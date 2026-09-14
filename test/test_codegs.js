@@ -503,6 +503,9 @@ section('Subitem rollup respects the parent\'s own work (2026-09-14, task #12 re
   d.tasks[0].tags = ['Calendar', 'Meeting'];
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('rollup never logs a bogus tags change (tsgLogFieldChanges_ always diffs tags)', !d.tasks[0].history.some(h => h.field === 'tags'));
+  d.tasks[0].history.push({ ts: NOW, field: 'tags', from: null, to: 'Calendar', source: 'rollup' }, { ts: NOW, field: 'tags', from: null, to: 'X', source: 'Durand' });
+  sandbox.tsgPurgeBogusRollupTagHistory_(d);
+  check('purge drops rollup-sourced tags entries and keeps everyone else\'s', d.tasks[0].history.filter(h => h.field === 'tags').length === 1 && d.tasks[0].history.some(h => h.source === 'Durand'));
 
   // Explicit edits set the parent's own share on both write paths.
   d = { meta: { docVersion: 1 }, tasks: [parent()] };

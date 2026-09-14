@@ -8,7 +8,7 @@ const OWNER_EMAIL = 'durand@thestawaszgroup.com';
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-14.7';
+const TSG_CODE_VERSION = '2026-09-14.8';
 
 const FILE_IDS = {
   html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv',     // Systems — Task Tracker Dashboard
@@ -3129,6 +3129,20 @@ function tsgRollupSubitemHours_(doc, now) {
 }
 
 /**
+ * One-time data repair (2026-09-14), safe to leave in: version 2026-09-14.4 of the rollup
+ * logged a bogus history entry ("tags: null -> <current tags>", source 'rollup') on every
+ * subitem-bearing task because its before-snapshot omitted tags. The rollup never changes
+ * tags, so any such entry is noise — drop it. Idempotent and cheap; remove once the live
+ * document has been observed clean.
+ */
+function tsgPurgeBogusRollupTagHistory_(doc) {
+  (doc.tasks || []).forEach(function(t) {
+    if (!Array.isArray(t.history)) return;
+    t.history = t.history.filter(function(h) { return !(h && h.source === 'rollup' && h.field === 'tags'); });
+  });
+}
+
+/**
  * Hours still open under a task: every not-done subitem's estHours plus the invisible
  * 0.5h "confirm the handoff" cost for each one delegated to someone other than Durand.
  * `any` is true when any subitem (done or not) ever carried estHours/delegate info, so a
@@ -3318,6 +3332,7 @@ function tsgAutoScheduleDoc_(doc) {
   // linger after the condition clears.
   if (doc.meta) delete doc.meta._scheduleWarning;
 
+  tsgPurgeBogusRollupTagHistory_(doc);
   tsgRollupSubitemHours_(doc, new Date().toISOString());
   tsgFlagAgingTasks_(doc, tsgTodayIso_());
 
