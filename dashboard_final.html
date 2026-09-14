@@ -1456,7 +1456,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-14.3';
+  const UI_VERSION = '2026-09-14.4';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -4893,6 +4893,9 @@
   function closeTaskCard() {
     document.getElementById('taskModal').classList.remove('open');
     currentModalTaskId = null;
+    // A remote change that arrived while this card was open was deferred (see
+    // pollForRemoteChanges) so the card wouldn't be yanked mid-edit — apply it now.
+    if (remoteChangePending) { remoteChangePending = false; setTimeout(pollForRemoteChanges, 0); }
     // Done paging through whatever popup list (if any) got us here — the next normal
     // board/Today render is free to recompute currentFilteredOrder again.
     navOrderScoped = false;
@@ -5895,6 +5898,40 @@
   renderVersionStamp();
   loadData();
   loadCalendar();
+
+  // Background sync (2026-09-14). The page used to load once and never look again, so a
+  // change made anywhere else (an _Inbox patch from Claude, another person's edit) was
+  // invisible until a manual reload and could only surface as a save conflict. Now every
+  // POLL_MS, and whenever the tab regains focus, ask ?api=version for the document's
+  // docVersion and reload the data when it has moved past what this page loaded. Never
+  // while a save is pending (that would race the save), and never while a task card is
+  // open (the reload is deferred until closeTaskCard). Foundation for the per-person
+  // mini-trackers, which edit the same document concurrently.
+  const POLL_MS = 45000;
+  let remoteChangePending = false;
+  let pollInFlight = false;
+  async function pollForRemoteChanges() {
+    if (pollInFlight || document.hidden || !dataLoaded) return;
+    if (saveTimer || pendingSaveId != null) return; // local edits in flight — they win, then the response carries the new docVersion
+    pollInFlight = true;
+    try {
+      const res = await fetch(apiUrl('api=version'));
+      if (!res.ok) return;
+      const v = await res.json();
+      const remote = v && typeof v.docVersion === 'number' ? v.docVersion : null;
+      const local = RAW_META && typeof RAW_META.docVersion === 'number' ? RAW_META.docVersion : null;
+      if (remote == null || local == null || remote <= local) return;
+      if (currentModalTaskId != null) { remoteChangePending = true; return; }
+      await loadData(false, true);
+      setSyncStatus('loaded');
+    } catch (err) {
+      // Polling is best-effort — a failed probe is not a connection problem worth alarming about.
+    } finally {
+      pollInFlight = false;
+    }
+  }
+  setInterval(pollForRemoteChanges, POLL_MS);
+  document.addEventListener('visibilitychange', function() { if (!document.hidden) pollForRemoteChanges(); });
 </script>
 </body>
 </html>

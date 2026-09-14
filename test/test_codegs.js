@@ -22,6 +22,10 @@ const sandbox = {
     })
   },
   ScriptApp: { getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/FAKE_DEPLOYMENT/exec' }) },
+  Session: {
+    getActiveUser: () => ({ getEmail: () => 'durand@thestawaszgroup.com' }),
+    getEffectiveUser: () => ({ getEmail: () => 'durand@thestawaszgroup.com' })
+  },
   UrlFetchApp: {
     fetch: (url, opts) => {
       const payload = JSON.parse(opts.payload);
@@ -451,13 +455,22 @@ section('Version indicator (?api=version + footer stamp)');
   const origGetFileById = sandbox.DriveApp.getFileById;
   sandbox.DriveApp.getFolderById = () => ({ getFiles: () => ({ hasNext: () => false }), createFile: () => {}, getFilesByName: () => ({ hasNext: () => false }) });
   const fakeDashboard = "<html><script>const API_URL = '__TSG_API_URL__'; const TSG_TOKEN = '__TSG_TOKEN__'; const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';</script></html>";
-  sandbox.DriveApp.getFileById = () => ({ getBlob: () => ({ getDataAsString: () => fakeDashboard }) });
+  const FILE_IDS_ = vm.runInContext('FILE_IDS', sandbox);
+  let fakeDataFile = JSON.stringify({ meta: { docVersion: 42 }, tasks: [] });
+  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS_.data ? fakeDataFile : fakeDashboard) }) });
   sandbox.LockService.getScriptLock = () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} });
   let out = sandbox.doGet({ parameter: { api: 'version' } });
   let body = null; try { body = JSON.parse(out.text); } catch (e) {}
   check('?api=version answers JSON with ok:true', !!body && body.ok === true);
   check('?api=version reports the TSG_CODE_VERSION constant', !!body && body.codeVersion === CODE_VERSION);
   check('?api=version needs no token (ungated like ?api=sync)', !!body && body.codeVersion && !('error' in body));
+  check('?api=version reports the data file docVersion (for background polling)', !!body && body.docVersion === 42);
+  fakeDataFile = 'not json';
+  body = JSON.parse(sandbox.doGet({ parameter: { api: 'version' } }).text);
+  check('?api=version still answers (docVersion null) when the data file is unreadable', body.ok === true && body.docVersion === null);
+  fakeDataFile = JSON.stringify({ meta: { docVersion: 42 }, tasks: [] });
+  body = JSON.parse(sandbox.doGet({ parameter: { api: 'whoami' } }).text);
+  check('?api=whoami answers without a token and never throws', body.ok === true && 'activeUser' in body && 'effectiveUser' in body);
   const page = sandbox.doGet({ parameter: {} });
   check('bare doGet stamps TSG_CODE_VERSION into the dashboard placeholder', typeof page.html === 'string' && page.html.includes("CODE_VERSION_STAMP = '" + CODE_VERSION + "'"));
   check('bare doGet leaves no raw __TSG_CODE_VERSION__ placeholder behind', typeof page.html === 'string' && !page.html.includes('__TSG_CODE_VERSION__'));
