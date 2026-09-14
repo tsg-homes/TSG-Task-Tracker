@@ -117,6 +117,24 @@ setTimeout(async () => {
   });
   console.log('Footer version stamp:', doc.getElementById('versionStamp').textContent);
 
+  // Transport: when google.script.run exists (page served by Apps Script), apiFetch must use
+  // it instead of cross-origin fetch, and the existing res.json() callers must keep working.
+  const rpcCalls = [];
+  w.google = { script: { run: (function() {
+    const chain = { _ok: null, _fail: null };
+    chain.withSuccessHandler = function(fn) { chain._ok = fn; return chain; };
+    chain.withFailureHandler = function(fn) { chain._fail = fn; return chain; };
+    chain.tsgRpc = function(query, method, body) { rpcCalls.push({ query, method }); setTimeout(() => chain._ok(JSON.stringify(fakeData)), 0); };
+    return chain;
+  })() } };
+  await w.loadData(false, true);
+  await new Promise(r => setTimeout(r, 30));
+  tryCall('apiFetch routes through google.script.run when the page is served by Apps Script', () => {
+    if (!rpcCalls.some(c => c.query === 'api=data' && c.method === 'GET')) throw new Error('rpc not used: ' + JSON.stringify(rpcCalls));
+    if (!w.findTask(1)) throw new Error('data from rpc not loaded');
+  });
+  delete w.google;
+
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

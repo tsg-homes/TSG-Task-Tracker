@@ -46,6 +46,12 @@ identifiers and environment facts that are otherwise only known from chat.
   `DOMAIN`, every request carries the signed-in TSG account: `tsgIsOwnerEmail_` gets the
   full dashboard, every other organization account gets `tsgPersonPlaceholderHtml_` (later:
   the per-person view). thestawaszgroup.com and tsg.homes are one Workspace (alias).
+- Transport under DOMAIN: the dashboard cannot fetch() the exec URL cross-origin (the
+  browser drops the Google session, every call returns a sign-in page: "Failed to fetch").
+  All 13 call sites go through `apiFetch`, which uses `google.script.run.tsgRpc` when the
+  page is served by Apps Script and plain fetch otherwise. `tsgRpc` rebuilds the doGet/doPost
+  event, supplies the token itself, and is OWNER-ONLY until per-person scoping exists,
+  because google.script.run is callable from any page this script serves.
 - Roster mapping: explicit roster `email` wins, else `firstname@<tsg domain>` matches the
   roster name case-insensitively (`tsgRosterNameForEmail_`).
 - DOMAIN switch runbook (first deploy of 2026-09-14.10): (1) `npm run deploy`; (2) Durand

@@ -81,7 +81,7 @@ const sandbox = {
   LockService: { getScriptLock: () => ({ waitLock: () => {}, releaseLock: () => {} }) },
   // Both stubs echo what they were given back on the returned object (.text / .html) so
   // doGet's responses can be inspected; the chained setters return the same object.
-  ContentService: { createTextOutput: (t) => { const o = { text: t }; o.setMimeType = () => o; return o; }, MimeType: { JSON: 'json' } },
+  ContentService: { createTextOutput: (t) => { const o = { text: t }; o.setMimeType = () => o; o.getContent = () => t; return o; }, MimeType: { JSON: 'json' } },
   HtmlService: {
     createHtmlOutput: (h) => { const o = { html: h }; o.setTitle = () => o; o.addMetaTag = () => o; return o; },
     // The dashboard is a file in the script project; tests point it at a small fake page.
@@ -598,6 +598,25 @@ section('Domain access: identity gate, roster mapping, inbox trigger (2026-09-14
   sandbox.Session = { getActiveUser: () => { throw new Error('no identity'); }, getEffectiveUser: () => ({ getEmail: () => '' }) };
   page = sandbox.doGet({ parameter: {} });
   check('no identity at all -> placeholder, never the dashboard', !page.html.includes('FULL DASHBOARD'));
+  sandbox.Session = origSession; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.DriveApp.getFileById = origGetFileById;
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (k === 'ANTHROPIC_API_KEY' ? 'fake-key' : null), setProperty: () => {} });
+
+  // RPC channel (google.script.run -> tsgRpc): owner only, rebuilds the doGet/doPost event.
+  sandbox.DriveApp.getFolderById = () => ({ getFiles: () => ({ hasNext: () => false }), createFile: () => {}, getFilesByName: () => ({ hasNext: () => false }) });
+  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS2.data ? dataWithRoster : '') }) });
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (k === 'SCRIPT_TOKEN' ? 'secret-token' : null), setProperty: () => {} });
+  sandbox.Session = origSession; // owner
+  let rpc = JSON.parse(sandbox.tsgRpc('api=version', 'GET', ''));
+  check('tsgRpc GET api=version returns the same JSON doGet would', rpc.ok === true && rpc.codeVersion === vm.runInContext('TSG_CODE_VERSION', sandbox));
+  rpc = JSON.parse(sandbox.tsgRpc('?api=data&x=1', 'GET', ''));
+  check('tsgRpc supplies the token itself (token-gated api=data succeeds for the owner)', Array.isArray(rpc.tasks));
+  rpc = JSON.parse(sandbox.tsgRpc('target=nonsense', 'POST', '{}'));
+  check('tsgRpc POST dispatches to doPost (unknown target rejected by doPost, not by rpc)', rpc.ok === false && /Unknown target/.test(rpc.error));
+  rpc = JSON.parse(sandbox.tsgRpc('', 'GET', ''));
+  check('tsgRpc refuses an empty GET instead of serving the dashboard HTML', rpc.ok === false && /nothing requested/.test(rpc.error));
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'perly@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }) };
+  rpc = JSON.parse(sandbox.tsgRpc('api=data', 'GET', ''));
+  check('tsgRpc refuses a non-owner (google.script.run is reachable from the placeholder page)', rpc.ok === false && rpc.error === 'unauthorized');
   sandbox.Session = origSession; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.DriveApp.getFileById = origGetFileById;
   sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (k === 'ANTHROPIC_API_KEY' ? 'fake-key' : null), setProperty: () => {} });
 

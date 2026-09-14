@@ -1456,7 +1456,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-14.4';
+  const UI_VERSION = '2026-09-14.5';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1471,6 +1471,31 @@
   function apiUrl(query) {
     const q = query ? String(query).replace(/^[?&]+/, '') : '';
     return API_URL + '?' + (q ? q + '&' : '') + 'token=' + encodeURIComponent(TSG_TOKEN);
+  }
+
+  // Transport (2026-09-14). Under domain-restricted access the browser will not attach the
+  // Google session to a cross-origin fetch() of the exec URL, so every API call would get a
+  // sign-in page back ("Failed to fetch"). When this page is served by Apps Script,
+  // google.script.run is available: it calls the server function tsgRpc with the signed-in
+  // identity, no CORS and no token. Every call site goes through apiFetch, which returns a
+  // minimal Response-like object so the existing res.ok / res.json() code is unchanged.
+  // Opened outside Apps Script (local file, jsdom tests) it falls back to plain fetch().
+  function apiFetch(query, opts) {
+    opts = opts || {};
+    const hasRpc = typeof window !== 'undefined' && window.google && window.google.script && window.google.script.run;
+    if (!hasRpc) return fetch(apiUrl(query), opts);
+    return new Promise(function(resolve, reject) {
+      window.google.script.run
+        .withSuccessHandler(function(text) {
+          resolve({
+            ok: true, status: 200,
+            text: async function() { return String(text == null ? '' : text); },
+            json: async function() { return JSON.parse(String(text == null ? '' : text)); }
+          });
+        })
+        .withFailureHandler(function(err) { reject(err instanceof Error ? err : new Error(String(err && err.message || err || 'RPC failed'))); })
+        .tsgRpc(query ? String(query).replace(/^[?&]+/, '') : '', (opts.method || 'GET').toUpperCase(), opts.body == null ? '' : String(opts.body));
+    });
   }
 
   const META = { lastUpdated: "2026-08-19" };
@@ -3242,7 +3267,7 @@
   }
   async function fetchAndMergeCalendar(start, end) {
     try {
-      const res = await fetch(apiUrl('api=calendar&start=' + start + '&end=' + end));
+      const res = await apiFetch('api=calendar&start=' + start + '&end=' + end);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const events = await res.json();
       const fresh = Array.isArray(events) ? events : [];
@@ -4398,7 +4423,7 @@
       'steps the notes state or clearly imply that are not already covered by this task\'s existing ' +
       'subtasks — empty array if nothing new or the task is a single atomic action.';
     try {
-      const res = await fetch(apiUrl('target=claude'), {
+      const res = await apiFetch('target=claude', {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({ prompt: prompt, taskId: id })
@@ -4518,7 +4543,7 @@
     const titleHint = encodeURIComponent(target.item.title || '');
     const dueDate = encodeURIComponent(target.item.timelineEnd || '');
     try {
-      const res = await fetch(apiUrl('api=meetings&start=' + MEETING_PICKER_WINDOW.start + '&end=' + MEETING_PICKER_WINDOW.end + '&titleHint=' + titleHint + '&dueDate=' + dueDate));
+      const res = await apiFetch('api=meetings&start=' + MEETING_PICKER_WINDOW.start + '&end=' + MEETING_PICKER_WINDOW.end + '&titleHint=' + titleHint + '&dueDate=' + dueDate);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       MEETING_PICKER_EVENTS = Array.isArray(data.events) ? data.events : [];
@@ -4599,7 +4624,7 @@
   async function verifyGuestEmail_(name, email) {
     if (!email) return { verified: false, reason: 'No email address to verify.' };
     try {
-      const res = await fetch(apiUrl('api=verifyEmail&name=' + encodeURIComponent(name || '') + '&email=' + encodeURIComponent(email)));
+      const res = await apiFetch('api=verifyEmail&name=' + encodeURIComponent(name || '') + '&email=' + encodeURIComponent(email));
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       if (!data || data.ok === false) throw new Error((data && data.error) || 'Verification failed');
@@ -4670,7 +4695,7 @@
     const endDt = new Date(startDt.getTime() + duration * 60000);
     btn.disabled = true; btn.textContent = 'Creating…';
     try {
-      const res = await fetch(apiUrl('target=createMeeting'), {
+      const res = await apiFetch('target=createMeeting', {
         method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({ title: title, startISO: startDt.toISOString(), endISO: endDt.toISOString(), location: location, description: description, guestEmail: invite ? guestEmail : '' })
       });
@@ -4709,7 +4734,7 @@
     closeMeetingPicker();
     // Best-effort — the docs[] link above already saved regardless of whether this succeeds.
     try {
-      await fetch(apiUrl('target=linkMeeting'), {
+      await apiFetch('target=linkMeeting', {
         method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         // Fall back to the first docs[] link when there's no legacy `doc` — otherwise the
         // calendar-event write-back carried an empty taskLink for every task whose only
@@ -5070,7 +5095,7 @@
   async function createTask(fields) {
     setSyncStatus('saving');
     try {
-      const res = await fetch(apiUrl(), {
+      const res = await apiFetch('', {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({ op: 'add_task', task: fields })
@@ -5305,7 +5330,7 @@
     const savedId = pendingSaveId;
     pendingSaveId = null;
     try {
-      const res = await fetch(apiUrl(), {
+      const res = await apiFetch('', {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(buildDoc())
@@ -5360,7 +5385,7 @@
     // either one on its own would still stomp the conflict warning the caller just set.
     if (!keepStatus) setSyncStatus('loading');
     try {
-      const res = await fetch(apiUrl('api=data'));
+      const res = await apiFetch('api=data');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const doc = await res.json();
       if (!doc || !Array.isArray(doc.tasks)) throw new Error('Unexpected response shape');
@@ -5414,7 +5439,7 @@
   // flagging half the team as terminated because of an API hiccup.
   async function syncFubRoster(silent) {
     try {
-      const res = await fetch(apiUrl('api=fubUsers'));
+      const res = await apiFetch('api=fubUsers');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       if (!data || data.ok === false) throw new Error((data && data.error) || 'FUB sync failed');
@@ -5539,7 +5564,7 @@
   }
   async function loadRulesets() {
     try {
-      const res = await fetch(apiUrl('api=rulesets'));
+      const res = await apiFetch('api=rulesets');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       RULESETS = await res.json();
       if (!RULESETS.threads) RULESETS.threads = {};
@@ -5836,7 +5861,7 @@
       // {ok:false, error:'conflict', serverVersion:N} if the stored doc has moved on since,
       // instead of letting this tab blind-overwrite someone else's Settings change.
       if (RULESETS_DOC_VERSION != null) RULESETS.meta.docVersion = RULESETS_DOC_VERSION;
-      const res = await fetch(apiUrl('target=rulesets'), {
+      const res = await apiFetch('target=rulesets', {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(RULESETS)
@@ -5915,7 +5940,7 @@
     if (saveTimer || pendingSaveId != null) return; // local edits in flight — they win, then the response carries the new docVersion
     pollInFlight = true;
     try {
-      const res = await fetch(apiUrl('api=version'));
+      const res = await apiFetch('api=version');
       if (!res.ok) return;
       const v = await res.json();
       const remote = v && typeof v.docVersion === 'number' ? v.docVersion : null;

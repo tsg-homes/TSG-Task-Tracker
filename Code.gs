@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-14.10';
+const TSG_CODE_VERSION = '2026-09-14.11';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -923,6 +923,36 @@ function tsgInstallInboxTrigger() {
   ScriptApp.newTrigger('tsgInboxTick').timeBased().everyMinutes(1).create();
   Logger.log('[trigger] tsgInboxTick installed (every minute); replaced ' + existing.length + ' existing.');
   return { ok: true, replaced: existing.length };
+}
+
+/**
+ * RPC entry for the dashboard (2026-09-14). Under domain-restricted access a cross-origin
+ * fetch() of the exec URL cannot carry the Google session, so the page calls this through
+ * google.script.run instead. It rebuilds the same event object doGet/doPost expect and
+ * returns the text body. The shared token is supplied here from Script Properties — the
+ * caller's proof is their signed-in identity, checked first. Until the per-person view
+ * exists, only the owner may use this channel: google.script.run is reachable from ANY
+ * page this script serves, including the placeholder, so the gate is not optional.
+ */
+function tsgRpc(query, method, body) {
+  if (TSG_ACCESS_MODE === 'DOMAIN' && !tsgIsOwnerEmail_(tsgSignedInEmail_())) {
+    return JSON.stringify({ ok: false, error: 'unauthorized' });
+  }
+  var params = {};
+  String(query || '').replace(/^[?&]+/, '').split('&').forEach(function(kv) {
+    if (!kv) return;
+    var i = kv.indexOf('=');
+    var k = i === -1 ? kv : kv.slice(0, i);
+    var v = i === -1 ? '' : kv.slice(i + 1);
+    try { params[decodeURIComponent(k)] = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (err) { params[k] = v; }
+  });
+  if (!params.api && !params.target && String(method || 'GET').toUpperCase() !== 'POST') {
+    return JSON.stringify({ ok: false, error: 'rpc: nothing requested (no api= or target=)' });
+  }
+  params.token = PropertiesService.getScriptProperties().getProperty('SCRIPT_TOKEN') || '';
+  var e = { parameter: params, postData: { contents: body == null ? '' : String(body) } };
+  var out = String(method || 'GET').toUpperCase() === 'POST' ? doPost(e) : doGet(e);
+  return (out && typeof out.getContent === 'function') ? out.getContent() : String(out);
 }
 
 function doGet(e) {
