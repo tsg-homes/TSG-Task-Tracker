@@ -8,7 +8,7 @@ const OWNER_EMAIL = 'durand@thestawaszgroup.com';
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-14.5';
+const TSG_CODE_VERSION = '2026-09-14.6';
 
 const FILE_IDS = {
   html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv',     // Systems — Task Tracker Dashboard
@@ -3104,7 +3104,9 @@ function tsgSubitemBlockedByIdx_(subitems, idx) {
 function tsgRollupSubitemHours_(doc, now) {
   (doc.tasks || []).forEach(function(t) {
     if (!t.subitems || !t.subitems.length) return;
-    var before = { estHours: t.estHours, timelineEnd: t.timelineEnd };
+    // tags is in the snapshot only because tsgLogFieldChanges_ always diffs it; the rollup
+    // never changes tags, and leaving it out logged a bogus null->tags entry every run.
+    var before = { estHours: t.estHours, timelineEnd: t.timelineEnd, tags: t.tags };
     var sub = tsgOpenSubitemHours_(t);
     // 2026-09-14 — the parent's OWN work. Until today this rollup REPLACED the parent's
     // estHours with the subitem sum, so a task whose subitems were all done rolled up to

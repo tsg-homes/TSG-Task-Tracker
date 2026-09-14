@@ -500,6 +500,9 @@ section('Subitem rollup respects the parent\'s own work (2026-09-14, task #12 re
   check('all subitems done: parent keeps its own hours instead of rolling up to 0', d.tasks[0].estHours === 0.25);
   check('all subitems done: parent due date is NOT pinned to the finished subitem', d.tasks[0].timelineEnd === '2026-09-17');
   check('rollup writes no history entry when nothing changed', d.tasks[0].history.length === 0);
+  d.tasks[0].tags = ['Calendar', 'Meeting'];
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('rollup never logs a bogus tags change (tsgLogFieldChanges_ always diffs tags)', !d.tasks[0].history.some(h => h.field === 'tags'));
 
   // Explicit edits set the parent's own share on both write paths.
   d = { meta: { docVersion: 1 }, tasks: [parent()] };
