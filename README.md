@@ -68,10 +68,10 @@ clasp clone <SCRIPT_ID>
 `clasp clone` will pull down whatever's currently live, including `appsscript.json` (the
 manifest — now committed here so `clasp push` works from a fresh clone) and its own
 `.clasp.json` (gitignored here on purpose — it's environment-specific, not a secret, but
-there's no reason to commit it). `.claspignore` limits what `clasp push` uploads to `Code.gs`
-and `appsscript.json` — the dashboard HTML and `test/` must never be pushed into the script
-project. After
-cloning, this repo's `Code.gs` is the version to keep — overwrite the cloned copy with it, then:
+there's no reason to commit it). `.claspignore` limits what `clasp push` uploads to `Code.gs`,
+`appsscript.json` and `dashboard_final.html` — `test/`, `scripts/` and the docs must never be
+pushed into the script project. After cloning, this repo's files are the versions to keep —
+overwrite the cloned copies with them, then:
 
 ```
 clasp push
