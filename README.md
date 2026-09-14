@@ -15,9 +15,9 @@ GitHub repo: `https://github.com/tsg-homes/task-tracker.git`
 - `Code.gs` — the Apps Script backend: the `doGet`/`doPost` API, the `_Inbox` merge-on-read
   patch pipeline, the estimator/scheduler, and the Drive-doc / Calendar-meeting auto-link
   matchers.
-- `dashboard_final.html` — the single-file dashboard (HTML/CSS/JS) served by `doGet`. Stored
-  as a file in the tracker's Drive folder, not bound to the Apps Script project itself — it
-  already deploys with a plain `curl` (see **Deploying** below), no manual step needed.
+- `dashboard_final.html` — the single-file dashboard (HTML/CSS/JS) served by `doGet`. Since
+  2026-09-14 it is a file inside the Apps Script project (pushed by `clasp` alongside
+  `Code.gs`), so one `npm run deploy` ships backend and dashboard together.
 - `test/test_codegs.js` — Node `vm`-based unit tests for `Code.gs`. Loads the file into a
   sandboxed context with stubbed Apps Script globals (`DriveApp`, `CalendarApp`, `Utilities`,
   `PropertiesService`, etc.) and a controllable fake Claude responder, so `applyDataPatch` and
@@ -37,20 +37,15 @@ dependencies beyond Node's built-ins.)
 
 ## Deploying
 
-**`dashboard_final.html`** already has a zero-friction deploy path — push it straight to Drive
-with:
+`npm run deploy` pushes `Code.gs`, `appsscript.json` and `dashboard_final.html` to the live
+Apps Script project and republishes the existing web-app deployment (same exec URL). That is
+the whole deploy: there is no separate dashboard step any more. The historical
+`?target=html` write path is retired and now returns an error; the old Drive copy of the
+dashboard is no longer what `doGet` serves.
 
-```
-curl "<exec URL>?target=html" --data-binary @dashboard_final.html -H 'Content-Type: text/plain'
-```
-
-**`Code.gs`** is the one that has historically required a manual round-trip: paste it into the
-Apps Script editor, then *Manage deployments → Edit → New version → Deploy*. That friction —
-and the fact that a Claude session has no way to confirm a `Code.gs` change actually went live
-after handing over the file — is exactly what moving this repo under Claude Code + `clasp`
-(Google's official Apps Script CLI) is meant to close: `clasp push` uploads `Code.gs` straight
-into the live Apps Script project, and `clasp deploy -i <deploymentId>` republishes the
-*existing* deployment (same exec URL) instead of minting a new one.
+`clasp` (Google's official Apps Script CLI) is what makes this possible from any machine,
+including a Claude Code cloud session: `clasp push` uploads the files, `clasp deploy -i
+<deploymentId>` republishes the *existing* deployment instead of minting a new one.
 
 ### One-time setup (run these yourself — they need your own Google OAuth login, which
 ### shouldn't be driven by an agent on your behalf)
@@ -92,11 +87,11 @@ deployment; leave it alone.
 
 Linked and pushed for the first time on 2026-09-14 (this repo's `Code.gs` was a strict
 superset of what was live — it added the Drive/Calendar auto-link matchers). Note that the
-cloud session's outbound proxy blocks `script.google.com`, so the `curl ... ?target=html`
-dashboard deploy and any exec-URL smoke test have to run from a local machine.
+cloud session's outbound proxy blocks `script.google.com`, so an exec-URL smoke test has to
+run from a local machine or a browser; `clasp` itself is unaffected.
 
 **Version indicator.** `Code.gs` carries `TSG_CODE_VERSION` and `dashboard_final.html`
-carries `UI_VERSION` (both `YYYY-MM-DD.n`). Bump the one you're deploying, every time. The
+carries `UI_VERSION` (both `YYYY-MM-DD.n`). Bump the one you changed, every time. The
 dashboard footer shows `API <code version> · UI <ui version>`, and `<exec URL>?api=version`
 returns the live backend version as JSON with no token — that is how you tell whether a
 deploy actually landed.

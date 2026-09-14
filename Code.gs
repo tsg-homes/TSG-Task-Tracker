@@ -8,10 +8,12 @@ const OWNER_EMAIL = 'durand@thestawaszgroup.com';
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-14.8';
+const TSG_CODE_VERSION = '2026-09-14.9';
 
 const FILE_IDS = {
-  html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv',     // Systems — Task Tracker Dashboard
+  // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
+  // 2026-09-14: the dashboard now lives in this script project (dashboard_final.html) and
+  // is served by doGet from there. The Drive file is kept only as a historical copy.
   data: '1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt',     // Systems — Task Tracker Data.json
   rulesets: '1RKkNUEfh6Q0qlQXbNlME7aIfh_h8FE-R'  // Systems — Task Tracker Rulesets.json
 };
@@ -917,7 +919,11 @@ function doGet(e) {
   // deployment serving this request) and __TSG_TOKEN__ (the SCRIPT_TOKEN script property).
   // Injecting the last two here (2026-09-14) is what keeps the exec URL and the token out
   // of the git repo, which is public. Exact-string swaps only; nothing else is interpolated.
-  var html = getTrackerFile('html').getBlob().getDataAsString();
+  // 2026-09-14: the dashboard is now a file IN this script project (dashboard_final.html,
+  // pushed by clasp alongside Code.gs) rather than a Drive file written via ?target=html.
+  // One deploy path for both, from any machine that can run clasp. createHtmlOutputFromFile
+  // (not createTemplateFromFile) so nothing in the page is evaluated as a scriptlet.
+  var html = HtmlService.createHtmlOutputFromFile('dashboard_final').getContent();
   var stamps = {
     '__TSG_CODE_VERSION__': TSG_CODE_VERSION,
     '__TSG_API_URL__': tsgServiceUrl_(),
@@ -1552,9 +1558,17 @@ function doPost(e) {
   // Strict whitelist. This used to fall through to 'data' for anything unrecognized,
   // which meant a typo'd or unknown target silently overwrote the entire task database
   // with whatever was posted. Unknown targets are now rejected.
-  if (['data', 'html', 'rulesets'].indexOf(requested) === -1) {
+  if (requested === 'html') {
+    // Retired 2026-09-14: the dashboard ships inside the script project via clasp push
+    // (see doGet). The old Drive copy is no longer what doGet serves, so writing it would
+    // only mislead. Rejected loudly rather than silently ignored.
     return ContentService.createTextOutput(JSON.stringify({
-      ok: false, error: 'Unknown target: ' + requested + '. Expected data, html, rulesets, claude, createMeeting or linkMeeting.'
+      ok: false, error: 'target=html is retired: the dashboard is deployed with clasp push (npm run deploy), not written to Drive.'
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+  if (['data', 'rulesets'].indexOf(requested) === -1) {
+    return ContentService.createTextOutput(JSON.stringify({
+      ok: false, error: 'Unknown target: ' + requested + '. Expected data, rulesets, claude, createMeeting or linkMeeting.'
     })).setMimeType(ContentService.MimeType.JSON);
   }
 

@@ -11,6 +11,7 @@ let driveFilesFixture = [];      // [{ name, getUrl }] consumed by DriveApp.sear
 let calendarEventsFixture = [];  // [{ id, title, start: Date, end: Date, allDay, location }] consumed by CalendarApp stub
 let driveDocTextById = {};       // { fileId: text } consumed by the DocumentApp.openById stub (tsgGetFileSnippet_)
 let driveSheetValuesById = {};   // { fileId: [[...]] } consumed by the SpreadsheetApp.openById stub
+let projectDashboardHtml = '';   // what HtmlService.createHtmlOutputFromFile('dashboard_final') returns
 
 const sandbox = {
   console,
@@ -81,7 +82,11 @@ const sandbox = {
   // Both stubs echo what they were given back on the returned object (.text / .html) so
   // doGet's responses can be inspected; the chained setters return the same object.
   ContentService: { createTextOutput: (t) => { const o = { text: t }; o.setMimeType = () => o; return o; }, MimeType: { JSON: 'json' } },
-  HtmlService: { createHtmlOutput: (h) => { const o = { html: h }; o.setTitle = () => o; o.addMetaTag = () => o; return o; } },
+  HtmlService: {
+    createHtmlOutput: (h) => { const o = { html: h }; o.setTitle = () => o; o.addMetaTag = () => o; return o; },
+    // The dashboard is a file in the script project; tests point it at a small fake page.
+    createHtmlOutputFromFile: (name) => ({ getContent: () => (name === 'dashboard_final' ? projectDashboardHtml : '') })
+  },
   CacheService: { getScriptCache: () => ({ get: () => null, put: () => {} }) },
   // Global MimeType (distinct from ContentService.MimeType above) — used by
   // tsgGetFileSnippet_ to decide how to read a candidate Drive file's content.
@@ -457,7 +462,8 @@ section('Version indicator (?api=version + footer stamp)');
   const fakeDashboard = "<html><script>const API_URL = '__TSG_API_URL__'; const TSG_TOKEN = '__TSG_TOKEN__'; const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';</script></html>";
   const FILE_IDS_ = vm.runInContext('FILE_IDS', sandbox);
   let fakeDataFile = JSON.stringify({ meta: { docVersion: 42 }, tasks: [] });
-  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS_.data ? fakeDataFile : fakeDashboard) }) });
+  projectDashboardHtml = fakeDashboard;
+  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS_.data ? fakeDataFile : 'NOT THE DASHBOARD') }) });
   sandbox.LockService.getScriptLock = () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} });
   let out = sandbox.doGet({ parameter: { api: 'version' } });
   let body = null; try { body = JSON.parse(out.text); } catch (e) {}
@@ -473,6 +479,9 @@ section('Version indicator (?api=version + footer stamp)');
   const page = sandbox.doGet({ parameter: {} });
   check('bare doGet stamps TSG_CODE_VERSION into the dashboard placeholder', typeof page.html === 'string' && page.html.includes("CODE_VERSION_STAMP = '" + CODE_VERSION + "'"));
   check('bare doGet leaves no raw __TSG_CODE_VERSION__ placeholder behind', typeof page.html === 'string' && !page.html.includes('__TSG_CODE_VERSION__'));
+  check('bare doGet serves the dashboard from the script project file, not Drive', !page.html.includes('NOT THE DASHBOARD'));
+  const htmlPost = JSON.parse(sandbox.doPost({ parameter: { target: 'html' }, postData: { contents: '<html>x</html>' } }).text);
+  check('doPost target=html is retired and rejected loudly', htmlPost.ok === false && /retired/.test(htmlPost.error));
 
   // Secrets are injected at serve time, never committed (the repo is public).
   check('bare doGet stamps the serving deployment exec URL into API_URL', page.html.includes("API_URL = 'https://script.google.com/macros/s/FAKE_DEPLOYMENT/exec'"));

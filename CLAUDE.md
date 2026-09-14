@@ -22,16 +22,14 @@ identifiers and environment facts that are otherwise only known from chat.
 - Bump `TSG_CODE_VERSION` (Code.gs) on every backend deploy and `UI_VERSION`
   (dashboard_final.html) on every dashboard deploy, format `YYYY-MM-DD.n`. The footer shows
   both; `<exec URL>?api=version` returns the backend one. Tests assert the format.
-- The dashboard is a Drive file (`FILE_IDS.html` in Code.gs, id
-  `1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv`), not part of the script project. It CANNOT be
-  deployed from a cloud session: the exec URL is proxy-blocked, the Google Drive
-  connector's update_file only changes title/parent, clasp's token has only `drive.file`
-  scope, and Google blocks clasp's OAuth client from requesting the full drive scope
-  ("This app is blocked"). Do not add a fetch-from-URL endpoint to Code.gs to work around
-  this (denied 2026-09-14 as a remote-code-loading surface). Durand deploys it from his
-  machine with the README curl; give him the exact commands with the commit sha.
+- The dashboard (`dashboard_final.html`) is a file IN the script project since 2026-09-14
+  and is pushed by `clasp` with `Code.gs`; `npm run deploy` ships both. There is no
+  separate dashboard deploy step and no curl path. `?target=html` is retired (returns an
+  error). The old Drive copy (`1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv`) is historical only.
+  Never add a fetch-from-URL endpoint to Code.gs (denied 2026-09-14 as a remote-code-
+  loading surface); it is also no longer needed.
 
-- `npm run push` = `clasp push` (Code.gs + appsscript.json only; see .claspignore).
+- `npm run push` = `clasp push` (Code.gs, appsscript.json, dashboard_final.html; see .claspignore).
 - `npm run deploy` = push + `clasp deploy -i <web-app deployment ID>`. Never run bare
   `clasp deploy`; it mints a new deployment with a new URL.
 - Deploying changes live behavior for the team. Confirm with Durand before running it
@@ -50,9 +48,9 @@ identifiers and environment facts that are otherwise only known from chat.
   empty string. Do not add identity calls to a request path under this deployment.
 - Consequence: per-person (Google-login) views require switching the deployment to
   domain-restricted access, which makes every unauthenticated curl / skill call to the
-  exec URL fail. Durand chose Google login on 2026-09-14; the plan is to move the dashboard
-  into the script project (clasp-deployed), process the _Inbox on a timed trigger, and have
-  automation read the data file from Drive instead of `?api=data`.
+  exec URL fail. Durand chose Google login on 2026-09-14; the dashboard is already in the
+  script project; still to do: process the _Inbox on a timed trigger and have automation
+  read the data file from Drive instead of `?api=data`, then switch access to domain.
 
 ## Cloud (Claude Code on the web) session facts
 
@@ -60,6 +58,6 @@ identifiers and environment facts that are otherwise only known from chat.
   `clasp login --no-localhost`: Claude prints the URL, Durand authorizes as
   durand@thestawaszgroup.com, and pastes back the `http://localhost:8888/?...code=...` URL.
 - The cloud session's outbound proxy blocks `script.google.com`. The exec URL cannot be
-  smoke-tested from a cloud session, and the README's `curl ... ?target=html` dashboard
-  deploy must run from a local machine. clasp works because it uses googleapis.com.
+  smoke-tested from a cloud session; ask Durand to load it. clasp works because it uses
+  googleapis.com.
 - Work on the branch the session names; never push to main without being told.
