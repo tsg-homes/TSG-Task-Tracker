@@ -24,5 +24,8 @@ if (!id || !/^[A-Za-z0-9_-]{20,}$/.test(id)) {
   process.exit(1);
 }
 const clasp = process.platform === 'win32' ? 'clasp.cmd' : 'clasp';
-execFileSync(clasp, ['push'], { stdio: 'inherit', shell: process.platform === 'win32' });
+// -f: clasp prompts before overwriting a changed manifest (appsscript.json) and, with no
+// TTY, silently answers "no" and still exits 0 — which once deployed stale code as a new
+// version (2026-09-14). The manifest in this repo is the source of truth, so always force.
+execFileSync(clasp, ['push', '-f'], { stdio: 'inherit', shell: process.platform === 'win32' });
 execFileSync(clasp, ['deploy', '-i', id], { stdio: 'inherit', shell: process.platform === 'win32' });
