@@ -8,7 +8,7 @@ const OWNER_EMAIL = 'durand@thestawaszgroup.com';
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-14.6';
+const TSG_CODE_VERSION = '2026-09-14.7';
 
 const FILE_IDS = {
   html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv',     // Systems — Task Tracker Dashboard
@@ -728,7 +728,7 @@ function applyDataPatch(doc, patch) {
     }
     const incoming = patch.doc || {};
     const nextTasks = incoming.tasks || doc.tasks;
-    tsgCaptureOwnHoursFromSave_(doc.tasks, nextTasks);
+    tsgCaptureExplicitEditsFromSave_(doc.tasks, nextTasks);
     tsgStampStatusChanges_(doc.tasks, nextTasks, now, 'Durand');
     tsgStampSubitemTouches_(doc.tasks, nextTasks, now, 'Durand');
     doc.tasks = nextTasks;
@@ -3174,13 +3174,21 @@ function tsgCaptureOwnHours_(t, newTotal) {
   t.estHoursOwn = Math.max(0, Math.round((n - tsgOpenSubitemHours_(t).hours) * 100) / 100);
 }
 
-/** replace_all (the dashboard's full save): detect explicit parent estHours edits by diffing against the stored task. */
-function tsgCaptureOwnHoursFromSave_(prevTasks, nextTasks) {
+/**
+ * replace_all (the dashboard's full save): detect explicit edits by diffing against the
+ * stored task, and record them the same way update_task does — a changed timelineEnd
+ * sets dueOverride (the dashboard never sets that flag itself, which is why Durand's
+ * 10-08 on task #1 kept losing to the rollup), and a changed estHours on a subitem-
+ * bearing task captures the parent's own share.
+ */
+function tsgCaptureExplicitEditsFromSave_(prevTasks, nextTasks) {
   var prevById = {};
   (prevTasks || []).forEach(function(t) { prevById[t.id] = t; });
   (nextTasks || []).forEach(function(t) {
-    if (!t.subitems || !t.subitems.length) return;
     var prev = prevById[t.id];
+    if (prev && typeof prev.dueOverride === 'boolean' && t.dueOverride == null) t.dueOverride = prev.dueOverride;
+    if (prev && !tsgValuesEqual_(prev.timelineEnd, t.timelineEnd) && t.timelineEnd) t.dueOverride = true;
+    if (!t.subitems || !t.subitems.length) return;
     if (prev && typeof prev.estHoursOwn === 'number' && t.estHoursOwn == null) t.estHoursOwn = prev.estHoursOwn;
     if (!prev || !tsgValuesEqual_(prev.estHours, t.estHours)) tsgCaptureOwnHours_(t, t.estHours);
   });

@@ -522,6 +522,19 @@ section('Subitem rollup respects the parent\'s own work (2026-09-14, task #12 re
   sandbox.applyDataPatch(d, { op: 'replace_all', ts: NOW, baseVersion: d.meta.docVersion, doc: { meta: {}, tasks: [saved2] } });
   check('a save that omits estHoursOwn carries it over from the stored task', d.tasks[0].estHoursOwn === 0.25);
 
+  // Task #1 regression: a due date changed through the dashboard's full save must count as
+  // explicit (dueOverride) so the rollup cannot pull it back to a subitem's date.
+  d = { meta: { docVersion: 9 }, tasks: [{ id: 1, title: 'FUB Rollout', status: 'In Progress', timelineEnd: '2026-09-22', history: [],
+    subitems: [{ title: 'Rayma', done: true, timelineEnd: '2026-09-22' }, { title: 'Chelsea', done: false, timelineEnd: '2026-09-16' }] }] };
+  const saved3 = JSON.parse(JSON.stringify(d.tasks[0])); saved3.timelineEnd = '2026-10-08';
+  sandbox.applyDataPatch(d, { op: 'replace_all', ts: NOW, baseVersion: 9, doc: { meta: {}, tasks: [saved3] } });
+  check('full save changing timelineEnd sets dueOverride', d.tasks[0].dueOverride === true);
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('...so the rollup keeps the explicit 10-08 instead of the open subitem\'s 9-16', d.tasks[0].timelineEnd === '2026-10-08');
+  const saved4 = JSON.parse(JSON.stringify(d.tasks[0])); delete saved4.dueOverride; saved4.notes = 'notes only';
+  sandbox.applyDataPatch(d, { op: 'replace_all', ts: NOW, baseVersion: d.meta.docVersion, doc: { meta: {}, tasks: [saved4] } });
+  check('a save that omits dueOverride carries it over from the stored task', d.tasks[0].dueOverride === true);
+
   // Open subitems add on top of the parent's own hours; done ones drop out.
   d = { meta: { docVersion: 1 }, tasks: [parent({ estHoursOwn: 1, subitems: [
     { title: 'a', done: false, delegate: '', estHours: 0.5, timelineEnd: '2026-09-20' },
