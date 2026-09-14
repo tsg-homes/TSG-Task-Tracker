@@ -131,6 +131,27 @@ After that, `clasp push`/`clasp deploy` (see **Deploying** above) work the same 
 inside a cloud session as they do locally — `clasp login` just needs to happen once per
 environment, so a fresh cloud session will ask for it again the first time.
 
+## Access model and automation (2026-09-14)
+
+The web app is deployed **domain-restricted**: only signed-in TSG Workspace accounts
+(thestawaszgroup.com / tsg.homes, one organization) can reach the exec URL. The owner gets
+the full dashboard; any other TSG account gets a per-person page. Consequences for
+automation (Claude sessions, scripts):
+
+- **Reads**: fetch `Systems — Task Tracker Data — TSG.json` (`1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt`)
+  or `Systems — Task Tracker Rulesets.json` (`1RKkNUEfh6Q0qlQXbNlME7aIfh_h8FE-R`) directly
+  from Drive. `?api=data` / `?api=rulesets` are for the signed-in dashboard only.
+- **Writes**: unchanged — drop a patch file into `_Inbox` (`1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi`).
+  A one-minute time-driven trigger (`tsgInboxTick`) applies it; nothing needs to poke
+  `?api=sync` any more. Verify by re-reading the Drive file after a minute.
+- **No curl to the exec URL from anything that isn't a browser session.** It will get a
+  Google sign-in page, not JSON.
+
+Switching the access mode: change `TSG_ACCESS_MODE` in `Code.gs` AND `webapp.access` in
+`appsscript.json` together (`npm test` fails if they disagree), deploy, then run
+`tsgInstallInboxTrigger` once from the Apps Script editor to authorize the new scopes and
+install the trigger.
+
 ## Conventions carried over from prior work on this project
 
 - All writes to the tracker's Data/Rulesets files go through the `_Inbox` patch-file

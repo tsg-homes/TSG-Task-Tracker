@@ -4,11 +4,19 @@ const INBOX_FOLDER_ID = '1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi';
 // File IDs, not names — renaming these files in Drive will never break lookup again.
 const OWNER_EMAIL = 'durand@thestawaszgroup.com';
 
+// Access mode (2026-09-14). MUST agree with appsscript.json webapp.access — a test checks.
+//   'ANONYMOUS': anyone with the URL; identity calls are forbidden (they abort the request).
+//   'DOMAIN':    only signed-in TSG Workspace accounts; every request carries an identity,
+//                the owner gets the full dashboard, everyone else a per-person view.
+const TSG_ACCESS_MODE = 'DOMAIN';
+// Both spellings are the same Workspace organization (tsg.homes is an alias domain).
+const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
+
 // Deployed-code version stamp (2026-09-14). Apps Script exposes no deployment/version
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-14.9';
+const TSG_CODE_VERSION = '2026-09-14.10';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -837,6 +845,86 @@ function tsgCurrentHeartbeat_() {
   catch (err) { return null; }
 }
 
+/**
+ * ---------------------------------------------------------------------------
+ * IDENTITY (2026-09-14) — only meaningful when TSG_ACCESS_MODE is 'DOMAIN'.
+ * Under anonymous access these calls abort the request outright (verified live), so
+ * tsgSignedInEmail_ never touches Session unless the mode says it is safe.
+ * ---------------------------------------------------------------------------
+ */
+function tsgSignedInEmail_() {
+  if (TSG_ACCESS_MODE !== 'DOMAIN') return '';
+  try { return String(Session.getActiveUser().getEmail() || '').toLowerCase(); } catch (err) { return ''; }
+}
+function tsgEmailDomainOk_(email) {
+  var at = String(email || '').lastIndexOf('@');
+  return at > 0 && TSG_DOMAINS.indexOf(email.slice(at + 1)) !== -1;
+}
+function tsgIsOwnerEmail_(email) {
+  email = String(email || '').toLowerCase();
+  if (!email) return false;
+  if (email === OWNER_EMAIL.toLowerCase()) return true;
+  var local = email.slice(0, email.lastIndexOf('@'));
+  return tsgEmailDomainOk_(email) && local === OWNER_EMAIL.slice(0, OWNER_EMAIL.indexOf('@')).toLowerCase();
+}
+/**
+ * Roster name for a signed-in email: an explicit roster email wins; otherwise the TSG
+ * convention firstname@<domain> (case-insensitive local part == roster name). '' if no match.
+ */
+function tsgRosterNameForEmail_(roster, email) {
+  email = String(email || '').toLowerCase();
+  if (!email) return '';
+  var list = Array.isArray(roster) ? roster : [];
+  for (var i = 0; i < list.length; i++) {
+    var m = list[i]; if (!m) continue;
+    var name = typeof m === 'string' ? m : m.name;
+    var rEmail = (typeof m === 'object' && m.email) ? String(m.email).toLowerCase() : '';
+    if (rEmail && rEmail === email) return name || '';
+  }
+  if (!tsgEmailDomainOk_(email)) return '';
+  var local = email.slice(0, email.lastIndexOf('@'));
+  for (var j = 0; j < list.length; j++) {
+    var n = typeof list[j] === 'string' ? list[j] : (list[j] && list[j].name);
+    if (n && String(n).toLowerCase() === local) return n;
+  }
+  return '';
+}
+/** Placeholder served to a signed-in non-owner until their personal view exists. No token, no URL. */
+function tsgPersonPlaceholderHtml_(name, email) {
+  var who = name ? name : (email || 'there');
+  return '<!doctype html><html><head><meta charset="utf-8"><title>TSG Task Tracker</title>' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<style>body{margin:0;background:#0f1115;color:#e6e4dd;font-family:Lato,system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center}' +
+    '.card{max-width:520px;padding:32px;border:1px solid #2a2d35;border-radius:12px;background:#171a21}h1{font-size:20px;margin:0 0 12px}p{line-height:1.5;color:#b8b5ad}</style></head>' +
+    '<body><div class="card"><h1>Hi ' + tsgHtmlEscape_(who) + '</h1>' +
+    '<p>You are signed in to the TSG Task Tracker' + (name ? '' : ', but this account is not on the team roster yet') + '.</p>' +
+    '<p>Your personal view of the tasks delegated to you is being built. Until it is live, Durand is the contact for anything on the board.</p>' +
+    '</div></body></html>';
+}
+function tsgHtmlEscape_(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+}
+
+/**
+ * ---------------------------------------------------------------------------
+ * TIMED INBOX PROCESSING (2026-09-14). With domain-restricted access, automation (Claude
+ * sessions) can no longer poke ?api=sync to apply its _Inbox patches; a one-minute
+ * time-driven trigger does it instead. tsgInstallInboxTrigger is run ONCE by Durand from
+ * the Apps Script editor (Run > tsgInstallInboxTrigger) — that run is also what grants the
+ * script's new authorization scopes. Idempotent: re-running replaces the trigger.
+ * ---------------------------------------------------------------------------
+ */
+function tsgInboxTick() {
+  processInbox();
+}
+function tsgInstallInboxTrigger() {
+  var existing = ScriptApp.getProjectTriggers().filter(function(t) { return t.getHandlerFunction() === 'tsgInboxTick'; });
+  existing.forEach(function(t) { ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('tsgInboxTick').timeBased().everyMinutes(1).create();
+  Logger.log('[trigger] tsgInboxTick installed (every minute); replaced ' + existing.length + ' existing.');
+  return { ok: true, replaced: existing.length };
+}
+
 function doGet(e) {
   e = e || {};
   if (!e.parameter) e.parameter = {};
@@ -911,9 +999,21 @@ function doGet(e) {
       ok: true, verified: vres.verified, reason: vres.reason
     })).setMimeType(ContentService.MimeType.JSON);
   }
-  // Bare doGet — the dashboard HTML shell. Deliberately NOT token-gated: it is the
-  // initial page load, carries no sensitive payload of its own, and every data call the
-  // page then makes is gated above.
+  // Bare doGet — the dashboard HTML shell. Not token-gated: it is the initial page load,
+  // and every data call the page then makes is gated above. Under DOMAIN access the
+  // request carries a Google identity: the owner gets the full dashboard; anyone else in
+  // the organization gets a per-person placeholder that carries neither the token nor the
+  // exec URL (2026-09-14; the per-person view itself is the next build).
+  if (TSG_ACCESS_MODE === 'DOMAIN') {
+    var who = tsgSignedInEmail_();
+    if (!tsgIsOwnerEmail_(who)) {
+      var rosterName = '';
+      try { rosterName = tsgRosterNameForEmail_((JSON.parse(getTrackerFile('data').getBlob().getDataAsString()).meta || {}).teamRoster, who); } catch (err) { rosterName = ''; }
+      return HtmlService.createHtmlOutput(tsgPersonPlaceholderHtml_(rosterName, who))
+        .setTitle('TSG Task Tracker')
+        .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+    }
+  }
   // The dashboard file carries literal placeholders in its JS that only the backend can
   // fill: __TSG_CODE_VERSION__ (footer stamp), __TSG_API_URL__ (the exec URL of the
   // deployment serving this request) and __TSG_TOKEN__ (the SCRIPT_TOKEN script property).

@@ -38,19 +38,24 @@ identifiers and environment facts that are otherwise only known from chat.
   `clasp clone <Script ID>` into a scratch folder and copy the `.clasp.json` over, or
   write it by hand with the Script ID above.
 
-## Identity and access (verified 2026-09-14)
+## Identity and access
 
-- The web app is deployed with anonymous access (`appsscript.json` webapp.access
-  ANYONE_ANONYMOUS, executeAs USER_DEPLOYING). Under that setting, any call to
-  `Session.getActiveUser()` / `getEffectiveUser()` in doGet makes Apps Script abort the
-  request with Google's "Sorry, unable to open the file at this time" page, even for the
-  signed-in owner and even via the `/a/macros/<domain>/` URL form. It does not return an
-  empty string. Do not add identity calls to a request path under this deployment.
-- Consequence: per-person (Google-login) views require switching the deployment to
-  domain-restricted access, which makes every unauthenticated curl / skill call to the
-  exec URL fail. Durand chose Google login on 2026-09-14; the dashboard is already in the
-  script project; still to do: process the _Inbox on a timed trigger and have automation
-  read the data file from Drive instead of `?api=data`, then switch access to domain.
+- `TSG_ACCESS_MODE` in Code.gs MUST agree with `appsscript.json` webapp.access (a test
+  enforces it). Under `ANONYMOUS`, any `Session.getActiveUser()` call aborts the request
+  with Google's "Sorry, unable to open the file" page (verified live 2026-09-14). Under
+  `DOMAIN`, every request carries the signed-in TSG account: `tsgIsOwnerEmail_` gets the
+  full dashboard, every other organization account gets `tsgPersonPlaceholderHtml_` (later:
+  the per-person view). thestawaszgroup.com and tsg.homes are one Workspace (alias).
+- Roster mapping: explicit roster `email` wins, else `firstname@<tsg domain>` matches the
+  roster name case-insensitively (`tsgRosterNameForEmail_`).
+- DOMAIN switch runbook (first deploy of 2026-09-14.10): (1) `npm run deploy`; (2) Durand
+  opens the Apps Script editor, Run > `tsgInstallInboxTrigger`, accepts the new scopes —
+  this both authorizes the deployment and installs the 1-minute `tsgInboxTick` trigger;
+  (3) Durand loads the exec URL signed in and sees the dashboard; (4) a teammate loads it
+  and sees the placeholder. Rollback: `clasp deploy -i <id> -V <previous version>`.
+- After the switch, automation must not use the exec URL: read the Data/Rulesets files
+  from Drive by id and write via `_Inbox` patches, which the trigger applies within a
+  minute. `?api=sync` is no longer needed or reachable without a Google login.
 
 ## Cloud (Claude Code on the web) session facts
 
