@@ -41,11 +41,17 @@ identifiers and environment facts that are otherwise only known from chat.
 ## Identity and access
 
 - `TSG_ACCESS_MODE` in Code.gs MUST agree with `appsscript.json` webapp.access (a test
-  enforces it). Under `ANONYMOUS`, any `Session.getActiveUser()` call aborts the request
-  with Google's "Sorry, unable to open the file" page (verified live 2026-09-14). Under
-  `DOMAIN`, every request carries the signed-in TSG account: `tsgIsOwnerEmail_` gets the
-  full dashboard, every other organization account gets `tsgPersonPlaceholderHtml_` (later:
-  the per-person view). thestawaszgroup.com and tsg.homes are one Workspace (alias).
+  enforces it). Live since 2026-09-14 version 45: `DOMAIN` ("Anyone within The Stawasz
+  Group", confirmed in Manage deployments). Every request carries the signed-in TSG
+  account: `tsgIsOwnerEmail_` gets the full dashboard, every other organization account
+  gets `tsgPersonPlaceholderHtml_` (later: the per-person view). Verified live for the
+  owner and for info@tsg.homes. thestawaszgroup.com and tsg.homes are one Workspace (alias).
+- Caution on identity calls: on 2026-09-14 a `Session.getActiveUser()` probe under the
+  anonymous deployment made Apps Script return Google's "Sorry, unable to open the file"
+  page. The most likely cause in hindsight is that the script had never been authorized
+  for the identity scope (Durand granted it by running `tsgInstallInboxTrigger` in the
+  editor), not the access mode itself. Either way: after adding any call that needs a new
+  scope, Durand must run a function in the editor once, or every request errors.
 - Transport under DOMAIN: the dashboard cannot fetch() the exec URL cross-origin (the
   browser drops the Google session, every call returns a sign-in page: "Failed to fetch").
   All 13 call sites go through `apiFetch`, which uses `google.script.run.tsgRpc` when the
@@ -54,11 +60,13 @@ identifiers and environment facts that are otherwise only known from chat.
   because google.script.run is callable from any page this script serves.
 - Roster mapping: explicit roster `email` wins, else `firstname@<tsg domain>` matches the
   roster name case-insensitively (`tsgRosterNameForEmail_`).
-- DOMAIN switch runbook (first deploy of 2026-09-14.10): (1) `npm run deploy`; (2) Durand
-  opens the Apps Script editor, Run > `tsgInstallInboxTrigger`, accepts the new scopes —
-  this both authorizes the deployment and installs the 1-minute `tsgInboxTick` trigger;
-  (3) Durand loads the exec URL signed in and sees the dashboard; (4) a teammate loads it
-  and sees the placeholder. Rollback: `clasp deploy -i <id> -V <previous version>`.
+- DOMAIN switch was completed 2026-09-14 (versions 43-45; 43 was a no-op because
+  `clasp push` silently skipped a changed manifest without `-f`, now fixed in
+  scripts/deploy.js). The 1-minute `tsgInboxTick` trigger is installed. Rollback of any
+  deploy: `clasp deploy -i <id> -V <previous version>`. Testing as another account from
+  Durand's browser: append `?authuser=N` to the exec URL.
+- Skills that curl the exec URL broke at this switch; the replacement text lives in the
+  README "Access model and automation" section. Durand applies it in Cowork.
 - After the switch, automation must not use the exec URL: read the Data/Rulesets files
   from Drive by id and write via `_Inbox` patches, which the trigger applies within a
   minute. `?api=sync` is no longer needed or reachable without a Google login.
