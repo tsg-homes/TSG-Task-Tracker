@@ -488,6 +488,57 @@ section('Version indicator (?api=version + footer stamp)');
   sandbox.DriveApp.getFileById = origGetFileById;
 }
 
+section('Subitem rollup respects the parent\'s own work (2026-09-14, task #12 regression)');
+{
+  const NOW = '2026-09-14T17:30:00Z';
+  function parent(extra) {
+    return Object.assign({ id: 12, title: 'Call Farina', status: 'In Progress', priority: 'Critical', estHours: 0, timelineEnd: '2026-09-10',
+      history: [], subitems: [{ title: 'get the phone number', done: true, delegate: 'Claude', estHours: 0.25, timelineEnd: '2026-09-10' }] }, extra || {});
+  }
+  // The original bug: all subitems done -> parent forced to 0h and pinned to the done subitem's date.
+  let d = { meta: { docVersion: 1 }, tasks: [parent({ estHours: 0.25, estHoursOwn: 0.25, timelineEnd: '2026-09-17', dueOverride: true })] };
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('all subitems done: parent keeps its own hours instead of rolling up to 0', d.tasks[0].estHours === 0.25);
+  check('all subitems done: parent due date is NOT pinned to the finished subitem', d.tasks[0].timelineEnd === '2026-09-17');
+  check('rollup writes no history entry when nothing changed', d.tasks[0].history.length === 0);
+
+  // Explicit edits set the parent's own share on both write paths.
+  d = { meta: { docVersion: 1 }, tasks: [parent()] };
+  sandbox.applyDataPatch(d, { op: 'update_task', id: 12, ts: NOW, source: 'Claude', fields: { estHours: 0.25, timelineEnd: '2026-09-17' } });
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('update_task estHours on a subitem-bearing task captures estHoursOwn', d.tasks[0].estHoursOwn === 0.25);
+  check('update_task: the edit survives the next rollup (est 0.25h, due 9-17)', d.tasks[0].estHours === 0.25 && d.tasks[0].timelineEnd === '2026-09-17');
+
+  d = { meta: { docVersion: 5 }, tasks: [parent()] };
+  const saved = JSON.parse(JSON.stringify(parent({ estHours: 0.25, timelineEnd: '2026-09-17', dueOverride: true })));
+  sandbox.applyDataPatch(d, { op: 'replace_all', ts: NOW, baseVersion: 5, doc: { meta: {}, tasks: [saved] } });
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('dashboard full save (replace_all) that changes estHours captures estHoursOwn', d.tasks[0].estHoursOwn === 0.25);
+  check('dashboard full save: the edit survives the next rollup', d.tasks[0].estHours === 0.25 && d.tasks[0].timelineEnd === '2026-09-17');
+  // ...and a later save that does NOT touch estHours must not disturb the captured own share
+  const saved2 = JSON.parse(JSON.stringify(d.tasks[0])); delete saved2.estHoursOwn; saved2.notes = 'edited notes only';
+  sandbox.applyDataPatch(d, { op: 'replace_all', ts: NOW, baseVersion: d.meta.docVersion, doc: { meta: {}, tasks: [saved2] } });
+  check('a save that omits estHoursOwn carries it over from the stored task', d.tasks[0].estHoursOwn === 0.25);
+
+  // Open subitems add on top of the parent's own hours; done ones drop out.
+  d = { meta: { docVersion: 1 }, tasks: [parent({ estHoursOwn: 1, subitems: [
+    { title: 'a', done: false, delegate: '', estHours: 0.5, timelineEnd: '2026-09-20' },
+    { title: 'b', done: true, delegate: '', estHours: 2, timelineEnd: '2026-09-30' } ] })] };
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('estHours = own + open subitems (done subitem hours excluded)', d.tasks[0].estHours === 1.5);
+  check('due extends to the latest OPEN subitem, ignoring the later DONE one', d.tasks[0].timelineEnd === '2026-09-20');
+  check('rollup change is logged with source rollup', d.tasks[0].history.some(h => h.source === 'rollup' && h.field === 'estHours' && h.to === 1.5));
+  d.tasks[0].dueOverride = true; d.tasks[0].timelineEnd = '2026-09-25';
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('an explicit parent due LATER than every open subitem stands', d.tasks[0].timelineEnd === '2026-09-25');
+  d.tasks[0].timelineEnd = '2026-09-15';
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('an explicit parent due EARLIER than an open subitem is pushed out to it', d.tasks[0].timelineEnd === '2026-09-20');
+  check('non-Durand delegate on an open subitem still adds the 0.5h handoff cost', (function() {
+    const dd = { meta: {}, tasks: [parent({ estHoursOwn: 0, subitems: [{ title: 'x', done: false, delegate: 'Perly', estHours: 1 }] })] };
+    sandbox.tsgRollupSubitemHours_(dd); return dd.tasks[0].estHours === 1.5; })());
+}
+
 section('No secrets in tracked files (repo is public)');
 {
   // A deployment id is the exec URL; the API token is a long hex string. Neither may

@@ -8,7 +8,7 @@ const OWNER_EMAIL = 'durand@thestawaszgroup.com';
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-14.3';
+const TSG_CODE_VERSION = '2026-09-14.4';
 
 const FILE_IDS = {
   html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv',     // Systems — Task Tracker Dashboard
@@ -676,6 +676,9 @@ function applyDataPatch(doc, patch) {
     if (patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'timelineEnd')) {
       t.dueOverride = true;
     }
+    if (patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'estHours')) {
+      tsgCaptureOwnHours_(t, patch.fields.estHours);
+    }
   } else if (patch.op === 'delete_task') {
     const idx = doc.tasks.findIndex(function(x) { return x.id === patch.id; });
     if (idx === -1) throw new Error('delete_task: task id not found: ' + patch.id);
@@ -725,6 +728,7 @@ function applyDataPatch(doc, patch) {
     }
     const incoming = patch.doc || {};
     const nextTasks = incoming.tasks || doc.tasks;
+    tsgCaptureOwnHoursFromSave_(doc.tasks, nextTasks);
     tsgStampStatusChanges_(doc.tasks, nextTasks, now, 'Durand');
     tsgStampSubitemTouches_(doc.tasks, nextTasks, now, 'Durand');
     doc.tasks = nextTasks;
@@ -3102,29 +3106,86 @@ function tsgSubitemBlockedByIdx_(subitems, idx) {
  * top-level numbers are never stale relative to the real chain underneath them, whether the
  * task is brand new or has been on the board for weeks.
  */
-function tsgRollupSubitemHours_(doc) {
+function tsgRollupSubitemHours_(doc, now) {
   (doc.tasks || []).forEach(function(t) {
     if (!t.subitems || !t.subitems.length) return;
-    var hours = 0, any = false;
-    var latestEnd = null;
-    t.subitems.forEach(function(s) {
-      // A done subitem's hours (and its 0.5h handoff cost) drop OUT of the parent's
-      // rolled-up estHours — the parent number tracks work remaining, not work ever
-      // planned. `any` still flips true for a done subitem that carried real
-      // estHours/delegate info, so a task whose subitems are ALL done correctly rolls
-      // up to 0 instead of being left at whatever stale number it last had (2026-09-01,
-      // per Durand: "if a subtask is marked done, its time should be deducted from the
-      // parent task").
-      var hadInfo = (s.estHours != null && !isNaN(s.estHours)) || (s.delegate && !tsgIsDurandDelegate_(s));
-      if (hadInfo) any = true;
-      if (!s.done) {
-        if (s.estHours != null && !isNaN(s.estHours)) hours += s.estHours;
-        if (s.delegate && !tsgIsDurandDelegate_(s)) hours += 0.5; // confirm-the-handoff cost, invisible
-      }
-      if (s.timelineEnd && (!latestEnd || s.timelineEnd > latestEnd)) latestEnd = s.timelineEnd;
-    });
-    if (any) t.estHours = Math.round(hours * 100) / 100;
-    if (latestEnd) t.timelineEnd = latestEnd;
+    var before = { estHours: t.estHours, timelineEnd: t.timelineEnd };
+    var sub = tsgOpenSubitemHours_(t);
+    // 2026-09-14 — the parent's OWN work. Until today this rollup REPLACED the parent's
+    // estHours with the subitem sum, so a task whose subitems were all done rolled up to
+    // 0h no matter what Durand typed, and a parent's due date was pinned to the latest
+    // subitem due — even a finished one — on every run, with no history entry. Task #12
+    // (the Farina call: one done subitem, the call itself still to do) had its 0.25h /
+    // 9-14 edits silently reverted four times in one afternoon. estHoursOwn is the
+    // parent's own hours; it is set only by an explicit estHours edit on a subitem-bearing
+    // task (tsgCaptureOwnHours_) and never touched here. estHours = own + open subitems.
+    var own = (typeof t.estHoursOwn === 'number' && !isNaN(t.estHoursOwn)) ? t.estHoursOwn : 0;
+    if (sub.any || own) t.estHours = Math.round((own + sub.hours) * 100) / 100;
+    t.timelineEnd = tsgRollupDue_(t, sub.latestOpenEnd);
+    if (now) {
+      // Make the rollup visible: a changed number now shows up in the task's history as
+      // source 'rollup' instead of looking like an edit that mysteriously didn't stick.
+      t.history = t.history || [];
+      tsgLogFieldChanges_(t.history, before, t, ['estHours', 'timelineEnd'], now, 'rollup');
+    }
+  });
+}
+
+/**
+ * Hours still open under a task: every not-done subitem's estHours plus the invisible
+ * 0.5h "confirm the handoff" cost for each one delegated to someone other than Durand.
+ * `any` is true when any subitem (done or not) ever carried estHours/delegate info, so a
+ * task whose subitems are all done still rolls up (to its own hours, or 0) rather than
+ * being left at a stale number (2026-09-01, per Durand). latestOpenEnd is the latest
+ * timelineEnd among NOT-done subitems only — a finished subitem has no say in when its
+ * parent is due.
+ */
+function tsgOpenSubitemHours_(t) {
+  var hours = 0, any = false, latestOpenEnd = null;
+  (t.subitems || []).forEach(function(s) {
+    var hadInfo = (s.estHours != null && !isNaN(s.estHours)) || (s.delegate && !tsgIsDurandDelegate_(s));
+    if (hadInfo) any = true;
+    if (!s.done) {
+      if (s.estHours != null && !isNaN(s.estHours)) hours += Number(s.estHours);
+      if (s.delegate && !tsgIsDurandDelegate_(s)) hours += 0.5; // confirm-the-handoff cost, invisible
+      if (s.timelineEnd && (!latestOpenEnd || s.timelineEnd > latestOpenEnd)) latestOpenEnd = s.timelineEnd;
+    }
+  });
+  return { hours: Math.round(hours * 100) / 100, any: any, latestOpenEnd: latestOpenEnd };
+}
+
+/**
+ * The parent's due date given its open subitems: never earlier than the latest open
+ * subitem (a parent cannot be due before work still under it), and an explicitly set
+ * parent date (dueOverride) that is LATER than that stands. With no open subitems the
+ * parent keeps whatever date it has.
+ */
+function tsgRollupDue_(t, latestOpenEnd) {
+  if (!latestOpenEnd) return t.timelineEnd || '';
+  if (t.dueOverride && t.timelineEnd && t.timelineEnd > latestOpenEnd) return t.timelineEnd;
+  return latestOpenEnd;
+}
+
+/**
+ * An explicit estHours edit on a task WITH subitems is read as the total the editor wants
+ * to see; the parent's own share is whatever is left after the open subitems' hours.
+ */
+function tsgCaptureOwnHours_(t, newTotal) {
+  if (!t.subitems || !t.subitems.length) return;
+  var n = Number(newTotal);
+  if (newTotal == null || newTotal === '' || isNaN(n)) { t.estHoursOwn = 0; return; }
+  t.estHoursOwn = Math.max(0, Math.round((n - tsgOpenSubitemHours_(t).hours) * 100) / 100);
+}
+
+/** replace_all (the dashboard's full save): detect explicit parent estHours edits by diffing against the stored task. */
+function tsgCaptureOwnHoursFromSave_(prevTasks, nextTasks) {
+  var prevById = {};
+  (prevTasks || []).forEach(function(t) { prevById[t.id] = t; });
+  (nextTasks || []).forEach(function(t) {
+    if (!t.subitems || !t.subitems.length) return;
+    var prev = prevById[t.id];
+    if (prev && typeof prev.estHoursOwn === 'number' && t.estHoursOwn == null) t.estHoursOwn = prev.estHoursOwn;
+    if (!prev || !tsgValuesEqual_(prev.estHours, t.estHours)) tsgCaptureOwnHours_(t, t.estHours);
   });
 }
 
@@ -3252,7 +3313,7 @@ function tsgAutoScheduleDoc_(doc) {
   // linger after the condition clears.
   if (doc.meta) delete doc.meta._scheduleWarning;
 
-  tsgRollupSubitemHours_(doc);
+  tsgRollupSubitemHours_(doc, new Date().toISOString());
   tsgFlagAgingTasks_(doc, tsgTodayIso_());
 
   var allItems = [];
@@ -3533,9 +3594,7 @@ function tsgAutoScheduleDoc_(doc) {
   // honest without re-running the hours sum (hours didn't change from scheduling alone).
   tasks.forEach(function(t) {
     if (!t.subitems || !t.subitems.length) return;
-    var latestEnd = null;
-    t.subitems.forEach(function(s) { if (s.timelineEnd && (!latestEnd || s.timelineEnd > latestEnd)) latestEnd = s.timelineEnd; });
-    if (latestEnd) t.timelineEnd = latestEnd;
+    t.timelineEnd = tsgRollupDue_(t, tsgOpenSubitemHours_(t).latestOpenEnd);
   });
 
   return placed;
