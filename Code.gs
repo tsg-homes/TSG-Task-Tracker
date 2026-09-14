@@ -8,7 +8,7 @@ const OWNER_EMAIL = 'durand@thestawaszgroup.com';
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-14.4';
+const TSG_CODE_VERSION = '2026-09-14.5';
 
 const FILE_IDS = {
   html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv',     // Systems — Task Tracker Dashboard
@@ -850,15 +850,10 @@ function doGet(e) {
     // the processInbox() call above, which already ran unconditionally.
     return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
   }
-  if (e.parameter.api === 'whoami') {
-    // Ungated probe (2026-09-14): does Apps Script hand us the signed-in Google identity
-    // under the current anonymous-access deployment? Decides whether per-person views can
-    // key off the Google login without breaking the unauthenticated curl/skill paths.
-    var who = { ok: true, activeUser: '', effectiveUser: '' };
-    try { who.activeUser = Session.getActiveUser().getEmail() || ''; } catch (err) { who.activeUserError = String(err); }
-    try { who.effectiveUser = Session.getEffectiveUser().getEmail() || ''; } catch (err) { who.effectiveUserError = String(err); }
-    return ContentService.createTextOutput(JSON.stringify(who)).setMimeType(ContentService.MimeType.JSON);
-  }
+  // No ?api=whoami here, deliberately (2026-09-14): under this deployment's anonymous
+  // access, Session.getActiveUser() makes Apps Script abort the whole request with
+  // Google's "Sorry, unable to open the file at this time" page — it does not return ''.
+  // Per-person views therefore need a domain-restricted deployment; see CLAUDE.md.
   if (e.parameter.api === 'version') {
     // Intentionally ungated: a version string is not sensitive, and the point is that
     // Durand can open <exec URL>?api=version in a browser and see what is live.

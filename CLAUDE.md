@@ -40,6 +40,20 @@ identifiers and environment facts that are otherwise only known from chat.
   `clasp clone <Script ID>` into a scratch folder and copy the `.clasp.json` over, or
   write it by hand with the Script ID above.
 
+## Identity and access (verified 2026-09-14)
+
+- The web app is deployed with anonymous access (`appsscript.json` webapp.access
+  ANYONE_ANONYMOUS, executeAs USER_DEPLOYING). Under that setting, any call to
+  `Session.getActiveUser()` / `getEffectiveUser()` in doGet makes Apps Script abort the
+  request with Google's "Sorry, unable to open the file at this time" page, even for the
+  signed-in owner and even via the `/a/macros/<domain>/` URL form. It does not return an
+  empty string. Do not add identity calls to a request path under this deployment.
+- Consequence: per-person (Google-login) views require switching the deployment to
+  domain-restricted access, which makes every unauthenticated curl / skill call to the
+  exec URL fail. Durand chose Google login on 2026-09-14; the plan is to move the dashboard
+  into the script project (clasp-deployed), process the _Inbox on a timed trigger, and have
+  automation read the data file from Drive instead of `?api=data`.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs
