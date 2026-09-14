@@ -1,0 +1,16 @@
+{
+  "name": "tsg-task-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TSG Task Tracker — Apps Script backend (Code.gs) + dashboard (dashboard_final.html).",
+  "scripts": {
+    "test": "node test/test_codegs.js && node test/test_dashboard.js",
+    "test:backend": "node test/test_codegs.js",
+    "test:dashboard": "node test/test_dashboard.js",
+    "push": "clasp push",
+    "deploy": "node scripts/deploy.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}
