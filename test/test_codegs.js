@@ -888,6 +888,60 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   sandbox.Session = origSession; sandbox.DriveApp.getFileById = origGetFileById; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.LockService.getScriptLock = origLock;
 }
 
+section('Progress follows the notes on every write path (2026-09-15)');
+{
+  let calls = [];
+  let answer = 60;
+  claudeResponder = (system, user) => { calls.push(user); const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('progress')) out.progress = answer; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Actionable Task'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; return out; };
+  function d0() { return { meta: { docVersion: 5, next_id: 10, status_values: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'] }, tasks: [
+    { id: 1, title: 'Call the caterer', owner: 'Durand', status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '', notes: '', tags: [], history: [], subitems: [] },
+    { id: 2, title: 'Parent with steps', owner: 'Durand', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'p', tags: [], history: [], subitems: [
+      { title: 'step a', delegate: 'Durand', done: false, status: 'Not Started', progress: 0, notes: '', timelineEnd: '' } ] },
+    { id: 3, title: 'Already done', owner: 'Durand', status: 'Done', priority: 'Low', progress: 100, timelineEnd: '', notes: 'x', tags: [], history: [], subitems: [] }
+  ] }; }
+  // update_task from a Claude-session inbox patch
+  let d = d0(); calls = [];
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'Left a voicemail, they called back with pricing' }, source: 'Claude' });
+  check('update_task with new notes re-reads progress and logs it with the patch source', calls.length === 1 && d.tasks[0].progress === 60 && d.tasks[0].history.some(h => h.field === 'progress' && h.to === 60 && h.source === 'Claude'));
+  check('update_task: first progress moves Not Started to In Progress', d.tasks[0].status === 'In Progress');
+  calls = [];
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { priority: 'High' }, source: 'Claude' });
+  check('update_task without a notes change makes no call', calls.length === 0 && d.tasks[0].progress === 60);
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'new notes', progress: 15 }, source: 'Claude' });
+  check('update_task: an explicit progress in the same patch wins, no call', calls.length === 0 && d.tasks[0].progress === 15);
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 2, fields: { notes: 'parent notes changed' }, source: 'Claude' });
+  check('update_task: a task with subitems is skipped (its bar comes from the subitems)', calls.length === 0 && d.tasks[1].progress === 0);
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 3, fields: { notes: 'done notes changed' }, source: 'Claude' });
+  check('update_task: a Done task is skipped', calls.length === 0 && d.tasks[2].progress === 100);
+  // update_subitem
+  calls = []; answer = 30;
+  sandbox.applyDataPatch_(d, { op: 'update_subitem', id: 2, index: 0, expectTitle: 'step a', fields: { notes: 'started drafting' }, source: 'Claude' });
+  check('update_subitem with new notes sets the subitem progress and status', calls.length === 1 && d.tasks[1].subitems[0].progress === 30 && d.tasks[1].subitems[0].status === 'In Progress' && d.tasks[1].subitems[0].done === false);
+  // replace_all: the dashboard's own save
+  d = d0(); calls = []; answer = 75;
+  const next = JSON.parse(JSON.stringify(d.tasks));
+  next[0].notes = 'Menu confirmed, deposit paid';               // notes changed -> re-read
+  next[1].subitems[0].notes = 'half done';                        // subitem notes changed -> re-read
+  next[2].notes = 'reworded';                                     // Done -> skipped
+  sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: 5, doc: { tasks: next } });
+  check('replace_all re-reads progress for the task and the subitem whose notes changed, not the Done one', calls.length === 2 && d.tasks[0].progress === 75 && d.tasks[1].subitems[0].progress === 75 && d.tasks[2].progress === 100);
+  check('replace_all logs the derived progress as Durand', d.tasks[0].history.some(h => h.field === 'progress' && h.to === 75 && h.source === 'Durand'));
+  d = d0(); calls = [];
+  const next2 = JSON.parse(JSON.stringify(d.tasks));
+  next2[0].notes = 'typed both'; next2[0].progress = 40;
+  sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: 5, doc: { tasks: next2 } });
+  check('replace_all: a progress typed in the same save wins over the notes', calls.length === 0 && d.tasks[0].progress === 40);
+  d = d0(); calls = [];
+  sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: 5, doc: { tasks: JSON.parse(JSON.stringify(d.tasks)) } });
+  check('replace_all with no notes change makes no call', calls.length === 0);
+  // add_task from any source with notes asks for progress
+  d = d0(); calls = []; answer = 20;
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Book the photographer for the fall shoot', owner: 'Durand', priority: 'Medium', group: 'Ops', notes: 'Two quotes in hand, one more to get' }, source: 'Claude', skipDedup: true });
+  const addedT = d.tasks.find(t => /photographer/i.test(t.title));
+  check("add_task with notes asks the estimator for progress and applies it (Durand's pipeline too)", !!addedT && calls.some(u => /NEEDED_FIELDS: \[[^\]]*"progress"/.test(u)) && addedT.progress === 20 && addedT.status === 'In Progress');
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+}
+
 section('Scheduler: a whole task owned by someone other than Durand is paced, not capacity-charged (2026-09-15)');
 {
   const doc = { meta: { docVersion: 1 }, tasks: [

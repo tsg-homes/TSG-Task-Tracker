@@ -139,14 +139,19 @@ identifiers and environment facts that are otherwise only known from chat.
   you" / "Your tasks" / collapsed "Completed", status battery per group, pill selects,
   owner avatar, type badge, tag chips, progress track, subtasks nested under her own tasks
   (checkbox + status + notes), and a "+ Task" add form in the group head.
-- Progress is DERIVED, never typed. `progress` left every `TSG_PERSON_*_FIELDS` list and a
-  typed value is refused. On a notes edit through `tsgPersonRpc` the server calls
-  `tsgProgressFromNotes_` (the estimator with `NEEDED_FIELDS ["progress"]`, a new field in
-  `TSG_ESTIMATE_SYSTEM` / `tsgEstimateTask_`); empty notes are 0 with no call; a task with
-  subitems takes its bar from them and makes no call; Claude unavailable leaves the value
-  alone. First progress on a Not Started item moves it to In Progress unless the same edit
-  set the status. Durand's own pipeline does NOT read progress from notes (add_task only
-  asks for it when the patch carries `personCreated: true`).
+- Progress follows the notes BOARD-WIDE (backend 2026-09-15.6). `tsgApplyProgressFromNotes_`
+  runs inside `update_task`, `update_subitem` and `replace_all` (the dashboard's own save,
+  paired by task id / subitem index), and `add_task` asks the estimator for `progress`
+  whenever a new task carries notes. Rule: only an OPEN item WITHOUT subitems whose notes
+  actually changed and whose progress was not set explicitly in the same write is re-read
+  (an explicit number always wins; the dashboard's manual progress input still works and
+  sticks until the notes next change). Empty notes are 0 with no call; a task with subitems
+  takes its bar from them; Claude unavailable leaves the value alone; first progress moves
+  Not Started to In Progress. The change is logged on the item's history with the write's
+  source. Cost: one estimator call per changed-notes item per write, under `perRunCap`.
+  On the person page `progress` left every `TSG_PERSON_*_FIELDS` list and a typed value is
+  refused; the estimator field itself is `progress` in `TSG_ESTIMATE_SYSTEM` /
+  `tsgEstimateTask_`, read through `tsgProgressFromNotes_`.
 - Person-created tasks are enriched like any other new task (estimate, type, subitems,
   tags, dependency, Drive doc) with `skipDedup` still on. Minted subitems are delegated to
   the task's assignee when that is not Durand (`tsgDefaultSubitemDelegate_`), and for a

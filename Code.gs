@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-15.5';
+const TSG_CODE_VERSION = '2026-09-15.6';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -469,10 +469,9 @@ function applyDataPatch_(doc, patch) {
       // of each task inventing its own wording for the same idea.
       var topicalTags = task.tags.filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1 && tg !== 'Self-created'; });
       if (!topicalTags.length) need.push('tags');
-      // Person-created tasks (tsgPersonRpc 'add', patch.personCreated) also ask for progress
-      // read from the notes; Durand's own pipeline does not, so a pushed task's notes never
-      // move its bar.
-      if (patch.personCreated && String(task.notes || '').trim() && task.status !== 'Done') need.push('progress');
+      // Progress follows the notes board-wide (2026-09-15, per Durand): a new task with
+      // notes has its bar read from them, whoever pushed it.
+      if (String(task.notes || '').trim() && task.status !== 'Done' && !(typeof task.progress === 'number' && task.progress > 0)) need.push('progress');
 
       if (need.length && !patch.skipEnrich) {
         // Batch siblings (see the 'bulk' handler above) are appended so a task listed
@@ -701,6 +700,7 @@ function applyDataPatch_(doc, patch) {
       : [];
     if (patch.fields) { ['id', 'history'].forEach(function(k) { delete patch.fields[k]; }); }  // server-owned
     Object.assign(t, patch.fields);
+    tsgApplyProgressFromNotes_(t, prevTaskSnapshot.notes, !!patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'progress'));
     t.history = t.history || [];
     tsgLogFieldChanges_(t.history, prevTaskSnapshot, t, TSG_TASK_DIFF_FIELDS, now, patch.source);
     tsgStampLifecycleTimestamps_(t, now);
@@ -759,6 +759,7 @@ function applyDataPatch_(doc, patch) {
     if (Object.prototype.hasOwnProperty.call(f, 'status')) { f.done = (f.status === 'Done'); if (f.done) f.progress = 100; }
     else if (Object.prototype.hasOwnProperty.call(f, 'done')) { f.status = f.done ? 'Done' : (sub.status === 'Done' ? 'In Progress' : (sub.status || 'Not Started')); if (f.done) f.progress = 100; }
     Object.assign(sub, f);
+    tsgApplyProgressFromNotes_(sub, prevSubs[patch.index].notes, Object.prototype.hasOwnProperty.call(f, 'progress'));
     tsgStampSubitemTouchesForTask_(prevSubs, subs, now, patch.source);
   } else if (patch.op === 'add_subitem') {
     const t = doc.tasks.find(function(x) { return x.id === patch.id; });
@@ -800,6 +801,7 @@ function applyDataPatch_(doc, patch) {
     const incoming = patch.doc || {};
     const nextTasks = incoming.tasks || doc.tasks;
     tsgCaptureExplicitEditsFromSave_(doc.tasks, nextTasks);
+    tsgApplyProgressFromNotesOnSave_(doc.tasks, nextTasks);
     tsgStampStatusChanges_(doc.tasks, nextTasks, now, 'Durand');
     tsgStampSubitemTouches_(doc.tasks, nextTasks, now, 'Durand');
     doc.tasks = nextTasks;
@@ -1169,18 +1171,8 @@ function tsgPersonRpc(action, payloadJson) {
     });
     if (rejected.length) return JSON.stringify({ ok: false, error: 'field not editable: ' + rejected.join(', ') });
     if (!Object.keys(fields).length) return JSON.stringify({ ok: false, error: 'nothing to change' });
-    // Progress follows the notes: a notes edit on an item without subitems re-reads them.
-    // A task with subitems takes its bar from those instead, so no call is spent on it.
-    // Claude unavailable -> progress untouched. A first sign of progress also moves a
-    // Not Started item to In Progress unless the same edit set the status itself.
-    var endStatus = Object.prototype.hasOwnProperty.call(fields, 'status') ? fields.status : row.status;
-    if (Object.prototype.hasOwnProperty.call(fields, 'notes') && !row.subTotal && endStatus !== 'Done') {
-      var pct = tsgProgressFromNotes_(row.title, fields.notes, row.priority);
-      if (pct != null) {
-        fields.progress = pct;
-        if (pct > 0 && endStatus === 'Not Started') fields.status = 'In Progress';
-      }
-    }
+    // Progress follows the notes: update_task / update_subitem re-read them server-side
+    // (tsgApplyProgressFromNotes_), the same rule as Durand's own board.
     var op = (row.kind === 'sub')
       ? { op: 'update_subitem', id: row.id, index: row.index, expectTitle: row.title, fields: fields, source: actor }
       : { op: 'update_task', id: row.id, fields: fields, source: actor };
@@ -3064,6 +3056,46 @@ function tsgProgressFromNotes_(title, notes, priority) {
   if (!clean) return 0;
   var est = tsgEstimateTask_(title, clean, priority || '', ['progress'], {});
   return (est && est.source !== 'none' && est.progress != null) ? est.progress : null;
+}
+
+/**
+ * Progress follows the notes, board-wide (2026-09-15, per Durand: "the progress from notes
+ * should be on my tracker too"). Called from every path that can change notes: update_task,
+ * update_subitem, replace_all (the dashboard's own save) and, through NEEDED_FIELDS, add_task.
+ * Re-reads only an OPEN item WITHOUT subitems whose notes actually changed and whose
+ * progress was not set explicitly in the same write (an explicit number always wins). A
+ * task with subitems takes its bar from them, so it is skipped. Claude unavailable leaves
+ * the stored value alone. The first sign of progress moves a Not Started item to In
+ * Progress. Returns true when progress was set.
+ */
+function tsgApplyProgressFromNotes_(item, prevNotes, progressExplicit) {
+  if (!item || progressExplicit) return false;
+  if (item.subitems && item.subitems.length) return false;
+  var status = item.done ? 'Done' : (item.status || 'Not Started');
+  if (status === 'Done') return false;
+  var nextNotes = String(item.notes || '').trim();
+  if (nextNotes === String(prevNotes || '').trim()) return false;
+  var pct = tsgProgressFromNotes_(item.title, nextNotes, item.priority);
+  if (pct == null) return false;
+  item.progress = pct;
+  if (pct > 0 && status === 'Not Started') item.status = 'In Progress';
+  return true;
+}
+/** replace_all variant: pairs tasks by id and subitems by index, like the history stamping does. */
+function tsgApplyProgressFromNotesOnSave_(prevTasks, nextTasks) {
+  var prevById = {};
+  (prevTasks || []).forEach(function(t) { if (t) prevById[t.id] = t; });
+  (nextTasks || []).forEach(function(t) {
+    if (!t) return;
+    var p = prevById[t.id];
+    tsgApplyProgressFromNotes_(t, p ? p.notes : '', !!p && !tsgValuesEqual_(p.progress, t.progress));
+    var ps = (p && Array.isArray(p.subitems)) ? p.subitems : [];
+    (t.subitems || []).forEach(function(s, i) {
+      if (!s) return;
+      var q = ps[i];
+      tsgApplyProgressFromNotes_(s, q ? q.notes : '', !!q && !tsgValuesEqual_(q.progress, s.progress));
+    });
+  });
 }
 
 /* ------------------------------------------------------------------ *
