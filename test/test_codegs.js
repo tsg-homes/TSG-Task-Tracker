@@ -734,10 +734,10 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
       { id: 1, title: 'Durand task with Marj sub', owner: 'Durand', status: 'In Progress', priority: 'High', progress: 0, timelineEnd: '2026-09-20', notes: 'parent notes', history: [], subitems: [
         { title: 'Marj part', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, timelineEnd: '2026-09-18', notes: '' },
         { title: 'Perly part', delegate: 'Perly', done: true, status: 'Done', progress: 100, timelineEnd: '', notes: '' } ] },
-      { id: 2, title: 'Assigned to Marj', owner: 'Durand', assignee: 'Marj', status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '2026-09-25', notes: '', history: [], subitems: [] },
+      { id: 2, title: 'Assigned to Marj', owner: 'Durand', delegate: 'Marj', status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '2026-09-25', notes: '', history: [], subitems: [] },
       { id: 3, title: "Marj's own task", owner: 'Marj', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'mine', history: [], subitems: [] },
       { id: 4, title: 'Nothing to do with Marj', owner: 'Durand', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'secret', history: [], subitems: [] },
-      { id: 5, title: 'Marj task with steps', owner: 'Marj', assignee: 'Marj', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'n', tags: ['Self-created', 'Flyers'], taskType: 'Actionable Task', estHours: 3, history: [], subitems: [
+      { id: 5, title: 'Marj task with steps', owner: 'Marj', delegate: 'Marj', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'n', tags: ['Self-created', 'Flyers'], taskType: 'Actionable Task', estHours: 3, history: [], subitems: [
         { title: 'step one', delegate: 'Marj', done: true, status: 'Done', progress: 100, timelineEnd: '', notes: '' },
         { title: 'step two', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, timelineEnd: '', notes: '' } ] }
     ] };
@@ -842,7 +842,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   r = JSON.parse(sandbox.tsgPersonRpc('add', JSON.stringify({ title: 'Order the fall flyer print run', priority: 'Low', notes: 'Need 500 copies before the open house' })));
   d = JSON.parse(disk);
   let added = d.tasks.find(t => /fall flyer print run/i.test(t.title));
-  check('add: creates a task owned by Marj, in her group, tagged Self-created and NOT held for review', r.ok === true && !!added && added.owner === 'Marj' && added.assignee === 'Marj' && added.group === 'Marj' && added.priority === 'Low' && added.tags.includes('Self-created') && !added.tags.includes('Triage'));
+  check('add: creates a task owned by Marj, in her group, tagged Self-created and NOT held for review', r.ok === true && !!added && added.owner === 'Marj' && added.delegate === 'Marj' && added.group === 'Marj' && added.priority === 'Low' && added.tags.includes('Self-created') && !added.tags.includes('Triage'));
   check('add: the estimator fills estimate, type, subitems and tags', added.estSource === 'claude' && added.taskType === 'Actionable Task' && added.subitems.length === 2 && added.tags.includes('Flyers') && added.history.some(h => h.field === 'auto-enriched'));
   check('add: the 2h estimate is split across the two minted steps; the rollup adds the 0.5h confirm cost per delegated step', added.subitems.every(s => s.estHours === 1 && s.estSource === 'claude') && added.estHours === 3);
   check('add: the estimator was asked for progress from the notes and priority/group were not re-asked', claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"progress"/.test(u)) && !claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"priority"/.test(u)) && !claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"group"/.test(u)));
@@ -953,9 +953,9 @@ section('Review gate: pushed delegate items carry Triage and stay off the person
       { title: 'old step', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, notes: '', tags: [] } ] }
   ] }; }
   let d = gdoc();
-  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Design the fall postcard', owner: 'Durand', assignee: 'Marj', priority: 'Medium', group: 'Marketing', notes: '', tags: [] }, source: 'Claude', skipDedup: true });
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Design the fall postcard', owner: 'Durand', delegate: 'Marj', priority: 'Medium', group: 'Marketing', notes: '', tags: [] }, source: 'Claude', skipDedup: true });
   let t = d.tasks.find(x => /fall postcard/i.test(x.title));
-  check('add_task pushed with an assignee is tagged Triage and logs the hold', !!t && t.tags.includes('Triage') && t.history.some(h => h.field === 'pending-review'));
+  check('add_task pushed with a delegate is tagged Triage and logs the hold', !!t && t.tags.includes('Triage') && t.history.some(h => h.field === 'pending-review'));
   sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Brand refresh planning', owner: 'Durand', priority: 'Medium', group: 'Marketing', notes: '', tags: [], subitems: [{ title: 'Marj drafts the palette', delegate: 'Marj', done: false }] }, source: 'Claude', skipDedup: true });
   t = d.tasks.find(x => /brand refresh/i.test(x.title));
   check('add_task pushed with a subitem delegated to a person is tagged Triage', !!t && t.tags.includes('Triage'));
@@ -966,8 +966,15 @@ section('Review gate: pushed delegate items carry Triage and stay off the person
   check('add_subitem delegated to a person holds that subitem only', d.tasks[0].subitems[1].tags.includes('Triage') && !d.tasks[0].subitems[0].tags.includes('Triage') && !(d.tasks[0].tags || []).includes('Triage'));
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { subitems: d.tasks[0].subitems.concat([{ title: 'another for Marj', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, notes: '', tags: [] }]) }, source: 'Claude' });
   check('update_task adding a delegated subitem holds the new one and leaves the old one alone', d.tasks[0].subitems[2].tags.includes('Triage') && !d.tasks[0].subitems[0].tags.includes('Triage'));
-  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { assignee: 'Perly' }, source: 'Claude' });
-  check('update_task re-pointing a task at a person holds the task', d.tasks[0].tags.includes('Triage'));
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { delegate: 'Perly' }, source: 'Claude' });
+  check('update_task re-pointing a task at a person holds the task and logs the delegate change', d.tasks[0].tags.includes('Triage') && d.tasks[0].history.some(h => h.field === 'delegate' && h.to === 'Perly'));
+  // legacy `assignee`: still read, migrated on the next write, accepted in a patch under the old name
+  const legacy = { meta: { docVersion: 1 }, tasks: [ { id: 9, title: 'Old shape', owner: 'Durand', delegate: 'Marj', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: '', tags: [], history: [], subitems: [] } ] };
+  check('a task still carrying assignee is sliced to that person until migrated', sandbox.tsgPersonSlice_(legacy, 'Marj').some(r => r.id === 9 && r.own === false));
+  sandbox.tsgAutoScheduleDoc_(legacy);
+  check('the scheduling pass migrates assignee to delegate and drops the old field', legacy.tasks[0].delegate === 'Marj' && !('assignee' in legacy.tasks[0]));
+  sandbox.applyDataPatch_(legacy, { op: 'update_task', id: 9, fields: { assignee: 'Perly' }, source: 'Claude' });
+  check('a patch that still says assignee lands as delegate', legacy.tasks[0].delegate === 'Perly' && !('assignee' in legacy.tasks[0]));
   // what the people see
   let rows = sandbox.tsgPersonSlice_(d, 'Marj');
   check("Marj's page hides the held task, the held parent and its steps, and the held new subitems", !rows.some(r => /fall postcard|brand refresh/i.test(r.title)) && !rows.some(r => r.id === 1));

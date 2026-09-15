@@ -801,6 +801,8 @@
   .modal-edit:empty:before { content: attr(data-placeholder); color: var(--text-muted); opacity: 0.6; }
   .modal-notes { display: block; min-height: 40px; white-space: pre-wrap; flex: 1; }
   .modal-owner-wrap { display: flex; align-items: center; }
+  .mini-lbl { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 700; margin-right: 4px; }
+  .delegate-cell .avatar { width: 18px; height: 18px; font-size: 8px; }
   .modal-tags { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
   .modal-source { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
   .doc-link-text { color: var(--brand); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
@@ -1437,7 +1439,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-15.4';
+  const UI_VERSION = '2026-09-15.6';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1488,9 +1490,9 @@
   // ---- Schema (Monday-board-style) ----
   // Task (parent): { id, title, group, owner, status, priority, tags:[], timelineStart,
   //   timelineEnd, progress, depends, doc, notes, estHours, subitems:[...] }
-  //   owner = accountable for the task, full stop — currently Durand on every task. Tasks carry
-  //   NO assignee/delegate field. Wanting to note who's actually doing a task is the signal it
-  //   needs to be broken into subtasks — that's where delegation happens, not at the task level.
+  //   owner = accountable for the task. delegate (2026-09-15; the old `assignee` field is
+  //   migrated server-side) = the person doing the whole task; it puts the task on that
+  //   person's own page. Subtasks stay the finer delegation unit (each has its own delegate).
   // Subtask (subitems[i]) — the delegation unit, same shape as a task minus owner/group/id:
   //   { title, done, delegate, status, priority, tags:[], timelineEnd, progress,
   //     depends, doc, notes, estHours, estDays, estSource, taskType }
@@ -2190,6 +2192,29 @@
   }
   function ownerSelect(taskId, current) {
     return `<select class="person-select" data-id="${taskId}" onchange="onOwnerChange(this)" onclick="event.stopPropagation()">${personOptions(current)}</select>`;
+  }
+  // Whole-task delegate (2026-09-15, per Durand: "I need to be able to edit the delegate from
+  // my dashboard"). Writes t.delegate, which is what puts a task on that person's own page.
+  // Set here by Durand it is NOT held for review (the review gate only holds automation pushes).
+  // taskDelegate() reads the retired `assignee` name too until the server has migrated it.
+  function taskDelegate(t) { return (t && (t.delegate || t.assignee)) || ''; }
+  function taskDelegateSelect(taskId, current) {
+    return `<select class="person-select" data-id="${taskId}" onchange="onTaskDelegateChange(this)" onclick="event.stopPropagation()" title="Delegate: who is doing this task. It appears on their page.">${personOptions(current)}</select>`;
+  }
+  function onTaskDelegateChange(el) {
+    const id = Number(el.dataset.id);
+    const t = findTask(id);
+    const before = taskDelegate(t);
+    let val = el.value;
+    if (val === '__other__') {
+      const custom = prompt('Delegate name:', before || '');
+      if (!custom || !custom.trim()) { el.value = before || ''; return; }
+      val = custom.trim();
+    }
+    t.delegate = val;
+    delete t.assignee;
+    if (before !== val) logHistory(t, 'delegate', before || null, val || null);
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
   function delegateSelect(taskId, idx, current) {
     return `<select class="person-select sub-person-select" data-id="${taskId}" data-idx="${idx}" onchange="onDelegateChange(this)" onclick="event.stopPropagation()">${personOptions(current)}</select>`;
@@ -3979,8 +4004,8 @@
   // Subtasks are the delegation unit: each one gets its own delegate, status, priority,
   // due date and estimate — everything a top-level task has except an owner, since
   // accountability for the work stays with the parent task, not the delegated piece.
-  // Tasks themselves carry no assignee/delegate field at all — wanting to note who's
-  // actually doing a task is the signal that it needs to be broken into subtasks.
+  // A task can also carry a whole-task delegate (t.delegate, editable on the row and in the
+  // modal since 2026-09-15); subtasks remain the finer unit.
   // Shared by the board's expandable sub-row and the task detail modal so both stay in sync.
   function subitemRowHtml(t, s, i) {
     const due = s.timelineEnd || '';
@@ -4070,7 +4095,7 @@
   // page they actually see, from this tab's session.
   function personTaskIds_(name) {
     return TASKS.filter(function(t) {
-      if (t.owner === name || t.assignee === name) return true;
+      if (t.owner === name || taskDelegate(t) === name) return true;
       return (t.subitems || []).some(function(s) { return s.delegate === name; });
     }).map(function(t) { return t.id; });
   }
@@ -4091,6 +4116,7 @@
         <td class="cell-group">
           <div class="cell-group-stack">
             <div class="cell-group-row owner-cell" title="Owner — accountable for this task">${avatarHtml(t.owner)}${ownerSelect(t.id, t.owner)}</div>
+            <div class="cell-group-row owner-cell delegate-cell" title="Delegate — who is doing this task; it appears on their page"><span class="mini-lbl">Delegate</span>${avatarHtml(taskDelegate(t))}${taskDelegateSelect(t.id, taskDelegate(t))}</div>
             <div class="cell-group-row">${hasSubs
               ? `<span class="pill ${statusClass(rollupStatus(t))}" style="pointer-events:none;" title="Rolled up from subtasks — edit status on the subtasks below.">${escapeHtml(rollupStatus(t))}</span><span class="pill ${priorityClass(rollupPriority(t))}" style="pointer-events:none;" title="Rolled up from subtasks — edit priority on the subtasks below.">${escapeHtml(rollupPriority(t))}</span>`
               : `${pillSelect('status', t.status, t.id)}${pillSelect('priority', t.priority, t.id)}`
@@ -4810,6 +4836,7 @@
     document.getElementById('modalMeta').innerHTML = [
       `<div class="modal-row"><b>Group</b><span class="modal-edit" contenteditable="true" onblur="modalFieldEdit(${id}, 'group', this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.group)}</span></div>`,
       `<div class="modal-row"><b>Owner</b><span class="modal-owner-wrap" title="Accountable for this task — confirming delegated subtasks are actually done is the owner's job">${avatarHtml(t.owner, 'lg')}${ownerSelect(id, t.owner)}</span></div>`,
+      `<div class="modal-row"><b>Delegate</b><span class="modal-owner-wrap" title="Who is doing this task. It appears on their own page (subtasks can also be delegated one by one below).">${avatarHtml(taskDelegate(t), 'lg')}${taskDelegateSelect(id, taskDelegate(t))}</span></div>`,
       `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}</div>`,
       `<div class="modal-row"><b>Priority</b>${modalPillSelect('priority', t.priority, id)}</div>`,
       `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Actionable Task')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,

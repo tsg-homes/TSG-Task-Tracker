@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-15.7';
+const TSG_CODE_VERSION = '2026-09-15.9';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -442,6 +442,7 @@ function applyDataPatch_(doc, patch) {
       // Genuinely new. Structural fields with an obvious, non-judgment default get one
       // directly — no reason to ask a model what status a brand-new task starts in.
       if (!task.owner) task.owner = 'Durand';
+      if (Object.prototype.hasOwnProperty.call(task, 'assignee')) { if (!task.delegate && task.assignee) task.delegate = task.assignee; delete task.assignee; }
       if (!task.status) task.status = 'Not Started';
       if (task.progress == null) task.progress = (task.status === 'Done') ? 100 : 0;
       if (!Array.isArray(task.tags)) task.tags = [];
@@ -706,7 +707,12 @@ function applyDataPatch_(doc, patch) {
       ? t.subitems.map(function(s) { return Object.assign({}, s); })
       : [];
     if (patch.fields) { ['id', 'history'].forEach(function(k) { delete patch.fields[k]; }); }  // server-owned
+    if (patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'assignee')) {   // legacy name for delegate
+      if (!Object.prototype.hasOwnProperty.call(patch.fields, 'delegate')) patch.fields.delegate = patch.fields.assignee;
+      delete patch.fields.assignee;
+    }
     Object.assign(t, patch.fields);
+    if (Object.prototype.hasOwnProperty.call(t, 'assignee')) { if (!t.delegate && t.assignee) t.delegate = t.assignee; delete t.assignee; }
     tsgApplyProgressFromNotes_(t, prevTaskSnapshot.notes, !!patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'progress'));
     t.history = t.history || [];
     tsgLogFieldChanges_(t.history, prevTaskSnapshot, t, TSG_TASK_DIFF_FIELDS, now, patch.source);
@@ -721,9 +727,9 @@ function applyDataPatch_(doc, patch) {
         }
       });
     }
-    if (patch.fields && ((Object.prototype.hasOwnProperty.call(patch.fields, 'assignee') && !tsgValuesEqual_(prevTaskSnapshot.assignee, t.assignee) && tsgIsDelegatePerson_(t.assignee)) ||
+    if (patch.fields && ((Object.prototype.hasOwnProperty.call(patch.fields, 'delegate') && !tsgValuesEqual_(tsgTaskDelegate_(prevTaskSnapshot), t.delegate) && tsgIsDelegatePerson_(t.delegate)) ||
                          (Object.prototype.hasOwnProperty.call(patch.fields, 'owner') && !tsgValuesEqual_(prevTaskSnapshot.owner, t.owner) && tsgIsDelegatePerson_(t.owner)))) {
-      tsgHoldForReview_(t, t.history, now, 'Re-pointed at ' + (t.assignee || t.owner) + ' by a patch; held off their view until reviewed');
+      tsgHoldForReview_(t, t.history, now, 'Re-pointed at ' + (t.delegate || t.owner) + ' by a patch; held off their view until reviewed');
     }
     // A changed estHours invalidates the whole plan built from the OLD estHours —
     // scheduledStart/scheduledDays/estDays/timelineEnd were all derived from it. Left in
@@ -1062,7 +1068,7 @@ function tsgRpc(query, method, body) {
  * PER-PERSON VIEW (milestone 1, 2026-09-15). A signed-in roster member gets a slice of the
  * document and a narrow write surface; everything is decided here, server-side:
  *   - own tasks (owner === name): every field editable;
- *   - tasks assigned to them (assignee === name): status, progress, notes only;
+ *   - tasks delegated to them whole (delegate === name): status, notes only;
  *   - subitems delegated to them: status, progress, notes only; the parent is context.
  * Writes go through the same _Inbox pipeline as everything else, as per-item ops, so a
  * person's edit can never overwrite the owner's board and vice versa.
@@ -1075,9 +1081,27 @@ var TSG_PERSON_TASK_FIELDS_OWN = ['title', 'status', 'priority', 'timelineEnd', 
 var TSG_PERSON_TASK_FIELDS_DELEGATED = ['status', 'notes'];
 var TSG_PERSON_SUB_FIELDS = ['status', 'notes'];
 
-/** Subitems minted by the estimator go to the task's assignee when that is someone other than Durand. */
+/**
+ * Whole-task delegate (2026-09-15, per Durand: "drop assignee, it's been replaced by
+ * delegate"). The field is `delegate` on the task, the same word subitems use. Documents
+ * written before this carry `assignee`; tsgMigrateAssigneeToDelegate_ moves it on the next
+ * write and this reader falls back to it until then.
+ */
+function tsgTaskDelegate_(t) {
+  if (!t) return '';
+  var d = String(t.delegate || '').trim();
+  return d || String(t.assignee || '').trim();
+}
+function tsgMigrateAssigneeToDelegate_(doc) {
+  (doc.tasks || []).forEach(function(t) {
+    if (!t || !Object.prototype.hasOwnProperty.call(t, 'assignee')) return;
+    if (!t.delegate && t.assignee) t.delegate = t.assignee;
+    delete t.assignee;
+  });
+}
+/** Subitems minted by the estimator go to the task's delegate when that is someone other than Durand. */
 function tsgDefaultSubitemDelegate_(task) {
-  var a = String((task && task.assignee) || '').trim();
+  var a = tsgTaskDelegate_(task);
   return (a && a.toLowerCase() !== 'durand') ? a : '';
 }
 function tsgTaskProgress_(t) {
@@ -1122,7 +1146,7 @@ function tsgPersonSlice_(doc, name) {
   (doc.tasks || []).forEach(function(t) {
     if (!t || tsgIsHeldForReview_(t)) return;
     var isOwn = t.owner === name;
-    var isAssigned = !isOwn && t.assignee === name;
+    var isAssigned = !isOwn && tsgTaskDelegate_(t) === name;
     var subs = t.subitems || [];
     var mine = [];
     subs.forEach(function(s, i) { if (s && s.delegate === name && !tsgIsHeldForReview_(s)) mine.push({ s: s, i: i }); });
@@ -1231,7 +1255,7 @@ function tsgPersonRpc(action, payloadJson) {
     var due = (payload.due && tsgIsValidIsoDate_(payload.due)) ? payload.due : '';
     var nowIso = new Date().toISOString();
     var task = {
-      title: title, owner: name, assignee: name, group: name, status: 'Not Started', priority: prio,
+      title: title, owner: name, delegate: name, group: name, status: 'Not Started', priority: prio,
       tags: ['Self-created'], timelineStart: '', timelineEnd: due, progress: 0, depends: '', doc: '', docs: [],
       notes: String(payload.notes || ''), subitems: [], duration: null, estHours: null, estDays: null, estSource: 'none',
       taskType: '', history: [{ ts: nowIso, field: 'created', from: null, to: null, source: actor }]
@@ -2277,7 +2301,7 @@ function backupTrackerFile_(key, payload) {
 // scheduled task/session name) and defaults to 'Durand' for the dashboard's own direct
 // edits (replace_all) or 'unknown' if a caller genuinely didn't say. tags is diffed as
 // one whole-array entry rather than per-tag; every other field here is a plain scalar.
-var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'status', 'priority', 'group', 'timelineEnd',
+var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
   'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
   'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done'];
@@ -3005,7 +3029,7 @@ function tsgIsDelegatePerson_(name) {
   return !!n && n !== 'durand' && n !== 'claude' && n !== 'unassigned';
 }
 function tsgTaskNeedsDelegateReview_(task) {
-  if (tsgIsDelegatePerson_(task.owner) || tsgIsDelegatePerson_(task.assignee)) return true;
+  if (tsgIsDelegatePerson_(task.owner) || tsgIsDelegatePerson_(tsgTaskDelegate_(task))) return true;
   return (task.subitems || []).some(function(s) { return s && tsgIsDelegatePerson_(s.delegate); });
 }
 function tsgIsHeldForReview_(item) { return !!item && (item.tags || []).indexOf(TSG_REVIEW_TAG) !== -1; }
@@ -3887,6 +3911,7 @@ function tsgAutoScheduleDoc_(doc) {
   if (doc.meta) delete doc.meta._scheduleWarning;
 
   tsgPurgeBogusRollupTagHistory_(doc);
+  tsgMigrateAssigneeToDelegate_(doc);
   tsgRollupSubitemHours_(doc, new Date().toISOString());
   tsgFlagAgingTasks_(doc, tsgTodayIso_());
 

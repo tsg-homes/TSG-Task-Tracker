@@ -153,7 +153,7 @@ setTimeout(async () => {
     if (btns.join() !== 'Ryan') throw new Error('buttons: ' + JSON.stringify(btns));
   });
   w.alert = function() {};
-  w.findTask(2).assignee = 'Ryan'; w.findTask(3).assignee = 'Ryan';   // two, so the list pop-up opens rather than a single card
+  w.findTask(2).delegate = 'Ryan'; w.findTask(3).delegate = 'Ryan';   // two, so the list pop-up opens rather than a single card
   doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
   tryCall("clicking a team view button opens that person's filtered pop-up on this board", () => {
     const modal = doc.getElementById('dayViewModal');
@@ -167,7 +167,24 @@ setTimeout(async () => {
     if (opened.length !== 1 || !/\?person=Ryan$/.test(opened[0].url) || opened[0].name !== 'tsg-view-Ryan') throw new Error('opened: ' + JSON.stringify(opened));
     if (/__TSG_API_URL__/.test(opened[0].url)) throw new Error('placeholder leaked into the URL');
   });
-  w.findTask(2).assignee = undefined; w.findTask(3).assignee = undefined;
+  w.findTask(2).delegate = undefined; w.findTask(3).delegate = undefined;
+
+  // Whole-task delegate (assignee) editable on the board row and in the modal
+  tryCall('board row carries a Delegate select writing t.assignee, and it logs as Delegate', () => {
+    w.setView('board');
+    const sel = doc.querySelector('tr.task-row[data-id="2"] .delegate-cell select.person-select');
+    if (!sel) throw new Error('no delegate select on row 2');
+    sel.value = 'Ryan';
+    sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+    const t = w.findTask(2);
+    if (t.delegate !== 'Ryan' || 'assignee' in t) throw new Error('delegate not set / assignee not dropped: ' + JSON.stringify([t.delegate, t.assignee]));
+    if (!t.history.some(h => h.field === 'delegate' && h.to === 'Ryan')) throw new Error('no delegate history');
+    w.openTaskCard(2);
+    const modalSel = Array.from(doc.querySelectorAll('.modal-row')).find(r => r.textContent.startsWith('Delegate'));
+    if (!modalSel || !modalSel.querySelector('select.person-select') || modalSel.querySelector('select.person-select').value !== 'Ryan') throw new Error('modal Delegate row missing or wrong value');
+    w.closeTopmostModal_ ? w.closeTopmostModal_() : null;
+    t.delegate = ''; t.history = t.history.filter(h => h.field !== 'delegate');
+  });
 
   // Review gate: the Triage chip on a board row clears the tag from the task and its subitems
   w.setView('board');

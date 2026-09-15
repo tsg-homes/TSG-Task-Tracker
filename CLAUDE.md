@@ -202,6 +202,21 @@ identifiers and environment facts that are otherwise only known from chat.
   open card re-renders after every load. Adds lock the board (`#board.busy`, form disabled,
   spinner in `#sync`) until the server answers.
 
+## Whole-task delegate (2026-09-15, backend 2026-09-15.9, dashboard UI 2026-09-15.6)
+
+- The task-level field is `delegate` (per Durand: "drop assignee, it's been replaced by
+  delegate"), the same word subitems use. It is what puts a whole task on that person's page.
+  Editable on the dashboard: a Delegate select on every board row (under Owner) and a
+  Delegate row in the task modal (`taskDelegateSelect` / `onTaskDelegateChange`, history
+  field `delegate`). Set by Durand on the dashboard it is NOT held for review; set by a
+  patch it is (round 3 gate). `delegate` is in `TSG_TASK_DIFF_FIELDS`.
+- `assignee` is retired. `tsgTaskDelegate_(t)` reads `delegate` and falls back to a leftover
+  `assignee`; `tsgMigrateAssigneeToDelegate_` (run inside `tsgAutoScheduleDoc_`, i.e. on
+  every data write) moves the value and deletes the old key; `update_task` / `add_task`
+  accept a patch that still says `assignee` and land it as `delegate`. The dashboard's
+  `taskDelegate(t)` has the same fallback. Patches from Claude sessions should say
+  `delegate` from now on.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs
