@@ -296,6 +296,9 @@
   .btn.primary:hover { opacity: 0.92; }
   .btn.small { padding: 3px 9px; font-size: 11px; }
   .btn.danger { color: var(--status-critical); }
+  /* Pop-out per-person views (2026-09-15): one small button per roster member. */
+  .team-views { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .team-views .lbl { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; margin-right: 2px; }
 
   /* Groups / board */
   .group-section {
@@ -1320,6 +1323,8 @@
     <button class="btn primary" id="btnAddGroup">+ Group</button>
     <button class="btn" id="btnReload">⟳ Reload</button>
     <button class="btn" id="btnExport">⤓ Export</button>
+    <span class="toolbar-sep"></span>
+    <span class="team-views" id="teamViews" title="Open a team member's own view in a new window. Edits you make there are recorded as you."></span>
     <span class="count" id="resultCount"></span>
   </div>
 
@@ -1430,7 +1435,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-15.2';
+  const UI_VERSION = '2026-09-15.3';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1620,6 +1625,34 @@
   // someone REMOVED from FUB (survives a name or email change; matching by name/email alone
   // would not). All new fields default to '' / null so older saved rosters load without a
   // migration.
+  // Per-person views (2026-09-15, per Durand: "buttons on my tracker to pop out each of
+  // their views for me to edit"). One button per roster member other than the owner; each
+  // opens <exec URL>?person=<Name> in its own window, from THIS tab's Google session, so it
+  // lands on the same account as the dashboard (a fresh tab may default to another account
+  // and get Google's "unable to open the file" page). Edits made there are recorded as the
+  // owner, not as the person (tsgPersonRpc's actor).
+  function renderTeamViewButtons_() {
+    const host = document.getElementById('teamViews');
+    if (!host) return;
+    const names = TEAM_ROSTER.map(function(p) { return p.name; })
+      .filter(function(n) { return n && n.trim().toLowerCase() !== 'durand'; })
+      .sort(function(a, b) { return a.localeCompare(b); });
+    host.innerHTML = names.length
+      ? '<span class="lbl">Views</span>' + names.map(function(n) {
+          return '<button type="button" class="btn small" data-person-view="' + escapeHtml(n) + '" title="Open ' + escapeHtml(n) + '\'s view">' + escapeHtml(n) + '</button>';
+        }).join('')
+      : '';
+  }
+  function personViewUrl_(name) {
+    const base = (API_URL && API_URL.indexOf('__') !== 0) ? API_URL : location.href.split('?')[0];
+    return base + '?person=' + encodeURIComponent(name);
+  }
+  document.getElementById('teamViews').addEventListener('click', function(e) {
+    const b = e.target.closest('[data-person-view]');
+    if (!b) return;
+    const name = b.getAttribute('data-person-view');
+    window.open(personViewUrl_(name), 'tsg-view-' + name.replace(/\W+/g, '-'), 'width=1280,height=860,noopener');
+  });
   function normalizeRoster(raw) {
     if (!Array.isArray(raw) || !raw.length) return DEFAULT_TEAM_ROSTER.slice();
     return raw.map(function(entry) {
@@ -5292,6 +5325,7 @@
     tsgNormalizeTaskDates_(TASKS);
     RAW_META = doc.meta || {};
     TEAM_ROSTER = normalizeRoster(RAW_META.teamRoster);
+    renderTeamViewButtons_();
     META.created = doc.meta && doc.meta.created;
     META.lastUpdated = (doc.meta && doc.meta.last_updated) || META.lastUpdated;
     nextId = (doc.meta && doc.meta.next_id) || (TASKS.length ? Math.max(...TASKS.map(t => t.id)) + 1 : 1);

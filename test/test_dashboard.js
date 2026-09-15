@@ -144,6 +144,20 @@ setTimeout(async () => {
     if (w.eval('saveInFlight') !== false) throw new Error('saveInFlight still true');
   });
 
+  // Pop-out per-person views (2026-09-15): one button per roster member except the owner,
+  // opening <exec URL>?person=<Name> in a named window from this tab's session.
+  const opened = [];
+  w.open = function(url, name, features) { opened.push({ url, name, features }); return {}; };
+  tryCall('team view buttons: one per roster member, none for Durand', () => {
+    const btns = Array.from(doc.querySelectorAll('#teamViews button[data-person-view]')).map(b => b.getAttribute('data-person-view'));
+    if (btns.join() !== 'Ryan') throw new Error('buttons: ' + JSON.stringify(btns));
+  });
+  doc.querySelector('#teamViews button[data-person-view="Ryan"]').click();
+  tryCall("clicking a team view button opens ?person=<Name> in its own window", () => {
+    if (opened.length !== 1 || !/\?person=Ryan$/.test(opened[0].url) || opened[0].name !== 'tsg-view-Ryan') throw new Error('opened: ' + JSON.stringify(opened));
+    if (/__TSG_API_URL__/.test(opened[0].url)) throw new Error('placeholder leaked into the URL');
+  });
+
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

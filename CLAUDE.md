@@ -132,6 +132,41 @@ identifiers and environment facts that are otherwise only known from chat.
   assignee = name, group = name, tag `Self-created`.
 - Bump `PERSON_UI_VERSION` in person.html when it changes. Tests: `test/test_person.js`.
 
+## Per-person view, round 2 (2026-09-15, backend 2026-09-15.5, person UI 2026-09-15.2, dashboard UI 2026-09-15.3)
+
+- person.html mirrors the dashboard's Board view: same tokens (`data-theme` light/dark with
+  a toggle, remembered in `localStorage` `tsgPersonTheme`), group sections "Delegated to
+  you" / "Your tasks" / collapsed "Completed", status battery per group, pill selects,
+  owner avatar, type badge, tag chips, progress track, subtasks nested under her own tasks
+  (checkbox + status + notes), and a "+ Task" add form in the group head.
+- Progress is DERIVED, never typed. `progress` left every `TSG_PERSON_*_FIELDS` list and a
+  typed value is refused. On a notes edit through `tsgPersonRpc` the server calls
+  `tsgProgressFromNotes_` (the estimator with `NEEDED_FIELDS ["progress"]`, a new field in
+  `TSG_ESTIMATE_SYSTEM` / `tsgEstimateTask_`); empty notes are 0 with no call; a task with
+  subitems takes its bar from them and makes no call; Claude unavailable leaves the value
+  alone. First progress on a Not Started item moves it to In Progress unless the same edit
+  set the status. Durand's own pipeline does NOT read progress from notes (add_task only
+  asks for it when the patch carries `personCreated: true`).
+- Person-created tasks are enriched like any other new task (estimate, type, subitems,
+  tags, dependency, Drive doc) with `skipDedup` still on. Minted subitems are delegated to
+  the task's assignee when that is not Durand (`tsgDefaultSubitemDelegate_`), and for a
+  `personCreated` task the estimate is split evenly across them so they schedule (steps
+  with no hours are never queued; Durand's pipeline still keeps the hours on the parent).
+  The rollup then adds the 0.5 h confirm cost per delegated step to the parent's estHours.
+- Scheduler: `tsgWorkItemsOf_` now returns a whole task owned by any named person other
+  than Durand as a work item flagged `delegated`; `tsgItemIsDurandWork_` decides whether an
+  item charges his capacity. Such a task is paced at its priority's chunk rate like a
+  delegated subitem, never draws on his day, reserves the 0.5 h confirm slice after it
+  finishes, and logs `auto-scheduled` on its own history. Unowned/`Unassigned` tasks stay
+  unscheduled. This applies to every non-Durand-owned task on the board with estHours and
+  no due date, not only person-created ones.
+- Owner preview edits (`?person=<Name>`, RPC payload `as`) are recorded with `source` =
+  the owner's roster name (`actor` in `tsgPersonRpc`), not the person's.
+- Dashboard toolbar has one "Views" button per roster member (not Durand) that opens
+  `<exec URL>?person=<Name>` in a named window from the dashboard tab's session
+  (`renderTeamViewButtons_`, `personViewUrl_`), which sidesteps the wrong-default-account
+  page. Test coverage in all three suites.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs

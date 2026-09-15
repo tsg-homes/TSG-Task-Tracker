@@ -23,7 +23,10 @@ GitHub repo: `https://github.com/tsg-homes/task-tracker.git`
   `PropertiesService`, etc.) and a controllable fake Claude responder, so `applyDataPatch` and
   friends can be exercised without touching the live Drive/Calendar/Anthropic API.
 - `person.html` — the per-person view served to signed-in roster members (see CLAUDE.md,
-  "Per-person view"). Reads a server-computed slice and writes single-item operations.
+  "Per-person view"). A Board-style page: reads a server-computed slice and writes
+  single-item operations; progress is derived from the notes by the estimator, and tasks
+  created there are enriched and scheduled like any other. The owner opens any member's
+  view from the dashboard's "Views" buttons (or `?person=<Name>`).
 - `test/test_person.js` — jsdom smoke test for the per-person view.
 - `test/test_dashboard.js` — a jsdom smoke test for the dashboard: loads the real HTML into a
   DOM, mocks `fetch`, and exercises rendering, the task modal, and the meeting picker.

@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-15.4';
+const TSG_CODE_VERSION = '2026-09-15.5';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -467,7 +467,12 @@ function applyDataPatch_(doc, patch) {
       // reuses whatever's already in use across the board as its de facto vocabulary,
       // via EXISTING_TAGS below, so tags converge on a real shared set over time instead
       // of each task inventing its own wording for the same idea.
-      if (!task.tags.length) need.push('tags');
+      var topicalTags = task.tags.filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1 && tg !== 'Self-created'; });
+      if (!topicalTags.length) need.push('tags');
+      // Person-created tasks (tsgPersonRpc 'add', patch.personCreated) also ask for progress
+      // read from the notes; Durand's own pipeline does not, so a pushed task's notes never
+      // move its bar.
+      if (patch.personCreated && String(task.notes || '').trim() && task.status !== 'Done') need.push('progress');
 
       if (need.length && !patch.skipEnrich) {
         // Batch siblings (see the 'bulk' handler above) are appended so a task listed
@@ -502,11 +507,17 @@ function applyDataPatch_(doc, patch) {
         }
         if (need.indexOf('taskType') !== -1 && est.taskType) { task.taskType = est.taskType; applied.push('taskType'); }
         if (need.indexOf('subitems') !== -1 && est.subitems && est.subitems.length) {
+          // A person-created task's estimate is split evenly across the steps it was just
+          // broken into, so the rollup and the scheduler have per-step hours to work with
+          // (steps with no hours are never queued). Durand's pipeline keeps the hours on
+          // the parent as before.
+          var perStep = (patch.personCreated && typeof task.estHours === 'number' && task.estHours > 0)
+            ? Math.max(0.25, Math.round((task.estHours / est.subitems.length) * 4) / 4) : null;
           task.subitems = est.subitems.map(function(s) {
-            return { title: s.title, done: false, delegate: '', status: 'Not Started',
+            return { title: s.title, done: false, delegate: tsgDefaultSubitemDelegate_(task), status: 'Not Started',
               priority: task.priority || 'Medium', tags: [], timelineEnd: '', progress: 0,
-              depends: '', doc: '', notes: '', estHours: null, estDays: null,
-              estSource: 'none', taskType: 'Actionable Task',
+              depends: '', doc: '', notes: '', estHours: perStep, estDays: null,
+              estSource: perStep != null ? 'claude' : 'none', taskType: 'Actionable Task',
               history: [{ ts: now, field: 'created', from: null, to: null, source: patch.source || 'unknown' }] };
           });
           applied.push('subitems (' + task.subitems.length + ')');
@@ -530,6 +541,11 @@ function applyDataPatch_(doc, patch) {
         if (need.indexOf('tags') !== -1 && est.tags && est.tags.length) {
           task.tags = Array.from(new Set(task.tags.concat(est.tags)));
           applied.push('tags (' + est.tags.join(', ') + ')');
+        }
+        if (need.indexOf('progress') !== -1 && est.progress != null) {
+          task.progress = est.progress;
+          if (est.progress > 0 && task.status === 'Not Started') task.status = 'In Progress';
+          applied.push('progress (' + est.progress + '%, from the notes)');
         }
         if (applied.length) {
           task.history.push({
@@ -1029,9 +1045,24 @@ function tsgRpc(query, method, body) {
  * The owner may preview any person with the `as` parameter.
  * ---------------------------------------------------------------------------
  */
-var TSG_PERSON_TASK_FIELDS_OWN = ['title', 'status', 'priority', 'progress', 'timelineEnd', 'notes'];
-var TSG_PERSON_TASK_FIELDS_DELEGATED = ['status', 'progress', 'notes'];
-var TSG_PERSON_SUB_FIELDS = ['status', 'progress', 'notes'];
+// 2026-09-15: 'progress' left every list. It is derived, never typed: from the notes via
+// tsgProgressFromNotes_ on each notes edit, or from the subitems when the task has any.
+var TSG_PERSON_TASK_FIELDS_OWN = ['title', 'status', 'priority', 'timelineEnd', 'notes'];
+var TSG_PERSON_TASK_FIELDS_DELEGATED = ['status', 'notes'];
+var TSG_PERSON_SUB_FIELDS = ['status', 'notes'];
+
+/** Subitems minted by the estimator go to the task's assignee when that is someone other than Durand. */
+function tsgDefaultSubitemDelegate_(task) {
+  var a = String((task && task.assignee) || '').trim();
+  return (a && a.toLowerCase() !== 'durand') ? a : '';
+}
+function tsgTaskProgress_(t) {
+  if (t.subitems && t.subitems.length) {
+    var done = t.subitems.filter(function(s) { return s && s.done; }).length;
+    return Math.round((done / t.subitems.length) * 100);
+  }
+  return t.status === 'Done' ? 100 : (typeof t.progress === 'number' ? t.progress : 0);
+}
 
 function tsgPersonNameForRequest_(doc, asOverride) {
   var who = tsgSignedInEmail_();
@@ -1055,20 +1086,23 @@ function tsgPersonSlice_(doc, name) {
     var isOwn = t.owner === name;
     var isAssigned = !isOwn && t.assignee === name;
     if (isOwn || isAssigned) {
+      var subs = t.subitems || [];
       rows.push({
         kind: 'task', id: t.id, own: isOwn, title: t.title || '', status: t.status || 'Not Started',
-        priority: t.priority || '', progress: (t.status === 'Done') ? 100 : (typeof t.progress === 'number' ? t.progress : 0),
-        due: t.timelineEnd || '', notes: t.notes || '', group: t.group || '',
+        priority: t.priority || '', progress: tsgTaskProgress_(t),
+        due: t.timelineEnd || '', notes: t.notes || '', group: t.group || '', owner: t.owner || '',
+        tags: (t.tags || []).slice(), taskType: t.taskType || '', estHours: (typeof t.estHours === 'number') ? t.estHours : null,
+        subTotal: subs.length, subDone: subs.filter(function(s) { return s && s.done; }).length,
         editable: isOwn ? TSG_PERSON_TASK_FIELDS_OWN.slice() : TSG_PERSON_TASK_FIELDS_DELEGATED.slice()
       });
     }
     (t.subitems || []).forEach(function(s, i) {
       if (!s || s.delegate !== name) return;
       rows.push({
-        kind: 'sub', id: t.id, index: i, own: false, parentTitle: t.title || '', title: s.title || '',
+        kind: 'sub', id: t.id, index: i, own: false, parentOwn: isOwn, parentTitle: t.title || '', title: s.title || '',
         status: s.done ? 'Done' : (s.status || 'Not Started'), priority: s.priority || t.priority || '',
-        progress: s.done ? 100 : (typeof s.progress === 'number' ? s.progress : 0),
-        due: s.timelineEnd || '', notes: s.notes || '', group: t.group || '',
+        progress: s.done ? 100 : (typeof s.progress === 'number' ? s.progress : 0), done: !!s.done,
+        due: s.timelineEnd || '', notes: s.notes || '', group: t.group || '', owner: t.owner || '', subTotal: 0,
         editable: TSG_PERSON_SUB_FIELDS.slice()
       });
     });
@@ -1100,6 +1134,10 @@ function tsgPersonRpc(action, payloadJson) {
   catch (err) { return JSON.stringify({ ok: false, error: 'data unavailable' }); }
   var name = tsgPersonNameForRequest_(doc, payload.as);
   if (!name) return JSON.stringify({ ok: false, error: 'unauthorized' });
+  // The owner editing through a ?person= preview is recorded as themself, not as the person.
+  var whoRpc = tsgSignedInEmail_();
+  var actor = (payload.as && tsgIsOwnerEmail_(whoRpc))
+    ? (tsgRosterNameForEmail_((doc.meta && doc.meta.teamRoster) || [], whoRpc) || 'Durand') : name;
 
   if (action === 'load') {
     return JSON.stringify({
@@ -1131,9 +1169,21 @@ function tsgPersonRpc(action, payloadJson) {
     });
     if (rejected.length) return JSON.stringify({ ok: false, error: 'field not editable: ' + rejected.join(', ') });
     if (!Object.keys(fields).length) return JSON.stringify({ ok: false, error: 'nothing to change' });
+    // Progress follows the notes: a notes edit on an item without subitems re-reads them.
+    // A task with subitems takes its bar from those instead, so no call is spent on it.
+    // Claude unavailable -> progress untouched. A first sign of progress also moves a
+    // Not Started item to In Progress unless the same edit set the status itself.
+    var endStatus = Object.prototype.hasOwnProperty.call(fields, 'status') ? fields.status : row.status;
+    if (Object.prototype.hasOwnProperty.call(fields, 'notes') && !row.subTotal && endStatus !== 'Done') {
+      var pct = tsgProgressFromNotes_(row.title, fields.notes, row.priority);
+      if (pct != null) {
+        fields.progress = pct;
+        if (pct > 0 && endStatus === 'Not Started') fields.status = 'In Progress';
+      }
+    }
     var op = (row.kind === 'sub')
-      ? { op: 'update_subitem', id: row.id, index: row.index, expectTitle: row.title, fields: fields, source: name }
-      : { op: 'update_task', id: row.id, fields: fields, source: name };
+      ? { op: 'update_subitem', id: row.id, index: row.index, expectTitle: row.title, fields: fields, source: actor }
+      : { op: 'update_task', id: row.id, fields: fields, source: actor };
     if (row.kind === 'task' && fields.status === 'Done') op.fields.progress = 100;
     return JSON.stringify(tsgQueueDataPatch_(op));
   }
@@ -1148,10 +1198,15 @@ function tsgPersonRpc(action, payloadJson) {
       title: title, owner: name, assignee: name, group: name, status: 'Not Started', priority: prio,
       tags: ['Self-created'], timelineStart: '', timelineEnd: due, progress: 0, depends: '', doc: '', docs: [],
       notes: String(payload.notes || ''), subitems: [], duration: null, estHours: null, estDays: null, estSource: 'none',
-      taskType: 'Actionable Task', history: [{ ts: nowIso, field: 'created', from: null, to: null, source: name }]
+      taskType: '', history: [{ ts: nowIso, field: 'created', from: null, to: null, source: actor }]
     };
     if (due) task.dueOverride = true;
-    return JSON.stringify(tsgQueueDataPatch_({ op: 'add_task', task: task, source: name, skipEnrich: true, skipDedup: true }));
+    // Enriched like any other new task (estimate, type, subitems delegated back to the
+    // person, tags, dependency, Drive doc) and scheduled on the same pass; only the
+    // near-duplicate merge is skipped, since folding a person's task into one of Durand's
+    // would make it vanish from their page. personCreated: the notes set the bar and the
+    // estimate is split across the minted steps so they schedule.
+    return JSON.stringify(tsgQueueDataPatch_({ op: 'add_task', task: task, source: actor, skipDedup: true, personCreated: true }));
   }
   return JSON.stringify({ ok: false, error: 'unknown action' });
 }
@@ -2867,6 +2922,12 @@ var TSG_ESTIMATE_SYSTEM =
   'return any of: Triage, Aging, Scheduling Stuck, Dependency Issue, needs-estimate, Claude — those ' +
   'are set by the system itself and mean something specific; returning one yourself would be wrong. ' +
   'Empty array is a completely normal answer — most tasks do not need a topical tag at all.\n\n' +
+  'progress — an integer 0-100: how much of this task\'s hands-on work the NOTES say is already ' +
+  'done, measured against what the title and notes say the whole job is. Count only evidence of ' +
+  'completed steps (past tense, "done", "sent", "received", "confirmed", checked-off items, dated ' +
+  'completed actions). 0 when the notes are empty or describe only what is still to be done. 100 ' +
+  'only when the notes state the work is finished. Never infer progress from elapsed time, tone, ' +
+  'or how long the notes are. Prefer round numbers (0, 10, 25, 50, 75, 90, 100).\n\n' +
   'needsConfirmation — ONLY relevant when estHours is one of the requested fields; ignore this ' +
   'field otherwise. true if a human should sanity-check the estHours you gave before it\'s trusted, ' +
   'false if you\'re genuinely confident in it. Say true when: the notes are too thin to really pin ' +
@@ -2883,7 +2944,7 @@ var TSG_ESTIMATE_SYSTEM =
   'markdown fences:\n' +
   '{"estHours": <number>, "taskType": "...", "subitems": ["step 1", "step 2"], ' +
   '"priority": "...", "group": "...", "dependsOnTitle": "<exact title>"|null, ' +
-  '"tags": ["..."], ' +
+  '"tags": ["..."], "progress": <integer 0-100>, ' +
   '"needsConfirmation": <boolean>, ' +
   '"rationale": "<one short sentence covering whatever you determined>"}';
 
@@ -2939,14 +3000,14 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
     Logger.log('[estimate] "' + title + '" -> UNESTIMATED (Claude unavailable) — needs: ' + need.join(','));
     return {
       estHours: null, taskType: null, subitems: [],
-      priority: null, group: null, dependsOnTitle: null,
+      priority: null, group: null, dependsOnTitle: null, progress: null,
       tags: ['needs-estimate'], source: 'none', rationale: null, needsConfirmation: false
     };
   }
 
   var out = {
     estHours: null, taskType: null, subitems: [],
-    priority: null, group: null, dependsOnTitle: null,
+    priority: null, group: null, dependsOnTitle: null, progress: null,
     tags: [], source: 'claude', rationale: parsed.rationale || null,
     // Only meaningful when estHours was actually requested/returned this call — see the
     // "Triage" tag repurpose (2026-08-26): a self-assessed low-confidence estimate gets
@@ -2975,6 +3036,9 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
   if (need.indexOf('dependsOnTitle') !== -1 && parsed.dependsOnTitle) {
     out.dependsOnTitle = parsed.dependsOnTitle;
   }
+  if (need.indexOf('progress') !== -1 && typeof parsed.progress === 'number' && isFinite(parsed.progress)) {
+    out.progress = Math.max(0, Math.min(100, Math.round(parsed.progress)));
+  }
   if (need.indexOf('tags') !== -1 && Array.isArray(parsed.tags)) {
     // Defensive filter, not just prompt instruction — TSG_RESERVED_TAGS carry specific
     // system meaning (Triage/Aging/etc.) and must never be handed out by the model itself.
@@ -2987,6 +3051,19 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
 
   Logger.log('[estimate] "' + title + '" -> ' + JSON.stringify(out) + ' (claude): ' + (parsed.rationale || ''));
   return out;
+}
+
+/**
+ * Progress read from the notes (2026-09-15, per Durand: "progress should be autocalculated
+ * based on notes"). One estimator call with NEEDED_FIELDS = ["progress"]. Returns an integer
+ * 0-100, or null when there is nothing to read or Claude is unavailable, so a caller can
+ * leave the stored value alone. Empty notes are 0 without a call.
+ */
+function tsgProgressFromNotes_(title, notes, priority) {
+  var clean = String(notes || '').trim();
+  if (!clean) return 0;
+  var est = tsgEstimateTask_(title, clean, priority || '', ['progress'], {});
+  return (est && est.source !== 'none' && est.progress != null) ? est.progress : null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -3614,10 +3691,17 @@ function tsgWorkItemsOf_(t) {
     });
     return items;
   }
-  if ((t.owner || 'Unassigned') === 'Durand') {
-    return [{ ref: t, parent: t, idx: null, isSubitem: false, label: '#' + t.id + ' "' + t.title + '"' }];
-  }
-  return [];
+  // 2026-09-15: a whole task owned by a named person other than Durand (a Marj-created task,
+  // or one he assigned wholesale) is now a work item too, paced at its priority's chunk
+  // rate like a delegated subitem and never drawing on his capacity. Unowned tasks stay out.
+  var owner = String(t.owner || '').trim();
+  if (!owner || owner === 'Unassigned') return [];
+  return [{ ref: t, parent: t, idx: null, isSubitem: false, delegated: owner.toLowerCase() !== 'durand',
+    label: '#' + t.id + ' "' + t.title + '"' }];
+}
+/** Whether a work item competes for Durand's own daily capacity. */
+function tsgItemIsDurandWork_(it) {
+  return it.isSubitem ? tsgIsDurandDelegate_(it.ref) : !it.delegated;
 }
 
 /**
@@ -3734,7 +3818,7 @@ function tsgAutoScheduleDoc_(doc) {
   // schedule, since that was never really competing for HIS time.
   allItems.forEach(function(it) {
     var r = it.ref;
-    if (it.isSubitem && !tsgIsDurandDelegate_(r)) {
+    if (!tsgItemIsDurandWork_(it)) {
       // Not Durand's own work, so it never draws on his capacity pool directly — but if
       // it's already scheduled from an earlier run, the 0.5h "confirm this is done" slice
       // still needs to be reserved on his calendar the day after, same as a freshly
@@ -3875,7 +3959,7 @@ function tsgAutoScheduleDoc_(doc) {
     var item = queue.splice(readyIdx, 1)[0];
     var t = item.ref;
     var priority = t.priority || item.parent.priority || 'Medium';
-    var isDurandWork = !item.isSubitem || tsgIsDurandDelegate_(t);
+    var isDurandWork = tsgItemIsDurandWork_(item);
 
     var earliest = earliestStartFor(item);
     var d2 = earliest;
@@ -3942,6 +4026,7 @@ function tsgAutoScheduleDoc_(doc) {
       t.history = t.history || [];
       t.history.push({ ts: new Date().toISOString(), field: 'timelineEnd', from: before || null, to: t.timelineEnd, note: 'auto-scheduled' });
       finishDate[t.id] = t.timelineEnd;
+      if (!isDurandWork) tsgReserveConfirmCapacity_(addLoad, today, t.timelineEnd);
     } else {
       // A subitem: it carries no history of its own, so the note goes on the parent
       // task instead, naming which subitem it was. Nothing outside its own task ever

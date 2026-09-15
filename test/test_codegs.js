@@ -726,27 +726,33 @@ section('Inbox pipeline: lock busy, trash-after-write, unreadable document, whit
   sandbox.LockService.getScriptLock = origLock; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.DriveApp.getFileById = origGetFileById;
 }
 
-section('Per-person view, milestone 1: slice, write rules, RPC (2026-09-15)');
+section('Per-person view: slice, write rules, RPC, notes-driven progress, enrichment (2026-09-15)');
 {
-  const NOW = '2026-09-15T13:00:00Z';
   const roster = [{ name: 'Durand', email: '' }, { name: 'Marj', email: '' }, { name: 'Perly', email: '' }];
   function personDoc() {
     return { meta: { docVersion: 100, next_id: 50, teamRoster: roster, status_values: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'], priority_values: ['Critical', 'High', 'Medium', 'Low'] }, tasks: [
       { id: 1, title: 'Durand task with Marj sub', owner: 'Durand', status: 'In Progress', priority: 'High', progress: 0, timelineEnd: '2026-09-20', notes: 'parent notes', history: [], subitems: [
         { title: 'Marj part', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, timelineEnd: '2026-09-18', notes: '' },
-        { title: 'Perly part', delegate: 'Perly', done: false, status: 'Not Started', progress: 0, timelineEnd: '', notes: '' } ] },
+        { title: 'Perly part', delegate: 'Perly', done: true, status: 'Done', progress: 100, timelineEnd: '', notes: '' } ] },
       { id: 2, title: 'Assigned to Marj', owner: 'Durand', assignee: 'Marj', status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '2026-09-25', notes: '', history: [], subitems: [] },
       { id: 3, title: "Marj's own task", owner: 'Marj', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'mine', history: [], subitems: [] },
-      { id: 4, title: 'Nothing to do with Marj', owner: 'Durand', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'secret', history: [], subitems: [] }
+      { id: 4, title: 'Nothing to do with Marj', owner: 'Durand', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'secret', history: [], subitems: [] },
+      { id: 5, title: 'Marj task with steps', owner: 'Marj', assignee: 'Marj', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'n', tags: ['Self-created', 'Flyers'], taskType: 'Actionable Task', estHours: 3, history: [], subitems: [
+        { title: 'step one', delegate: 'Marj', done: true, status: 'Done', progress: 100, timelineEnd: '', notes: '' },
+        { title: 'step two', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, timelineEnd: '', notes: '' } ] }
     ] };
   }
+  driveFilesFixture = []; calendarEventsFixture = [];
   // slice
   const rows = sandbox.tsgPersonSlice_(personDoc(), 'Marj');
-  check('slice: own task, assigned task, delegated subitem; nothing else', rows.length === 3 && !rows.some(r => r.id === 4) && !rows.some(r => r.kind === 'sub' && r.title === 'Perly part'));
-  const own = rows.find(r => r.id === 3), assigned = rows.find(r => r.id === 2), sub = rows.find(r => r.kind === 'sub');
-  check('own task: every field editable', own.own === true && own.editable.includes('priority') && own.editable.includes('timelineEnd') && own.editable.includes('title'));
-  check('assigned task: status/progress/notes only', assigned.editable.join() === 'status,progress,notes');
-  check('delegated subitem carries parent title and is limited to status/progress/notes', sub.parentTitle === 'Durand task with Marj sub' && sub.editable.join() === 'status,progress,notes' && sub.index === 0);
+  check('slice: own tasks, assigned task, delegated subitems; nothing else', rows.length === 6 && !rows.some(r => r.id === 4) && !rows.some(r => r.kind === 'sub' && r.title === 'Perly part'));
+  const own = rows.find(r => r.id === 3), assigned = rows.find(r => r.id === 2), sub = rows.find(r => r.kind === 'sub' && r.id === 1), stepped = rows.find(r => r.kind === 'task' && r.id === 5);
+  check('own task: title/status/priority/due/notes editable, progress never', own.own === true && own.editable.join() === 'title,status,priority,timelineEnd,notes');
+  check('assigned task: status and notes only', assigned.editable.join() === 'status,notes');
+  check('delegated subitem: parent title, status/notes only, not parentOwn', sub.parentTitle === 'Durand task with Marj sub' && sub.editable.join() === 'status,notes' && sub.index === 0 && sub.parentOwn === false);
+  check('a task with subitems reports progress as the done ratio and its counts', stepped.progress === 50 && stepped.subDone === 1 && stepped.subTotal === 2);
+  check("a subitem of her own task is flagged parentOwn so the page nests it", rows.some(r => r.kind === 'sub' && r.id === 5 && r.parentOwn === true && r.done === true));
+  check('task rows carry owner, tags, type and estimate for the board-style row', stepped.owner === 'Marj' && stepped.tags.includes('Flyers') && stepped.taskType === 'Actionable Task' && stepped.estHours === 3);
 
   // RPC with Marj signed in; the queue helper is exercised through fakes
   const origSession = sandbox.Session, origGetFileById = sandbox.DriveApp.getFileById, origGetFolderById = sandbox.DriveApp.getFolderById, origLock = sandbox.LockService.getScriptLock;
@@ -761,31 +767,91 @@ section('Per-person view, milestone 1: slice, write rules, RPC (2026-09-15)');
   });
   sandbox.LockService.getScriptLock = () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} });
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'marj@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  // Fake estimator: answers whatever NEEDED_FIELDS asks for; records every call.
+  let claudeCalls = [];
+  let progressAnswer = 40;
+  claudeResponder = (system, user) => {
+    claudeCalls.push(user);
+    const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user);
+    const need = m ? JSON.parse(m[1]) : [];
+    const out = { rationale: 'test' };
+    if (need.includes('progress')) out.progress = progressAnswer;
+    if (need.includes('estHours')) { out.estHours = 2; out.needsConfirmation = false; }
+    if (need.includes('taskType')) out.taskType = 'Actionable Task';
+    if (need.includes('subitems')) out.subitems = ['Draft the copy', 'Send to printer'];
+    if (need.includes('tags')) out.tags = ['Flyers'];
+    if (need.includes('dependsOnTitle')) out.dependsOnTitle = null;
+    if (need.includes('group')) out.group = 'Marketing';
+    if (need.includes('priority')) out.priority = 'Medium';
+    return out;
+  };
 
   let r = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
-  check('load: Marj gets her 3 rows and the status/priority vocab', r.ok && r.person === 'Marj' && r.rows.length === 3 && r.statuses.includes('Done') && r.priorities.includes('High'));
+  check('load: Marj gets her rows and the status/priority vocab', r.ok && r.person === 'Marj' && r.rows.length === 6 && r.statuses.includes('Done') && r.priorities.includes('High'));
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { priority: 'Critical' } })));
   check('update: priority on an assigned task is refused server-side', r.ok === false && /not editable: priority/.test(r.error));
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { due: '2026-10-01' } })));
   check('update: due on an assigned task is refused server-side', r.ok === false && /not editable/.test(r.error));
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 3, fields: { progress: 60 } })));
+  check('update: a typed progress is refused even on her own task', r.ok === false && /not editable: progress/.test(r.error));
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 4, fields: { notes: 'x' } })));
   check('update: a task outside her slice is refused', r.ok === false && r.error === 'not yours');
-  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { status: 'In Progress', progress: 40, notes: 'started' } })));
+
+  claudeCalls = [];
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { status: 'Blocked', notes: 'Sent the proof to the printer, waiting on them' } })));
   let d = JSON.parse(disk);
-  check('update: status/progress/notes on an assigned task apply through the inbox as update_task', r.ok === true && d.tasks[1].status === 'In Progress' && d.tasks[1].progress === 40 && d.tasks[1].notes === 'started');
+  check('update: a notes edit reads progress from the notes through the estimator', r.ok === true && claudeCalls.length === 1 && /NEEDED_FIELDS: \["progress"\]/.test(claudeCalls[0]) && d.tasks[1].progress === 40 && d.tasks[1].notes === 'Sent the proof to the printer, waiting on them');
+  check('update: a status set in the same edit is kept, not replaced by In Progress', d.tasks[1].status === 'Blocked');
   check('update: history records Marj as the source', d.tasks[1].history.some(h => h.source === 'Marj' && h.field === 'status'));
+  claudeCalls = []; progressAnswer = 25;
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 3, fields: { notes: 'Called two vendors so far' } })));
+  d = JSON.parse(disk);
+  check('update: first progress on a Not Started task moves it to In Progress', r.ok === true && d.tasks[2].progress === 25 && d.tasks[2].status === 'In Progress');
+  claudeCalls = [];
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 3, fields: { notes: '' } })));
+  d = JSON.parse(disk);
+  check('update: clearing the notes resets progress to 0 without a Claude call', r.ok === true && claudeCalls.length === 0 && d.tasks[2].progress === 0);
+  claudeCalls = []; progressAnswer = 90;
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 5, fields: { notes: 'nearly there' } })));
+  d = JSON.parse(disk);
+  check('update: notes on a task with subitems never call Claude; the subitems own the bar', r.ok === true && claudeCalls.length === 0 && d.tasks[4].notes === 'nearly there' && d.tasks[4].progress === 0);
+  const savedResponder = claudeResponder;
+  claudeResponder = () => ({ rationale: 'no number this time' });
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { notes: 'more notes' } })));
+  d = JSON.parse(disk);
+  check('update: when the estimator returns no progress the stored value is left alone', r.ok === true && d.tasks[1].progress === 40 && d.tasks[1].notes === 'more notes');
+  claudeResponder = savedResponder;
+
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'sub', id: 1, index: 0, fields: { status: 'Done' } })));
   d = JSON.parse(disk);
-  check('update: a delegated subitem marked Done sets done and progress 100 via update_subitem', r.ok === true && d.tasks[0].subitems[0].done === true && d.tasks[0].subitems[0].progress === 100 && d.tasks[0].subitems[1].done === false);
+  check('update: a delegated subitem marked Done sets done and progress 100 via update_subitem', r.ok === true && d.tasks[0].subitems[0].done === true && d.tasks[0].subitems[0].progress === 100);
+  claudeCalls = []; progressAnswer = 50;
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'sub', id: 5, index: 1, fields: { notes: 'half the copy is drafted' } })));
+  d = JSON.parse(disk);
+  check("update: notes on a subitem of her own task set that subitem's progress and status", r.ok === true && claudeCalls.length === 1 && d.tasks[4].subitems[1].progress === 50 && d.tasks[4].subitems[1].status === 'In Progress');
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'sub', id: 1, index: 1, fields: { notes: 'hi' } })));
   check("update: Perly's subitem is not in Marj's slice", r.ok === false && r.error === 'not yours');
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 3, fields: { priority: 'High', due: '2026-10-02', title: 'Renamed' } })));
   d = JSON.parse(disk);
   check('update: own task accepts priority, due and title', r.ok === true && d.tasks[2].priority === 'High' && d.tasks[2].timelineEnd === '2026-10-02' && d.tasks[2].title === 'Renamed');
-  r = JSON.parse(sandbox.tsgPersonRpc('add', JSON.stringify({ title: 'new thing', priority: 'Low', due: '2026-10-05', notes: 'n' })));
+
+  // add: enriched by the estimator, subitems delegated back to her, scheduled on the same pass
+  claudeCalls = []; progressAnswer = 0;
+  r = JSON.parse(sandbox.tsgPersonRpc('add', JSON.stringify({ title: 'Order the fall flyer print run', priority: 'Low', notes: 'Need 500 copies before the open house' })));
   d = JSON.parse(disk);
-  const added = d.tasks.find(t => t.title === 'New Thing' || t.title === 'new thing');
-  check('add: creates a task owned by Marj, in her group, with no Claude enrichment', r.ok === true && !!added && added.owner === 'Marj' && added.group === 'Marj' && added.priority === 'Low' && added.timelineEnd === '2026-10-05' && added.estSource === 'none');
+  let added = d.tasks.find(t => /fall flyer print run/i.test(t.title));
+  check('add: creates a task owned by Marj, in her group, tagged Self-created', r.ok === true && !!added && added.owner === 'Marj' && added.assignee === 'Marj' && added.group === 'Marj' && added.priority === 'Low' && added.tags.includes('Self-created'));
+  check('add: the estimator fills estimate, type, subitems and tags', added.estSource === 'claude' && added.taskType === 'Actionable Task' && added.subitems.length === 2 && added.tags.includes('Flyers') && added.history.some(h => h.field === 'auto-enriched'));
+  check('add: the 2h estimate is split across the two minted steps; the rollup adds the 0.5h confirm cost per delegated step', added.subitems.every(s => s.estHours === 1 && s.estSource === 'claude') && added.estHours === 3);
+  check('add: the estimator was asked for progress from the notes and priority/group were not re-asked', claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"progress"/.test(u)) && !claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"priority"/.test(u)) && !claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"group"/.test(u)));
+  check('add: minted subitems are delegated to Marj, not left for Durand', added.subitems.every(s => s.delegate === 'Marj'));
+  check('add: the scheduler placed her steps and rolled the due date up to the parent', added.subitems.every(s => !!s.timelineEnd) && !!added.timelineEnd && !(added.tags || []).includes('Scheduling Stuck'));
+  progressAnswer = 50;
+  r = JSON.parse(sandbox.tsgPersonRpc('add', JSON.stringify({ title: 'Update the postcard mailing list', priority: 'Medium', due: '2026-10-05', notes: 'Half the agents have sent theirs' })));
+  d = JSON.parse(disk);
+  added = d.tasks.find(t => /postcard mailing list/i.test(t.title));
+  check('add: progress read from the notes moves a new task straight to In Progress', !!added && added.progress === 50 && added.status === 'In Progress');
+  check('add: a due date she typed is locked (dueOverride) and survives the scheduling pass', added.dueOverride === true && added.timelineEnd === '2026-10-05');
   r = JSON.parse(sandbox.tsgPersonRpc('add', JSON.stringify({ title: '   ' })));
   check('add: blank title refused', r.ok === false);
 
@@ -794,13 +860,16 @@ section('Per-person view, milestone 1: slice, write rules, RPC (2026-09-15)');
   let stale = false; try { sandbox.applyDataPatch_(d, { op: 'update_subitem', id: 1, index: 0, expectTitle: 'Something else', fields: { notes: 'x' } }); } catch (e) { stale = true; }
   check('update_subitem refuses when the subitem at that index has changed title', stale);
 
-  // identity gates
+  // identity gates and the owner's preview
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'nobody@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
   r = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
   check('load: a non-roster account is unauthorized', r.ok === false && r.error === 'unauthorized');
   sandbox.Session = origSession; // owner
   r = JSON.parse(sandbox.tsgPersonRpc('load', JSON.stringify({ as: 'Marj' })));
   check("load: the owner can preview Marj's slice with as=Marj", r.ok === true && r.person === 'Marj');
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ as: 'Marj', kind: 'task', id: 2, fields: { status: 'Waiting' } })));
+  d = JSON.parse(disk);
+  check("update: the owner editing through a preview is recorded as Durand, not as Marj", r.ok === true && d.tasks[1].status === 'Waiting' && d.tasks[1].history.some(h => h.field === 'status' && h.to === 'Waiting' && h.source === 'Durand'));
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'perly@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
   r = JSON.parse(sandbox.tsgPersonRpc('load', JSON.stringify({ as: 'Marj' })));
   check('load: a non-owner cannot use as= to see someone else', r.ok === true && r.person === 'Perly');
@@ -811,12 +880,45 @@ section('Per-person view, milestone 1: slice, write rules, RPC (2026-09-15)');
   check('doGet: a roster member gets the person page stamped with their name', page.html.includes('PERSON PAGE for Marj'));
   sandbox.Session = origSession;
   page = sandbox.doGet({ parameter: { person: 'Marj' } });
-  check("doGet: owner with ?as=Marj gets Marj's page, flagged as a preview", page.html.includes('PERSON PAGE for Marj (as=Marj)'));
+  check("doGet: owner with ?person=Marj gets Marj's page, flagged as a preview", page.html.includes('PERSON PAGE for Marj (as=Marj)'));
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'perly@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
   page = sandbox.doGet({ parameter: { person: 'Marj' } });
   check('doGet: a non-owner with ?person= still gets their own page', page.html.includes('PERSON PAGE for Perly'));
 
   sandbox.Session = origSession; sandbox.DriveApp.getFileById = origGetFileById; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.LockService.getScriptLock = origLock;
+}
+
+section('Scheduler: a whole task owned by someone other than Durand is paced, not capacity-charged (2026-09-15)');
+{
+  const doc = { meta: { docVersion: 1 }, tasks: [
+    { id: 1, title: "Marj's flyer run", owner: 'Marj', status: 'Not Started', priority: 'Medium', estHours: 5, timelineEnd: '', tags: [], history: [], subitems: [] },
+    { id: 2, title: 'Durand thing', owner: 'Durand', status: 'Not Started', priority: 'Medium', estHours: 2, timelineEnd: '', tags: [], history: [], subitems: [] },
+    { id: 3, title: 'Nobody owns this', owner: 'Unassigned', status: 'Not Started', priority: 'Medium', estHours: 2, timelineEnd: '', tags: [], history: [], subitems: [] }
+  ] };
+  const placed = sandbox.tsgAutoScheduleDoc_(doc);
+  const marj = doc.tasks[0], durand = doc.tasks[1], nobody = doc.tasks[2];
+  check("Marj's whole task gets a paced schedule and a due date", !!marj.scheduledStart && Array.isArray(marj.scheduledDays) && marj.scheduledDays.length === 2 && marj.timelineEnd === marj.scheduledDays[1]);
+  check("Durand's task still schedules from today and is unaffected by hers", !!durand.scheduledStart && durand.scheduledStart <= marj.scheduledStart && durand.scheduledDays.length === 1);
+  check('an unowned task is still left alone', !nobody.scheduledStart && !nobody.timelineEnd && placed === 2);
+  check('the delegated task logs its auto-schedule on its own history', marj.history.some(h => h.field === 'timelineEnd' && h.note === 'auto-scheduled'));
+  const items = sandbox.tsgWorkItemsOf_(marj);
+  check('tsgWorkItemsOf_ marks a non-Durand whole task as delegated and not his work', items.length === 1 && items[0].delegated === true && sandbox.tsgItemIsDurandWork_(items[0]) === false && sandbox.tsgItemIsDurandWork_(sandbox.tsgWorkItemsOf_(durand)[0]) === true);
+}
+
+section('Estimator: progress is a requestable field (2026-09-15)');
+{
+  let asked = null;
+  claudeResponder = (system, user) => { asked = user; return { progress: 73.4, rationale: 'r' }; };
+  let est = sandbox.tsgEstimateTask_('Draft the newsletter', 'Intro and two of three sections written', 'Medium', ['progress'], {});
+  check('progress comes back rounded and clamped, and the prompt names it', est.progress === 73 && /NEEDED_FIELDS: \["progress"\]/.test(asked) && /progress — an integer 0-100/.test(vm.runInContext('TSG_ESTIMATE_SYSTEM', sandbox)));
+  claudeResponder = () => ({ progress: 250, rationale: 'r' });
+  check('progress above 100 is clamped', sandbox.tsgEstimateTask_('x y', 'n', '', ['progress'], {}).progress === 100);
+  check('tsgProgressFromNotes_: empty notes are 0 with no call', sandbox.tsgProgressFromNotes_('t', '   ', '') === 0);
+  claudeResponder = () => ({ rationale: 'nothing numeric' });
+  check('tsgProgressFromNotes_: no number from the model gives null', sandbox.tsgProgressFromNotes_('t', 'some notes', '') === null);
+  claudeResponder = () => ({ estHours: 1, taskType: 'Actionable Task', subitems: [], rationale: 'r', needsConfirmation: false });
+  est = sandbox.tsgEstimateTask_('Plain task', 'n', 'Medium');
+  check('progress stays null when it was not requested', est.progress === null && est.estHours === 1);
 }
 
 section('No secrets in tracked files (repo is public)');
