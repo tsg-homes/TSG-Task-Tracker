@@ -13,6 +13,8 @@ let driveDocTextById = {};       // { fileId: text } consumed by the DocumentApp
 let driveSheetValuesById = {};   // { fileId: [[...]] } consumed by the SpreadsheetApp.openById stub
 let projectDashboardHtml = '';   // what HtmlService.createHtmlOutputFromFile('dashboard_final') returns
 let cacheStore = {};             // CacheService stub backing store
+let uuidCounter = 0;
+let personPageHtml = '<html>PERSON PAGE for __TSG_PERSON__ (as=__TSG_AS__)</html>';
 
 const sandbox = {
   console,
@@ -77,7 +79,8 @@ const sandbox = {
     },
     base64EncodeWebSafe: (s) => Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
     base64Encode: (s) => Buffer.from(s).toString('base64'),
-    sleep: () => {}
+    sleep: () => {},
+    getUuid: () => 'uuid-' + (++uuidCounter)
   },
   GmailApp: { search: () => [] },
   MailApp: { sendEmail: () => {} },
@@ -88,7 +91,7 @@ const sandbox = {
   HtmlService: {
     createHtmlOutput: (h) => { const o = { html: h }; o.setTitle = () => o; o.addMetaTag = () => o; return o; },
     // The dashboard is a file in the script project; tests point it at a small fake page.
-    createHtmlOutputFromFile: (name) => ({ getContent: () => (name === 'dashboard_final' ? projectDashboardHtml : '') })
+    createHtmlOutputFromFile: (name) => ({ getContent: () => (name === 'dashboard_final' ? projectDashboardHtml : (name === 'person' ? personPageHtml : '')) })
   },
   CacheService: { getScriptCache: () => ({ get: (k) => (cacheStore[k] == null ? null : cacheStore[k]), put: (k, v) => { cacheStore[k] = v; }, remove: (k) => { delete cacheStore[k]; } }) },
   // Global MimeType (distinct from ContentService.MimeType above) — used by
@@ -602,7 +605,7 @@ section('Domain access: identity gate, roster mapping, inbox trigger (2026-09-14
   check('owner gets the full dashboard', page.html.includes('FULL DASHBOARD'));
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'perly@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => 'durand@thestawaszgroup.com' }) };
   page = sandbox.doGet({ parameter: {} });
-  check('a roster member gets the personal placeholder, greeted by name', !page.html.includes('FULL DASHBOARD') && page.html.includes('Hi Perly'));
+  check('a roster member gets the person page, not the dashboard', !page.html.includes('FULL DASHBOARD') && page.html.includes('PERSON PAGE for Perly'));
   check('the placeholder carries neither the token nor the exec URL', !page.html.includes('secret-token') && !page.html.includes('FAKE_DEPLOYMENT') && !page.html.includes('__TSG_'));
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'someone@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }) };
   page = sandbox.doGet({ parameter: {} });
@@ -721,6 +724,99 @@ section('Inbox pipeline: lock busy, trash-after-write, unreadable document, whit
   check('remove_thread_memory without an index throws instead of deleting memory 0', badIdx && rs.threads.T.memories.length === 2);
 
   sandbox.LockService.getScriptLock = origLock; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.DriveApp.getFileById = origGetFileById;
+}
+
+section('Per-person view, milestone 1: slice, write rules, RPC (2026-09-15)');
+{
+  const NOW = '2026-09-15T13:00:00Z';
+  const roster = [{ name: 'Durand', email: '' }, { name: 'Marj', email: '' }, { name: 'Perly', email: '' }];
+  function personDoc() {
+    return { meta: { docVersion: 100, next_id: 50, teamRoster: roster, status_values: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'], priority_values: ['Critical', 'High', 'Medium', 'Low'] }, tasks: [
+      { id: 1, title: 'Durand task with Marj sub', owner: 'Durand', status: 'In Progress', priority: 'High', progress: 0, timelineEnd: '2026-09-20', notes: 'parent notes', history: [], subitems: [
+        { title: 'Marj part', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, timelineEnd: '2026-09-18', notes: '' },
+        { title: 'Perly part', delegate: 'Perly', done: false, status: 'Not Started', progress: 0, timelineEnd: '', notes: '' } ] },
+      { id: 2, title: 'Assigned to Marj', owner: 'Durand', assignee: 'Marj', status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '2026-09-25', notes: '', history: [], subitems: [] },
+      { id: 3, title: "Marj's own task", owner: 'Marj', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'mine', history: [], subitems: [] },
+      { id: 4, title: 'Nothing to do with Marj', owner: 'Durand', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'secret', history: [], subitems: [] }
+    ] };
+  }
+  // slice
+  const rows = sandbox.tsgPersonSlice_(personDoc(), 'Marj');
+  check('slice: own task, assigned task, delegated subitem; nothing else', rows.length === 3 && !rows.some(r => r.id === 4) && !rows.some(r => r.kind === 'sub' && r.title === 'Perly part'));
+  const own = rows.find(r => r.id === 3), assigned = rows.find(r => r.id === 2), sub = rows.find(r => r.kind === 'sub');
+  check('own task: every field editable', own.own === true && own.editable.includes('priority') && own.editable.includes('timelineEnd') && own.editable.includes('title'));
+  check('assigned task: status/progress/notes only', assigned.editable.join() === 'status,progress,notes');
+  check('delegated subitem carries parent title and is limited to status/progress/notes', sub.parentTitle === 'Durand task with Marj sub' && sub.editable.join() === 'status,progress,notes' && sub.index === 0);
+
+  // RPC with Marj signed in; the queue helper is exercised through fakes
+  const origSession = sandbox.Session, origGetFileById = sandbox.DriveApp.getFileById, origGetFolderById = sandbox.DriveApp.getFolderById, origLock = sandbox.LockService.getScriptLock;
+  const FILE_IDS4 = vm.runInContext('FILE_IDS', sandbox);
+  let disk = JSON.stringify(personDoc());
+  let queued = [];
+  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS4.data ? disk : '{}') }), setContent: (c) => { if (id === FILE_IDS4.data) disk = c; } });
+  sandbox.DriveApp.getFolderById = () => ({
+    createFile: (name, content) => { queued.push({ name, content }); },
+    getFiles: () => { const items = queued.splice(0).map(q => ({ isTrashed: () => false, getName: () => q.name, setName: () => {}, setTrashed: () => {}, getDateCreated: () => new Date(), getBlob: () => ({ getDataAsString: () => q.content }) })); let i = 0; return { hasNext: () => i < items.length, next: () => items[i++] }; },
+    getFilesByName: () => ({ hasNext: () => false })
+  });
+  sandbox.LockService.getScriptLock = () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} });
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'marj@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+
+  let r = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
+  check('load: Marj gets her 3 rows and the status/priority vocab', r.ok && r.person === 'Marj' && r.rows.length === 3 && r.statuses.includes('Done') && r.priorities.includes('High'));
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { priority: 'Critical' } })));
+  check('update: priority on an assigned task is refused server-side', r.ok === false && /not editable: priority/.test(r.error));
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { due: '2026-10-01' } })));
+  check('update: due on an assigned task is refused server-side', r.ok === false && /not editable/.test(r.error));
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 4, fields: { notes: 'x' } })));
+  check('update: a task outside her slice is refused', r.ok === false && r.error === 'not yours');
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { status: 'In Progress', progress: 40, notes: 'started' } })));
+  let d = JSON.parse(disk);
+  check('update: status/progress/notes on an assigned task apply through the inbox as update_task', r.ok === true && d.tasks[1].status === 'In Progress' && d.tasks[1].progress === 40 && d.tasks[1].notes === 'started');
+  check('update: history records Marj as the source', d.tasks[1].history.some(h => h.source === 'Marj' && h.field === 'status'));
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'sub', id: 1, index: 0, fields: { status: 'Done' } })));
+  d = JSON.parse(disk);
+  check('update: a delegated subitem marked Done sets done and progress 100 via update_subitem', r.ok === true && d.tasks[0].subitems[0].done === true && d.tasks[0].subitems[0].progress === 100 && d.tasks[0].subitems[1].done === false);
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'sub', id: 1, index: 1, fields: { notes: 'hi' } })));
+  check("update: Perly's subitem is not in Marj's slice", r.ok === false && r.error === 'not yours');
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 3, fields: { priority: 'High', due: '2026-10-02', title: 'Renamed' } })));
+  d = JSON.parse(disk);
+  check('update: own task accepts priority, due and title', r.ok === true && d.tasks[2].priority === 'High' && d.tasks[2].timelineEnd === '2026-10-02' && d.tasks[2].title === 'Renamed');
+  r = JSON.parse(sandbox.tsgPersonRpc('add', JSON.stringify({ title: 'new thing', priority: 'Low', due: '2026-10-05', notes: 'n' })));
+  d = JSON.parse(disk);
+  const added = d.tasks.find(t => t.title === 'New Thing' || t.title === 'new thing');
+  check('add: creates a task owned by Marj, in her group, with no Claude enrichment', r.ok === true && !!added && added.owner === 'Marj' && added.group === 'Marj' && added.priority === 'Low' && added.timelineEnd === '2026-10-05' && added.estSource === 'none');
+  r = JSON.parse(sandbox.tsgPersonRpc('add', JSON.stringify({ title: '   ' })));
+  check('add: blank title refused', r.ok === false);
+
+  // stale subitem index guard
+  d = personDoc();
+  let stale = false; try { sandbox.applyDataPatch_(d, { op: 'update_subitem', id: 1, index: 0, expectTitle: 'Something else', fields: { notes: 'x' } }); } catch (e) { stale = true; }
+  check('update_subitem refuses when the subitem at that index has changed title', stale);
+
+  // identity gates
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'nobody@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  r = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
+  check('load: a non-roster account is unauthorized', r.ok === false && r.error === 'unauthorized');
+  sandbox.Session = origSession; // owner
+  r = JSON.parse(sandbox.tsgPersonRpc('load', JSON.stringify({ as: 'Marj' })));
+  check("load: the owner can preview Marj's slice with as=Marj", r.ok === true && r.person === 'Marj');
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'perly@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  r = JSON.parse(sandbox.tsgPersonRpc('load', JSON.stringify({ as: 'Marj' })));
+  check('load: a non-owner cannot use as= to see someone else', r.ok === true && r.person === 'Perly');
+
+  // doGet serves the person page to a roster member, and the owner's ?as= preview
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'marj@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  let page = sandbox.doGet({ parameter: {} });
+  check('doGet: a roster member gets the person page stamped with their name', page.html.includes('PERSON PAGE for Marj'));
+  sandbox.Session = origSession;
+  page = sandbox.doGet({ parameter: { as: 'Marj' } });
+  check("doGet: owner with ?as=Marj gets Marj's page, flagged as a preview", page.html.includes('PERSON PAGE for Marj (as=Marj)'));
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'perly@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  page = sandbox.doGet({ parameter: { as: 'Marj' } });
+  check('doGet: a non-owner with ?as= still gets their own page', page.html.includes('PERSON PAGE for Perly'));
+
+  sandbox.Session = origSession; sandbox.DriveApp.getFileById = origGetFileById; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.LockService.getScriptLock = origLock;
 }
 
 section('No secrets in tracked files (repo is public)');

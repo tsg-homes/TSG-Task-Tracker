@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-15.1';
+const TSG_CODE_VERSION = '2026-09-15.2';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -469,7 +469,7 @@ function applyDataPatch_(doc, patch) {
       // of each task inventing its own wording for the same idea.
       if (!task.tags.length) need.push('tags');
 
-      if (need.length) {
+      if (need.length && !patch.skipEnrich) {
         // Batch siblings (see the 'bulk' handler above) are appended so a task listed
         // before one it actually depends on can still detect that dependency — batch
         // order stops mattering. Own title excluded so a task can't "depend on itself".
@@ -548,7 +548,7 @@ function applyDataPatch_(doc, patch) {
       // surfaced via Triage + a note instead of guessed at, same "infer, don't silently
       // default" posture as priority/group below.
       if (!Array.isArray(task.docs)) task.docs = [];
-      if (!task.doc && !task.docs.length) {
+      if (!task.doc && !task.docs.length && !patch.skipEnrich) {
         var driveMatch = tsgSearchDriveForTask_(task.title, task.notes);
         if (driveMatch) {
           if (driveMatch.confident) {
@@ -726,6 +726,24 @@ function applyDataPatch_(doc, patch) {
     // from the retired Google Tasks import. Single-purpose and parameter-free by design —
     // not a general "clear any meta field" op.
     delete doc.meta.dismissedGoogleTaskIds;
+  } else if (patch.op === 'update_subitem') {
+    // One subitem by parent id + index (subitems have no ids). expectTitle guards against
+    // the index having shifted under a concurrent reorder: mismatch -> rejected, not misapplied.
+    const pt = doc.tasks.find(function(x) { return x.id === patch.id; });
+    if (!pt) throw new Error('update_subitem: task id not found: ' + patch.id);
+    const subs = Array.isArray(pt.subitems) ? pt.subitems : [];
+    const sub = subs[patch.index];
+    if (!sub) throw new Error('update_subitem: no subitem at index ' + patch.index + ' on task ' + patch.id);
+    if (patch.expectTitle != null && String(sub.title || '') !== String(patch.expectTitle)) {
+      throw new Error('update_subitem: subitem at index ' + patch.index + ' is not "' + patch.expectTitle + '" any more (stale)');
+    }
+    const prevSubs = subs.map(function(x) { return Object.assign({}, x); });
+    const f = Object.assign({}, patch.fields || {});
+    delete f.history;
+    if (Object.prototype.hasOwnProperty.call(f, 'status')) { f.done = (f.status === 'Done'); if (f.done) f.progress = 100; }
+    else if (Object.prototype.hasOwnProperty.call(f, 'done')) { f.status = f.done ? 'Done' : (sub.status === 'Done' ? 'In Progress' : (sub.status || 'Not Started')); if (f.done) f.progress = 100; }
+    Object.assign(sub, f);
+    tsgStampSubitemTouchesForTask_(prevSubs, subs, now, patch.source);
   } else if (patch.op === 'add_subitem') {
     const t = doc.tasks.find(function(x) { return x.id === patch.id; });
     if (!t) throw new Error('add_subitem: task id not found: ' + patch.id);
@@ -999,6 +1017,145 @@ function tsgRpc(query, method, body) {
   return (out && typeof out.getContent === 'function') ? out.getContent() : String(out);
 }
 
+/**
+ * ---------------------------------------------------------------------------
+ * PER-PERSON VIEW (milestone 1, 2026-09-15). A signed-in roster member gets a slice of the
+ * document and a narrow write surface; everything is decided here, server-side:
+ *   - own tasks (owner === name): every field editable;
+ *   - tasks assigned to them (assignee === name): status, progress, notes only;
+ *   - subitems delegated to them: status, progress, notes only; the parent is context.
+ * Writes go through the same _Inbox pipeline as everything else, as per-item ops, so a
+ * person's edit can never overwrite the owner's board and vice versa.
+ * The owner may preview any person with the `as` parameter.
+ * ---------------------------------------------------------------------------
+ */
+var TSG_PERSON_TASK_FIELDS_OWN = ['title', 'status', 'priority', 'progress', 'timelineEnd', 'notes'];
+var TSG_PERSON_TASK_FIELDS_DELEGATED = ['status', 'progress', 'notes'];
+var TSG_PERSON_SUB_FIELDS = ['status', 'progress', 'notes'];
+
+function tsgPersonNameForRequest_(doc, asOverride) {
+  var who = tsgSignedInEmail_();
+  if (!who) return '';
+  var roster = (doc && doc.meta && doc.meta.teamRoster) || [];
+  if (asOverride && tsgIsOwnerEmail_(who)) {
+    var wanted = String(asOverride).toLowerCase();
+    for (var i = 0; i < roster.length; i++) {
+      var n = typeof roster[i] === 'string' ? roster[i] : (roster[i] && roster[i].name);
+      if (n && String(n).toLowerCase() === wanted) return n;
+    }
+    return '';
+  }
+  return tsgRosterNameForEmail_(roster, who);
+}
+
+function tsgPersonSlice_(doc, name) {
+  var rows = [];
+  (doc.tasks || []).forEach(function(t) {
+    if (!t) return;
+    var isOwn = t.owner === name;
+    var isAssigned = !isOwn && t.assignee === name;
+    if (isOwn || isAssigned) {
+      rows.push({
+        kind: 'task', id: t.id, own: isOwn, title: t.title || '', status: t.status || 'Not Started',
+        priority: t.priority || '', progress: (t.status === 'Done') ? 100 : (typeof t.progress === 'number' ? t.progress : 0),
+        due: t.timelineEnd || '', notes: t.notes || '', group: t.group || '',
+        editable: isOwn ? TSG_PERSON_TASK_FIELDS_OWN.slice() : TSG_PERSON_TASK_FIELDS_DELEGATED.slice()
+      });
+    }
+    (t.subitems || []).forEach(function(s, i) {
+      if (!s || s.delegate !== name) return;
+      rows.push({
+        kind: 'sub', id: t.id, index: i, own: false, parentTitle: t.title || '', title: s.title || '',
+        status: s.done ? 'Done' : (s.status || 'Not Started'), priority: s.priority || t.priority || '',
+        progress: s.done ? 100 : (typeof s.progress === 'number' ? s.progress : 0),
+        due: s.timelineEnd || '', notes: s.notes || '', group: t.group || '',
+        editable: TSG_PERSON_SUB_FIELDS.slice()
+      });
+    });
+  });
+  return rows;
+}
+
+/** Queue one data patch and apply it now. Returns {ok, busy?, docVersion?}. */
+function tsgQueueDataPatch_(patchObj) {
+  var nonce = Utilities.getUuid();
+  patchObj = Object.assign({ target: 'data', ts: new Date().toISOString(), nonce: nonce }, patchObj);
+  DriveApp.getFolderById(INBOX_FOLDER_ID).createFile('person-' + nonce + '.json', JSON.stringify(patchObj), 'application/json');
+  tsgCacheRemove_('inboxEmptyUntil');
+  var run = processInbox_();
+  if (run && run.busy) return { ok: false, busy: true };
+  var v = tsgCacheGet_('docVersion');
+  return { ok: true, docVersion: (v != null && !isNaN(Number(v))) ? Number(v) : null };
+}
+
+function tsgPersonRpc(action, payloadJson) {
+  var payload = {};
+  try { payload = JSON.parse(payloadJson || '{}') || {}; } catch (err) { return JSON.stringify({ ok: false, error: 'bad payload' }); }
+  if (action === 'version') {
+    var cv = tsgCacheGet_('docVersion');
+    return JSON.stringify({ ok: true, docVersion: (cv != null && !isNaN(Number(cv))) ? Number(cv) : null });
+  }
+  var doc;
+  try { doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString()); }
+  catch (err) { return JSON.stringify({ ok: false, error: 'data unavailable' }); }
+  var name = tsgPersonNameForRequest_(doc, payload.as);
+  if (!name) return JSON.stringify({ ok: false, error: 'unauthorized' });
+
+  if (action === 'load') {
+    return JSON.stringify({
+      ok: true, person: name, docVersion: doc.meta && doc.meta.docVersion, codeVersion: TSG_CODE_VERSION,
+      statuses: (doc.meta && doc.meta.status_values) || ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'],
+      priorities: (doc.meta && doc.meta.priority_values) || ['Critical', 'High', 'Medium', 'Low'],
+      rows: tsgPersonSlice_(doc, name)
+    });
+  }
+  if (action === 'update') {
+    var rows = tsgPersonSlice_(doc, name);
+    var row = rows.filter(function(r) {
+      return r.kind === payload.kind && r.id === payload.id && (r.kind !== 'sub' || r.index === payload.index);
+    })[0];
+    if (!row) return JSON.stringify({ ok: false, error: 'not yours' });
+    var fields = {};
+    var offered = payload.fields || {};
+    var rejected = [];
+    Object.keys(offered).forEach(function(k) {
+      var key = (k === 'due') ? 'timelineEnd' : k;
+      if (row.editable.indexOf(key) === -1) { rejected.push(k); return; }
+      var v = offered[k];
+      if (key === 'progress') { v = Math.max(0, Math.min(100, Math.round(Number(v) || 0))); }
+      if (key === 'status' && ((doc.meta && doc.meta.status_values) || []).length && (doc.meta.status_values).indexOf(v) === -1) { rejected.push(k); return; }
+      if (key === 'priority' && ((doc.meta && doc.meta.priority_values) || []).length && (doc.meta.priority_values).indexOf(v) === -1) { rejected.push(k); return; }
+      if (key === 'timelineEnd' && v && !tsgIsValidIsoDate_(v)) { rejected.push(k); return; }
+      if (key === 'title' && !String(v || '').trim()) { rejected.push(k); return; }
+      fields[key] = (typeof v === 'string') ? v : v;
+    });
+    if (rejected.length) return JSON.stringify({ ok: false, error: 'field not editable: ' + rejected.join(', ') });
+    if (!Object.keys(fields).length) return JSON.stringify({ ok: false, error: 'nothing to change' });
+    var op = (row.kind === 'sub')
+      ? { op: 'update_subitem', id: row.id, index: row.index, expectTitle: row.title, fields: fields, source: name }
+      : { op: 'update_task', id: row.id, fields: fields, source: name };
+    if (row.kind === 'task' && fields.status === 'Done') op.fields.progress = 100;
+    return JSON.stringify(tsgQueueDataPatch_(op));
+  }
+  if (action === 'add') {
+    var title = String(payload.title || '').trim();
+    if (!title) return JSON.stringify({ ok: false, error: 'title required' });
+    var prios = (doc.meta && doc.meta.priority_values) || ['Critical', 'High', 'Medium', 'Low'];
+    var prio = prios.indexOf(payload.priority) !== -1 ? payload.priority : 'Medium';
+    var due = (payload.due && tsgIsValidIsoDate_(payload.due)) ? payload.due : '';
+    var nowIso = new Date().toISOString();
+    var task = {
+      title: title, owner: name, assignee: name, group: name, status: 'Not Started', priority: prio,
+      tags: ['Self-created'], timelineStart: '', timelineEnd: due, progress: 0, depends: '', doc: '', docs: [],
+      notes: String(payload.notes || ''), subitems: [], duration: null, estHours: null, estDays: null, estSource: 'none',
+      taskType: 'Actionable Task', history: [{ ts: nowIso, field: 'created', from: null, to: null, source: name }]
+    };
+    if (due) task.dueOverride = true;
+    return JSON.stringify(tsgQueueDataPatch_({ op: 'add_task', task: task, source: name, skipEnrich: true, skipDedup: true }));
+  }
+  return JSON.stringify({ ok: false, error: 'unknown action' });
+}
+
 function doGet(e) {
   e = e || {};
   if (!e.parameter) e.parameter = {};
@@ -1086,11 +1243,22 @@ function doGet(e) {
   // exec URL (2026-09-14; the per-person view itself is the next build).
   if (TSG_ACCESS_MODE === 'DOMAIN') {
     var who = tsgSignedInEmail_();
-    if (!tsgIsOwnerEmail_(who)) {
+    if (!tsgIsOwnerEmail_(who) || e.parameter.as) {
       var rosterName = '';
-      try { rosterName = tsgRosterNameForEmail_((JSON.parse(getTrackerFile_('data').getBlob().getDataAsString()).meta || {}).teamRoster, who); } catch (err) { rosterName = ''; }
-      return HtmlService.createHtmlOutput(tsgPersonPlaceholderHtml_(rosterName, who))
-        .setTitle('TSG Task Tracker')
+      try {
+        var gateDoc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
+        rosterName = tsgPersonNameForRequest_(gateDoc, e.parameter.as);
+      } catch (err) { rosterName = ''; }
+      if (!rosterName) {
+        return HtmlService.createHtmlOutput(tsgPersonPlaceholderHtml_('', who))
+          .setTitle('TSG Task Tracker')
+          .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+      }
+      var personHtml = HtmlService.createHtmlOutputFromFile('person').getContent();
+      var personStamps = { '__TSG_PERSON__': rosterName, '__TSG_CODE_VERSION__': TSG_CODE_VERSION, '__TSG_AS__': (e.parameter.as && tsgIsOwnerEmail_(who)) ? rosterName : '' };
+      Object.keys(personStamps).forEach(function(k) { personHtml = personHtml.split(k).join(tsgHtmlEscape_(personStamps[k])); });
+      return HtmlService.createHtmlOutput(personHtml)
+        .setTitle('TSG Task Tracker: ' + rosterName)
         .addMetaTag('viewport', 'width=device-width, initial-scale=1');
     }
   }
