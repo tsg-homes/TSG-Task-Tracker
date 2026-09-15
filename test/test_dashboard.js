@@ -169,6 +169,46 @@ setTimeout(async () => {
   });
   w.findTask(2).delegate = undefined; w.findTask(3).delegate = undefined;
 
+  // "+ Task" on pop-up lists (task #269): the button carries the list's context into the New Task modal
+  tryCall('a pop-up list carries a + Task button that pre-fills the New Task modal', () => {
+    w.openMultiTaskModal('Overdue', [1, 3], { due: '2026-09-15', status: 'In Progress' });
+    const btn = doc.querySelector('#dayViewActions .dv-add');
+    if (!btn) throw new Error('no + Task button in the pop-up header');
+    btn.click();
+    if (!doc.getElementById('newTaskModal').classList.contains('open')) throw new Error('New Task modal not open');
+    if (doc.getElementById('ntDue').value !== '2026-09-15') throw new Error('due not prefilled');
+    if (doc.getElementById('ntStatus').value !== 'In Progress') throw new Error('status not prefilled: ' + doc.getElementById('ntStatus').value);
+    if (!/Overdue/.test(doc.querySelector('.nt-context').textContent)) throw new Error('context line missing');
+    w.closeNewTaskModal(); w.closeDayView();
+  });
+  tryCall("a person's view pop-up pre-fills the delegate; the modal's fields include delegate and tags", () => {
+    w.findTask(2).delegate = 'Ryan'; w.findTask(3).delegate = 'Ryan';
+    w.openPersonView('Ryan');
+    doc.querySelector('#dayViewActions .dv-add').click();
+    if (doc.getElementById('ntDelegate').value !== 'Ryan') throw new Error('delegate not prefilled: ' + doc.getElementById('ntDelegate').value);
+    doc.getElementById('ntTitle').value = 'Chase the listing photos';
+    doc.getElementById('ntGroup').value = 'Ops';
+    doc.getElementById('ntTags').value = 'Listings, photos';
+    const f = w.newTaskFieldsFromModal_();
+    if (f.delegate !== 'Ryan' || f.tags.join() !== 'Listings,photos' || f.title !== 'Chase the listing photos' || f.group !== 'Ops') throw new Error('fields: ' + JSON.stringify(f));
+    w.closeNewTaskModal(); w.closeDayView();
+    w.findTask(2).delegate = undefined; w.findTask(3).delegate = undefined;
+  });
+  tryCall('the Errands schedule block pre-fills group Errands and tag Errand; the full-schedule view has a button per block', () => {
+    const today = w.todayISO();
+    const agenda = w.buildTodayAgenda(today);
+    const idx = agenda.schedule.findIndex(i => i.kind === 'errand');
+    if (idx === -1) throw new Error('no errand block in today\'s agenda');
+    w.openScheduleDetail(today, idx);
+    doc.querySelector('#dayViewActions .dv-add').click();
+    if (doc.getElementById('ntGroup').value !== 'Errands' || doc.getElementById('ntTags').value !== 'Errand' || doc.getElementById('ntDue').value !== today) throw new Error('errand prefill wrong: ' + JSON.stringify([doc.getElementById('ntGroup').value, doc.getElementById('ntTags').value, doc.getElementById('ntDue').value]));
+    w.closeNewTaskModal();
+    w.openFullScheduleDetail(today);
+    const perBlock = doc.querySelectorAll('#dayViewBody .sched-full-block-head .dv-add').length;
+    if (perBlock < 3) throw new Error('expected a + Task per block, got ' + perBlock);
+    w.closeDayView();
+  });
+
   // Whole-task delegate (assignee) editable on the board row and in the modal
   tryCall('board row carries a Delegate select writing t.assignee, and it logs as Delegate', () => {
     w.setView('board');

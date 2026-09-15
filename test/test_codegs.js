@@ -962,6 +962,9 @@ section('Review gate: pushed delegate items carry Triage and stay off the person
   sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Durand-only chore', owner: 'Durand', priority: 'Low', group: 'Ops', notes: '', tags: [] }, source: 'Claude', skipDedup: true });
   t = d.tasks.find(x => /durand-only/i.test(x.title));
   check("add_task with nothing pointed at a person is not held", !!t && !t.tags.includes('Triage'));
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Dashboard add for Marj', owner: 'Durand', delegate: 'Marj', priority: 'Medium', group: 'Marketing', notes: '', tags: [] }, source: 'Durand', skipDedup: true, ownerCreated: true });
+  t = d.tasks.find(x => /dashboard add for marj/i.test(x.title));
+  check("add_task from the dashboard (ownerCreated) with a delegate is not held", !!t && t.delegate === 'Marj' && !t.tags.includes('Triage'));
   sandbox.applyDataPatch_(d, { op: 'add_subitem', id: 1, subitem: { title: 'new step for Perly', delegate: 'Perly', done: false, status: 'Not Started', progress: 0, notes: '', tags: [] }, source: 'Claude' });
   check('add_subitem delegated to a person holds that subitem only', d.tasks[0].subitems[1].tags.includes('Triage') && !d.tasks[0].subitems[0].tags.includes('Triage') && !(d.tasks[0].tags || []).includes('Triage'));
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { subitems: d.tasks[0].subitems.concat([{ title: 'another for Marj', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, notes: '', tags: [] }]) }, source: 'Claude' });

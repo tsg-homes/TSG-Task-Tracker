@@ -719,6 +719,8 @@
   }
   .modal-header h2 { flex: 1; min-width: 0; }
   .modal-header-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+  .nt-context { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+  .sched-full-block-head .dv-add { margin-left: 8px; }
   .modal-header h2 {
     font-family: 'Playfair Display', serif;
     font-size: 20px;
@@ -1399,6 +1401,7 @@
   <div class="modal-card">
     <div class="modal-header">
       <h2 id="dayViewTitle"></h2>
+      <span class="modal-header-actions" id="dayViewActions"></span>
       <button class="icon-btn" onclick="closeDayView()" title="Close">&#10005;</button>
     </div>
     <div id="dayViewBody"></div>
@@ -1440,7 +1443,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-15.7';
+  const UI_VERSION = '2026-09-15.8';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1865,14 +1868,15 @@
   // go stale between a render and a click.
   function openStatTile(key) {
     let list = [], title = '';
+    let prefill = {};
     if (key === 'open') { list = TASKS.filter(t => rollupStatus(t) !== 'Done'); title = 'Open Tasks'; }
-    else if (key === 'overdue') { list = TASKS.filter(isOverdue); title = 'Overdue'; }
-    else if (key === 'inprogress') { list = TASKS.filter(t => rollupStatus(t) === 'In Progress'); title = 'In Progress'; }
-    else if (key === 'blocked') { list = TASKS.filter(t => ['Blocked', 'Waiting'].indexOf(rollupStatus(t)) !== -1); title = 'Blocked / Waiting'; }
-    else if (key === 'done') { list = TASKS.filter(t => rollupStatus(t) === 'Done'); title = 'Done'; }
-    else if (key === 'completed7d') { list = completedInLastNDays(7); title = 'Completed (last 7 days)'; }
+    else if (key === 'overdue') { list = TASKS.filter(isOverdue); title = 'Overdue'; prefill = { due: todayISO() }; }
+    else if (key === 'inprogress') { list = TASKS.filter(t => rollupStatus(t) === 'In Progress'); title = 'In Progress'; prefill = { status: 'In Progress' }; }
+    else if (key === 'blocked') { list = TASKS.filter(t => ['Blocked', 'Waiting'].indexOf(rollupStatus(t)) !== -1); title = 'Blocked / Waiting'; prefill = { status: 'Blocked' }; }
+    else if (key === 'done') { list = TASKS.filter(t => rollupStatus(t) === 'Done'); title = 'Done'; prefill = { status: 'Done' }; }
+    else if (key === 'completed7d') { list = completedInLastNDays(7); title = 'Completed (last 7 days)'; prefill = { status: 'Done' }; }
     if (!list.length) return;
-    openMultiTaskModal(title, list.map(t => t.id));
+    openMultiTaskModal(title, list.map(t => t.id), prefill);
   }
   function computeAlerts() {
     const alerts = [];
@@ -1996,9 +2000,34 @@
   // Shared by any "N things" line that needs to drill into more than one task at once —
   // the alert banner, the Today Admin block's confirm-rollup and overflow lines. A single
   // match still opens the normal task card rather than a one-item modal.
-  function openMultiTaskModal(title, ids) {
+  // "+ Task" on every pop-up list (2026-09-15, task #269, per Durand: "each pop up list
+  // should have an add task button tied to it, including Errands/Break"). The opener
+  // passes a prefill describing the list's context; the button opens the New Task modal
+  // with those fields filled. Prefills live in POPUP_PREFILLS (indexed) so nothing has to
+  // be JSON-escaped into an onclick attribute.
+  let POPUP_PREFILLS = [];
+  function popupAddBtn_(prefill) {
+    const idx = POPUP_PREFILLS.push(prefill || {}) - 1;
+    return `<button type="button" class="btn small primary dv-add" onclick="event.stopPropagation(); openNewTaskModal(POPUP_PREFILLS[${idx}])" title="Add a task pre-filled from this list">+ Task</button>`;
+  }
+  function setDayViewAdd_(prefill) {
+    POPUP_PREFILLS = [];
+    document.getElementById('dayViewActions').innerHTML = prefill ? popupAddBtn_(prefill) : '';
+  }
+  function schedulePrefill_(item, dateISO) {
+    const timeLabel = minToLabel(item.start) + ' – ' + minToLabel(item.end);
+    const p = { due: dateISO, context: item.title + ' · ' + timeLabel };
+    if (item.kind === 'errand') { p.group = 'Errands'; p.tags = ['Errand']; }
+    else if (item.kind === 'lunch') { p.tags = ['Lunch']; }
+    else if (item.kind === 'relief') { p.tags = ['Break']; }
+    else if (item.kind === 'admin') { p.tags = ['Admin']; }
+    else if (item.kind === 'calendar') { p.notes = 'From meeting: ' + item.title; }
+    return p;
+  }
+  function openMultiTaskModal(title, ids, prefill) {
     const tasks = (ids || []).map(function(id) { return findTask(id); }).filter(Boolean);
     if (!tasks.length) return;
+    setDayViewAdd_(Object.assign({ context: title }, prefill || {}));
     // Scope popout-card arrow nav to exactly this list — opening "Overdue" and paging
     // through with ← → should walk the overdue tasks, not silently fall back to every
     // task on the board (Done ones included).
@@ -3913,6 +3942,7 @@
     const timeLabel = minToLabel(item.start) + ' – ' + minToLabel(item.end);
     if (item.kind === 'task') { currentFilteredOrder = item.items.map(c => c.task.id); navOrderScoped = true; }
     document.getElementById('dayViewTitle').textContent = item.kind === 'calendar' ? item.title : item.title + ' · ' + timeLabel;
+    setDayViewAdd_(schedulePrefill_(item, dateISO));
     document.getElementById('dayViewBody').innerHTML = scheduleBlockDetailBody(item);
     document.getElementById('dayViewModal').classList.add('open');
   }
@@ -3924,10 +3954,11 @@
   function openFullScheduleDetail(dateISO) {
     const agenda = buildTodayAgenda(dateISO);
     document.getElementById('dayViewTitle').textContent = relativeDayLabel(dateISO) + ' — Full Schedule';
+    setDayViewAdd_({ due: dateISO, context: relativeDayLabel(dateISO) });
     const blocks = agenda.schedule.filter(item => item.kind !== 'gap');
     const sections = blocks.map(item => {
       const timeLabel = minToLabel(item.start) + ' – ' + minToLabel(item.end);
-      return `<div class="sched-full-block"><div class="sched-full-block-head"><span>${escapeHtml(item.title)}</span><span class="sched-full-block-time">${timeLabel}</span></div>${scheduleBlockDetailBody(item)}</div>`;
+      return `<div class="sched-full-block"><div class="sched-full-block-head"><span>${escapeHtml(item.title)}</span><span class="sched-full-block-time">${timeLabel}</span>${popupAddBtn_(schedulePrefill_(item, dateISO))}</div>${scheduleBlockDetailBody(item)}</div>`;
     }).join('');
     document.getElementById('dayViewBody').innerHTML = sections || '<div class="today-side-empty">Nothing scheduled.</div>';
     document.getElementById('dayViewModal').classList.add('open');
@@ -3941,7 +3972,7 @@
     const ids = [];
     agenda.unplaced.forEach(b => b.items.forEach(c => { if (ids.indexOf(c.task.id) === -1) ids.push(c.task.id); }));
     if (!ids.length) return;
-    openMultiTaskModal("Didn't fit" + (dateISO === todayISO() ? ' today' : ''), ids);
+    openMultiTaskModal("Didn't fit" + (dateISO === todayISO() ? ' today' : ''), ids, { due: dateISO });
   }
   function openDueSoonDrilldown(dateISO) {
     const list = getOthersDueSoon(dateISO);
@@ -4111,7 +4142,7 @@
   function openPersonView(name) {
     const ids = personTaskIds_(name);
     if (!ids.length) { alert('Nothing on the board is owned by, assigned to, or delegated to ' + name + ' yet.'); return; }
-    openMultiTaskModal(name + "'s view", ids);
+    openMultiTaskModal(name + "'s view", ids, { delegate: name });
   }
   function taskRowHtml(t) {
     const pct = taskProgress(t);
@@ -5014,19 +5045,27 @@
   function currentGroupOptions_() {
     return [...new Set([...GROUP_ORDER, ...TASKS.map(t => t.group)])].filter(Boolean);
   }
-  function renderNewTaskModalBody() {
+  // prefill (2026-09-15): { title, group, status, priority, due, notes, delegate, tags[], context }
+  // from a pop-up list's "+ Task"; every field stays editable.
+  function renderNewTaskModalBody(prefill) {
+    const p = prefill || {};
     const groupOptionsHtml = currentGroupOptions_().map(g => `<option value="${escapeHtml(g)}"></option>`).join('');
     document.getElementById('newTaskModalBody').innerHTML = `
       <div class="meeting-form">
-        <label>Title<input type="text" class="text-input" id="ntTitle" placeholder="What needs to happen?"></label>
-        <label>Group<input type="text" class="text-input" id="ntGroup" list="ntGroupList" placeholder="Choose an existing group or type a new one"></label>
+        ${p.context ? `<div class="nt-context">Pre-filled from <b>${escapeHtml(p.context)}</b></div>` : ''}
+        <label>Title<input type="text" class="text-input" id="ntTitle" placeholder="What needs to happen?" value="${escapeHtml(p.title || '')}"></label>
+        <label>Group<input type="text" class="text-input" id="ntGroup" list="ntGroupList" placeholder="Choose an existing group or type a new one" value="${escapeHtml(p.group || '')}"></label>
         <datalist id="ntGroupList">${groupOptionsHtml}</datalist>
         <div class="meeting-form-row">
-          <label>Status<select class="due-input" id="ntStatus">${STATUSES.map(s => `<option ${s === 'Not Started' ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
-          <label>Priority<select class="due-input" id="ntPriority">${PRIORITIES.map(p => `<option ${p === 'Medium' ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
-          <label>Due<input type="date" class="due-input" id="ntDue"></label>
+          <label>Status<select class="due-input" id="ntStatus">${STATUSES.map(s => `<option ${s === (p.status || 'Not Started') ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
+          <label>Priority<select class="due-input" id="ntPriority">${PRIORITIES.map(pr => `<option ${pr === (p.priority || 'Medium') ? 'selected' : ''}>${pr}</option>`).join('')}</select></label>
+          <label>Due<input type="date" class="due-input" id="ntDue" value="${escapeHtml(p.due || '')}"></label>
         </div>
-        <label>Notes<textarea class="text-input" id="ntNotes" rows="3" placeholder="Optional"></textarea></label>
+        <div class="meeting-form-row">
+          <label>Delegate<select class="due-input" id="ntDelegate" title="Who is doing it; it appears on their page">${personOptions(p.delegate || '', true)}</select></label>
+          <label>Tags<input type="text" class="text-input" id="ntTags" placeholder="comma-separated" value="${escapeHtml((p.tags || []).join(', '))}"></label>
+        </div>
+        <label>Notes<textarea class="text-input" id="ntNotes" rows="3" placeholder="Optional">${escapeHtml(p.notes || '')}</textarea></label>
         <div class="meeting-modal-footer">
           <button class="btn small" onclick="closeNewTaskModal()">Cancel</button>
           <button class="btn primary small" id="ntConfirmBtn" onclick="confirmNewTask(this)">Create task</button>
@@ -5034,8 +5073,8 @@
       </div>
     `;
   }
-  function openNewTaskModal() {
-    renderNewTaskModalBody();
+  function openNewTaskModal(prefill) {
+    renderNewTaskModalBody(prefill);
     document.getElementById('newTaskModal').classList.add('open');
     const titleInput = document.getElementById('ntTitle');
     if (titleInput) titleInput.focus();
@@ -5043,21 +5082,31 @@
   function closeNewTaskModal() {
     document.getElementById('newTaskModal').classList.remove('open');
   }
-  async function confirmNewTask(btn) {
+  function newTaskFieldsFromModal_() {
     const title = document.getElementById('ntTitle').value.trim();
     const group = document.getElementById('ntGroup').value.trim();
-    if (!title) { alert('Give the task a title first.'); return; }
-    if (!group) { alert('Pick or type a group for this task.'); return; }
     const status = document.getElementById('ntStatus').value;
     const priority = document.getElementById('ntPriority').value;
     const due = document.getElementById('ntDue').value;
     const notes = document.getElementById('ntNotes').value.trim();
+    const delegateEl = document.getElementById('ntDelegate');
+    let delegate = delegateEl ? delegateEl.value : '';
+    if (delegate === '__other__') { delegate = (prompt('Delegate name:', '') || '').trim(); }
+    const tagsEl = document.getElementById('ntTags');
+    const tags = tagsEl ? tagsEl.value.split(',').map(x => x.trim()).filter(Boolean) : [];
     const fields = {
       title, group, owner: 'Durand',
-      status, priority, tags: [], timelineEnd: due,
+      status, priority, tags, timelineEnd: due,
       progress: 0, depends: '', doc: '', notes, subitems: [],
       history: [{ ts: new Date().toISOString(), field: 'created', from: null, to: null }]
     };
+    if (delegate) fields.delegate = delegate;
+    return fields;
+  }
+  async function confirmNewTask(btn) {
+    const fields = newTaskFieldsFromModal_();
+    if (!fields.title) { alert('Give the task a title first.'); return; }
+    if (!fields.group) { alert('Pick or type a group for this task.'); return; }
     btn.disabled = true; btn.textContent = 'Creating…';
     const result = await createTask(fields);
     btn.disabled = false; btn.textContent = 'Create task';
@@ -5092,7 +5141,9 @@
       const res = await apiFetch('', {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ op: 'add_task', task: fields })
+        // ownerCreated: this add is Durand's own (tsgRpc is owner-only), so a delegate set
+        // here is deliberate and the server's review gate must not hold it (2026-09-15).
+        body: JSON.stringify({ op: 'add_task', task: fields, ownerCreated: true })
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const resp = await res.json();

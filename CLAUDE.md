@@ -228,6 +228,20 @@ identifiers and environment facts that are otherwise only known from chat.
   `tsgWorkItemsOf_` now decides "delegated" by the whole-task delegate when set, else the
   owner, so a task Durand owns but delegated to Marj or Claude no longer eats his day.
 
+## "+ Task" on pop-up lists (2026-09-15, task #269, backend 2026-09-15.11, dashboard UI 2026-09-15.8)
+
+- Every scoped pop-up list (stat tiles, alert lists, a person's view, "Didn't fit", the
+  schedule block detail, the full-schedule view with one button per block) carries a
+  "+ Task" (`popupAddBtn_` / `setDayViewAdd_`, slot `#dayViewActions`) that opens the New
+  Task modal pre-filled from the list: `openMultiTaskModal(title, ids, prefill)`,
+  `schedulePrefill_(item, dateISO)` (Errands -> group Errands + tag Errand; Lunch/Relief/
+  Admin -> tag; calendar -> notes "From meeting: ..."; every block -> due that day).
+  Prefills live in `POPUP_PREFILLS` by index, never JSON in an attribute.
+- The New Task modal (`renderNewTaskModalBody(prefill)`, `newTaskFieldsFromModal_`) now has
+  Delegate (roster + Claude) and Tags fields and a "Pre-filled from" line.
+- Dashboard adds send `ownerCreated: true` on `add_task`; the review gate skips them, so a
+  delegate chosen on the dashboard is never held (only automation pushes are).
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs

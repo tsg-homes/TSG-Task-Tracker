@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-15.10';
+const TSG_CODE_VERSION = '2026-09-15.11';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -682,7 +682,10 @@ function applyDataPatch_(doc, patch) {
       // sweep and could sit open forever without being flagged (2026-09-02).
       task.history = task.history || [];
       task.history.push({ ts: new Date().toISOString(), field: 'created', from: null, to: null });
-      if (!patch.personCreated && tsgTaskNeedsDelegateReview_(task)) {
+      // ownerCreated: the dashboard's own add (owner-only RPC); a delegate chosen there is
+      // deliberate, so no hold. personCreated: the person's own page. Everything else
+      // pointing at a person is automation and waits for review.
+      if (!patch.personCreated && !patch.ownerCreated && tsgTaskNeedsDelegateReview_(task)) {
         tsgHoldForReview_(task, task.history, now, 'Held off the delegate views until Durand clears the Triage tag');
       }
       doc.tasks.push(task);
