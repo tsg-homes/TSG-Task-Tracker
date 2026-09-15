@@ -512,6 +512,7 @@
   .type-badge.type-schedule-task { color: var(--brand); border-color: rgba(21,70,74,0.3); }
   .type-badge.type-actionable-task { color: var(--text-muted); }
   .type-badge.type-meeting { color: var(--brand); border-color: rgba(21,70,74,0.3); }
+  .type-badge.type-claude { color: var(--status-warn); border-color: rgba(150,112,10,0.45); background: var(--status-warn-bg); }
 
   .progress-track {
     width: 70px;
@@ -1439,7 +1440,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-15.6';
+  const UI_VERSION = '2026-09-15.7';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1597,7 +1598,11 @@
   // or is meant to be checked on/discussed in one, most commonly Durand's accountability
   // checks on delegated subitems. Not in TODAY_ADMIN_ELIGIBLE_TYPES (below) since it doesn't
   // behave like Durand's own quick-touch types.
-  const TASK_TYPES = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Actionable Task'];
+  // 'Claude' (2026-09-15, per Durand: "claude should be a delegate and task type") = work
+  // Claude carries out in a Cowork / Claude Code session (drafting, research, data pulls,
+  // tracker and Drive housekeeping). The estimator can assign it; a new task typed Claude
+  // with no delegate is delegated to Claude server-side.
+  const TASK_TYPES = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Actionable Task'];
   // TSG team roster for the Owner/Delegate dropdowns — matches the real people who take
   // tasks. "+ Other…" always stays available for anyone not on this list. Each entry is
   // {name, role, title}: role is the coarse category used for filtering (e.g. an
@@ -2181,8 +2186,12 @@
   // Owner/Delegate dropdowns — same roster for both, since a task's owner and a subtask's
   // delegate are drawn from the same team. Always includes "+ Other…" so anyone not on the
   // TEAM_ROSTER list (an outside vendor, a new hire not added yet) can still be typed in.
-  function personOptions(current) {
-    const names = rosterNames();
+  // withClaude: delegate selects (task and subtask) list "Claude" after the roster, since
+  // Claude sessions do real work on the board; the owner select does not (accountability
+  // stays with a person).
+  function personOptions(current, withClaude) {
+    const names = rosterNames().slice();
+    if (withClaude && names.indexOf('Claude') === -1) names.push('Claude');
     const inRoster = names.indexOf(current) !== -1;
     let html = `<option value="" ${!current ? 'selected' : ''}>—</option>`;
     html += names.map(name => `<option value="${name}" ${name === current ? 'selected' : ''}>${name}</option>`).join('');
@@ -2199,7 +2208,7 @@
   // taskDelegate() reads the retired `assignee` name too until the server has migrated it.
   function taskDelegate(t) { return (t && (t.delegate || t.assignee)) || ''; }
   function taskDelegateSelect(taskId, current) {
-    return `<select class="person-select" data-id="${taskId}" onchange="onTaskDelegateChange(this)" onclick="event.stopPropagation()" title="Delegate: who is doing this task. It appears on their page.">${personOptions(current)}</select>`;
+    return `<select class="person-select" data-id="${taskId}" onchange="onTaskDelegateChange(this)" onclick="event.stopPropagation()" title="Delegate: who is doing this task. It appears on their page.">${personOptions(current, true)}</select>`;
   }
   function onTaskDelegateChange(el) {
     const id = Number(el.dataset.id);
@@ -2217,7 +2226,7 @@
     renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
   function delegateSelect(taskId, idx, current) {
-    return `<select class="person-select sub-person-select" data-id="${taskId}" data-idx="${idx}" onchange="onDelegateChange(this)" onclick="event.stopPropagation()">${personOptions(current)}</select>`;
+    return `<select class="person-select sub-person-select" data-id="${taskId}" data-idx="${idx}" onchange="onDelegateChange(this)" onclick="event.stopPropagation()">${personOptions(current, true)}</select>`;
   }
   function onOwnerChange(el) {
     const id = Number(el.dataset.id);

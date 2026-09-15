@@ -997,6 +997,8 @@ section('Scheduler: a whole task owned by someone other than Durand is paced, no
   check("Marj's whole task gets a paced schedule and a due date", !!marj.scheduledStart && Array.isArray(marj.scheduledDays) && marj.scheduledDays.length === 2 && marj.timelineEnd === marj.scheduledDays[1]);
   check("Durand's task still schedules from today and is unaffected by hers", !!durand.scheduledStart && durand.scheduledStart <= marj.scheduledStart && durand.scheduledDays.length === 1);
   check('an unowned task is still left alone', !nobody.scheduledStart && !nobody.timelineEnd && placed === 2);
+  const claudeTask = { id: 4, title: 'Draft the newsletter', owner: 'Durand', delegate: 'Claude', estHours: 2, timelineEnd: '', tags: [], history: [], subitems: [] };
+  check("a task Durand owns but delegated to Claude (or anyone) is paced, not charged to his day", sandbox.tsgWorkItemsOf_(claudeTask)[0].delegated === true && sandbox.tsgItemIsDurandWork_(sandbox.tsgWorkItemsOf_(claudeTask)[0]) === false);
   check('the delegated task logs its auto-schedule on its own history', marj.history.some(h => h.field === 'timelineEnd' && h.note === 'auto-scheduled'));
   const items = sandbox.tsgWorkItemsOf_(marj);
   check('tsgWorkItemsOf_ marks a non-Durand whole task as delegated and not his work', items.length === 1 && items[0].delegated === true && sandbox.tsgItemIsDurandWork_(items[0]) === false && sandbox.tsgItemIsDurandWork_(sandbox.tsgWorkItemsOf_(durand)[0]) === true);
@@ -1016,6 +1018,20 @@ section('Estimator: progress is a requestable field (2026-09-15)');
   claudeResponder = () => ({ estHours: 1, taskType: 'Actionable Task', subitems: [], rationale: 'r', needsConfirmation: false });
   est = sandbox.tsgEstimateTask_('Plain task', 'n', 'Medium');
   check('progress stays null when it was not requested', est.progress === null && est.estHours === 1);
+  check('the estimator prompt offers the Claude task type', /"Claude"\|"Actionable Task"/.test(vm.runInContext('TSG_ESTIMATE_SYSTEM', sandbox)));
+}
+
+section('Task type Claude delegates to Claude (2026-09-15)');
+{
+  driveFilesFixture = []; calendarEventsFixture = [];
+  claudeResponder = (system, user) => { const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Claude'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; if (need.includes('progress')) out.progress = 0; return out; };
+  const d = { meta: { docVersion: 1, next_id: 30 }, tasks: [] };
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Summarize the September listing stats', owner: 'Durand', priority: 'Medium', group: 'Ops', notes: '', tags: [] }, source: 'Claude', skipDedup: true });
+  const t = d.tasks[0];
+  check('a new task the estimator types Claude gets delegate Claude and is not held for review', t.taskType === 'Claude' && t.delegate === 'Claude' && !t.tags.includes('Triage') && t.history.some(h => h.field === 'auto-enriched' && /delegate \(Claude\)/.test(h.to)));
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Pull the Lofty export', owner: 'Durand', delegate: 'Perly', priority: 'Medium', group: 'Ops', notes: '', tags: [] }, source: 'Claude', skipDedup: true });
+  check('a supplied delegate is never overridden by the Claude type', d.tasks[1].taskType === 'Claude' && d.tasks[1].delegate === 'Perly');
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 
 section('No secrets in tracked files (repo is public)');

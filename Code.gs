@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-15.9';
+const TSG_CODE_VERSION = '2026-09-15.10';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -510,6 +510,9 @@ function applyDataPatch_(doc, patch) {
           task.tags = Array.from(new Set(task.tags.concat(est.tags)));
         }
         if (need.indexOf('taskType') !== -1 && est.taskType) { task.taskType = est.taskType; applied.push('taskType'); }
+        // Type "Claude" with nobody named: Claude is the delegate (2026-09-15). A supplied
+        // delegate is never overridden.
+        if (task.taskType === 'Claude' && !tsgTaskDelegate_(task)) { task.delegate = 'Claude'; applied.push('delegate (Claude)'); }
         if (need.indexOf('subitems') !== -1 && est.subitems && est.subitems.length) {
           // A person-created task's estimate is split evenly across the steps it was just
           // broken into, so the rollup and the scheduler have per-step hours to work with
@@ -2956,11 +2959,15 @@ var TSG_ESTIMATE_SYSTEM =
   'Do not pad. Most tasks are small. If the task is one message to one person, say 0.25.\n' +
   'subitems: only concrete steps that are actually stated or clearly implied by the title/notes. ' +
   'Empty array if the task is a single atomic action. Never invent work that is not there.\n' +
-  'taskType is one of: "Email"|"Call"|"Text/Chat"|"Meeting"|"Actionable Task". Use "Email" or ' +
+  'taskType is one of: "Email"|"Call"|"Text/Chat"|"Meeting"|"Claude"|"Actionable Task". Use "Email" or ' +
   '"Call" when the whole point of the task is sending one email or making one call. Use ' +
   '"Text/Chat" for a quick message to one person (SMS or a chat ping) rather than a call or ' +
   'formal email. Use "Meeting" only when the task IS a meeting or is meant to be checked on/' +
-  'discussed in one. Everything else is "Actionable Task" — this should be the majority.\n\n' +
+  'discussed in one. Use "Claude" when the work itself is something Claude (the AI assistant the ' +
+  'Director runs in Cowork / Claude Code sessions) would carry out end to end: drafting a document ' +
+  'or email, research, a data pull or transform, tracker or Drive housekeeping, a summary. A task a ' +
+  'human must physically do or decide stays "Actionable Task". Everything else is "Actionable ' +
+  'Task" — this should be the majority.\n\n' +
   'priority — one of "Critical"|"High"|"Medium"|"Low".\n' +
   'Infer from real urgency and consequence signals in the title/notes (a hard deadline, money at ' +
   'risk, a person blocked, legal/compliance exposure, a client-facing commitment) — not from tone ' +
@@ -3824,7 +3831,10 @@ function tsgWorkItemsOf_(t) {
   // rate like a delegated subitem and never drawing on his capacity. Unowned tasks stay out.
   var owner = String(t.owner || '').trim();
   if (!owner || owner === 'Unassigned') return [];
-  return [{ ref: t, parent: t, idx: null, isSubitem: false, delegated: owner.toLowerCase() !== 'durand',
+  // Whose hands: the whole-task delegate when set (a person or Claude), else the owner.
+  // Durand owning a task delegated to Marj or Claude does not put it on his capacity.
+  var hands = tsgTaskDelegate_(t) || owner;
+  return [{ ref: t, parent: t, idx: null, isSubitem: false, delegated: hands.toLowerCase() !== 'durand',
     label: '#' + t.id + ' "' + t.title + '"' }];
 }
 /** Whether a work item competes for Durand's own daily capacity. */

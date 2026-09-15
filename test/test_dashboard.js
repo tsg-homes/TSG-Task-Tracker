@@ -186,6 +186,19 @@ setTimeout(async () => {
     t.delegate = ''; t.history = t.history.filter(h => h.field !== 'delegate');
   });
 
+  tryCall('Claude is a task type and a delegate option (task and subtask), but not an owner option', () => {
+    if (w.eval('TASK_TYPES').indexOf('Claude') === -1) throw new Error('TASK_TYPES lacks Claude');
+    w.setView('board');
+    const del = doc.querySelector('tr.task-row[data-id="2"] .delegate-cell select.person-select');
+    if (!Array.from(del.options).some(o => o.value === 'Claude')) throw new Error('task delegate select lacks Claude');
+    const own = doc.querySelector('tr.task-row[data-id="2"] .owner-cell:not(.delegate-cell) select.person-select');
+    if (Array.from(own.options).some(o => o.value === 'Claude')) throw new Error('owner select offers Claude');
+    w.toggleSub(1);
+    const sub = doc.querySelector('#subrow-1 select.sub-person-select');
+    if (!sub || !Array.from(sub.options).some(o => o.value === 'Claude')) throw new Error('subtask delegate select lacks Claude');
+    w.toggleSub(1);
+  });
+
   // Review gate: the Triage chip on a board row clears the tag from the task and its subitems
   w.setView('board');
   w.findTask(1).subitems[0].tags.push('Triage');

@@ -217,6 +217,17 @@ identifiers and environment facts that are otherwise only known from chat.
   `taskDelegate(t)` has the same fallback. Patches from Claude sessions should say
   `delegate` from now on.
 
+## Claude as delegate and task type (2026-09-15, backend 2026-09-15.10, dashboard UI 2026-09-15.7)
+
+- Task type `Claude` (in `TASK_TYPES` and the estimator's list): work Claude carries out in a
+  Cowork / Claude Code session. A new task the estimator types Claude with no delegate gets
+  `delegate: 'Claude'` (a supplied delegate is never overridden). Delegate selects (task and
+  subtask) offer "Claude" after the roster; the owner select does not.
+- Claude-delegated items are never held by the review gate (Claude has no page) and, like
+  any non-Durand delegate, are paced rather than charged to Durand's capacity.
+  `tsgWorkItemsOf_` now decides "delegated" by the whole-task delegate when set, else the
+  owner, so a task Durand owns but delegated to Marj or Claude no longer eats his day.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs
