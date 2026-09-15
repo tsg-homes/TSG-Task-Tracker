@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-15.2';
+const TSG_CODE_VERSION = '2026-09-15.3';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -1254,12 +1254,27 @@ function doGet(e) {
           .setTitle('TSG Task Tracker')
           .addMetaTag('viewport', 'width=device-width, initial-scale=1');
       }
-      var personHtml = HtmlService.createHtmlOutputFromFile('person').getContent();
-      var personStamps = { '__TSG_PERSON__': rosterName, '__TSG_CODE_VERSION__': TSG_CODE_VERSION, '__TSG_AS__': (e.parameter.as && tsgIsOwnerEmail_(who)) ? rosterName : '' };
-      Object.keys(personStamps).forEach(function(k) { personHtml = personHtml.split(k).join(tsgHtmlEscape_(personStamps[k])); });
-      return HtmlService.createHtmlOutput(personHtml)
-        .setTitle('TSG Task Tracker: ' + rosterName)
-        .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+      // An uncaught exception here renders as Google's generic "unable to open the file"
+      // page, which hides the cause. Catch it: the owner sees the message and stack, a
+      // roster member sees the placeholder (2026-09-15, diagnosing the ?as= preview).
+      try {
+        var personHtml = HtmlService.createHtmlOutputFromFile('person').getContent();
+        var personStamps = { '__TSG_PERSON__': rosterName, '__TSG_CODE_VERSION__': TSG_CODE_VERSION, '__TSG_AS__': (e.parameter.as && tsgIsOwnerEmail_(who)) ? rosterName : '' };
+        Object.keys(personStamps).forEach(function(k) { personHtml = personHtml.split(k).join(tsgHtmlEscape_(personStamps[k])); });
+        return HtmlService.createHtmlOutput(personHtml)
+          .setTitle('TSG Task Tracker: ' + rosterName)
+          .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+      } catch (personErr) {
+        console.error('person page failed for ' + rosterName + ': ' + (personErr && personErr.stack || personErr));
+        if (!tsgIsOwnerEmail_(who)) {
+          return HtmlService.createHtmlOutput(tsgPersonPlaceholderHtml_(rosterName, who))
+            .setTitle('TSG Task Tracker')
+            .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+        }
+        return HtmlService.createHtmlOutput('<!doctype html><html><head><meta charset="utf-8"><title>TSG Task Tracker: error</title></head><body style="font-family:monospace;padding:24px;white-space:pre-wrap">' +
+          '<h2>Person page failed (API ' + tsgHtmlEscape_(TSG_CODE_VERSION) + ')</h2>' +
+          tsgHtmlEscape_((personErr && personErr.stack) || String(personErr)) + '</body></html>').setTitle('TSG Task Tracker: error');
+      }
     }
   }
   // The dashboard file carries literal placeholders in its JS that only the backend can
