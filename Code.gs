@@ -1256,7 +1256,7 @@ function doGet(e) {
       }
       // An uncaught exception here renders as Google's generic "unable to open the file"
       // page, which hides the cause. Catch it: the owner sees the message and stack, a
-      // roster member sees the placeholder (2026-09-15, diagnosing the ?as= preview, since renamed ?person=).
+      // roster member sees the placeholder (2026-09-15, kept from diagnosing the ?person= preview, which turned out to be an out-of-domain account).
       try {
         var personHtml = HtmlService.createHtmlOutputFromFile('person').getContent();
         var personStamps = { '__TSG_PERSON__': rosterName, '__TSG_CODE_VERSION__': TSG_CODE_VERSION, '__TSG_AS__': (e.parameter.person && tsgIsOwnerEmail_(who)) ? rosterName : '' };

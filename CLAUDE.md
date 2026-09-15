@@ -60,6 +60,13 @@ identifiers and environment facts that are otherwise only known from chat.
   because google.script.run is callable from any page this script serves.
 - Roster mapping: explicit roster `email` wins, else `firstname@<tsg domain>` matches the
   roster name case-insensitively (`tsgRosterNameForEmail_`).
+- "Sorry, unable to open the file at this time" with NO doGet row in Executions means Google
+  refused the request before the script ran: the tab is signed in to an account outside the
+  domain (a new tab uses the browser's default account, which need not be durand@). It is not
+  a code error, and no try/catch in doGet can surface it. Open the URL from a tab already on
+  the TSG account or add `&authuser=N`. Diagnosed 2026-09-15 on the `?person=Marj` preview
+  (v49 added an owner-visible error page to the person branch, v50 renamed the preview
+  parameter from `as`; neither was the cause, both stay).
 - DOMAIN switch was completed 2026-09-14 (versions 43-45; 43 was a no-op because
   `clasp push` silently skipped a changed manifest without `-f`, now fixed in
   scripts/deploy.js). The 1-minute `tsgInboxTick` trigger is installed. Rollback of any
@@ -114,7 +121,7 @@ identifiers and environment facts that are otherwise only known from chat.
 ## Per-person view (2026-09-15, backend 2026-09-15.2, person UI 2026-09-15.1)
 
 - `person.html` is served by doGet to any signed-in roster member (owner still gets the
-  dashboard; owner + `?person=<Name>` previews that person's page; the parameter was `as` until 2026-09-15, which Google's front end rejected before doGet ran, showing "Sorry, unable to open the file"). Placeholders stamped at
+  dashboard; owner + `?person=<Name>` previews that person's page). Placeholders stamped at
   serve time: `__TSG_PERSON__`, `__TSG_AS__`, `__TSG_CODE_VERSION__`. No token, no URL.
 - Server decides everything: `tsgPersonSlice_` (own tasks by `owner`, tasks by `assignee`,
   subitems by `delegate`), `tsgPersonRpc(action, payloadJson)` with `load | update | add |
