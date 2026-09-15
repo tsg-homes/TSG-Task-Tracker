@@ -96,6 +96,21 @@ identifiers and environment facts that are otherwise only known from chat.
 - Tests: both suites exit non-zero on any failure; `.github/workflows/test.yml` runs them
   on every push.
 
+## Hardening batch 2 (2026-09-15, UI 2026-09-15.2)
+
+- Page 467 KB -> 338 KB: the two logos are 96x120 PNGs (about 1.9 KB each, downscaled
+  with scripts in the session scratchpad from the 1441x1808 originals; keep them small),
+  the seed `TASKS` array is gone (page never ships task data), `reestimateFromNotes`,
+  `inBonusFinalWeek_` and the dead `prefers-color-scheme` block are removed, fonts are
+  Playfair 700 + Lato 400/700 only (all 600/800/900 weights collapsed to 700).
+- Warm start: `applyLoadedDoc_` installs a document; on boot the last document from
+  `localStorage` (`tsgDocCache`) paints immediately, then the live fetch replaces it.
+- `syncFubRoster` runs when Settings opens, not on every load.
+- Search input is debounced 150 ms. `isoLocal_` replaces every `toISOString().slice(0,10)`.
+- Modals carry `role="dialog"`, Escape closes the topmost one (`closeTopmostModal_`),
+  the task card takes focus on open, `:focus-visible` is styled, the nine icon spans are
+  real buttons, light-mode muted text is `#6b6a65` (5.4:1).
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs
