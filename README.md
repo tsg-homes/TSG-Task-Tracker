@@ -22,6 +22,9 @@ GitHub repo: `https://github.com/tsg-homes/task-tracker.git`
   sandboxed context with stubbed Apps Script globals (`DriveApp`, `CalendarApp`, `Utilities`,
   `PropertiesService`, etc.) and a controllable fake Claude responder, so `applyDataPatch` and
   friends can be exercised without touching the live Drive/Calendar/Anthropic API.
+- `person.html` — the per-person view served to signed-in roster members (see CLAUDE.md,
+  "Per-person view"). Reads a server-computed slice and writes single-item operations.
+- `test/test_person.js` — jsdom smoke test for the per-person view.
 - `test/test_dashboard.js` — a jsdom smoke test for the dashboard: loads the real HTML into a
   DOM, mocks `fetch`, and exercises rendering, the task modal, and the meeting picker.
 

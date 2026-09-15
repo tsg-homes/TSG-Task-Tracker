@@ -4,7 +4,8 @@
   "private": true,
   "description": "TSG Task Tracker — Apps Script backend (Code.gs) + dashboard (dashboard_final.html).",
   "scripts": {
-    "test": "node test/test_codegs.js && node test/test_dashboard.js",
+    "test": "node test/test_codegs.js && node test/test_dashboard.js && node test/test_person.js",
+    "test:person": "node test/test_person.js",
     "test:backend": "node test/test_codegs.js",
     "test:dashboard": "node test/test_dashboard.js",
     "push": "clasp push -f",

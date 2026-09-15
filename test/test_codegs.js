@@ -825,7 +825,7 @@ section('No secrets in tracked files (repo is public)');
   // appear in anything committed. Patterns are built here rather than written literally
   // so this file cannot itself trip the check.
   const root = path.join(__dirname, '..');
-  const tracked = ['Code.gs', 'dashboard_final.html', 'README.md', 'CLAUDE.md', 'package.json',
+  const tracked = ['Code.gs', 'dashboard_final.html', 'person.html', 'README.md', 'CLAUDE.md', 'package.json',
     'appsscript.json', '.claspignore', 'scripts/deploy.js', 'test/test_codegs.js', 'test/test_dashboard.js'];
   const deploymentId = new RegExp('AKfycb[A-Za-z0-9_-]{30,}');
   const hexToken = new RegExp('\\b[0-9a-f]{40,}\\b');

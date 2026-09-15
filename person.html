@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TSG Task Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Lato:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light dark;
+    --brand: #15464A; --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f1f2ef; --line: #dcdbd3;
+    --text: #0b1211; --muted: #6b6a65; --ok: #1f6b3a; --warn: #8a4b06; --bad: #9f2115;
+    --chip-critical: #fbe9e6; --chip-critical-t: #9f2115; --chip-high: #fbeedb; --chip-high-t: #8a4b06;
+    --chip-medium: #e3eeee; --chip-medium-t: #15464A; --chip-low: #e9eeec; --chip-low-t: #4a5a58;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --brand: #4fb8ac; --page: #0d1211; --surface: #16201f; --surface-2: #1c2726; --line: #2a3634;
+      --text: #f3f2ee; --muted: #a8a7a0; --ok: #7bd39a; --warn: #f5b860; --bad: #ff8a7a;
+      --chip-critical: #3a1a16; --chip-critical-t: #ff8a7a; --chip-high: #3a2a10; --chip-high-t: #f5b860;
+      --chip-medium: #16302e; --chip-medium-t: #4fb8ac; --chip-low: #243130; --chip-low-t: #b6c2bf;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--text); font-family: Lato, "Helvetica Neue", Arial, sans-serif; font-size: 14px; line-height: 1.45; padding-block: 20px 60px; padding-inline: 16px; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { font-family: "Playfair Display", Georgia, serif; font-size: 24px; margin: 0; }
+  h1 small { font-family: Lato, sans-serif; font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 10px; }
+  .preview { background: var(--chip-high); color: var(--chip-high-t); padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 700; }
+  #sync { font-size: 12px; color: var(--muted); min-width: 90px; text-align: right; }
+  #sync.err { color: var(--bad); }
+  h2 { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 26px 0 8px; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); }
+  th { text-align: left; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); font-weight: 700; }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  tr.saved td { background: color-mix(in srgb, var(--ok) 10%, transparent); }
+  tr.error td { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+  .title { font-weight: 700; }
+  .title[contenteditable="true"] { outline: none; border-bottom: 1px dashed var(--line); cursor: text; }
+  .parent { display: block; font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 2px; }
+  .ro { color: var(--muted); }
+  select, input[type="number"], input[type="date"], input[type="text"], textarea {
+    font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; max-width: 100%;
+  }
+  input[type="number"] { width: 64px; }
+  input[type="date"] { width: 140px; }
+  textarea { width: 100%; min-height: 34px; resize: vertical; }
+  .chip { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 3px; white-space: nowrap; }
+  .p-Critical { background: var(--chip-critical); color: var(--chip-critical-t); }
+  .p-High { background: var(--chip-high); color: var(--chip-high-t); }
+  .p-Medium { background: var(--chip-medium); color: var(--chip-medium-t); }
+  .p-Low { background: var(--chip-low); color: var(--chip-low-t); }
+  .bar { height: 6px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 3px; overflow: hidden; margin-top: 4px; width: 90px; }
+  .bar i { display: block; height: 100%; background: var(--brand); }
+  .empty { color: var(--muted); padding: 14px 10px; }
+  form.add { display: grid; grid-template-columns: 2fr 1fr 1fr 2fr auto; gap: 8px; align-items: start; background: var(--surface); border: 1px solid var(--line); padding: 12px; margin-top: 10px; }
+  form.add textarea { min-height: 32px; }
+  button.primary { font: inherit; font-weight: 700; background: var(--brand); color: #fff; border: 0; border-radius: 4px; padding: 6px 14px; cursor: pointer; }
+  button.primary:disabled { opacity: .6; cursor: default; }
+  :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+  footer { margin-top: 30px; font-size: 11.5px; color: var(--muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  @media (max-width: 720px) {
+    thead { display: none; }
+    tr { display: block; border-bottom: 1px solid var(--line); padding: 6px 0; }
+    td { display: block; border: 0; padding: 4px 10px; }
+    td[data-label]::before { content: attr(data-label); display: block; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+    form.add { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>__TSG_PERSON__ <small>TSG Task Tracker</small></h1>
+    <span id="previewBadge" class="preview" hidden>Preview as __TSG_AS__</span>
+    <span id="sync">Loading…</span>
+  </header>
+
+  <h2>Delegated to you</h2>
+  <div id="delegated"></div>
+
+  <h2>Your tasks</h2>
+  <div id="own"></div>
+
+  <form class="add" id="addForm" autocomplete="off">
+    <input type="text" id="addTitle" placeholder="New task title" required aria-label="New task title">
+    <select id="addPriority" aria-label="Priority"></select>
+    <input type="date" id="addDue" aria-label="Due date">
+    <textarea id="addNotes" placeholder="Notes (optional)" aria-label="Notes"></textarea>
+    <button type="submit" class="primary" id="addBtn">Add task</button>
+  </form>
+
+  <footer>
+    <span>Changes save as you make them and reach Durand's board within a minute.</span>
+    <span id="versionStamp"></span>
+  </footer>
+</div>
+
+<script>
+  const PERSON_UI_VERSION = '2026-09-15.1';
+  const PERSON = '__TSG_PERSON__';
+  const AS = '__TSG_AS__';
+  const CODE_VERSION = '__TSG_CODE_VERSION__';
+  const POLL_MS = 45000;
+  let STATE = { rows: [], statuses: [], priorities: [], docVersion: null };
+  let lastRenderedVersion = null;
+
+  function rpc(action, payload) {
+    const body = Object.assign({}, payload || {});
+    if (AS && AS.indexOf('__') !== 0) body.as = AS;
+    const hasRpc = window.google && google.script && google.script.run;
+    if (!hasRpc) return Promise.reject(new Error('This page must be opened from the tracker link.'));
+    return new Promise(function(resolve, reject) {
+      google.script.run
+        .withSuccessHandler(function(text) { try { resolve(JSON.parse(text)); } catch (e) { reject(new Error('Bad response')); } })
+        .withFailureHandler(function(err) { reject(err instanceof Error ? err : new Error(String(err && err.message || err))); })
+        .tsgPersonRpc(action, JSON.stringify(body));
+    });
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function setSync(text, isErr) { const el = document.getElementById('sync'); el.textContent = text; el.className = isErr ? 'err' : ''; }
+  function fmtDate(iso) { if (!iso) return ''; const d = new Date(iso + 'T00:00:00'); return isNaN(d) ? iso : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
+  function editing() { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable); }
+
+  function selectHtml(name, options, current, enabled) {
+    if (!enabled) return '<span class="ro">' + esc(current || '') + '</span>';
+    return '<select data-field="' + name + '" aria-label="' + name + '">' + options.map(function(o) {
+      return '<option value="' + esc(o) + '"' + (o === current ? ' selected' : '') + '>' + esc(o) + '</option>';
+    }).join('') + '</select>';
+  }
+  function rowHtml(r) {
+    const can = function(f) { return r.editable.indexOf(f) !== -1; };
+    const key = r.kind + ':' + r.id + ':' + (r.index == null ? '' : r.index);
+    const titleCell = can('title')
+      ? '<span class="title" contenteditable="true" data-field="title">' + esc(r.title) + '</span>'
+      : '<span class="title">' + esc(r.title) + '</span>' + (r.parentTitle ? '<span class="parent">part of: ' + esc(r.parentTitle) + '</span>' : '');
+    const prioCell = can('priority')
+      ? selectHtml('priority', STATE.priorities, r.priority, true)
+      : (r.priority ? '<span class="chip p-' + esc(r.priority) + '">' + esc(r.priority) + '</span>' : '<span class="ro"></span>');
+    const dueCell = can('timelineEnd')
+      ? '<input type="date" data-field="due" value="' + esc(r.due) + '" aria-label="Due">'
+      : '<span class="ro">' + esc(fmtDate(r.due)) + '</span>';
+    const progress = r.status === 'Done' ? 100 : r.progress;
+    return '<tr data-key="' + esc(key) + '" data-kind="' + esc(r.kind) + '" data-id="' + r.id + '" data-index="' + (r.index == null ? '' : r.index) + '">' +
+      '<td data-label="Task">' + titleCell + '</td>' +
+      '<td data-label="Status">' + selectHtml('status', STATE.statuses, r.status, can('status')) + '</td>' +
+      '<td data-label="Priority">' + prioCell + '</td>' +
+      '<td data-label="Progress">' + (can('progress') ? '<input type="number" min="0" max="100" step="5" data-field="progress" value="' + progress + '" aria-label="Progress percent">' : '<span class="ro">' + progress + '%</span>') + '<div class="bar"><i style="width:' + progress + '%"></i></div></td>' +
+      '<td data-label="Due">' + dueCell + '</td>' +
+      '<td data-label="Notes">' + (can('notes') ? '<textarea data-field="notes" aria-label="Notes">' + esc(r.notes) + '</textarea>' : '<span class="ro">' + esc(r.notes) + '</span>') + '</td>' +
+      '</tr>';
+  }
+  function tableHtml(rows, emptyText) {
+    if (!rows.length) return '<div class="empty">' + emptyText + '</div>';
+    return '<table><thead><tr><th>Task</th><th>Status</th><th>Priority</th><th>Progress</th><th>Due</th><th>Notes</th></tr></thead><tbody>' + rows.map(rowHtml).join('') + '</tbody></table>';
+  }
+  function render() {
+    const delegated = STATE.rows.filter(function(r) { return !r.own; });
+    const own = STATE.rows.filter(function(r) { return r.own; });
+    const order = { 'Not Started': 0, 'In Progress': 1, 'Blocked': 2, 'Waiting': 3, 'Done': 9 };
+    const byStatusThenDue = function(a, b) { return (order[a.status] || 0) - (order[b.status] || 0) || String(a.due || '9').localeCompare(String(b.due || '9')); };
+    delegated.sort(byStatusThenDue); own.sort(byStatusThenDue);
+    document.getElementById('delegated').innerHTML = tableHtml(delegated, 'Nothing delegated to you right now.');
+    document.getElementById('own').innerHTML = tableHtml(own, 'No tasks of your own yet. Add one below.');
+    const sel = document.getElementById('addPriority');
+    if (!sel.options.length) STATE.priorities.forEach(function(p) { const o = document.createElement('option'); o.value = p; o.textContent = p; if (p === 'Medium') o.selected = true; sel.appendChild(o); });
+    lastRenderedVersion = STATE.docVersion;
+  }
+
+  async function load(silent) {
+    if (!silent) setSync('Loading…');
+    try {
+      const r = await rpc('load');
+      if (!r.ok) throw new Error(r.error || 'load failed');
+      STATE = { rows: r.rows, statuses: r.statuses, priorities: r.priorities, docVersion: r.docVersion };
+      if (!editing()) render();
+      setSync('Up to date');
+      document.getElementById('versionStamp').textContent = 'API ' + (r.codeVersion || CODE_VERSION) + ' · UI ' + PERSON_UI_VERSION;
+    } catch (err) {
+      setSync('Could not load: ' + (err.message || err), true);
+    }
+  }
+
+  async function save(tr, field, value) {
+    const payload = { kind: tr.dataset.kind, id: Number(tr.dataset.id), fields: {} };
+    if (tr.dataset.index !== '') payload.index = Number(tr.dataset.index);
+    payload.fields[field] = value;
+    setSync('Saving…');
+    tr.classList.remove('error');
+    try {
+      const r = await rpc('update', payload);
+      if (!r.ok) throw new Error(r.error || 'save failed');
+      tr.classList.add('saved'); setTimeout(function() { tr.classList.remove('saved'); }, 1500);
+      setSync(r.busy ? 'Queued' : 'Saved');
+      await load(true);
+    } catch (err) {
+      tr.classList.add('error');
+      setSync('Not saved: ' + (err.message || err), true);
+      await load(true);
+    }
+  }
+
+  document.body.addEventListener('change', function(e) {
+    const el = e.target; const tr = el.closest('tr[data-key]'); if (!tr || !el.dataset.field) return;
+    let v = el.value;
+    if (el.dataset.field === 'progress') v = Math.max(0, Math.min(100, Number(v) || 0));
+    save(tr, el.dataset.field, v);
+  });
+  document.body.addEventListener('focusout', function(e) {
+    const el = e.target; const tr = el.closest('tr[data-key]'); if (!tr) return;
+    if (el.dataset.field === 'notes') {
+      const row = STATE.rows.find(function(r) { return r.kind + ':' + r.id + ':' + (r.index == null ? '' : r.index) === tr.dataset.key; });
+      if (row && el.value !== row.notes) save(tr, 'notes', el.value);
+    }
+    if (el.dataset.field === 'title' && el.isContentEditable) {
+      const row = STATE.rows.find(function(r) { return r.kind + ':' + r.id + ':' + (r.index == null ? '' : r.index) === tr.dataset.key; });
+      const text = el.textContent.trim();
+      if (row && text && text !== row.title) save(tr, 'title', text); else if (row) el.textContent = row.title;
+    }
+  });
+  document.body.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && e.target.dataset && e.target.dataset.field === 'title') { e.preventDefault(); e.target.blur(); }
+  });
+
+  document.getElementById('addForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('addBtn');
+    const title = document.getElementById('addTitle').value.trim();
+    if (!title) return;
+    btn.disabled = true; setSync('Adding…');
+    try {
+      const r = await rpc('add', { title: title, priority: document.getElementById('addPriority').value, due: document.getElementById('addDue').value, notes: document.getElementById('addNotes').value });
+      if (!r.ok) throw new Error(r.error || 'add failed');
+      document.getElementById('addTitle').value = ''; document.getElementById('addDue').value = ''; document.getElementById('addNotes').value = '';
+      setSync(r.busy ? 'Queued' : 'Added');
+      await load(true);
+    } catch (err) {
+      setSync('Not added: ' + (err.message || err), true);
+    } finally { btn.disabled = false; }
+  });
+
+  async function poll() {
+    if (document.hidden || editing()) return;
+    try {
+      const v = await rpc('version');
+      if (v && v.ok && typeof v.docVersion === 'number' && lastRenderedVersion != null && v.docVersion !== lastRenderedVersion) await load(true);
+    } catch (err) { /* best-effort */ }
+  }
+  setInterval(poll, POLL_MS);
+  document.addEventListener('visibilitychange', function() { if (!document.hidden) poll(); });
+
+  if (AS && AS.indexOf('__') !== 0) document.getElementById('previewBadge').hidden = false;
+  load(false);
+</script>
+</body>
+</html>
