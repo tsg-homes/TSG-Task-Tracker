@@ -12,6 +12,7 @@ let calendarEventsFixture = [];  // [{ id, title, start: Date, end: Date, allDay
 let driveDocTextById = {};       // { fileId: text } consumed by the DocumentApp.openById stub (tsgGetFileSnippet_)
 let driveSheetValuesById = {};   // { fileId: [[...]] } consumed by the SpreadsheetApp.openById stub
 let projectDashboardHtml = '';   // what HtmlService.createHtmlOutputFromFile('dashboard_final') returns
+let cacheStore = {};             // CacheService stub backing store
 
 const sandbox = {
   console,
@@ -25,7 +26,8 @@ const sandbox = {
   ScriptApp: { getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/FAKE_DEPLOYMENT/exec' }) },
   Session: {
     getActiveUser: () => ({ getEmail: () => 'durand@thestawaszgroup.com' }),
-    getEffectiveUser: () => ({ getEmail: () => 'durand@thestawaszgroup.com' })
+    getEffectiveUser: () => ({ getEmail: () => 'durand@thestawaszgroup.com' }),
+    getScriptTimeZone: () => 'America/New_York'
   },
   UrlFetchApp: {
     fetch: (url, opts) => {
@@ -74,7 +76,8 @@ const sandbox = {
       return date.toISOString();
     },
     base64EncodeWebSafe: (s) => Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
-    base64Encode: (s) => Buffer.from(s).toString('base64')
+    base64Encode: (s) => Buffer.from(s).toString('base64'),
+    sleep: () => {}
   },
   GmailApp: { search: () => [] },
   MailApp: { sendEmail: () => {} },
@@ -87,7 +90,7 @@ const sandbox = {
     // The dashboard is a file in the script project; tests point it at a small fake page.
     createHtmlOutputFromFile: (name) => ({ getContent: () => (name === 'dashboard_final' ? projectDashboardHtml : '') })
   },
-  CacheService: { getScriptCache: () => ({ get: () => null, put: () => {} }) },
+  CacheService: { getScriptCache: () => ({ get: (k) => (cacheStore[k] == null ? null : cacheStore[k]), put: (k, v) => { cacheStore[k] = v; }, remove: (k) => { delete cacheStore[k]; } }) },
   // Global MimeType (distinct from ContentService.MimeType above) — used by
   // tsgGetFileSnippet_ to decide how to read a candidate Drive file's content.
   MimeType: {
@@ -106,6 +109,8 @@ const sandbox = {
 sandbox.global = sandbox;
 vm.createContext(sandbox);
 vm.runInContext(src, sandbox, { filename: 'Code.gs' });
+// The whole suite is one process; production resets the per-execution Claude budget per run.
+vm.runInContext('TSG_CLAUDE.perRunCap = 100000', sandbox);
 
 function freshDoc() {
   return {
@@ -122,7 +127,8 @@ function freshDoc() {
 }
 
 function section(name) { console.log('\n=== ' + name + ' ==='); }
-function check(label, cond) { console.log((cond ? 'PASS' : 'FAIL') + ' - ' + label); }
+let FAILS = 0;
+function check(label, cond) { console.log((cond ? 'PASS' : 'FAIL') + ' - ' + label); if (!cond) FAILS++; }
 
 // --- Test 1: tsgCleanTitle_ mechanical cleanup ---
 section('tsgCleanTitle_');
@@ -139,7 +145,7 @@ section('Exact-match dedup merge (was: silently discarded)');
     op: 'add_task', ts: '2026-09-10T10:00:00Z', source: 'Claude',
     task: { title: 'Confirm Vendor Invoice For Photography', notes: 'New info: invoice #4471, $340, approved by Ryan.', timelineEnd: '2026-09-18', tags: ['Vendor'] }
   };
-  sandbox.applyDataPatch(doc, patch);
+  sandbox.applyDataPatch_(doc, patch);
   const t = doc.tasks[0];
   check('no duplicate task created', doc.tasks.length === 1);
   check('notes merged in (not discarded)', t.notes.indexOf('invoice #4471') !== -1);
@@ -177,7 +183,7 @@ section('Batch-aware depends resolution');
       { op: 'add_task', task: { title: 'Get Photos From The Photographer' } }
     ]
   };
-  sandbox.applyDataPatch(doc, patch);
+  sandbox.applyDataPatch_(doc, patch);
   const a = doc.tasks.find(t => t.title === 'Draft The Listing Description');
   const b = doc.tasks.find(t => t.title === 'Get Photos From The Photographer');
   check('both tasks created', !!a && !!b);
@@ -200,7 +206,7 @@ section('Priority/group Triage fallback, no flat silent default');
     return out;
   };
   const doc = { meta: { next_id: 500 }, tasks: [] }; // empty board -> no neighbor to infer from
-  sandbox.applyDataPatch(doc, { op: 'add_task', ts: '2026-09-10T12:00:00Z', source: 'Claude', task: { title: 'Totally Novel One-Off Thing' } });
+  sandbox.applyDataPatch_(doc, { op: 'add_task', ts: '2026-09-10T12:00:00Z', source: 'Claude', task: { title: 'Totally Novel One-Off Thing' } });
   const t = doc.tasks[0];
   check('priority still got SOME value (board needs one)', t.priority === 'Medium');
   check('group still got SOME value', t.group === 'Unsorted');
@@ -228,7 +234,7 @@ section('Tags inference');
   const doc = { meta: { next_id: 600 }, tasks: [
     { id: 1, title: 'Old task', tags: ['Block Party'], group: 'Marketing', status: 'Not Started', history: [] }
   ] };
-  sandbox.applyDataPatch(doc, { op: 'add_task', ts: '2026-09-10T13:00:00Z', source: 'Claude', task: { title: 'Plan The Block Party Flyer' } });
+  sandbox.applyDataPatch_(doc, { op: 'add_task', ts: '2026-09-10T13:00:00Z', source: 'Claude', task: { title: 'Plan The Block Party Flyer' } });
   const t = doc.tasks[1];
   check('real topical tag applied', (t.tags || []).includes('Block Party'));
   check('reserved system tags filtered out even though the model tried', !t.tags.includes('Aging'));
@@ -247,7 +253,7 @@ section('update_task generic diffing + real subitem history');
         doc: '', notes: '', estHours: 0.25, estDays: null, estSource: 'none', taskType: 'Actionable Task' }]
     }
   };
-  sandbox.applyDataPatch(doc, patch);
+  sandbox.applyDataPatch_(doc, patch);
   const t = doc.tasks[0];
   const statusEntry = t.history.find(h => h.field === 'status' && h.to === 'Done');
   const priorityEntry = t.history.find(h => h.field === 'priority' && h.to === 'Critical');
@@ -301,7 +307,7 @@ let lastDriveMatchUser = '';   // captures the actual prompt sent, so tests can 
   driveFilesFixture = [fakeDriveFile('Listing Agreement Farina Di Vita.pdf', 'https://drive.google.com/file/d/abc123')];
   driveMatchResponse = { index: 1, confident: true, rationale: 'Same listing agreement referenced in the title' };
   const doc1 = { meta: { next_id: 700 }, tasks: [] };
-  sandbox.applyDataPatch(doc1, { op: 'add_task', ts: '2026-09-10T15:00:00Z', source: 'Claude',
+  sandbox.applyDataPatch_(doc1, { op: 'add_task', ts: '2026-09-10T15:00:00Z', source: 'Claude',
     task: { title: 'Send Farina Di Vita The Listing Agreement' } });
   const t1 = doc1.tasks[0];
   check('confident match auto-attached to docs[]', (t1.docs || []).some(d => d.url === 'https://drive.google.com/file/d/abc123' && d.type === 'doc'));
@@ -313,7 +319,7 @@ let lastDriveMatchUser = '';   // captures the actual prompt sent, so tests can 
   driveFilesFixture = [fakeDriveFile('Old Marketing Flyer Notes.docx', 'https://drive.google.com/file/d/zzz999')];
   driveMatchResponse = { index: 1, confident: false, rationale: 'Could be it, but the title only loosely overlaps' };
   const doc2 = { meta: { next_id: 701 }, tasks: [] };
-  sandbox.applyDataPatch(doc2, { op: 'add_task', ts: '2026-09-10T15:05:00Z', source: 'Claude',
+  sandbox.applyDataPatch_(doc2, { op: 'add_task', ts: '2026-09-10T15:05:00Z', source: 'Claude',
     task: { title: 'Design The Block Party Flyer' } });
   const t2 = doc2.tasks[0];
   check('weak match NOT auto-attached', !(t2.docs || []).some(d => d.url === 'https://drive.google.com/file/d/zzz999'));
@@ -326,7 +332,7 @@ let lastDriveMatchUser = '';   // captures the actual prompt sent, so tests can 
   driveFilesFixture = [fakeDriveFile('Unrelated Vendor W9.pdf', 'https://drive.google.com/file/d/w9')];
   driveMatchResponse = { index: null, confident: false, rationale: 'None of these are the same document' };
   const doc2b = { meta: { next_id: 703 }, tasks: [] };
-  sandbox.applyDataPatch(doc2b, { op: 'add_task', ts: '2026-09-10T15:07:00Z', source: 'Claude',
+  sandbox.applyDataPatch_(doc2b, { op: 'add_task', ts: '2026-09-10T15:07:00Z', source: 'Claude',
     task: { title: 'Reconcile The September Books' } });
   const t2b = doc2b.tasks[0];
   check('Claude explicitly rejecting all candidates -> no doc, no Triage', !(t2b.docs || []).length && !(t2b.tags || []).includes('Triage'));
@@ -336,7 +342,7 @@ let lastDriveMatchUser = '';   // captures the actual prompt sent, so tests can 
   driveFilesFixture = [];
   driveMatchResponse = 'SHOULD_NOT_BE_USED — zero candidates must never reach Claude';
   const doc3 = { meta: { next_id: 702 }, tasks: [] };
-  sandbox.applyDataPatch(doc3, { op: 'add_task', ts: '2026-09-10T15:10:00Z', source: 'Claude',
+  sandbox.applyDataPatch_(doc3, { op: 'add_task', ts: '2026-09-10T15:10:00Z', source: 'Claude',
     task: { title: 'Reconcile September Vendor Invoices' } });
   const t3 = doc3.tasks[0];
   check('no candidates -> no doc attached, no Triage just for that', !(t3.docs || []).length && !(t3.tags || []).includes('Triage'));
@@ -350,7 +356,7 @@ let lastDriveMatchUser = '';   // captures the actual prompt sent, so tests can 
     { id: 'doc1', mimeType: 'application/vnd.google-apps.document' })];
   driveMatchResponse = { index: 1, confident: true, rationale: 'Content excerpt matches the Farina Di Vita listing agreement' };
   const doc4 = { meta: { next_id: 704 }, tasks: [] };
-  sandbox.applyDataPatch(doc4, { op: 'add_task', ts: '2026-09-10T15:12:00Z', source: 'Claude',
+  sandbox.applyDataPatch_(doc4, { op: 'add_task', ts: '2026-09-10T15:12:00Z', source: 'Claude',
     task: { title: 'Send Farina Di Vita The Listing Agreement' } });
   const t4 = doc4.tasks[0];
   check('content-based match auto-attached despite a generic file name ("Notes")', (t4.docs || []).some(d => d.url === 'https://drive.google.com/file/d/doc1'));
@@ -361,7 +367,7 @@ let lastDriveMatchUser = '';   // captures the actual prompt sent, so tests can 
   driveFilesFixture = [fakeDriveFile('September Vendor Invoice.pdf', 'https://drive.google.com/file/d/inv1')]; // default mimeType = unreadable PDF
   driveMatchResponse = { index: 1, confident: true, rationale: 'File name alone is a clear match' };
   const doc5 = { meta: { next_id: 705 }, tasks: [] };
-  sandbox.applyDataPatch(doc5, { op: 'add_task', ts: '2026-09-10T15:14:00Z', source: 'Claude',
+  sandbox.applyDataPatch_(doc5, { op: 'add_task', ts: '2026-09-10T15:14:00Z', source: 'Claude',
     task: { title: 'Pay The September Vendor Invoice' } });
   const t5 = doc5.tasks[0];
   check('unreadable file type still matches fine on name alone, no crash', (t5.docs || []).some(d => d.url === 'https://drive.google.com/file/d/inv1'));
@@ -402,7 +408,7 @@ section('Calendar meeting auto-search-and-link (Claude-judged match)');
   ];
   meetingMatchResponse = { index: 1, confident: true, rationale: 'Same meeting, matching title and timing' };
   const doc1 = { meta: { next_id: 800 }, tasks: [] };
-  sandbox.applyDataPatch(doc1, { op: 'add_task', ts: '2026-09-10T16:00:00Z', source: 'Claude',
+  sandbox.applyDataPatch_(doc1, { op: 'add_task', ts: '2026-09-10T16:00:00Z', source: 'Claude',
     task: { title: 'Vendor Sync Meeting', taskType: 'Meeting' } });
   const t1 = doc1.tasks[0];
   check('confident match sets meetingDate', !!t1.meetingDate);
@@ -419,7 +425,7 @@ section('Calendar meeting auto-search-and-link (Claude-judged match)');
   ];
   meetingMatchResponse = { index: 1, confident: false, rationale: 'Could be the same meeting, but the title only loosely matches' };
   const doc2 = { meta: { next_id: 801 }, tasks: [] };
-  sandbox.applyDataPatch(doc2, { op: 'add_task', ts: '2026-09-10T16:05:00Z', source: 'Claude',
+  sandbox.applyDataPatch_(doc2, { op: 'add_task', ts: '2026-09-10T16:05:00Z', source: 'Claude',
     task: { title: 'Vendor Walkthrough Meeting', taskType: 'Meeting' } });
   const t2 = doc2.tasks[0];
   check('weak match NOT auto-linked', !t2.meetingDate);
@@ -433,7 +439,7 @@ section('Calendar meeting auto-search-and-link (Claude-judged match)');
   ];
   meetingMatchResponse = { index: null, confident: false, rationale: 'Different vendor, unrelated meeting' };
   const doc2b = { meta: { next_id: 803 }, tasks: [] };
-  sandbox.applyDataPatch(doc2b, { op: 'add_task', ts: '2026-09-10T16:07:00Z', source: 'Claude',
+  sandbox.applyDataPatch_(doc2b, { op: 'add_task', ts: '2026-09-10T16:07:00Z', source: 'Claude',
     task: { title: 'Confirm Catering Headcount Meeting', taskType: 'Meeting' } });
   const t2b = doc2b.tasks[0];
   check('Claude explicitly rejecting the only candidate -> no meeting linked, no Triage', !t2b.meetingDate && !(t2b.tags || []).includes('Triage'));
@@ -444,7 +450,7 @@ section('Calendar meeting auto-search-and-link (Claude-judged match)');
   ];
   meetingMatchResponse = 'SHOULD_NOT_BE_USED — non-Meeting taskType must never call Claude for a meeting match';
   const doc3 = { meta: { next_id: 802 }, tasks: [] };
-  sandbox.applyDataPatch(doc3, { op: 'add_task', ts: '2026-09-10T16:10:00Z', source: 'Claude',
+  sandbox.applyDataPatch_(doc3, { op: 'add_task', ts: '2026-09-10T16:10:00Z', source: 'Claude',
     task: { title: 'Call The Vendor About Pricing', taskType: 'Call' } });
   const t3 = doc3.tasks[0];
   check('non-Meeting taskType never gets a meeting auto-linked', !t3.meetingDate);
@@ -455,7 +461,7 @@ section('Version indicator (?api=version + footer stamp)');
   // Top-level `const` in Code.gs is not a property of the sandbox global; read it via eval.
   const CODE_VERSION = vm.runInContext('TSG_CODE_VERSION', sandbox);
   check('TSG_CODE_VERSION is a date.counter string', /^\d{4}-\d{2}-\d{2}\.\d+$/.test(CODE_VERSION));
-  // doGet runs processInbox() first; give it an empty inbox and a fake dashboard file.
+  // doGet runs processInbox_() first; give it an empty inbox and a fake dashboard file.
   const origGetFolderById = sandbox.DriveApp.getFolderById;
   const origGetFileById = sandbox.DriveApp.getFileById;
   sandbox.DriveApp.getFolderById = () => ({ getFiles: () => ({ hasNext: () => false }), createFile: () => {}, getFilesByName: () => ({ hasNext: () => false }) });
@@ -471,7 +477,7 @@ section('Version indicator (?api=version + footer stamp)');
   check('?api=version reports the TSG_CODE_VERSION constant', !!body && body.codeVersion === CODE_VERSION);
   check('?api=version needs no token (ungated like ?api=sync)', !!body && body.codeVersion && !('error' in body));
   check('?api=version reports the data file docVersion (for background polling)', !!body && body.docVersion === 42);
-  fakeDataFile = 'not json';
+  fakeDataFile = 'not json'; delete cacheStore.docVersion;
   body = JSON.parse(sandbox.doGet({ parameter: { api: 'version' } }).text);
   check('?api=version still answers (docVersion null) when the data file is unreadable', body.ok === true && body.docVersion === null);
   fakeDataFile = JSON.stringify({ meta: { docVersion: 42 }, tasks: [] });
@@ -480,7 +486,13 @@ section('Version indicator (?api=version + footer stamp)');
   check('bare doGet stamps TSG_CODE_VERSION into the dashboard placeholder', typeof page.html === 'string' && page.html.includes("CODE_VERSION_STAMP = '" + CODE_VERSION + "'"));
   check('bare doGet leaves no raw __TSG_CODE_VERSION__ placeholder behind', typeof page.html === 'string' && !page.html.includes('__TSG_CODE_VERSION__'));
   check('bare doGet serves the dashboard from the script project file, not Drive', !page.html.includes('NOT THE DASHBOARD'));
-  const htmlPost = JSON.parse(sandbox.doPost({ parameter: { target: 'html' }, postData: { contents: '<html>x</html>' } }).text);
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (k === 'SCRIPT_TOKEN' ? 'tok' : null), setProperty: () => {} });
+  const htmlPost = JSON.parse(sandbox.doPost({ parameter: { target: 'html', token: 'tok' }, postData: { contents: '<html>x</html>' } }).text);
+  const noTokenPost = JSON.parse(sandbox.doPost({ parameter: { target: 'html' }, postData: { contents: '' } }).text);
+  check('doPost refuses a request without the token', noTokenPost.ok === false && noTokenPost.error === 'unauthorized');
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (k === 'ANTHROPIC_API_KEY' ? 'fake-key' : null), setProperty: () => {} });
+  const unsetTokenPost = JSON.parse(sandbox.doPost({ parameter: { target: 'html', token: 'anything' }, postData: { contents: '' } }).text);
+  check('doPost refuses when SCRIPT_TOKEN is unset (no more fail-open)', unsetTokenPost.ok === false && unsetTokenPost.error === 'unauthorized');
   check('doPost target=html is retired and rejected loudly', htmlPost.ok === false && /retired/.test(htmlPost.error));
 
   // Secrets are injected at serve time, never committed (the repo is public).
@@ -518,20 +530,20 @@ section('Subitem rollup respects the parent\'s own work (2026-09-14, task #12 re
 
   // Explicit edits set the parent's own share on both write paths.
   d = { meta: { docVersion: 1 }, tasks: [parent()] };
-  sandbox.applyDataPatch(d, { op: 'update_task', id: 12, ts: NOW, source: 'Claude', fields: { estHours: 0.25, timelineEnd: '2026-09-17' } });
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 12, ts: NOW, source: 'Claude', fields: { estHours: 0.25, timelineEnd: '2026-09-17' } });
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('update_task estHours on a subitem-bearing task captures estHoursOwn', d.tasks[0].estHoursOwn === 0.25);
   check('update_task: the edit survives the next rollup (est 0.25h, due 9-17)', d.tasks[0].estHours === 0.25 && d.tasks[0].timelineEnd === '2026-09-17');
 
   d = { meta: { docVersion: 5 }, tasks: [parent()] };
   const saved = JSON.parse(JSON.stringify(parent({ estHours: 0.25, timelineEnd: '2026-09-17', dueOverride: true })));
-  sandbox.applyDataPatch(d, { op: 'replace_all', ts: NOW, baseVersion: 5, doc: { meta: {}, tasks: [saved] } });
+  sandbox.applyDataPatch_(d, { op: 'replace_all', ts: NOW, baseVersion: 5, doc: { meta: {}, tasks: [saved] } });
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('dashboard full save (replace_all) that changes estHours captures estHoursOwn', d.tasks[0].estHoursOwn === 0.25);
   check('dashboard full save: the edit survives the next rollup', d.tasks[0].estHours === 0.25 && d.tasks[0].timelineEnd === '2026-09-17');
   // ...and a later save that does NOT touch estHours must not disturb the captured own share
   const saved2 = JSON.parse(JSON.stringify(d.tasks[0])); delete saved2.estHoursOwn; saved2.notes = 'edited notes only';
-  sandbox.applyDataPatch(d, { op: 'replace_all', ts: NOW, baseVersion: d.meta.docVersion, doc: { meta: {}, tasks: [saved2] } });
+  sandbox.applyDataPatch_(d, { op: 'replace_all', ts: NOW, baseVersion: d.meta.docVersion, doc: { meta: {}, tasks: [saved2] } });
   check('a save that omits estHoursOwn carries it over from the stored task', d.tasks[0].estHoursOwn === 0.25);
 
   // Task #1 regression: a due date changed through the dashboard's full save must count as
@@ -539,12 +551,12 @@ section('Subitem rollup respects the parent\'s own work (2026-09-14, task #12 re
   d = { meta: { docVersion: 9 }, tasks: [{ id: 1, title: 'FUB Rollout', status: 'In Progress', timelineEnd: '2026-09-22', history: [],
     subitems: [{ title: 'Rayma', done: true, timelineEnd: '2026-09-22' }, { title: 'Chelsea', done: false, timelineEnd: '2026-09-16' }] }] };
   const saved3 = JSON.parse(JSON.stringify(d.tasks[0])); saved3.timelineEnd = '2026-10-08';
-  sandbox.applyDataPatch(d, { op: 'replace_all', ts: NOW, baseVersion: 9, doc: { meta: {}, tasks: [saved3] } });
+  sandbox.applyDataPatch_(d, { op: 'replace_all', ts: NOW, baseVersion: 9, doc: { meta: {}, tasks: [saved3] } });
   check('full save changing timelineEnd sets dueOverride', d.tasks[0].dueOverride === true);
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('...so the rollup keeps the explicit 10-08 instead of the open subitem\'s 9-16', d.tasks[0].timelineEnd === '2026-10-08');
   const saved4 = JSON.parse(JSON.stringify(d.tasks[0])); delete saved4.dueOverride; saved4.notes = 'notes only';
-  sandbox.applyDataPatch(d, { op: 'replace_all', ts: NOW, baseVersion: d.meta.docVersion, doc: { meta: {}, tasks: [saved4] } });
+  sandbox.applyDataPatch_(d, { op: 'replace_all', ts: NOW, baseVersion: d.meta.docVersion, doc: { meta: {}, tasks: [saved4] } });
   check('a save that omits dueOverride carries it over from the stored task', d.tasks[0].dueOverride === true);
 
   // Open subitems add on top of the parent's own hours; done ones drop out.
@@ -630,6 +642,87 @@ section('Domain access: identity gate, roster mapping, inbox trigger (2026-09-14
   check('tsgInstallInboxTrigger replaces the old tick trigger with a 1-minute one', r.ok && created === 1 && deleted === 1 && r.replaced === 1);
 }
 
+section('Inbox pipeline: lock busy, trash-after-write, unreadable document, whitelists (2026-09-15)');
+{
+  const origLock = sandbox.LockService.getScriptLock, origGetFolderById = sandbox.DriveApp.getFolderById, origGetFileById = sandbox.DriveApp.getFileById;
+  const FILE_IDS3 = vm.runInContext('FILE_IDS', sandbox);
+  function fakeInbox(files) {
+    return { getFiles: () => { let i = 0; return { hasNext: () => i < files.length, next: () => files[i++] }; }, createFile: () => {}, getFilesByName: () => ({ hasNext: () => false }) };
+  }
+  function fakePatchFile(name, obj) {
+    const f = { name, trashed: false, isTrashed: () => f.trashed, getName: () => f.name, setName: (n) => { f.name = n; }, setTrashed: (v) => { f.trashed = v; }, getDateCreated: () => new Date('2026-09-15T00:00:00Z'), getBlob: () => ({ getDataAsString: () => (typeof obj === 'string' ? obj : JSON.stringify(obj)) }) };
+    return f;
+  }
+  let dataOnDisk = JSON.stringify({ meta: { docVersion: 10, next_id: 5 }, tasks: [{ id: 1, title: 'A', status: 'Not Started', history: [], subitems: [] }] });
+  let writes = [];
+  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS3.data ? dataOnDisk : '{}') }), setContent: (c) => { if (id === FILE_IDS3.data) { writes.push(c); dataOnDisk = c; } } });
+
+  // busy lock -> signalled, nothing trashed
+  sandbox.LockService.getScriptLock = () => ({ tryLock: () => false, waitLock: () => {}, releaseLock: () => {} });
+  let pf = fakePatchFile('p1.json', { target: 'data', op: 'update_task', id: 1, fields: { notes: 'x' } });
+  sandbox.DriveApp.getFolderById = () => fakeInbox([pf]);
+  let r = sandbox.processInbox_();
+  check('busy lock: processInbox_ reports busy and leaves the patch untouched', r.busy === true && pf.trashed === false && writes.length === 0);
+
+  // normal apply -> written, THEN trashed; docVersion cached
+  sandbox.LockService.getScriptLock = () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} });
+  r = sandbox.processInbox_();
+  check('patch applied: file written then trashed', r.ok === true && r.applied === 1 && pf.trashed === true && writes.length === 1 && JSON.parse(writes[0]).tasks[0].notes === 'x');
+  check('docVersion is cached after a write', cacheStore.docVersion === String(JSON.parse(writes[0]).meta.docVersion));
+
+  // write failure -> nothing trashed (at-least-once)
+  pf = fakePatchFile('p2.json', { target: 'data', op: 'update_task', id: 1, fields: { notes: 'y' } });
+  sandbox.DriveApp.getFolderById = () => fakeInbox([pf]);
+  const savedGet = sandbox.DriveApp.getFileById;
+  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => dataOnDisk }), setContent: () => { throw new Error('Drive write failed'); } });
+  let threw = false; try { sandbox.processInbox_(); } catch (e) { threw = true; }
+  check('a failing write leaves the patch file in place for the next pass', threw && pf.trashed === false);
+  sandbox.DriveApp.getFileById = savedGet;
+
+  // unreadable data file -> patches left queued, nothing written
+  const goodDisk = dataOnDisk; dataOnDisk = 'corrupt {';
+  pf = fakePatchFile('p3.json', { target: 'data', op: 'update_task', id: 1, fields: { notes: 'z' } });
+  sandbox.DriveApp.getFolderById = () => fakeInbox([pf]);
+  writes = [];
+  r = sandbox.processInbox_();
+  check('corrupt data file: patch stays queued, nothing written, error reported', r.ok === false && pf.trashed === false && writes.length === 0 && /cannot|Unexpected|JSON/i.test(String(r.error)));
+  dataOnDisk = goodDisk;
+
+  // a patch that throws is dropped (renamed FAILED-) while others still apply
+  const bad = fakePatchFile('bad.json', { target: 'data', op: 'update_task', id: 999, fields: {} });
+  const good = fakePatchFile('good.json', { target: 'data', op: 'update_task', id: 1, fields: { notes: 'w' } });
+  sandbox.DriveApp.getFolderById = () => fakeInbox([bad, good]);
+  r = sandbox.processInbox_();
+  check('a failing patch is dropped and named FAILED-, the good one still applies', r.applied === 1 && r.failed === 1 && bad.name === 'FAILED-bad.json' && bad.trashed && good.trashed && JSON.parse(dataOnDisk).tasks[0].notes === 'w');
+
+  // empty inbox sets the throttle flag; the tick honours it
+  sandbox.DriveApp.getFolderById = () => fakeInbox([]);
+  r = sandbox.processInbox_();
+  check('empty inbox sets inboxEmptyUntil', r.applied === 0 && cacheStore.inboxEmptyUntil === '1');
+  let listed = false; sandbox.DriveApp.getFolderById = () => { listed = true; return fakeInbox([]); };
+  sandbox.tsgInboxTick();
+  check('tsgInboxTick skips the Drive listing while the empty flag holds', listed === false);
+  delete cacheStore.inboxEmptyUntil;
+
+  // whitelists and next_id
+  let d = { meta: { docVersion: 1, next_id: 3 }, tasks: [{ id: 1, title: 'A', history: [{ ts: 'x', field: 'created' }], subitems: [] }] };
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, ts: '2026-09-15T00:00:00Z', fields: { id: 77, history: [], title: 'B' } });
+  check('update_task cannot overwrite id or history', d.tasks[0].id === 1 && d.tasks[0].history.length >= 1 && d.tasks[0].title === 'B');
+  sandbox.applyDataPatch_(d, { op: 'set_meta', ts: '2026-09-15T00:00:00Z', fields: { next_id: 1, docVersion: 0, standingItems: ['ok'] } });
+  check('set_meta cannot overwrite next_id or docVersion', d.meta.next_id === 3 && d.meta.docVersion > 0 && d.meta.standingItems[0] === 'ok');
+  d = { meta: { docVersion: 4, next_id: 2 }, tasks: [] };
+  sandbox.applyDataPatch_(d, { op: 'replace_all', ts: '2026-09-15T00:00:00Z', baseVersion: 4, doc: { meta: {}, tasks: [{ id: 9, title: 'client-minted', history: [], subitems: [] }] } });
+  check('replace_all advances next_id past client-minted ids', d.meta.next_id === 10);
+  d = { meta: { docVersion: 4, next_id: 2 }, tasks: [{ id: 1, title: 'keep', history: [], subitems: [] }] };
+  sandbox.applyDataPatch_(d, { op: 'replace_all', ts: '2026-09-15T00:00:00Z', nonce: 'n1', doc: { meta: {}, tasks: [] } });
+  check('replace_all without a numeric baseVersion is rejected, not applied', d.tasks.length === 1 && d.meta.rejectedSaves.some(x => x.reason === 'missing_baseVersion'));
+  const rs = { meta: { docVersion: 1 }, current: {}, threads: { T: { instructions: '', memories: ['m0', 'm1'], history: [] } } };
+  let badIdx = false; try { sandbox.applyRulesetPatch_(rs, { op: 'remove_thread_memory', name: 'T' }); } catch (e) { badIdx = true; }
+  check('remove_thread_memory without an index throws instead of deleting memory 0', badIdx && rs.threads.T.memories.length === 2);
+
+  sandbox.LockService.getScriptLock = origLock; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.DriveApp.getFileById = origGetFileById;
+}
+
 section('No secrets in tracked files (repo is public)');
 {
   // A deployment id is the exec URL; the API token is a long hex string. Neither may
@@ -652,4 +745,5 @@ section('No secrets in tracked files (repo is public)');
   check('dashboard TSG_TOKEN is the __TSG_TOKEN__ placeholder', dash.includes("const TSG_TOKEN = '__TSG_TOKEN__';"));
 }
 
-console.log('\nDone.');
+console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
+if (FAILS) process.exitCode = 1;

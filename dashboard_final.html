@@ -1456,7 +1456,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-14.5';
+  const UI_VERSION = '2026-09-15.1';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -5322,13 +5322,16 @@
   // spurious conflict. Serialise them — a save started while one is in flight simply runs
   // after it, against the version the first one just established.
   let saveChain = Promise.resolve();
+  let saveInFlight = false; // true while a POST is outstanding; the remote-change poll waits
   function doSave() {
+    saveTimer = null; // the debounce fired; without this the poll guard saw a stale timer forever (2026-09-15)
     saveChain = saveChain.then(doSaveNow_, doSaveNow_);
     return saveChain;
   }
   async function doSaveNow_() {
     const savedId = pendingSaveId;
     pendingSaveId = null;
+    saveInFlight = true;
     try {
       const res = await apiFetch('', {
         method: 'POST',
@@ -5360,6 +5363,13 @@
           await loadData(false, true);
           return;
         }
+        if (resp.error === 'busy') {
+          // The save is queued server-side (its inbox file exists) and the minute trigger
+          // applies it; the next poll picks up the new version. Not an error to alarm about.
+          setSyncStatus('saving', 'Queued: another write is being applied; syncing shortly');
+          setTimeout(pollForRemoteChanges, 20000);
+          return;
+        }
         throw new Error(resp.error || 'Save rejected');
       }
       if (resp && typeof resp.docVersion === 'number') RAW_META.docVersion = resp.docVersion;
@@ -5373,6 +5383,8 @@
     } catch (err) {
       lastFailedOp = 'save';
       setSyncStatus('error', err.message || err);
+    } finally {
+      saveInFlight = false;
     }
   }
 
@@ -5937,7 +5949,7 @@
   let pollInFlight = false;
   async function pollForRemoteChanges() {
     if (pollInFlight || document.hidden || !dataLoaded) return;
-    if (saveTimer || pendingSaveId != null) return; // local edits in flight — they win, then the response carries the new docVersion
+    if (saveTimer || saveInFlight || pendingSaveId != null) return; // local edits in flight — they win, then the response carries the new docVersion
     pollInFlight = true;
     try {
       const res = await apiFetch('api=version');

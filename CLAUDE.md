@@ -71,6 +71,31 @@ identifiers and environment facts that are otherwise only known from chat.
   from Drive by id and write via `_Inbox` patches, which the trigger applies within a
   minute. `?api=sync` is no longer needed or reachable without a Google login.
 
+## Hardening batch 1 (2026-09-15, backend 2026-09-15.1 / UI 2026-09-15.1)
+
+- `processInbox_` (now private): a busy lock returns `{busy:true}` and doPost answers
+  `{ok:false,error:'busy'}` (the dashboard shows "Queued" and polls); inbox files are
+  trashed only AFTER the data/rulesets write succeeds; an unreadable target document
+  leaves every patch queued and logs; a patch that throws is renamed `FAILED-` and
+  dropped, the rest still apply. Empty listings set a 50 s cache flag that `tsgInboxTick`
+  honours (no Drive listing while it holds; doPost clears it).
+- `?api=version` is answered from the script cache (`docVersion` written on every write)
+  before any inbox pass; the dashboard poll costs no Drive I/O.
+- `tsgCheckToken_` refuses when SCRIPT_TOKEN is unset (no fail-open). `tsgRpc` gate is
+  unconditional. Internals are private: `getTrackerFile_`, `applyDataPatch_`,
+  `applyRulesetPatch_`, `getCalendarHours_`, `processInbox_`, `tsgListModels_`. Editor-run
+  maintenance functions call `tsgAssertOwner_` first. `tsgTestDedup` and
+  `tsgReestimateAllOpenTasks` are deleted.
+- replace_all requires a numeric `baseVersion` (else rejected as `missing_baseVersion`);
+  update_task cannot set `id`/`history`; set_meta cannot set `next_id`/`docVersion`/
+  `rejectedSaves`/`addResults`; replace_all advances `next_id` past client-minted ids.
+- Claude calls: model `claude-opus-5` (raw HTTP via UrlFetchApp, no SDK in Apps Script);
+  one retry on 429/529/5xx; `perRunCap` 12 estimator/matcher calls per execution; the
+  remembered 404-fallback id is keyed to the configured model
+  (`ANTHROPIC_MODEL_RESOLVED_V2`) so an upgrade is never shadowed by a stale memory.
+- Tests: both suites exit non-zero on any failure; `.github/workflows/test.yml` runs them
+  on every push.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs

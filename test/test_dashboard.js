@@ -75,7 +75,8 @@ const dom = new JSDOM(html, {
 
 setTimeout(async () => {
   const w = dom.window, doc = w.document;
-  function tryCall(label, fn) { try { fn(); console.log('OK   -', label); } catch (e) { console.log('FAIL -', label, '->', e.message); } }
+  let FAILS = 0;
+  function tryCall(label, fn) { try { fn(); console.log('OK   -', label); } catch (e) { console.log('FAIL -', label, '->', e.message); FAILS++; } }
 
   console.log('--- Data loaded ---');
   console.log('TASK_TYPES:', JSON.stringify(w.TASK_TYPES));
@@ -135,6 +136,14 @@ setTimeout(async () => {
   });
   delete w.google;
 
+  // The debounce timer must clear once it fires, or background polling stays dead after the first edit.
+  w.scheduleSave();
+  await new Promise(r => setTimeout(r, 900));
+  tryCall('saveTimer is cleared after the debounced save fires (polling stays alive)', () => {
+    if (w.eval('saveTimer') !== null) throw new Error('saveTimer still set: ' + String(w.eval('saveTimer')));
+    if (w.eval('saveInFlight') !== false) throw new Error('saveInFlight still true');
+  });
+
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));
@@ -142,5 +151,5 @@ setTimeout(async () => {
   console.log('\n=== ERRORS ===');
   if (!errors.length) console.log('(none)');
   errors.forEach((e, i) => console.log('#' + i, e.msg, '\n', e.stack));
-  process.exit(0);
+  process.exit((errors.length || FAILS) ? 1 : 0);
 }, 2500);

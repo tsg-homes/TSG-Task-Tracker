@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-14.11';
+const TSG_CODE_VERSION = '2026-09-15.1';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -26,7 +26,7 @@ const FILE_IDS = {
   rulesets: '1RKkNUEfh6Q0qlQXbNlME7aIfh_h8FE-R'  // Systems — Task Tracker Rulesets.json
 };
 
-function getTrackerFile(key) {
+function getTrackerFile_(key) {
   const id = FILE_IDS[key];
   if (!id) throw new Error('Unknown tracker file key: ' + key);
   try {
@@ -43,26 +43,29 @@ function getTrackerFile(key) {
  * This function, and only this function, ever calls setContent() on the data or
  * rulesets file. As of this change, doPost()'s target=data handler no longer writes
  * directly either — it drops a "replace_all" patch into the same _Inbox folder every
- * other data write goes through, then calls processInbox() immediately. That closes
+ * other data write goes through, then calls processInbox_() immediately. That closes
  * the original data-loss bug: the dashboard's own full-document save and an _Inbox
  * patch used to be two unlocked, uncoordinated writers racing for the same file, and
  * whichever landed second silently won. Now every write — dashboard or patch — is
  * serialized under the same lock and checked against the same version counter
- * (doc.meta.docVersion, bumped in applyDataPatch on every successful mutation), so a
+ * (doc.meta.docVersion, bumped in applyDataPatch_ on every successful mutation), so a
  * stale full-document save is rejected instead of clobbering newer data.
  *
  * 2026-09-02: target=rulesets now takes the same route. It had been left on the direct
  * setContent() path on the reasoning that "rulesets isn't edited from two uncoordinated
  * places the way task data was" — which stopped being true once Claude sessions began
  * pushing threads/current patches into _Inbox alongside the dashboard's own Settings
- * save. Rulesets therefore has its own meta.docVersion counter (see applyRulesetPatch)
+ * save. Rulesets therefore has its own meta.docVersion counter (see applyRulesetPatch_)
  * with the same conflict semantics. Only 'html' still writes directly, and it still has
  * exactly one writer.
  * ============================================================================
  */
-function processInbox() {
+function processInbox_() {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(10000)) return;
+  if (!lock.tryLock(10000)) {
+    Logger.log('[inbox] lock busy after 10s; this pass skipped, patches stay queued');
+    return { ok: false, busy: true, applied: 0 };
+  }
   try {
     const inbox = DriveApp.getFolderById(INBOX_FOLDER_ID);
     const it = inbox.getFiles();
@@ -73,59 +76,79 @@ function processInbox() {
       try {
         patches.push({ file: f, patch: JSON.parse(f.getBlob().getDataAsString()), created: f.getDateCreated() });
       } catch (err) {
-        f.setTrashed(true); // malformed patch — don't let it jam the queue
+        Logger.log('[inbox] malformed patch file "' + f.getName() + '" trashed: ' + err);
+        try { f.setName('MALFORMED-' + f.getName()); } catch (e2) {}
+        f.setTrashed(true);
       }
     }
-    if (patches.length === 0) return 0;
+    if (patches.length === 0) {
+      tsgCachePut_('inboxEmptyUntil', '1', TSG_INBOX_EMPTY_TTL_SEC);
+      return { ok: true, applied: 0 };
+    }
     patches.sort(function(a, b) { return a.created - b.created; });
 
-    let rulesetsDoc = null, rulesetsFile = null;
-    let dataDoc = null, dataFile = null;
+    // Load each target document ONCE, outside the per-patch try. An unreadable document
+    // leaves every patch queued and says so in the log; it never trashes them.
+    let rulesetsDoc = null, rulesetsFile = null, dataDoc = null, dataFile = null;
+    try {
+      if (patches.some(function(p) { return p.patch && p.patch.target === 'rulesets'; })) {
+        rulesetsFile = getTrackerFile_('rulesets');
+        rulesetsDoc = JSON.parse(rulesetsFile.getBlob().getDataAsString());
+      }
+      if (patches.some(function(p) { return p.patch && p.patch.target === 'data'; })) {
+        dataFile = getTrackerFile_('data');
+        dataDoc = JSON.parse(dataFile.getBlob().getDataAsString());
+      }
+    } catch (loadErr) {
+      Logger.log('[inbox] cannot load a target document; ' + patches.length + ' patch(es) left queued: ' + loadErr);
+      return { ok: false, error: String(loadErr), applied: 0 };
+    }
 
+    const applied = [], failed = [];
     patches.forEach(function(p) {
       const patch = p.patch;
       try {
-        if (patch.target === 'rulesets') {
-          if (!rulesetsDoc) {
-            rulesetsFile = getTrackerFile('rulesets');
-            rulesetsDoc = JSON.parse(rulesetsFile.getBlob().getDataAsString());
-          }
-          applyRulesetPatch(rulesetsDoc, patch);
-        } else if (patch.target === 'data') {
-          if (!dataDoc) {
-            dataFile = getTrackerFile('data');
-            dataDoc = JSON.parse(dataFile.getBlob().getDataAsString());
-          }
-          applyDataPatch(dataDoc, patch);
-        }
+        if (patch.target === 'rulesets') applyRulesetPatch_(rulesetsDoc, patch);
+        else if (patch.target === 'data') applyDataPatch_(dataDoc, patch);
+        else throw new Error('unknown target: ' + patch.target);
+        applied.push(p);
       } catch (err) {
-        // invalid/unrecognized patch — drop it rather than jamming the queue or breaking doGet for everyone
+        Logger.log('[inbox] patch "' + p.file.getName() + '" failed and was dropped: ' + err);
+        failed.push(p);
       }
-      p.file.setTrashed(true);
     });
 
-    if (rulesetsDoc) {
-      rulesetsFile.setContent(JSON.stringify(rulesetsDoc));
-      try { backupTrackerFile_('rulesets', JSON.stringify(rulesetsDoc)); }
+    if (rulesetsDoc && applied.some(function(p) { return p.patch.target === 'rulesets'; })) {
+      const rsJson = JSON.stringify(rulesetsDoc);
+      rulesetsFile.setContent(rsJson);
+      try { backupTrackerFile_('rulesets', rsJson); }
       catch (backupErr) { Logger.log('Backup snapshot failed for rulesets: ' + backupErr); }
     }
-    if (dataDoc) {
+    if (dataDoc && applied.some(function(p) { return p.patch.target === 'data'; })) {
       tsgAutoScheduleDoc_(dataDoc);
-      // Piggyback the live heartbeat onto a write that is already happening — never a
-      // write of its own, and deliberately NOT a docVersion bump (see tsgNoteLiveHeartbeat_).
-      // This is "the deployed code was observed responding at X", not
-      // meta.lastRedeployVerification, which only Durand can ever set.
       var hb = tsgCurrentHeartbeat_();
       if (hb) { dataDoc.meta = dataDoc.meta || {}; dataDoc.meta.lastLiveHeartbeat = hb; }
-      dataFile.setContent(JSON.stringify(dataDoc));
-      try { backupTrackerFile_('data', JSON.stringify(dataDoc)); }
+      const dataJson = JSON.stringify(dataDoc);
+      dataFile.setContent(dataJson);
+      tsgCachePut_('docVersion', String(dataDoc.meta && dataDoc.meta.docVersion), 21600);
+      try { backupTrackerFile_('data', dataJson); }
       catch (backupErr) { Logger.log('Backup snapshot failed for data: ' + backupErr); }
     }
-    return patches.length;
+    // Trash only now, after the writes succeeded. A write that throws leaves every file in
+    // place for the next pass: at-least-once, never silently lost.
+    applied.forEach(function(p) { p.file.setTrashed(true); });
+    failed.forEach(function(p) { try { p.file.setName('FAILED-' + p.file.getName()); } catch (e2) {} p.file.setTrashed(true); });
+    return { ok: true, applied: applied.length, failed: failed.length };
   } finally {
     lock.releaseLock();
   }
 }
+
+// Script-cache helpers: every call is best-effort, the cache is an optimization only.
+var TSG_INBOX_EMPTY_TTL_SEC = 50;
+function tsgCachePut_(k, v, ttlSec) { try { CacheService.getScriptCache().put(k, v, ttlSec); } catch (err) {} }
+function tsgCacheGet_(k) { try { return CacheService.getScriptCache().get(k); } catch (err) { return null; } }
+function tsgCacheRemove_(k) { try { CacheService.getScriptCache().remove(k); } catch (err) {} }
 
 /**
  * Thread names are used as object keys, so a few JS-reserved ones can never be honest
@@ -163,7 +186,7 @@ function tsgHasThread_(doc, name) {
  * meta.version, which stays exactly what it always was: a static schema version (1).
  * Existing documents with no docVersion start at 1.
  */
-function applyRulesetPatch(doc, patch) {
+function applyRulesetPatch_(doc, patch) {
   if (!doc.meta) doc.meta = {};
   if (typeof doc.meta.docVersion !== 'number') doc.meta.docVersion = 1;
   if (!doc.threads) doc.threads = {};
@@ -178,9 +201,9 @@ function applyRulesetPatch(doc, patch) {
     // a conflict error to the user.
     const rsNow = patch.ts || new Date().toISOString();
     const currentVersion = doc.meta.docVersion;
-    if (typeof patch.baseVersion === 'number' && patch.baseVersion !== currentVersion) {
+    if (typeof patch.baseVersion !== 'number' || patch.baseVersion !== currentVersion) {
       doc.meta.rejectedSaves = doc.meta.rejectedSaves || [];
-      doc.meta.rejectedSaves.push({ ts: rsNow, nonce: patch.nonce || null, reason: 'stale_version', baseVersion: patch.baseVersion, currentVersion: currentVersion });
+      doc.meta.rejectedSaves.push({ ts: rsNow, nonce: patch.nonce || null, reason: (typeof patch.baseVersion !== 'number') ? 'missing_baseVersion' : 'stale_version', baseVersion: patch.baseVersion, currentVersion: currentVersion });
       if (doc.meta.rejectedSaves.length > 20) doc.meta.rejectedSaves = doc.meta.rejectedSaves.slice(-20);
       return; // no mutation, no version bump — this save did not happen
     }
@@ -253,6 +276,7 @@ function applyRulesetPatchOp_(doc, patch) {
     return;
   } else if (patch.op === 'remove_thread_memory') {
     if (!tsgHasThread_(doc, patch.name)) throw new Error('remove_thread_memory: thread not found: ' + patch.name);
+    if (typeof patch.index !== 'number' || patch.index < 0) throw new Error('remove_thread_memory: index must be a non-negative number');
     doc.threads[patch.name].memories.splice(patch.index, 1);
     doc.threads[patch.name].history.push({
       ts: now,
@@ -273,7 +297,7 @@ function applyRulesetPatchOp_(doc, patch) {
   if (patch.historyEntry) doc.history.push(Object.assign({ ts: now }, patch.historyEntry));
 }
 
-function applyDataPatch(doc, patch) {
+function applyDataPatch_(doc, patch) {
   const now = patch.ts || new Date().toISOString();
 
   if (patch.op === 'bulk') {
@@ -292,7 +316,7 @@ function applyDataPatch(doc, patch) {
       // `source`, if present, wins over the spread-in default.
       var subPatch = Object.assign({ ts: now, source: patch.source }, sub);
       if (subPatch.op === 'add_task') subPatch.__batchSiblingTitles = batchTitles;
-      applyDataPatch(doc, subPatch);
+      applyDataPatch_(doc, subPatch);
     });
     // Knowing the right title isn't enough on its own when it belongs to a sibling added
     // LATER in this same batch — that sibling doesn't have an id yet at the moment its
@@ -321,7 +345,7 @@ function applyDataPatch(doc, patch) {
     // used below, if this turns out to be a genuinely new task, to log what changed.
     var originalTitleForCleanup = task.title;
     if (task.title) task.title = tsgCleanTitle_(task.title);
-    // Every new task is run past the same classifier tsgSweepDuplicates/tsgTestDedup
+    // Every new task is run past the same classifier tsgSweepDuplicates
     // already use (tsgClassifyIncoming_), before it's allowed onto the board — added
     // 2026-08-26 so a duplicate is caught at the door instead of needing a sweep to
     // clean it up after the fact:
@@ -659,6 +683,7 @@ function applyDataPatch(doc, patch) {
     const prevSubitems = Array.isArray(t.subitems)
       ? t.subitems.map(function(s) { return Object.assign({}, s); })
       : [];
+    if (patch.fields) { ['id', 'history'].forEach(function(k) { delete patch.fields[k]; }); }  // server-owned
     Object.assign(t, patch.fields);
     t.history = t.history || [];
     tsgLogFieldChanges_(t.history, prevTaskSnapshot, t, TSG_TASK_DIFF_FIELDS, now, patch.source);
@@ -715,7 +740,9 @@ function applyDataPatch(doc, patch) {
     // field a caller needs to set wholesale. First user: doc.meta.standingItems, the
     // recurring Ops Manual duties (SOP-sourced, dated by cadence) that feed the Today
     // view's Admin checklist client-side — see dash_fixed2.html's buildStandingItemChecks.
-    Object.assign(doc.meta, patch.fields || {});
+    var metaFields = Object.assign({}, patch.fields || {});
+    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat'].forEach(function(k) { delete metaFields[k]; });  // server-owned
+    Object.assign(doc.meta, metaFields);
   } else if (patch.op === 'replace_all') {
     // A whole-document save — today this is only ever the dashboard's own doSave(),
     // submitted as a patch like everything else instead of written straight to disk
@@ -730,9 +757,9 @@ function applyDataPatch(doc, patch) {
     // it by hand. If a real auto-retry is ever implemented dashboard-side, this comment
     // needs updating again.
     const currentVersion = doc.meta.docVersion || 0;
-    if (typeof patch.baseVersion === 'number' && patch.baseVersion !== currentVersion) {
+    if (typeof patch.baseVersion !== 'number' || patch.baseVersion !== currentVersion) {
       doc.meta.rejectedSaves = doc.meta.rejectedSaves || [];
-      doc.meta.rejectedSaves.push({ ts: now, nonce: patch.nonce || null, reason: 'stale_version', baseVersion: patch.baseVersion, currentVersion: currentVersion });
+      doc.meta.rejectedSaves.push({ ts: now, nonce: patch.nonce || null, reason: (typeof patch.baseVersion !== 'number') ? 'missing_baseVersion' : 'stale_version', baseVersion: patch.baseVersion, currentVersion: currentVersion });
       if (doc.meta.rejectedSaves.length > 20) doc.meta.rejectedSaves = doc.meta.rejectedSaves.slice(-20);
       return; // no mutation, no version bump — this save did not happen
     }
@@ -742,6 +769,9 @@ function applyDataPatch(doc, patch) {
     tsgStampStatusChanges_(doc.tasks, nextTasks, now, 'Durand');
     tsgStampSubitemTouches_(doc.tasks, nextTasks, now, 'Durand');
     doc.tasks = nextTasks;
+    // A full save can carry client-minted ids; never let next_id fall behind them.
+    var maxId = (nextTasks || []).reduce(function(m, t) { return (t && typeof t.id === 'number' && t.id > m) ? t.id : m; }, 0);
+    if (typeof doc.meta.next_id !== 'number' || doc.meta.next_id <= maxId) doc.meta.next_id = maxId + 1;
     // next_id stays server-owned (only add_task ever advances it) — a client can't be
     // trusted to know the true max if something else added a task in the meantime, and
     // the version check above already guarantees nothing did if we got this far.
@@ -779,10 +809,10 @@ function applyDataPatch(doc, patch) {
 function tsgCheckToken_(e) {
   var expected = PropertiesService.getScriptProperties().getProperty('SCRIPT_TOKEN');
   if (!expected) {
-    Logger.log('[auth] WARNING: no SCRIPT_TOKEN script property set — the tracker API is currently OPEN ' +
-               'to anyone with the deployment URL. Set SCRIPT_TOKEN in Project Settings > Script Properties ' +
-               'to turn auth on.');
-    return true;
+    // Refuses (2026-09-15). The anonymous deployment that once justified the open default
+    // is gone, and google.script.run can reach doPost from any page this script serves.
+    Logger.log('[auth] SCRIPT_TOKEN is not set; refusing. Set it in Project Settings > Script Properties.');
+    return false;
   }
   return !!(e && e.parameter && e.parameter.token === expected);
 }
@@ -817,7 +847,7 @@ function tsgIsValidIsoDate_(s) {
  * It is never worth a Drive write of its own. The timestamp is stamped cheaply into a
  * Script Property (throttled to at most once every TSG_HEARTBEAT_THROTTLE_SEC via
  * CacheService, so a burst of GETs doesn't burn Properties quota), and folded into
- * Data.json's meta only when processInbox() is already writing that file for some other
+ * Data.json's meta only when processInbox_() is already writing that file for some other
  * reason. So doGet never gains a write of its own, the single-writer guarantee above is
  * untouched, and docVersion is never bumped by a heartbeat — a heartbeat can't
  * manufacture a save conflict for the dashboard.
@@ -914,10 +944,23 @@ function tsgHtmlEscape_(s) {
  * script's new authorization scopes. Idempotent: re-running replaces the trigger.
  * ---------------------------------------------------------------------------
  */
+/**
+ * Editor-run maintenance entry points must stay public (the editor can only run public
+ * functions), so each one refuses any caller who is not the owner. Under DOMAIN access every
+ * google.script.run caller has an identity, and the editor runs as the owner.
+ */
+function tsgAssertOwner_(what) {
+  if (!tsgIsOwnerEmail_(tsgSignedInEmail_())) throw new Error(what + ': owner only');
+}
+
 function tsgInboxTick() {
-  processInbox();
+  // processInbox_ sets a short-lived "inbox was empty" flag; while it holds, skip the Drive
+  // listing entirely (the dashboard's own saves clear the flag and process immediately).
+  if (tsgCacheGet_('inboxEmptyUntil')) return;
+  processInbox_();
 }
 function tsgInstallInboxTrigger() {
+  tsgAssertOwner_('tsgInstallInboxTrigger');
   var existing = ScriptApp.getProjectTriggers().filter(function(t) { return t.getHandlerFunction() === 'tsgInboxTick'; });
   existing.forEach(function(t) { ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('tsgInboxTick').timeBased().everyMinutes(1).create();
@@ -935,7 +978,8 @@ function tsgInstallInboxTrigger() {
  * page this script serves, including the placeholder, so the gate is not optional.
  */
 function tsgRpc(query, method, body) {
-  if (TSG_ACCESS_MODE === 'DOMAIN' && !tsgIsOwnerEmail_(tsgSignedInEmail_())) {
+  if (!tsgIsOwnerEmail_(tsgSignedInEmail_())) {
+    // Unconditional: with no identity (any non-DOMAIN mode) nobody gets in.
     return JSON.stringify({ ok: false, error: 'unauthorized' });
   }
   var params = {};
@@ -958,48 +1002,54 @@ function tsgRpc(query, method, body) {
 function doGet(e) {
   e = e || {};
   if (!e.parameter) e.parameter = {};
-  // processInbox() stays FIRST and stays UNGATED, deliberately: it is how _Inbox patch
+  if (e.parameter.api === 'version') {
+    // Polled every 45s by every open dashboard: answered from the script cache (set on every
+    // write) with no Drive I/O and no inbox pass. Falls back to one file read when cold.
+    var docVersion = null;
+    var cachedV = tsgCacheGet_('docVersion');
+    if (cachedV != null && cachedV !== '' && !isNaN(Number(cachedV))) {
+      docVersion = Number(cachedV);
+    } else {
+      try {
+        var vdoc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
+        if (vdoc && vdoc.meta && typeof vdoc.meta.docVersion === 'number') {
+          docVersion = vdoc.meta.docVersion;
+          tsgCachePut_('docVersion', String(docVersion), 21600);
+        }
+      } catch (err) { docVersion = null; }
+    }
+    return ContentService.createTextOutput(JSON.stringify({ ok: true, codeVersion: TSG_CODE_VERSION, docVersion: docVersion }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  // processInbox_() stays FIRST and stays UNGATED, deliberately: it is how _Inbox patch
   // files actually get applied, and gating it behind a token would silently strand every
   // queued write. It reads only files this script already owns and applies only patches
   // already sitting in a Drive folder only Durand can write to, so it is not an auth hole.
   tsgNoteLiveHeartbeat_();
-  processInbox();
+  processInbox_();
 
   if (e.parameter.api === 'sync') {
     // Intentionally ungated: returns no data at all ({ok:true}), and its only effect is
-    // the processInbox() call above, which already ran unconditionally.
+    // the processInbox_() call above, which already ran unconditionally.
     return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
   }
   // No ?api=whoami here, deliberately (2026-09-14): under this deployment's anonymous
   // access, Session.getActiveUser() makes Apps Script abort the whole request with
   // Google's "Sorry, unable to open the file at this time" page — it does not return ''.
   // Per-person views therefore need a domain-restricted deployment; see CLAUDE.md.
-  if (e.parameter.api === 'version') {
-    // Intentionally ungated: a version string is not sensitive, and the point is that
-    // Durand can open <exec URL>?api=version in a browser and see what is live.
-    // docVersion (2026-09-14) lets an open dashboard cheaply ask "has the document changed
-    // since I loaded it?" for background polling. A number, not data — stays ungated.
-    var docVersion = null;
-    try {
-      var vdoc = JSON.parse(getTrackerFile('data').getBlob().getDataAsString());
-      if (vdoc && vdoc.meta && typeof vdoc.meta.docVersion === 'number') docVersion = vdoc.meta.docVersion;
-    } catch (err) { docVersion = null; }
-    return ContentService.createTextOutput(JSON.stringify({ ok: true, codeVersion: TSG_CODE_VERSION, docVersion: docVersion }))
-      .setMimeType(ContentService.MimeType.JSON);
-  }
   if (e.parameter.api === 'data') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
-    return ContentService.createTextOutput(getTrackerFile('data').getBlob().getDataAsString())
+    return ContentService.createTextOutput(getTrackerFile_('data').getBlob().getDataAsString())
       .setMimeType(ContentService.MimeType.JSON);
   }
   if (e.parameter.api === 'rulesets') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
-    return ContentService.createTextOutput(getTrackerFile('rulesets').getBlob().getDataAsString())
+    return ContentService.createTextOutput(getTrackerFile_('rulesets').getBlob().getDataAsString())
       .setMimeType(ContentService.MimeType.JSON);
   }
   if (e.parameter.api === 'calendar') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
-    // start/end used to be handed straight to getCalendarHours(), where a missing or
+    // start/end used to be handed straight to getCalendarHours_(), where a missing or
     // malformed value became new Date('undefinedT00:00:00') — an Invalid Date that came
     // back as an empty event list. An empty calendar and a broken request are very
     // different things, so say which one this actually is.
@@ -1008,7 +1058,7 @@ function doGet(e) {
         ok: false, error: 'invalid or missing start/end date parameter'
       })).setMimeType(ContentService.MimeType.JSON);
     }
-    return ContentService.createTextOutput(JSON.stringify(getCalendarHours(e.parameter.start, e.parameter.end)))
+    return ContentService.createTextOutput(JSON.stringify(getCalendarHours_(e.parameter.start, e.parameter.end)))
       .setMimeType(ContentService.MimeType.JSON);
   }
   if (e.parameter.api === 'meetings') {
@@ -1038,7 +1088,7 @@ function doGet(e) {
     var who = tsgSignedInEmail_();
     if (!tsgIsOwnerEmail_(who)) {
       var rosterName = '';
-      try { rosterName = tsgRosterNameForEmail_((JSON.parse(getTrackerFile('data').getBlob().getDataAsString()).meta || {}).teamRoster, who); } catch (err) { rosterName = ''; }
+      try { rosterName = tsgRosterNameForEmail_((JSON.parse(getTrackerFile_('data').getBlob().getDataAsString()).meta || {}).teamRoster, who); } catch (err) { rosterName = ''; }
       return HtmlService.createHtmlOutput(tsgPersonPlaceholderHtml_(rosterName, who))
         .setTitle('TSG Task Tracker')
         .addMetaTag('viewport', 'width=device-width, initial-scale=1');
@@ -1085,7 +1135,7 @@ function tsgIsOffSiteMeeting_(title, location) {
   return true;
 }
 
-function getCalendarHours(startStr, endStr) {
+function getCalendarHours_(startStr, endStr) {
   const cal = CalendarApp.getDefaultCalendar();
   const tz = cal.getTimeZone();
   const start = new Date(startStr + 'T00:00:00');
@@ -1245,7 +1295,7 @@ var TSG_MEETING_MATCH_SYSTEM =
   'as a plausible best guess but are not sure, return that index with confident:false.';
 
 // Calendar meeting auto-search (2026-09-10) — backs the automatic half of "link a meeting":
-// the add_task path (applyDataPatch) calls this for any new task typed "Meeting" so Durand
+// the add_task path (applyDataPatch_) calls this for any new task typed "Meeting" so Durand
 // doesn't have to open the manual picker for the obvious cases. FUTURE EVENTS ONLY, same as
 // the manual picker (tsgListUpcomingMeetings_) — a meeting that already happened is never a
 // useful auto-link. The window is bounded (see start/end below) precisely so the whole
@@ -1583,7 +1633,7 @@ function tsgLinkMeetingToTask_(eventId, taskTitle, taskLink) {
 // Calendar has no dedicated "absence" event type this script can query directly.
 // Returns every ISO date such an event covers, so the auto-scheduler can treat that day
 // as fully booked instead of packing real task work into a day off. Deliberately kept
-// separate from getCalendarHours() above (which explicitly SKIPS all-day events for a
+// separate from getCalendarHours_() above (which explicitly SKIPS all-day events for a
 // different, still-valid reason: they're not a real timed meeting conflict) — the two
 // functions serve different callers and conflating them would leak a fabricated
 // multi-hour "meeting" into the dashboard's Today view and into
@@ -1722,9 +1772,9 @@ function doPost(e) {
   //     "+ Add" button goes through this instead of pushing straight into its local array
   //     and letting the next full save carry the new task along — that second path had no
   //     dedup check and no server-assigned id. Now every task addition, from any source,
-  //     runs through the same applyDataPatch('add_task') classifier.
+  //     runs through the same applyDataPatch_('add_task') classifier.
   // Either way it's queued into the same _Inbox folder and processed immediately by the
-  // same locked pipeline in processInbox() — the Inbox is the only path that ever touches
+  // same locked pipeline in processInbox_() — the Inbox is the only path that ever touches
   // the data file's contents, so a stale save comes back as an explicit conflict instead
   // of silently winning, and a duplicate task comes back merged instead of silently added.
   if (requested === 'data') {
@@ -1750,10 +1800,17 @@ function doPost(e) {
         ok: false, error: 'Could not queue save: ' + writeErr.message
       })).setMimeType(ContentService.MimeType.JSON);
     }
-    processInbox();
+    tsgCacheRemove_('inboxEmptyUntil');
+    var inboxRun = processInbox_();
+    if (inboxRun && inboxRun.busy) {
+      // The save IS queued (its inbox file exists); the tick applies it within a minute.
+      return ContentService.createTextOutput(JSON.stringify({
+        ok: false, error: 'busy', reason: 'Another write is being applied; your change is queued and will apply within a minute.'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
 
     var resultDoc = null;
-    try { resultDoc = JSON.parse(getTrackerFile('data').getBlob().getDataAsString()); } catch (err) { /* fall through */ }
+    try { resultDoc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString()); } catch (err) { /* fall through */ }
     var rejected = !!(resultDoc && Array.isArray(resultDoc.meta.rejectedSaves) &&
       resultDoc.meta.rejectedSaves.some(function(r) { return r.nonce === nonce; }));
     if (rejected) {
@@ -1804,10 +1861,16 @@ function doPost(e) {
         ok: false, error: 'Could not queue save: ' + writeErr.message
       })).setMimeType(ContentService.MimeType.JSON);
     }
-    processInbox();
+    tsgCacheRemove_('inboxEmptyUntil');
+    var inboxRunRs = processInbox_();
+    if (inboxRunRs && inboxRunRs.busy) {
+      return ContentService.createTextOutput(JSON.stringify({
+        ok: false, error: 'busy', reason: 'Another write is being applied; your change is queued and will apply within a minute.'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
 
     var rsDoc = null;
-    try { rsDoc = JSON.parse(getTrackerFile('rulesets').getBlob().getDataAsString()); } catch (err) { /* fall through */ }
+    try { rsDoc = JSON.parse(getTrackerFile_('rulesets').getBlob().getDataAsString()); } catch (err) { /* fall through */ }
     var rsMeta = (rsDoc && rsDoc.meta) || {};
     var rsRejected = !!(Array.isArray(rsMeta.rejectedSaves) &&
       rsMeta.rejectedSaves.some(function(r) { return r.nonce === rsNonce; }));
@@ -1826,7 +1889,7 @@ function doPost(e) {
   // mechanism with only one writer, and it isn't exposed to the dashboard-vs-Inbox race
   // that data and (as of 2026-09-02) rulesets both now route around.
   try {
-    getTrackerFile(requested).setContent(body);
+    getTrackerFile_(requested).setContent(body);
   } catch (writeErr) {
     try {
       MailApp.sendEmail(OWNER_EMAIL, '[TSG Task Tracker] Write failed: ' + requested,
@@ -1842,7 +1905,7 @@ function doPost(e) {
   }
 
   // (The rulesets backup that used to run here is gone with the direct write — the
-  // _Inbox pipeline in processInbox() already snapshots rulesets on every applied write.)
+  // _Inbox pipeline in processInbox_() already snapshots rulesets on every applied write.)
 
   return ContentService.createTextOutput(JSON.stringify({ ok: true, updated: requested })).setMimeType(ContentService.MimeType.JSON);
 }
@@ -1998,7 +2061,7 @@ function tsgStampLifecycleTimestamps_(t, now) {
 /**
  * Stamp field-change history onto nextTasks by diffing against prevTasks (whatever is
  * already in the doc before this save is applied). Pure function, no disk access — used
- * by applyDataPatch's replace_all op, inside the same locked/versioned apply as every
+ * by applyDataPatch_'s replace_all op, inside the same locked/versioned apply as every
  * other write. This used to run in doPost by re-reading the file from disk right before
  * an unlocked overwrite, which was exactly the kind of check-then-write race the
  * dashboard's own save was otherwise guilty of; now the diff and the write happen inside
@@ -2057,7 +2120,7 @@ function tsgStampSubitemTouchesForTask_(prevSubitems, nextSubitems, now, source)
   return changed;
 }
 
-// Whole-document variant used by applyDataPatch's replace_all op (the dashboard's own
+// Whole-document variant used by applyDataPatch_'s replace_all op (the dashboard's own
 // save) — diffs every task's subitems by id-matched pair, same shape/spirit as
 // tsgStampStatusChanges_ above. update_task/bulk go through
 // tsgStampSubitemTouchesForTask_ directly instead, since there's only ever one task
@@ -2320,7 +2383,8 @@ function tsgClassifyIncoming_(title, tasks) {
  * Only tier-1 confidence deletes. Tier-2 pairs are logged for you to read.
  * ------------------------------------------------------------------ */
 function tsgSweepDuplicates(apply) {
-  const doc = JSON.parse(getTrackerFile('data').getBlob().getDataAsString());
+  tsgAssertOwner_('tsgSweepDuplicates');
+  const doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
   const open = (doc.tasks || []).filter(function(t) {
     var st = String(t.status || '');
     return st !== 'Done' && st !== 'Cancelled';
@@ -2402,39 +2466,6 @@ function tsgSweepDuplicates(apply) {
   return { hard: hard, soft: soft };
 }
 
-/** Sanity check — run this after deploying, before you trust the dedup on live data. */
-function tsgTestDedup() {
-  const doc = JSON.parse(getTrackerFile('data').getBlob().getDataAsString());
-  const tasks = doc.tasks || [];
-
-  const cases = [
-    ['[ Holiday Party] Make deposit for Gas Lamp holiday party', 281],
-    ['[ Closing/Moving Checklist] Update closing checklist and notify Katy', 316],
-    ['[ KW Command Support] Assist Katy Kane with Dotloop login', 282],
-    ['[ Block Party Rentals] Submit event requirements for Beanie Bounce', 276],
-    ['Order new office chairs', null],
-    ['[ Recruiting] Interview a new buyer agent', null]
-  ];
-  cases.forEach(function(c) {
-    var v = tsgClassifyIncoming_(c[0], tasks);
-    var gotId = v.task ? v.task.id : null;
-    var ok = c[1] === null ? (v.verdict === 'new') : (v.verdict !== 'new' && gotId === c[1]);
-    Logger.log((ok ? 'PASS' : 'FAIL') + '  ' + v.verdict + '  #' + gotId + '  ' + c[0]);
-  });
-
-  // No existing task should match any other — anything here is a false positive.
-  var fp = 0;
-  tasks.forEach(function(t) {
-    var others = tasks.filter(function(x) { return x.id !== t.id; });
-    var v = tsgClassifyIncoming_(t.title, others);
-    if (v.verdict !== 'new') {
-      fp++;
-      Logger.log('FALSE POSITIVE  #' + t.id + ' "' + t.title + '" ~ #' + v.task.id);
-    }
-  });
-  Logger.log('false positives: ' + fp + ' of ' + tasks.length);
-}
-
 /**
  * ============================================================================
  * LIVE ESTIMATION — added 2026-08-24
@@ -2473,9 +2504,10 @@ function tsgTestDedup() {
 var TSG_CLAUDE = {
   endpoint: 'https://api.anthropic.com/v1/messages',
   version: '2023-06-01',
-  model: 'claude-sonnet-4-5',   // if this 404s, tsgClaude_ self-heals — see tsgResolveModel_
+  model: 'claude-opus-5',   // if this 404s, tsgClaude_ self-heals — see tsgResolveModel_
   maxTokens: 1024,
-  dailyCallCap: 200             // guard on the public ?target=claude endpoint
+  dailyCallCap: 200,            // guard on the ?target=claude endpoint
+  perRunCap: 12                 // estimator/matcher calls per execution; the rest stay pending for a later run
 };
 
 // Your capacity model: 6h of real working time per day, and no single task eats the
@@ -2507,7 +2539,7 @@ function tsgApiKey_() {
 }
 
 /** Lists models your key can actually reach. Run from the editor if the model id is stale. */
-function tsgListModels() {
+function tsgListModels_() {
   var key = tsgApiKey_();
   if (!key) { Logger.log('No ANTHROPIC_API_KEY in Script Properties.'); return []; }
   var resp = UrlFetchApp.fetch('https://api.anthropic.com/v1/models?limit=50', {
@@ -2527,20 +2559,28 @@ function tsgListModels() {
  * and carry on — so a model rename never silently breaks estimation.
  */
 function tsgResolveModel_() {
-  var props = PropertiesService.getScriptProperties();
-  var cached = props.getProperty('ANTHROPIC_MODEL_RESOLVED');
-  if (cached) return cached;
+  // A remembered fallback id is honored only if it was remembered for the model configured
+  // NOW; otherwise a stale fallback would silently outlive a deliberate model upgrade.
+  try {
+    var cached = JSON.parse(PropertiesService.getScriptProperties().getProperty('ANTHROPIC_MODEL_RESOLVED_V2') || 'null');
+    if (cached && cached.forModel === TSG_CLAUDE.model && cached.id) return cached.id;
+  } catch (err) {}
   return TSG_CLAUDE.model;
 }
 
 function tsgRememberModel_(id) {
-  PropertiesService.getScriptProperties().setProperty('ANTHROPIC_MODEL_RESOLVED', id);
+  PropertiesService.getScriptProperties().setProperty('ANTHROPIC_MODEL_RESOLVED_V2', JSON.stringify({ forModel: TSG_CLAUDE.model, id: id }));
 }
 
 /** Single Claude call. Returns the text, or null on any failure — never throws. */
+var TSG_CLAUDE_RUN_CALLS = 0;
 function tsgClaude_(system, user, maxTokens, _retried) {
   var key = tsgApiKey_();
   if (!key) { Logger.log('[claude] no ANTHROPIC_API_KEY set'); return null; }
+  if (!_retried) {
+    if (TSG_CLAUDE_RUN_CALLS >= TSG_CLAUDE.perRunCap) { Logger.log('[claude] per-run cap reached; call skipped'); return null; }
+    TSG_CLAUDE_RUN_CALLS++;
+  }
 
   var resp;
   try {
@@ -2562,13 +2602,19 @@ function tsgClaude_(system, user, maxTokens, _retried) {
   }
 
   var code = resp.getResponseCode();
+  if ((code === 429 || code === 529 || code >= 500) && !_retried) {
+    Logger.log('[claude] HTTP ' + code + '; retrying once after 2s');
+    Utilities.sleep(2000);
+    return tsgClaude_(system, user, maxTokens, true);
+  }
   if (code === 404 && !_retried) {
-    // Stale model id — find a live one, cache it, retry once.
-    var ids = tsgListModels();
-    var sonnet = ids.filter(function (i) { return i.indexOf('sonnet') !== -1; })[0] || ids[0];
-    if (sonnet) {
-      Logger.log('[claude] model 404 — switching to ' + sonnet);
-      tsgRememberModel_(sonnet);
+    var ids = tsgListModels_();
+    var pick = ids.filter(function (i) { return i.indexOf('opus-5') !== -1; })[0] ||
+               ids.filter(function (i) { return i.indexOf('opus') !== -1; })[0] ||
+               ids.filter(function (i) { return i.indexOf('sonnet') !== -1; })[0] || ids[0];
+    if (pick) {
+      Logger.log('[claude] model 404; switching to ' + pick);
+      tsgRememberModel_(pick);
       return tsgClaude_(system, user, maxTokens, true);
     }
   }
@@ -2767,7 +2813,8 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
  *   tsgReestimate(true, true)  -> include tasks that already have an estimate
  * ------------------------------------------------------------------ */
 function tsgReestimate(apply, includeEstimated) {
-  const doc = JSON.parse(getTrackerFile('data').getBlob().getDataAsString());
+  tsgAssertOwner_('tsgReestimate');
+  const doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
   const open = (doc.tasks || []).filter(function (t) {
     var st = String(t.status || '');
     if (st === 'Done' || st === 'Cancelled') return false;
@@ -2809,17 +2856,6 @@ function tsgReestimate(apply, includeEstimated) {
   return ops;
 }
 
-/**
- * One-time wrapper so this can be run from the Apps Script editor's function dropdown
- * (which calls the selected function with zero arguments — there's no UI to pass
- * tsgReestimate's args directly). Re-estimates every OPEN task, including ones that
- * already have a manually-entered estHours, overwriting them with the real estimate.
- * Safe to delete after running once.
- */
-function tsgReestimateAllOpenTasks() {
-  return tsgReestimate(true, true);
-}
-
 /* ------------------------------------------------------------------ *
  * Ask-Claude endpoint for the dashboard button.
  * POST ?target=claude  body: {"prompt":"...", "taskId":123}
@@ -2849,7 +2885,7 @@ function tsgClaudeEndpoint_(body) {
 
   var context = '';
   if (req.taskId) {
-    var doc = JSON.parse(getTrackerFile('data').getBlob().getDataAsString());
+    var doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
     var t = (doc.tasks || []).find(function (x) { return x.id === req.taskId; });
     if (t) {
       context = '\n\nThe question is about this task:\n' + JSON.stringify({
@@ -2923,7 +2959,8 @@ function tsgWorkdaysBetween_(startIso, endIso) {
  *   tsgDeriveActuals(true) -> write a patch into _Inbox
  */
 function tsgDeriveActuals(apply) {
-  const doc = JSON.parse(getTrackerFile('data').getBlob().getDataAsString());
+  tsgAssertOwner_('tsgDeriveActuals');
+  const doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
   const done = (doc.tasks || []).filter(function (t) {
     return String(t.status) === 'Done' && t.completedAt && !t.actualDays;
   });
@@ -2975,7 +3012,8 @@ function tsgDeriveActuals(apply) {
  * distribution is too thin to read anything into.
  */
 function tsgVelocityReport() {
-  const doc = JSON.parse(getTrackerFile('data').getBlob().getDataAsString());
+  tsgAssertOwner_('tsgVelocityReport');
+  const doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
   const rows = (doc.tasks || []).filter(function (t) {
     return t.actualDays && t.estDays && t.actualConfidence !== 'low';
   });
@@ -3009,8 +3047,9 @@ function tsgVelocityReport() {
  *   tsgAttributeCalendarHours('2026-08-01', '2026-08-31')
  */
 function tsgAttributeCalendarHours(startStr, endStr, apply) {
-  const doc = JSON.parse(getTrackerFile('data').getBlob().getDataAsString());
-  const events = getCalendarHours(startStr, endStr);
+  tsgAssertOwner_('tsgAttributeCalendarHours');
+  const doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
+  const events = getCalendarHours_(startStr, endStr);
   const tasks = (doc.tasks || []).filter(function (t) { return t.title; });
 
   var byTask = {};
@@ -3048,7 +3087,7 @@ function tsgAttributeCalendarHours(startStr, endStr, apply) {
  * AUTO-SCHEDULE — added 2026-08-25
  *
  * Runs on every write to the tracker — dashboard saves (doPost, target=data) and
- * every _Inbox patch batch (processInbox) alike — so an unscheduled task never
+ * every _Inbox patch batch (processInbox_) alike — so an unscheduled task never
  * just sits there. It lands on a real date automatically, the same moment it's
  * created or edited into existence, whether or not the dashboard happens to be
  * open at the time.
@@ -3548,15 +3587,15 @@ function tsgAutoScheduleDoc_(doc) {
   // Seed: real calendar meetings actually eat into the day too. Never let a calendar
   // hiccup block a save — schedule on task load alone if it's unreachable.
   try {
-    var events = getCalendarHours(today, tsgAddDays_(today, 120));
-    // bufferedHours (meeting duration + prep/travel — see getCalendarHours) is what
+    var events = getCalendarHours_(today, tsgAddDays_(today, 120));
+    // bufferedHours (meeting duration + prep/travel — see getCalendarHours_) is what
     // actually reserves capacity here; ev.hours stays the raw duration used elsewhere
     // for real actual-time attribution (tsgAttributeCalendarHours) and must not be
     // conflated with it.
     events.forEach(function(ev) { if (ev && ev.date >= today) addLoad(ev.date, ev.bufferedHours != null ? ev.bufferedHours : (ev.hours || 0)); });
   } catch (err) { /* calendar unavailable this run — proceed without it */ }
 
-  // Seed: full-day absences (OOO/PTO/vacation/holiday/sick). getCalendarHours()
+  // Seed: full-day absences (OOO/PTO/vacation/holiday/sick). getCalendarHours_()
   // deliberately skips all-day events (see its own comment — they're not a real timed
   // meeting conflict, and folding them in there would also leak a fabricated multi-hour
   // "meeting" into the dashboard's Today view and into tsgAttributeCalendarHours's
