@@ -805,16 +805,16 @@ section('Per-person view, milestone 1: slice, write rules, RPC (2026-09-15)');
   r = JSON.parse(sandbox.tsgPersonRpc('load', JSON.stringify({ as: 'Marj' })));
   check('load: a non-owner cannot use as= to see someone else', r.ok === true && r.person === 'Perly');
 
-  // doGet serves the person page to a roster member, and the owner's ?as= preview
+  // doGet serves the person page to a roster member, and the owner's ?person= preview
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'marj@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
   let page = sandbox.doGet({ parameter: {} });
   check('doGet: a roster member gets the person page stamped with their name', page.html.includes('PERSON PAGE for Marj'));
   sandbox.Session = origSession;
-  page = sandbox.doGet({ parameter: { as: 'Marj' } });
+  page = sandbox.doGet({ parameter: { person: 'Marj' } });
   check("doGet: owner with ?as=Marj gets Marj's page, flagged as a preview", page.html.includes('PERSON PAGE for Marj (as=Marj)'));
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'perly@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
-  page = sandbox.doGet({ parameter: { as: 'Marj' } });
-  check('doGet: a non-owner with ?as= still gets their own page', page.html.includes('PERSON PAGE for Perly'));
+  page = sandbox.doGet({ parameter: { person: 'Marj' } });
+  check('doGet: a non-owner with ?person= still gets their own page', page.html.includes('PERSON PAGE for Perly'));
 
   sandbox.Session = origSession; sandbox.DriveApp.getFileById = origGetFileById; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.LockService.getScriptLock = origLock;
 }

@@ -114,7 +114,7 @@ identifiers and environment facts that are otherwise only known from chat.
 ## Per-person view (2026-09-15, backend 2026-09-15.2, person UI 2026-09-15.1)
 
 - `person.html` is served by doGet to any signed-in roster member (owner still gets the
-  dashboard; owner + `?as=<Name>` previews that person's page). Placeholders stamped at
+  dashboard; owner + `?person=<Name>` previews that person's page; the parameter was `as` until 2026-09-15, which Google's front end rejected before doGet ran, showing "Sorry, unable to open the file"). Placeholders stamped at
   serve time: `__TSG_PERSON__`, `__TSG_AS__`, `__TSG_CODE_VERSION__`. No token, no URL.
 - Server decides everything: `tsgPersonSlice_` (own tasks by `owner`, tasks by `assignee`,
   subitems by `delegate`), `tsgPersonRpc(action, payloadJson)` with `load | update | add |

@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-15.3';
+const TSG_CODE_VERSION = '2026-09-15.4';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -1243,11 +1243,11 @@ function doGet(e) {
   // exec URL (2026-09-14; the per-person view itself is the next build).
   if (TSG_ACCESS_MODE === 'DOMAIN') {
     var who = tsgSignedInEmail_();
-    if (!tsgIsOwnerEmail_(who) || e.parameter.as) {
+    if (!tsgIsOwnerEmail_(who) || e.parameter.person) {
       var rosterName = '';
       try {
         var gateDoc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
-        rosterName = tsgPersonNameForRequest_(gateDoc, e.parameter.as);
+        rosterName = tsgPersonNameForRequest_(gateDoc, e.parameter.person);
       } catch (err) { rosterName = ''; }
       if (!rosterName) {
         return HtmlService.createHtmlOutput(tsgPersonPlaceholderHtml_('', who))
@@ -1256,10 +1256,10 @@ function doGet(e) {
       }
       // An uncaught exception here renders as Google's generic "unable to open the file"
       // page, which hides the cause. Catch it: the owner sees the message and stack, a
-      // roster member sees the placeholder (2026-09-15, diagnosing the ?as= preview).
+      // roster member sees the placeholder (2026-09-15, diagnosing the ?as= preview, since renamed ?person=).
       try {
         var personHtml = HtmlService.createHtmlOutputFromFile('person').getContent();
-        var personStamps = { '__TSG_PERSON__': rosterName, '__TSG_CODE_VERSION__': TSG_CODE_VERSION, '__TSG_AS__': (e.parameter.as && tsgIsOwnerEmail_(who)) ? rosterName : '' };
+        var personStamps = { '__TSG_PERSON__': rosterName, '__TSG_CODE_VERSION__': TSG_CODE_VERSION, '__TSG_AS__': (e.parameter.person && tsgIsOwnerEmail_(who)) ? rosterName : '' };
         Object.keys(personStamps).forEach(function(k) { personHtml = personHtml.split(k).join(tsgHtmlEscape_(personStamps[k])); });
         return HtmlService.createHtmlOutput(personHtml)
           .setTitle('TSG Task Tracker: ' + rosterName)
