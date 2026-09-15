@@ -167,10 +167,40 @@ identifiers and environment facts that are otherwise only known from chat.
   no due date, not only person-created ones.
 - Owner preview edits (`?person=<Name>`, RPC payload `as`) are recorded with `source` =
   the owner's roster name (`actor` in `tsgPersonRpc`), not the person's.
-- Dashboard toolbar has one "Views" button per roster member (not Durand) that opens
+- Dashboard toolbar has one "Views" button per roster member (not Durand). A click opens
+  that person's slice (owned by / assigned to / any subitem delegated to them) as the
+  board's own scoped list pop-up (`openPersonView` -> `openMultiTaskModal`; a single task
+  opens straight as its card, the modal's convention). Shift-click opens
   `<exec URL>?person=<Name>` in a named window from the dashboard tab's session
-  (`renderTeamViewButtons_`, `personViewUrl_`), which sidesteps the wrong-default-account
-  page. Test coverage in all three suites.
+  (`personViewUrl_`), which sidesteps the wrong-default-account page.
+
+## Per-person view, round 3 (2026-09-15, backend 2026-09-15.7, person UI 2026-09-15.3, dashboard UI 2026-09-15.4)
+
+- REVIEW GATE, per Durand ("tag pushed tasks for review before sending them to delegates'
+  views; not all tasks marked for Marj are actually hers; use the Triage tag so I have a
+  quick list"). `TSG_REVIEW_TAG = 'Triage'`. Anything AUTOMATION pushes that points at a
+  person other than Durand/Claude is tagged Triage: `add_task` (owner/assignee is a person,
+  or any subitem delegate is), the near-duplicate merge-as-subitem, `add_subitem` with a
+  person delegate (subitem-level tag), `update_task` that adds or re-delegates a subitem to
+  a person (subitem-level) or re-points `assignee`/`owner` at a person (task-level). Never
+  held: `personCreated` adds (the person's own page) and the dashboard's `replace_all`.
+  `tsgPersonSlice_` hides any task tagged Triage (with all its subitems) and any subitem
+  tagged Triage, so a Triage tag from ANY cause, an estimate to confirm included, keeps the
+  item off the delegate page until Durand clears it. History field `pending-review`.
+- Clearing: on the board row the Triage chip is a button (`reviewChipHtml` /
+  `approveReview`) that strips Triage from the task and every subitem and logs `review`;
+  the task modal's tag "x" on Triage does the same; a subitem-level hold also clears via the
+  subitem row's click-to-remove chip. The toolbar's Triage filter and the alert banner
+  ("needs triage: an estimate to confirm or a pushed delegate item to release") are the
+  quick list.
+- Person page: steps always nest under their parent row, open by default (`collapsedSubs`
+  holds the ones closed by hand). A task that is neither hers nor assigned to her but has
+  steps delegated to her is a read-only CONTEXT row (`context: true`, `editable: []`,
+  status/progress rolled up from HER steps only, owner shown, no notes/tags/estimate)
+  with her steps beneath it. Clicking a row (not a control) opens a card (`openCard`,
+  `#cardBack`) with the same edit rules and her steps; Escape, backdrop or x closes it; an
+  open card re-renders after every load. Adds lock the board (`#board.busy`, form disabled,
+  spinner in `#sync`) until the server answers.
 
 ## Cloud (Claude Code on the web) session facts
 

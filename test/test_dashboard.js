@@ -152,10 +152,36 @@ setTimeout(async () => {
     const btns = Array.from(doc.querySelectorAll('#teamViews button[data-person-view]')).map(b => b.getAttribute('data-person-view'));
     if (btns.join() !== 'Ryan') throw new Error('buttons: ' + JSON.stringify(btns));
   });
-  doc.querySelector('#teamViews button[data-person-view="Ryan"]').click();
-  tryCall("clicking a team view button opens ?person=<Name> in its own window", () => {
+  w.alert = function() {};
+  w.findTask(2).assignee = 'Ryan'; w.findTask(3).assignee = 'Ryan';   // two, so the list pop-up opens rather than a single card
+  doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  tryCall("clicking a team view button opens that person's filtered pop-up on this board", () => {
+    const modal = doc.getElementById('dayViewModal');
+    if (!modal.classList.contains('open')) throw new Error('pop-up not open');
+    if (doc.getElementById('dayViewTitle').textContent !== "Ryan's view") throw new Error('title: ' + doc.getElementById('dayViewTitle').textContent);
+    if (opened.length) throw new Error('a window was opened on a plain click');
+  });
+  doc.getElementById('dayViewModal').classList.remove('open');
+  doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true, shiftKey: true }));
+  tryCall("shift-clicking opens ?person=<Name> in its own window", () => {
     if (opened.length !== 1 || !/\?person=Ryan$/.test(opened[0].url) || opened[0].name !== 'tsg-view-Ryan') throw new Error('opened: ' + JSON.stringify(opened));
     if (/__TSG_API_URL__/.test(opened[0].url)) throw new Error('placeholder leaked into the URL');
+  });
+  w.findTask(2).assignee = undefined; w.findTask(3).assignee = undefined;
+
+  // Review gate: the Triage chip on a board row clears the tag from the task and its subitems
+  w.setView('board');
+  w.findTask(1).subitems[0].tags.push('Triage');
+  w.renderAll();
+  tryCall('a Triage tag renders as a clickable chip on the board row', () => {
+    if (!doc.querySelector('tr.task-row[data-id="1"] .review-chip')) throw new Error('no review chip on task 1');
+  });
+  doc.querySelector('tr.task-row[data-id="1"] .review-chip').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  tryCall('clicking the chip clears Triage from the task and its subitems and logs the release', () => {
+    const t = w.findTask(1);
+    if (t.tags.indexOf('Triage') !== -1) throw new Error('task still tagged');
+    if (t.subitems[0].tags.indexOf('Triage') !== -1) throw new Error('subitem still tagged');
+    if (!t.history.some(h => h.field === 'review')) throw new Error('no release history');
   });
 
   tryCall('setView(table)', () => w.setView('table'));

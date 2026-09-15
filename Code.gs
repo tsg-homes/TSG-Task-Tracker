@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-15.6';
+const TSG_CODE_VERSION = '2026-09-15.7';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -433,6 +433,10 @@ function applyDataPatch_(doc, patch) {
         to: 'Merged as a related subitem (' + Math.round(verdict.score * 100) + '% match on "' +
             verdict.via + '"): "' + task.title + '"'
       });
+      var mergedSub = match.subitems[match.subitems.length - 1];
+      if (!patch.personCreated && tsgIsDelegatePerson_(mergedSub.delegate)) {
+        tsgHoldForReview_(mergedSub, match.history, now, 'Merged subitem "' + task.title + '" held off ' + mergedSub.delegate + "'s view until reviewed");
+      }
       addResult = { verdict: 'merged-subitem', matchedTaskId: match.id, title: task.title };
     } else {
       // Genuinely new. Structural fields with an obvious, non-judgment default get one
@@ -674,6 +678,9 @@ function applyDataPatch_(doc, patch) {
       // sweep and could sit open forever without being flagged (2026-09-02).
       task.history = task.history || [];
       task.history.push({ ts: new Date().toISOString(), field: 'created', from: null, to: null });
+      if (!patch.personCreated && tsgTaskNeedsDelegateReview_(task)) {
+        tsgHoldForReview_(task, task.history, now, 'Held off the delegate views until Durand clears the Triage tag');
+      }
       doc.tasks.push(task);
       addResult = { verdict: 'added', taskId: task.id, title: task.title };
     }
@@ -706,6 +713,17 @@ function applyDataPatch_(doc, patch) {
     tsgStampLifecycleTimestamps_(t, now);
     if (patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'subitems')) {
       tsgStampSubitemTouchesForTask_(prevSubitems, t.subitems, now, patch.source);
+      (t.subitems || []).forEach(function(s, i) {
+        var p = prevSubitems[i];
+        var fresh = !p || String(p.title || '') !== String(s.title || '') || String(p.delegate || '') !== String(s.delegate || '');
+        if (s && fresh && tsgIsDelegatePerson_(s.delegate)) {
+          tsgHoldForReview_(s, t.history, now, 'Subitem "' + s.title + '" held off ' + s.delegate + "'s view until reviewed");
+        }
+      });
+    }
+    if (patch.fields && ((Object.prototype.hasOwnProperty.call(patch.fields, 'assignee') && !tsgValuesEqual_(prevTaskSnapshot.assignee, t.assignee) && tsgIsDelegatePerson_(t.assignee)) ||
+                         (Object.prototype.hasOwnProperty.call(patch.fields, 'owner') && !tsgValuesEqual_(prevTaskSnapshot.owner, t.owner) && tsgIsDelegatePerson_(t.owner)))) {
+      tsgHoldForReview_(t, t.history, now, 'Re-pointed at ' + (t.assignee || t.owner) + ' by a patch; held off their view until reviewed');
     }
     // A changed estHours invalidates the whole plan built from the OLD estHours —
     // scheduledStart/scheduledDays/estDays/timelineEnd were all derived from it. Left in
@@ -769,6 +787,10 @@ function applyDataPatch_(doc, patch) {
     }
     t.subitems = t.subitems || [];
     t.subitems.push(patch.subitem);
+    if (tsgIsDelegatePerson_(patch.subitem.delegate)) {
+      t.history = t.history || [];
+      tsgHoldForReview_(patch.subitem, t.history, now, 'Subitem "' + patch.subitem.title + '" held off ' + patch.subitem.delegate + "'s view until reviewed");
+    }
   } else if (patch.op === 'set_meta') {
     // Generic, reusable merge into doc.meta — unlike remove_dismissed_google_task_ids
     // above (one-time, parameter-free), this is meant for any future top-level meta
@@ -1081,27 +1103,49 @@ function tsgPersonNameForRequest_(doc, asOverride) {
   return tsgRosterNameForEmail_(roster, who);
 }
 
+function tsgStatusOfSubs_(subs) {
+  if (!subs.length) return 'Not Started';
+  if (subs.every(function(s) { return s.done; })) return 'Done';
+  if (subs.some(function(s) { return s.status === 'Blocked'; })) return 'Blocked';
+  if (subs.some(function(s) { return s.done || s.status === 'In Progress'; })) return 'In Progress';
+  if (subs.some(function(s) { return s.status === 'Waiting'; })) return 'Waiting';
+  return 'Not Started';
+}
+/**
+ * The rows a person's page shows. Tasks and subitems tagged Pending Review are invisible
+ * to them. A task that is neither theirs nor assigned to them but carries subitems
+ * delegated to them appears as a read-only CONTEXT row (title, rolled-up status of their
+ * steps, priority, due, owner; no notes, no tags) so those steps group under it.
+ */
 function tsgPersonSlice_(doc, name) {
   var rows = [];
   (doc.tasks || []).forEach(function(t) {
-    if (!t) return;
+    if (!t || tsgIsHeldForReview_(t)) return;
     var isOwn = t.owner === name;
     var isAssigned = !isOwn && t.assignee === name;
-    if (isOwn || isAssigned) {
-      var subs = t.subitems || [];
+    var subs = t.subitems || [];
+    var mine = [];
+    subs.forEach(function(s, i) { if (s && s.delegate === name && !tsgIsHeldForReview_(s)) mine.push({ s: s, i: i }); });
+    if (!isOwn && !isAssigned && !mine.length) return;
+    var context = !isOwn && !isAssigned;
+    var mineSubs = mine.map(function(m) { return m.s; });
+    var mineDone = mineSubs.filter(function(s) { return s.done; }).length;
+    rows.push({
+      kind: 'task', id: t.id, own: isOwn, context: context, title: t.title || '',
+      status: context ? tsgStatusOfSubs_(mineSubs) : (t.status || 'Not Started'),
+      priority: t.priority || '',
+      progress: context ? Math.round((mineDone / mineSubs.length) * 100) : tsgTaskProgress_(t),
+      due: t.timelineEnd || '', notes: context ? '' : (t.notes || ''), group: t.group || '', owner: t.owner || '',
+      tags: context ? [] : (t.tags || []).slice(), taskType: context ? '' : (t.taskType || ''),
+      estHours: (!context && typeof t.estHours === 'number') ? t.estHours : null,
+      subTotal: context ? mineSubs.length : subs.length,
+      subDone: context ? mineDone : subs.filter(function(s) { return s && s.done; }).length,
+      editable: isOwn ? TSG_PERSON_TASK_FIELDS_OWN.slice() : (isAssigned ? TSG_PERSON_TASK_FIELDS_DELEGATED.slice() : [])
+    });
+    mine.forEach(function(m) {
+      var s = m.s;
       rows.push({
-        kind: 'task', id: t.id, own: isOwn, title: t.title || '', status: t.status || 'Not Started',
-        priority: t.priority || '', progress: tsgTaskProgress_(t),
-        due: t.timelineEnd || '', notes: t.notes || '', group: t.group || '', owner: t.owner || '',
-        tags: (t.tags || []).slice(), taskType: t.taskType || '', estHours: (typeof t.estHours === 'number') ? t.estHours : null,
-        subTotal: subs.length, subDone: subs.filter(function(s) { return s && s.done; }).length,
-        editable: isOwn ? TSG_PERSON_TASK_FIELDS_OWN.slice() : TSG_PERSON_TASK_FIELDS_DELEGATED.slice()
-      });
-    }
-    (t.subitems || []).forEach(function(s, i) {
-      if (!s || s.delegate !== name) return;
-      rows.push({
-        kind: 'sub', id: t.id, index: i, own: false, parentOwn: isOwn, parentTitle: t.title || '', title: s.title || '',
+        kind: 'sub', id: t.id, index: m.i, own: false, parentOwn: isOwn, parentTitle: t.title || '', title: s.title || '',
         status: s.done ? 'Done' : (s.status || 'Not Started'), priority: s.priority || t.priority || '',
         progress: s.done ? 100 : (typeof s.progress === 'number' ? s.progress : 0), done: !!s.done,
         due: s.timelineEnd || '', notes: s.notes || '', group: t.group || '', owner: t.owner || '', subTotal: 0,
@@ -2942,7 +2986,35 @@ var TSG_ESTIMATE_SYSTEM =
 
 // Set by the system itself — never something the estimator should be allowed to hand back,
 // even if it ignores the instruction not to. Filtered out of parsed.tags defensively below.
+var TSG_REVIEW_TAG = 'Triage';
 var TSG_RESERVED_TAGS = ['Triage', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude'];
+
+/**
+ * Review gate (2026-09-15, per Durand: "when new tasks are pushed, tag them for review
+ * before sending them to delegates' views — not all tasks marked for Marj are actually
+ * hers"). Anything AUTOMATION pushes that points at a person other than Durand (a task
+ * owned by or assigned to them, or a subitem delegated to them) is tagged Triage (per
+ * Durand, "use the triage tag so I have a quick list": the toolbar's Triage filter and the
+ * alert banner already list it) and stays off that person's page until Durand clears the
+ * tag on his board. So a Triage tag from ANY cause, an estimate to confirm included, keeps
+ * an item off the delegate views until cleared. A task the person created themself
+ * (personCreated) and Durand's own dashboard edits (replace_all) are never held.
+ */
+function tsgIsDelegatePerson_(name) {
+  var n = String(name || '').trim().toLowerCase();
+  return !!n && n !== 'durand' && n !== 'claude' && n !== 'unassigned';
+}
+function tsgTaskNeedsDelegateReview_(task) {
+  if (tsgIsDelegatePerson_(task.owner) || tsgIsDelegatePerson_(task.assignee)) return true;
+  return (task.subitems || []).some(function(s) { return s && tsgIsDelegatePerson_(s.delegate); });
+}
+function tsgIsHeldForReview_(item) { return !!item && (item.tags || []).indexOf(TSG_REVIEW_TAG) !== -1; }
+function tsgHoldForReview_(item, historyArr, now, why) {
+  if (!item || tsgIsHeldForReview_(item)) return false;
+  item.tags = Array.from(new Set((item.tags || []).concat([TSG_REVIEW_TAG])));
+  if (historyArr) historyArr.push({ ts: now, field: 'pending-review', from: null, to: why });
+  return true;
+}
 
 /**
  * Determine one or more judgment fields for a task. Claude only — no text-heuristic fallback

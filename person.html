@@ -145,6 +145,27 @@
   .add-form input[name="title"] { flex: 2; min-width: 180px; }
   .add-form textarea { flex: 2; min-width: 180px; min-height: 32px; resize: vertical; }
   .empty { color: var(--text-muted); padding: 14px; font-size: 13px; }
+  /* Busy lock while an add or save is in flight */
+  #board.busy { pointer-events: none; opacity: 0.55; }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--brand); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  tr.task-row { cursor: pointer; }
+  tr.task-row.context td.title-cell { font-weight: 700; }
+  .ctx-note { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+  /* Card (edit view) */
+  .modal-back { position: fixed; inset: 0; background: rgba(10,14,13,0.55); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; z-index: 50; overflow-y: auto; }
+  .modal-back[hidden] { display: none; }
+  .card { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 14px; width: 100%; max-width: 760px; box-shadow: 0 20px 60px rgba(0,0,0,0.35); padding: 22px 24px 24px; }
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+  .card-title { font-family: 'Playfair Display', serif; font-size: 22px; margin: 0; line-height: 1.25; flex: 1; outline: none; }
+  .card-title[contenteditable="true"]:focus { border-bottom: 1px dashed var(--border); }
+  .card-grid { display: grid; grid-template-columns: 120px 1fr; gap: 8px 14px; align-items: center; font-size: 13px; margin-bottom: 14px; }
+  .card-grid b { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+  .card-notes b, .card-subs b { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 14px 0 6px; }
+  .card-notes-edit { min-height: 60px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; outline: none; background: var(--surface-2); }
+  .card-notes-edit[contenteditable="true"]:focus { border-color: var(--brand); }
+  .card-notes-edit:empty:before { content: 'Add notes — progress is read from them'; color: var(--text-muted); opacity: 0.6; }
+  .card .sub-list { padding: 0; }
   footer.tsg-footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--gridline); font-size: 11.5px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
   @media (max-width: 720px) {
     .wrap { width: auto; padding: 16px 16px 48px; }
@@ -189,13 +210,17 @@
     </div>
   </div>
 
+  <div class="modal-back" id="cardBack" hidden>
+    <div class="card" id="card" role="dialog" aria-modal="true" aria-label="Task"></div>
+  </div>
+
   <footer class="tsg-footer">
     <span>Changes save as you make them and reach Durand's board within a minute. Progress is read from your notes.</span>
     <span id="versionStamp"></span>
   </footer>
 </div>
 <script>
-  const PERSON_UI_VERSION = '2026-09-15.2';
+  const PERSON_UI_VERSION = '2026-09-15.3';
   const PERSON = '__TSG_PERSON__';
   const AS = '__TSG_AS__';
   const CODE_VERSION = '__TSG_CODE_VERSION__';
@@ -205,8 +230,9 @@
   const AVATAR_PALETTE = ['#15464A', '#1d5c61', '#0f3437', '#2c6e63', '#3a4a44', '#004225', '#26413d', '#4a5a52'];
   let STATE = { rows: [], statuses: [], priorities: [], docVersion: null };
   let lastRenderedVersion = null;
-  const expanded = new Set();
+  const collapsedSubs = new Set();   // subtasks show open by default; this holds the parents closed by hand
   const collapsedGroups = new Set();
+  let openCardKey = null;
 
   function rpc(action, payload) {
     const body = Object.assign({}, payload || {});
@@ -221,7 +247,11 @@
     });
   }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-  function setSync(text, isErr) { const el = document.getElementById('sync'); el.textContent = text; el.className = isErr ? 'err' : ''; }
+  function setSync(text, isErr, spinning) { const el = document.getElementById('sync'); el.innerHTML = (spinning ? '<span class="spin"></span>' : '') + esc(text); el.className = isErr ? 'err' : ''; }
+  function setBusy(on) {
+    document.getElementById('board').classList.toggle('busy', !!on);
+    Array.prototype.forEach.call(document.querySelectorAll('#addForm input, #addForm select, #addForm textarea, #addForm button'), function(el) { el.disabled = !!on; });
+  }
   function fmtDate(iso) { if (!iso) return ''; const d = new Date(String(iso).slice(0, 10) + 'T00:00:00'); return isNaN(d) ? iso : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
   function todayIso() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
   function editing() { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.getAttribute('contenteditable') === 'true'); }
@@ -243,27 +273,31 @@
   function progressHtml(pct) { return '<div class="progress-wrap" title="Worked out from your notes, or from the subtasks when there are any"><div class="progress-track"><div class="progress-fill" style="width:' + pct + '%"></div></div><span class="pct">' + pct + '%</span></div>'; }
   function tagChipHtml(tag) { return '<span class="tag-chip ' + (TAG_COLORS[tag] || '') + '">' + esc(tag) + '</span>'; }
 
+  function subsOf(r) { return r.kind === 'task' ? STATE.rows.filter(function(x) { return x.kind === 'sub' && x.id === r.id; }) : []; }
   function taskRowHtml(r) {
     const can = function(f) { return r.editable.indexOf(f) !== -1; };
-    const subs = r.kind === 'task' ? STATE.rows.filter(function(s) { return s.kind === 'sub' && s.parentOwn && s.id === r.id; }) : [];
+    const subs = subsOf(r);
     const hasSubs = subs.length > 0;
-    const isOpen = hasSubs && expanded.has(r.id);
+    const isOpen = hasSubs && !collapsedSubs.has(r.id);
     const key = keyOf(r);
     const pct = r.status === 'Done' ? 100 : r.progress;
     const overdue = r.due && r.due < todayIso() && r.status !== 'Done';
     const title = can('title')
       ? '<span class="ttl-edit" contenteditable="true" data-field="title">' + esc(r.title) + '</span>'
       : '<span class="ttl-edit">' + esc(r.title) + '</span>';
-    const badge = hasSubs ? '<span class="sub-count-badge" title="' + r.subDone + ' of ' + r.subTotal + ' subtasks done">' + r.subDone + '/' + r.subTotal + '</span>' : '';
-    const parent = r.kind === 'sub' ? '<span class="parent">part of: ' + esc(r.parentTitle) + '</span>' : '';
+    const badge = hasSubs ? '<span class="sub-count-badge" title="' + r.subDone + ' of ' + r.subTotal + ' steps done">' + r.subDone + '/' + r.subTotal + '</span>' : '';
+    const ctx = r.context ? '<span class="parent ctx-note">' + esc(r.owner || 'Durand') + "'s task; your steps are below</span>" : '';
     const due = can('timelineEnd')
       ? '<span class="due-cell ' + (overdue ? 'overdue' : '') + '"><input type="date" class="due-input" data-field="due" value="' + esc(r.due) + '" aria-label="Due"></span>'
       : '<span class="due-cell ' + (overdue ? 'overdue' : '') + '">' + (r.due ? 'Due ' + esc(fmtDate(r.due)) : '<span class="est">No due date</span>') + '</span>';
     const tags = (r.taskType ? '<span class="type-badge">' + esc(r.taskType) + '</span>' : '') + (r.tags || []).map(tagChipHtml).join('');
     const est = (r.estHours != null) ? '<span class="est">' + r.estHours + 'h est.</span>' : '';
-    let html = '<tr class="task-row" data-key="' + esc(key) + '" data-kind="' + esc(r.kind) + '" data-id="' + r.id + '" data-index="' + (r.index == null ? '' : r.index) + '">' +
-      '<td style="width:26px;">' + (hasSubs ? '<button type="button" class="icon-btn" data-expand="' + r.id + '" aria-label="Show subtasks">' + (isOpen ? '▾' : '▸') + '</button>' : '') + '</td>' +
-      '<td class="title-cell">' + title + badge + parent + '</td>' +
+    const notes = r.context
+      ? '<span class="ro est">—</span>'
+      : '<span contenteditable="' + (can('notes') ? 'true' : 'false') + '" data-field="notes">' + esc(r.notes) + '</span>';
+    let html = '<tr class="task-row' + (r.context ? ' context' : '') + '" data-key="' + esc(key) + '" data-kind="' + esc(r.kind) + '" data-id="' + r.id + '" data-index="' + (r.index == null ? '' : r.index) + '">' +
+      '<td style="width:26px;">' + (hasSubs ? '<button type="button" class="icon-btn" data-expand="' + r.id + '" aria-label="Show steps">' + (isOpen ? '▾' : '▸') + '</button>' : '') + '</td>' +
+      '<td class="title-cell">' + title + badge + ctx + '</td>' +
       '<td class="cell-group"><div class="cell-group-stack">' +
         '<div class="cell-group-row owner-cell" title="Owner">' + avatarHtml(r.owner) + esc(r.owner || '') + '</div>' +
         '<div class="cell-group-row">' + pillHtml('status', r.status, can('status'), STATE.statuses) + pillHtml('priority', r.priority, can('priority'), STATE.priorities) + '</div>' +
@@ -272,7 +306,7 @@
         (tags || est ? '<div class="cell-group-row">' + tags + est + '</div>' : '') +
         '<div class="cell-group-row">' + due + progressHtml(pct) + '</div>' +
       '</div></td>' +
-      '<td class="notes-cell"><span contenteditable="' + (can('notes') ? 'true' : 'false') + '" data-field="notes">' + esc(r.notes) + '</span></td>' +
+      '<td class="notes-cell">' + notes + '</td>' +
       '</tr>';
     if (hasSubs) {
       html += '<tr class="sub-row" data-subrow="' + r.id + '"' + (isOpen ? '' : ' style="display:none"') + '><td colspan="5"><div class="sub-list">' + subs.map(subItemHtml).join('') + '</div></td></tr>';
@@ -307,7 +341,7 @@
   function sortRows(a, b) { return (STATUS_ORDER[a.status] || 0) - (STATUS_ORDER[b.status] || 0) || String(a.due || '9').localeCompare(String(b.due || '9')) || a.id - b.id; }
 
   function render() {
-    const top = STATE.rows.filter(function(r) { return r.kind === 'task' || !r.parentOwn; });
+    const top = STATE.rows.filter(function(r) { return r.kind === 'task'; });
     const delegated = top.filter(function(r) { return !r.own && r.status !== 'Done'; }).sort(sortRows);
     const own = top.filter(function(r) { return r.own && r.status !== 'Done'; }).sort(sortRows);
     const done = top.filter(function(r) { return r.status === 'Done'; }).sort(sortRows);
@@ -330,7 +364,39 @@
     const sel = document.getElementById('addPriority');
     if (!sel.options.length) STATE.priorities.forEach(function(p) { const o = document.createElement('option'); o.value = p; o.textContent = p; if (p === 'Medium') o.selected = true; sel.appendChild(o); });
     lastRenderedVersion = STATE.docVersion;
+    if (openCardKey) renderCard();
   }
+
+  // ---- Card / edit view (2026-09-15, per Durand: "clicking on her tasks should open a card") ----
+  function renderCard() {
+    const r = rowByKey(openCardKey);
+    const back = document.getElementById('cardBack'), card = document.getElementById('card');
+    if (!r) { back.hidden = true; openCardKey = null; return; }
+    const can = function(f) { return r.editable.indexOf(f) !== -1; };
+    const subs = subsOf(r);
+    const pct = r.status === 'Done' ? 100 : r.progress;
+    card.dataset.key = keyOf(r); card.dataset.kind = r.kind; card.dataset.id = r.id; card.dataset.index = r.index == null ? '' : r.index;
+    card.innerHTML =
+      '<div class="card-head"><h2 class="card-title" contenteditable="' + (can('title') ? 'true' : 'false') + '" data-field="title">' + esc(r.title) + '</h2>' +
+        '<button type="button" class="icon-btn" id="cardClose" aria-label="Close">&#10005;</button></div>' +
+      '<div class="card-grid">' +
+        '<b>Owner</b><span>' + avatarHtml(r.owner) + esc(r.owner || '') + (r.context ? ' <span class="est">(their task; only your steps below are yours to edit)</span>' : '') + '</span>' +
+        '<b>Status</b><span>' + pillHtml('status', r.status, can('status'), STATE.statuses) + '</span>' +
+        '<b>Priority</b><span>' + pillHtml('priority', r.priority, can('priority'), STATE.priorities) + '</span>' +
+        '<b>Due</b><span>' + (can('timelineEnd') ? '<input type="date" class="due-input" data-field="due" value="' + esc(r.due) + '" aria-label="Due">' : (r.due ? esc(fmtDate(r.due)) : '<span class="est">No due date</span>')) + '</span>' +
+        '<b>Progress</b><span>' + progressHtml(pct) + '</span>' +
+        ((r.taskType || (r.tags || []).length || r.estHours != null) ? '<b>Details</b><span>' + (r.taskType ? '<span class="type-badge">' + esc(r.taskType) + '</span>' : '') + (r.tags || []).map(tagChipHtml).join('') + (r.estHours != null ? '<span class="est">' + r.estHours + 'h est.</span>' : '') + '</span>' : '') +
+      '</div>' +
+      (r.context ? '' : '<div class="card-notes"><b>Notes</b><div class="card-notes-edit" contenteditable="' + (can('notes') ? 'true' : 'false') + '" data-field="notes">' + esc(r.notes) + '</div></div>') +
+      (subs.length ? '<div class="card-subs"><b>Your steps</b><div class="sub-list">' + subs.map(subItemHtml).join('') + '</div></div>' : '');
+    back.hidden = false;
+  }
+  function openCard(key) { openCardKey = key; renderCard(); const t = document.querySelector('#card .card-title'); if (t && t.getAttribute('contenteditable') !== 'true') document.getElementById('cardClose').focus(); }
+  function closeCard() { openCardKey = null; document.getElementById('cardBack').hidden = true; }
+  document.getElementById('cardBack').addEventListener('click', function(e) {
+    if (e.target === e.currentTarget || e.target.closest('#cardClose')) closeCard();
+  });
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && openCardKey) closeCard(); });
 
   async function load(silent) {
     if (!silent) setSync('Loading…');
@@ -350,7 +416,7 @@
     const payload = { kind: holder.dataset.kind, id: Number(holder.dataset.id), fields: {} };
     if (holder.dataset.index !== '') payload.index = Number(holder.dataset.index);
     payload.fields[field] = value;
-    setSync(field === 'notes' ? 'Saving… reading progress from your notes' : 'Saving…');
+    setSync(field === 'notes' ? 'Saving… reading progress from your notes' : 'Saving…', false, true);
     holder.classList.remove('error');
     try {
       const r = await rpc('update', payload);
@@ -364,7 +430,7 @@
       await load(true);
     }
   }
-  function holderOf(el) { return el.closest('tr[data-key], .sub-item[data-key]'); }
+  function holderOf(el) { return el.closest('tr[data-key], .sub-item[data-key], .card[data-key]'); }
 
   document.body.addEventListener('change', function(e) {
     const el = e.target; const holder = holderOf(el); if (!holder || !el.dataset.field) return;
@@ -389,7 +455,9 @@
   });
   document.body.addEventListener('click', function(e) {
     const ex = e.target.closest('[data-expand]');
-    if (ex) { const id = Number(ex.dataset.expand); if (expanded.has(id)) expanded.delete(id); else expanded.add(id); render(); return; }
+    if (ex) { const id = Number(ex.dataset.expand); if (collapsedSubs.has(id)) collapsedSubs.delete(id); else collapsedSubs.add(id); render(); return; }
+    const row = e.target.closest('tr.task-row[data-key]');
+    if (row && !e.target.closest('select, input, button, textarea, [contenteditable="true"], a')) { openCard(row.dataset.key); return; }
     const head = e.target.closest('.group-head[data-toggle]');
     if (head && !e.target.closest('button')) {
       const id = head.dataset.toggle;
@@ -410,7 +478,7 @@
     const btn = document.getElementById('addBtn');
     const title = document.getElementById('addTitle').value.trim();
     if (!title) return;
-    btn.disabled = true; setSync('Adding… estimating and breaking it into steps');
+    setBusy(true); setSync('Adding… estimating, breaking it into steps and scheduling (10–30 s)', false, true);
     try {
       const r = await rpc('add', { title: title, priority: document.getElementById('addPriority').value, due: document.getElementById('addDue').value, notes: document.getElementById('addNotes').value });
       if (!r.ok) throw new Error(r.error || 'add failed');
@@ -420,7 +488,7 @@
       await load(true);
     } catch (err) {
       setSync('Not added: ' + (err.message || err), true);
-    } finally { btn.disabled = false; }
+    } finally { setBusy(false); }
   });
 
   async function poll() {

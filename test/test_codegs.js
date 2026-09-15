@@ -745,7 +745,9 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   driveFilesFixture = []; calendarEventsFixture = [];
   // slice
   const rows = sandbox.tsgPersonSlice_(personDoc(), 'Marj');
-  check('slice: own tasks, assigned task, delegated subitems; nothing else', rows.length === 6 && !rows.some(r => r.id === 4) && !rows.some(r => r.kind === 'sub' && r.title === 'Perly part'));
+  check('slice: own tasks, assigned task, delegated subitems under a context parent; nothing else', rows.length === 7 && !rows.some(r => r.id === 4) && !rows.some(r => r.kind === 'sub' && r.title === 'Perly part'));
+  const ctx = rows.find(r => r.kind === 'task' && r.id === 1);
+  check("slice: Durand's task with her step appears as a read-only context row without notes or tags", !!ctx && ctx.context === true && ctx.editable.length === 0 && ctx.notes === '' && ctx.owner === 'Durand' && ctx.subTotal === 1 && ctx.status === 'Not Started' && ctx.progress === 0);
   const own = rows.find(r => r.id === 3), assigned = rows.find(r => r.id === 2), sub = rows.find(r => r.kind === 'sub' && r.id === 1), stepped = rows.find(r => r.kind === 'task' && r.id === 5);
   check('own task: title/status/priority/due/notes editable, progress never', own.own === true && own.editable.join() === 'title,status,priority,timelineEnd,notes');
   check('assigned task: status and notes only', assigned.editable.join() === 'status,notes');
@@ -787,7 +789,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   };
 
   let r = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
-  check('load: Marj gets her rows and the status/priority vocab', r.ok && r.person === 'Marj' && r.rows.length === 6 && r.statuses.includes('Done') && r.priorities.includes('High'));
+  check('load: Marj gets her rows and the status/priority vocab', r.ok && r.person === 'Marj' && r.rows.length === 7 && r.statuses.includes('Done') && r.priorities.includes('High'));
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { priority: 'Critical' } })));
   check('update: priority on an assigned task is refused server-side', r.ok === false && /not editable: priority/.test(r.error));
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { due: '2026-10-01' } })));
@@ -840,7 +842,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   r = JSON.parse(sandbox.tsgPersonRpc('add', JSON.stringify({ title: 'Order the fall flyer print run', priority: 'Low', notes: 'Need 500 copies before the open house' })));
   d = JSON.parse(disk);
   let added = d.tasks.find(t => /fall flyer print run/i.test(t.title));
-  check('add: creates a task owned by Marj, in her group, tagged Self-created', r.ok === true && !!added && added.owner === 'Marj' && added.assignee === 'Marj' && added.group === 'Marj' && added.priority === 'Low' && added.tags.includes('Self-created'));
+  check('add: creates a task owned by Marj, in her group, tagged Self-created and NOT held for review', r.ok === true && !!added && added.owner === 'Marj' && added.assignee === 'Marj' && added.group === 'Marj' && added.priority === 'Low' && added.tags.includes('Self-created') && !added.tags.includes('Triage'));
   check('add: the estimator fills estimate, type, subitems and tags', added.estSource === 'claude' && added.taskType === 'Actionable Task' && added.subitems.length === 2 && added.tags.includes('Flyers') && added.history.some(h => h.field === 'auto-enriched'));
   check('add: the 2h estimate is split across the two minted steps; the rollup adds the 0.5h confirm cost per delegated step', added.subitems.every(s => s.estHours === 1 && s.estSource === 'claude') && added.estHours === 3);
   check('add: the estimator was asked for progress from the notes and priority/group were not re-asked', claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"progress"/.test(u)) && !claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"priority"/.test(u)) && !claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"group"/.test(u)));
@@ -939,6 +941,40 @@ section('Progress follows the notes on every write path (2026-09-15)');
   sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Book the photographer for the fall shoot', owner: 'Durand', priority: 'Medium', group: 'Ops', notes: 'Two quotes in hand, one more to get' }, source: 'Claude', skipDedup: true });
   const addedT = d.tasks.find(t => /photographer/i.test(t.title));
   check("add_task with notes asks the estimator for progress and applies it (Durand's pipeline too)", !!addedT && calls.some(u => /NEEDED_FIELDS: \[[^\]]*"progress"/.test(u)) && addedT.progress === 20 && addedT.status === 'In Progress');
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+}
+
+section('Review gate: pushed delegate items carry Triage and stay off the person page until cleared (2026-09-15)');
+{
+  driveFilesFixture = []; calendarEventsFixture = [];
+  claudeResponder = (system, user) => { const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('progress')) out.progress = 0; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Actionable Task'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; return out; };
+  function gdoc() { return { meta: { docVersion: 1, next_id: 20, teamRoster: [{ name: 'Durand' }, { name: 'Marj' }, { name: 'Perly' }] }, tasks: [
+    { id: 1, title: 'Existing parent', owner: 'Durand', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: '', tags: [], history: [], subitems: [
+      { title: 'old step', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, notes: '', tags: [] } ] }
+  ] }; }
+  let d = gdoc();
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Design the fall postcard', owner: 'Durand', assignee: 'Marj', priority: 'Medium', group: 'Marketing', notes: '', tags: [] }, source: 'Claude', skipDedup: true });
+  let t = d.tasks.find(x => /fall postcard/i.test(x.title));
+  check('add_task pushed with an assignee is tagged Triage and logs the hold', !!t && t.tags.includes('Triage') && t.history.some(h => h.field === 'pending-review'));
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Brand refresh planning', owner: 'Durand', priority: 'Medium', group: 'Marketing', notes: '', tags: [], subitems: [{ title: 'Marj drafts the palette', delegate: 'Marj', done: false }] }, source: 'Claude', skipDedup: true });
+  t = d.tasks.find(x => /brand refresh/i.test(x.title));
+  check('add_task pushed with a subitem delegated to a person is tagged Triage', !!t && t.tags.includes('Triage'));
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Durand-only chore', owner: 'Durand', priority: 'Low', group: 'Ops', notes: '', tags: [] }, source: 'Claude', skipDedup: true });
+  t = d.tasks.find(x => /durand-only/i.test(x.title));
+  check("add_task with nothing pointed at a person is not held", !!t && !t.tags.includes('Triage'));
+  sandbox.applyDataPatch_(d, { op: 'add_subitem', id: 1, subitem: { title: 'new step for Perly', delegate: 'Perly', done: false, status: 'Not Started', progress: 0, notes: '', tags: [] }, source: 'Claude' });
+  check('add_subitem delegated to a person holds that subitem only', d.tasks[0].subitems[1].tags.includes('Triage') && !d.tasks[0].subitems[0].tags.includes('Triage') && !(d.tasks[0].tags || []).includes('Triage'));
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { subitems: d.tasks[0].subitems.concat([{ title: 'another for Marj', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, notes: '', tags: [] }]) }, source: 'Claude' });
+  check('update_task adding a delegated subitem holds the new one and leaves the old one alone', d.tasks[0].subitems[2].tags.includes('Triage') && !d.tasks[0].subitems[0].tags.includes('Triage'));
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { assignee: 'Perly' }, source: 'Claude' });
+  check('update_task re-pointing a task at a person holds the task', d.tasks[0].tags.includes('Triage'));
+  // what the people see
+  let rows = sandbox.tsgPersonSlice_(d, 'Marj');
+  check("Marj's page hides the held task, the held parent and its steps, and the held new subitems", !rows.some(r => /fall postcard|brand refresh/i.test(r.title)) && !rows.some(r => r.id === 1));
+  d.tasks[0].tags = [];
+  rows = sandbox.tsgPersonSlice_(d, 'Marj');
+  check("clearing Triage on the parent releases it: her old step shows, the held new step still does not", rows.some(r => r.kind === 'sub' && r.title === 'old step') && !rows.some(r => r.kind === 'sub' && r.title === 'another for Marj'));
+  check('a person-created task is exempt (covered above) and Triage stays a reserved tag the model cannot hand out', vm.runInContext('TSG_RESERVED_TAGS', sandbox).includes('Triage') && vm.runInContext('TSG_REVIEW_TAG', sandbox) === 'Triage');
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 

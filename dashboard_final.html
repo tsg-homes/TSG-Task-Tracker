@@ -444,6 +444,8 @@
   .tag-chip.tag-warn { background: var(--status-blocked-bg); color: var(--status-blocked); }
   .tag-chip.tag-active { background: var(--status-active-bg); color: var(--brand); }
   .tag-chip.tag-good { background: var(--status-good-bg); color: var(--status-good); }
+  .review-chip { cursor: pointer; border: 1px dashed var(--status-blocked); font: inherit; font-size: 10.5px; font-weight: 700; }
+  .review-chip:hover { background: var(--status-blocked); color: #fff; }
   .btn.toggle-active { background: var(--status-blocked-bg); color: var(--status-blocked); border-color: rgba(181,84,28,0.35); }
 
   /* ---- Due-date / 6-month bonus-deadline countdowns (2026-09-03, per Durand) ---- */
@@ -1324,7 +1326,7 @@
     <button class="btn" id="btnReload">⟳ Reload</button>
     <button class="btn" id="btnExport">⤓ Export</button>
     <span class="toolbar-sep"></span>
-    <span class="team-views" id="teamViews" title="Open a team member's own view in a new window. Edits you make there are recorded as you."></span>
+    <span class="team-views" id="teamViews" title="A team member's tasks and delegated steps, as a pop-up. Shift-click opens the page they see."></span>
     <span class="count" id="resultCount"></span>
   </div>
 
@@ -1435,7 +1437,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-15.3';
+  const UI_VERSION = '2026-09-15.4';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1639,7 +1641,7 @@
       .sort(function(a, b) { return a.localeCompare(b); });
     host.innerHTML = names.length
       ? '<span class="lbl">Views</span>' + names.map(function(n) {
-          return '<button type="button" class="btn small" data-person-view="' + escapeHtml(n) + '" title="Open ' + escapeHtml(n) + '\'s view">' + escapeHtml(n) + '</button>';
+          return '<button type="button" class="btn small" data-person-view="' + escapeHtml(n) + '" title="' + escapeHtml(n) + '\'s tasks and delegated steps, as a pop-up here. Shift-click opens the page they see.">' + escapeHtml(n) + '</button>';
         }).join('')
       : '';
   }
@@ -1651,7 +1653,8 @@
     const b = e.target.closest('[data-person-view]');
     if (!b) return;
     const name = b.getAttribute('data-person-view');
-    window.open(personViewUrl_(name), 'tsg-view-' + name.replace(/\W+/g, '-'), 'width=1280,height=860,noopener');
+    if (e.shiftKey) { window.open(personViewUrl_(name), 'tsg-view-' + name.replace(/\W+/g, '-'), 'width=1280,height=860,noopener'); return; }
+    openPersonView(name);
   });
   function normalizeRoster(raw) {
     if (!Array.isArray(raw) || !raw.length) return DEFAULT_TEAM_ROSTER.slice();
@@ -1961,7 +1964,7 @@
     if (triage.length) {
       alerts.push({
         level: 'warn',
-        text: triage.length + (triage.length === 1 ? ' task has' : ' tasks have') + ' an estimate worth confirming.',
+        text: triage.length + (triage.length === 1 ? ' task needs' : ' tasks need') + ' triage: an estimate to confirm or a pushed delegate item to release.',
         ids: triage.map(function(t) { return t.id; })
       });
     }
@@ -4046,11 +4049,41 @@
     renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
 
+  // Review gate (2026-09-15): a pushed task pointed at a delegate carries 'Triage' (the
+  // same tag the estimator uses for an estimate worth confirming, so the toolbar's Triage
+  // filter is the one quick list) and is invisible on their page until the tag is cleared.
+  // The row chip is that clear: it strips Triage from the task and every subitem and logs
+  // the release. Subitem-level holds also clear through the subitem row's own chip.
+  function reviewChipHtml(id) {
+    return `<button type="button" class="tag-chip tag-warn review-chip" onclick="event.stopPropagation(); approveReview(${id})" title="Triage: check the estimate and/or the delegate, then click to clear. Until then it is held off the delegate's view.">Triage &#10003;</button>`;
+  }
+  function approveReview(id) {
+    const t = findTask(id);
+    if (!t) return;
+    t.tags = (t.tags || []).filter(tag => tag !== 'Triage');
+    (t.subitems || []).forEach(s => { if (s.tags) s.tags = s.tags.filter(tag => tag !== 'Triage'); });
+    logHistory(t, 'review', 'Triage', 'Cleared; released to the delegate views');
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+  // Delegate views (2026-09-15, per Durand: "filtered views in pop ups instead"): the
+  // person's whole slice, as a scoped list pop-up on this board. Shift-click opens the
+  // page they actually see, from this tab's session.
+  function personTaskIds_(name) {
+    return TASKS.filter(function(t) {
+      if (t.owner === name || t.assignee === name) return true;
+      return (t.subitems || []).some(function(s) { return s.delegate === name; });
+    }).map(function(t) { return t.id; });
+  }
+  function openPersonView(name) {
+    const ids = personTaskIds_(name);
+    if (!ids.length) { alert('Nothing on the board is owned by, assigned to, or delegated to ' + name + ' yet.'); return; }
+    openMultiTaskModal(name + "'s view", ids);
+  }
   function taskRowHtml(t) {
     const pct = taskProgress(t);
     const hasSubs = t.subitems && t.subitems.length > 0;
     const subOpen = hasSubs && expandedSubtasks.has(t.id);
-    const tagsHtml = (t.tags || []).map(tag => tagChipHtml(tag)).join('');
+    const tagsHtml = (t.tags || []).map(tag => tag === 'Triage' ? reviewChipHtml(t.id) : tagChipHtml(tag)).join('');
     let html = `
       <tr class="task-row" data-id="${t.id}" onclick="onRowClick(event, ${t.id})">
         <td>${hasSubs ? `<button class="icon-btn" onclick="toggleSub(${t.id})">${subOpen ? '▾' : '▸'}</button>` : ''}</td>
@@ -4695,6 +4728,7 @@
   function modalRemoveTag(id, idx) {
     const t = findTask(id);
     const removed = t.tags[idx];
+    if (removed === 'Triage') { approveReview(id); return; }
     t.tags.splice(idx, 1);
     logHistory(t, 'tag', removed, null);
     renderAll(); openTaskCard(id); scheduleSave();

@@ -14,6 +14,7 @@ const slice = {
   ok: true, person: 'Marj', docVersion: 100, codeVersion: '2026-09-15.5',
   statuses: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'], priorities: ['Critical', 'High', 'Medium', 'Low'],
   rows: [
+    { kind: 'task', id: 1, own: false, context: true, title: 'Durand task with Marj sub', status: 'Not Started', priority: 'High', progress: 0, due: '2026-09-20', notes: '', owner: 'Durand', tags: [], taskType: '', estHours: null, subTotal: 1, subDone: 0, editable: [] },
     { kind: 'sub', id: 1, index: 0, own: false, parentOwn: false, parentTitle: 'Durand task with Marj sub', title: 'Marj part', status: 'Not Started', priority: 'High', progress: 0, done: false, due: '2026-09-18', notes: '', owner: 'Durand', subTotal: 0, editable: ['status', 'notes'] },
     { kind: 'task', id: 2, own: false, title: 'Assigned to Marj', status: 'Not Started', priority: 'Medium', progress: 0, due: '2026-09-25', notes: 'from Durand', owner: 'Durand', tags: ['Marketing'], taskType: 'Actionable Task', estHours: 1, subTotal: 0, subDone: 0, editable: ['status', 'notes'] },
     { kind: 'task', id: 3, own: true, title: "Marj's own task", status: 'In Progress', priority: 'Low', progress: 30, due: '', notes: 'mine', owner: 'Marj', tags: ['Self-created'], taskType: '', estHours: null, subTotal: 0, subDone: 0, editable: ['title', 'status', 'priority', 'timelineEnd', 'notes'] },
@@ -64,10 +65,12 @@ setTimeout(async () => {
   check('board-style groups: Delegated to you, Your tasks, Completed', doc.querySelectorAll('.group-section .group-head .gname').length === 3 && doc.getElementById('completed').hidden === false);
   const delegatedRows = doc.querySelectorAll('#delegated tr[data-key]');
   const ownRows = doc.querySelectorAll('#own tr[data-key]');
-  check('delegated group has the subitem and the assigned task', delegatedRows.length === 2 && doc.getElementById('delegatedCount').textContent === '2');
+  check("delegated group has Durand's parent as a context row and the assigned task", delegatedRows.length === 2 && doc.getElementById('delegatedCount').textContent === '2');
+  const ctxRow = doc.querySelector('#delegated tr.task-row.context[data-id="1"]');
+  check('context row: read-only (no selects, no inputs, no editable title/notes), names the owner', !!ctxRow && !ctxRow.querySelector('select, input') && !ctxRow.querySelector('[contenteditable="true"]') && /Durand/.test(ctxRow.querySelector('.ctx-note').textContent) && ctxRow.querySelector('.sub-count-badge').textContent === '0/1');
+  check('her step is nested under the context row and open by default', doc.querySelectorAll('tr.sub-row[data-subrow="1"] .sub-item').length === 1 && doc.querySelector('tr.sub-row[data-subrow="1"]').style.display !== 'none');
   check('own group has her two open tasks; the Done one moved to Completed', ownRows.length === 2 && doc.querySelectorAll('#completed tr[data-key]').length === 1 && doc.getElementById('completedCount').textContent === '1');
   check('group heads carry a status battery and percent', doc.querySelector('#own .status-battery') && /%$/.test(doc.querySelector('#own .group-battery-pct').textContent));
-  check('delegated subitem shows its parent task title', doc.querySelector('#delegated .parent').textContent.includes('Durand task with Marj sub'));
   const delegatedTask = doc.querySelector('#delegated tr[data-kind="task"][data-id="2"]');
   check('delegated row: status is a pill select, priority a static pill, due plain text', !!delegatedTask.querySelector('select.pill[data-field="status"]') && !delegatedTask.querySelector('select[data-field="priority"]') && !!delegatedTask.querySelector('.pill.priority-medium') && !delegatedTask.querySelector('input[data-field="due"]') && /Sep 25/.test(delegatedTask.querySelector('.due-cell').textContent));
   check('delegated row: owner avatar, type badge and tag chip like the board', !!delegatedTask.querySelector('.avatar') && delegatedTask.querySelector('.type-badge').textContent === 'Actionable Task' && delegatedTask.querySelector('.tag-chip').textContent === 'Marketing');
@@ -80,7 +83,7 @@ setTimeout(async () => {
   check('no token or exec URL anywhere in the page', !/AKfycb|token=|script\.google\.com\/macros/.test(doc.documentElement.outerHTML));
 
   // status change on the delegated subitem -> update with kind/id/index/fields
-  const subRow = doc.querySelector('#delegated tr[data-kind="sub"]');
+  const subRow = doc.querySelector('tr.sub-row[data-subrow="1"] .sub-item[data-kind="sub"]');
   const statusSel = subRow.querySelector('select[data-field="status"]');
   statusSel.value = 'Done';
   statusSel.dispatchEvent(new w.Event('change', { bubbles: true }));
@@ -98,13 +101,15 @@ setTimeout(async () => {
   upd = lastUpdate();
   check('notes edit sends only the notes; no progress field travels with it', !!upd && upd.payload.kind === 'task' && upd.payload.id === 2 && upd.payload.fields.notes === 'Proof sent to the printer' && upd.payload.fields.progress === undefined);
 
-  // subtasks nest under her own task: expand, then check one off
-  check('subtasks are collapsed until expanded', doc.querySelector('tr.sub-row[data-subrow="5"]').style.display === 'none');
+  // subtasks nest under her own task, open by default; the caret collapses
+  const subItems = doc.querySelectorAll('tr.sub-row[data-subrow="5"] .sub-item');
+  check('her own task shows both steps as cards, open by default, the done one struck through', doc.querySelector('tr.sub-row[data-subrow="5"]').style.display !== 'none' && subItems.length === 2 && subItems[0].classList.contains('done'));
   doc.querySelector('[data-expand="5"]').click();
   await wait(10);
-  const subItems = doc.querySelectorAll('tr.sub-row[data-subrow="5"] .sub-item');
-  check('expanding shows both subtasks as cards, the done one struck through', doc.querySelector('tr.sub-row[data-subrow="5"]').style.display !== 'none' && subItems.length === 2 && subItems[0].classList.contains('done'));
-  const box = subItems[1].querySelector('input[data-field="done"]');
+  check('the caret collapses the steps', doc.querySelector('tr.sub-row[data-subrow="5"]').style.display === 'none');
+  doc.querySelector('[data-expand="5"]').click();
+  await wait(10);
+  const box = doc.querySelectorAll('tr.sub-row[data-subrow="5"] .sub-item')[1].querySelector('input[data-field="done"]');
   box.checked = true;
   box.dispatchEvent(new w.Event('change', { bubbles: true }));
   await wait(30);
@@ -119,10 +124,31 @@ setTimeout(async () => {
   doc.getElementById('addDue').value = '2026-09-30';
   doc.getElementById('addNotes').value = 'ask printer';
   doc.getElementById('addForm').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  check('while the add is in flight the board is locked and the form disabled, with a spinner', doc.getElementById('board').classList.contains('busy') && doc.getElementById('addTitle').disabled && !!doc.querySelector('#sync .spin'));
   await wait(30);
+  check('the lock lifts when the add completes', !doc.getElementById('board').classList.contains('busy') && !doc.getElementById('addTitle').disabled);
   const add = calls.filter(c => c.action === 'add').pop();
   check('add form sends the four fields', !!add && add.payload.title === 'Order flyer proofs' && add.payload.priority === 'High' && add.payload.due === '2026-09-30' && add.payload.notes === 'ask printer');
   check('add form clears and closes after success', doc.getElementById('addTitle').value === '' && !doc.getElementById('addForm').classList.contains('open'));
+
+  // card / edit view: click a row (not a control) -> card with the same rules
+  doc.querySelector('#own tr[data-id="3"] td.cell-group').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await wait(10);
+  const card = doc.getElementById('card');
+  check('clicking her own task opens the card with editable title, status, priority, due and notes', doc.getElementById('cardBack').hidden === false && card.querySelector('.card-title').textContent === "Marj's own task" && card.querySelector('.card-title').getAttribute('contenteditable') === 'true' && !!card.querySelector('select[data-field="status"]') && !!card.querySelector('select[data-field="priority"]') && !!card.querySelector('input[data-field="due"]') && card.querySelector('.card-notes-edit').getAttribute('contenteditable') === 'true');
+  const cardStatus = card.querySelector('select[data-field="status"]');
+  cardStatus.value = 'Blocked';
+  cardStatus.dispatchEvent(new w.Event('change', { bubbles: true }));
+  await wait(30);
+  upd = lastUpdate();
+  check('a change made in the card saves against that task', !!upd && upd.payload.kind === 'task' && upd.payload.id === 3 && upd.payload.fields.status === 'Blocked');
+  doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  check('Escape closes the card', doc.getElementById('cardBack').hidden === true);
+  doc.querySelector('#delegated tr.task-row.context[data-id="1"] td.cell-group').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await wait(10);
+  check("Durand's task opens as a read-only card with her step listed and no notes", doc.getElementById('cardBack').hidden === false && card.querySelector('.card-title').getAttribute('contenteditable') === 'false' && !card.querySelector('.card-grid select, .card-grid input') && !card.querySelector('.card-notes') && card.querySelectorAll('.sub-item').length === 1 && !!card.querySelector('.sub-item select[data-field="status"]'));
+  doc.querySelector('#cardClose').click();
+  check('the close button closes the card', doc.getElementById('cardBack').hidden === true);
 
   // group collapse
   doc.querySelector('#delegated .group-head').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
