@@ -5,209 +5,7 @@
  *
  *   node test/test_raffle.js
  */
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
-
-let fails = 0, passes = 0;
-function check(name, cond) {
-  if (cond) { passes++; console.log('PASS  ' + name); }
-  else { fails++; console.log('FAIL  ' + name); }
-}
-function eq(name, actual, expected) {
-  check(name + '  (got ' + JSON.stringify(actual) + ')', actual === expected);
-}
-
-// ---- Fakes -----------------------------------------------------------------
-const HEADERS = ['Timestamp (ET)', 'Full Name', 'Email', 'Phone', 'Consent',
-  'Consent Version', 'Entry Source', 'FUB Status', 'FUB Person ID', 'Eligible'];
-
-function makeSandbox(opts) {
-  opts = opts || {};
-  const props = Object.assign({ RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' }, opts.props || {});
-  const rows = opts.rows ? opts.rows.slice() : [HEADERS.slice()];
-  const sent = [];
-  const fetches = [];
-  const cache = {};
-  const alerts = [];
-  const qa = { active: !!opts.qaMode };
-  const triggers = [];
-
-  // Multi-tab fake: the whole point of the test/live split is that they are
-  // different sheets, so the fake has to model that rather than share one array.
-  const tabs = {};
-  function makeSheet(name, seed) {
-    // index 0 == sheet row 1 == the header row, on every tab.
-    const r = seed || [HEADERS.slice()];
-    const sh = {
-      name,
-      rows: r,
-      appendRow: x => r.push(x.slice()),
-      getLastRow: () => r.length,
-      getRange: (row, c, nr, nc) => ({
-        getValues: () => r.slice(row - 1, row - 1 + nr).map(x => x.slice(c - 1, c - 1 + nc)),
-        setValue: v => { r[row - 1][c - 1] = v; },
-        setValues: () => {},
-        setFontWeight: () => ({ setFontSize: () => {}, setBackground: () => {} })
-      }),
-      setName: n => { sh.name = n; }, setFrozenRows: () => {}, clear: () => {},
-      deleteRows: (start, n) => { r.splice(start - 1, n); }
-    };
-    tabs[name] = sh;
-    return sh;
-  }
-  const sheet = makeSheet('Entries', rows);
-  const shared = [];
-  const ss = {
-    getOwner: () => ({ getEmail: () => opts.sheetOwner || 'durand@thestawaszgroup.com' }),
-    addEditor: e => { shared.push(e); },
-    getSheets: () => Object.keys(tabs).map(k => tabs[k]),
-    getSheetByName: n => tabs[n] || null,
-    insertSheet: n => makeSheet(n, []),   // a new sheet is EMPTY; the code adds its own header
-    deleteSheet: sh => { delete tabs[sh.name]; },
-    getId: () => 'sheet1', getUrl: () => 'u'
-  };
-
-  const sandbox = {
-    console,
-    Logger: { log: () => {} },
-    PropertiesService: {
-      getScriptProperties: () => ({
-        getProperty: k => (k in props ? props[k] : null),
-        setProperty: (k, v) => { props[k] = v; },
-        deleteProperty: k => { delete props[k]; }
-      })
-    },
-    SpreadsheetApp: { openById: () => ss, create: () => ss },
-    CacheService: { getScriptCache: () => ({ get: k => cache[k] || null, put: (k, v) => { cache[k] = v; }, remove: k => { delete cache[k]; } }) },
-    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
-    MailApp: { sendEmail: m => sent.push(m) },
-    Session: { getEffectiveUser: () => ({ getEmail: () => opts.runAs || 'info@tsg.homes' }) },
-    DriveApp: { getFileById: () => ({ getBlob: () => ({ getContentType: () => 'image/png', getBytes: () => [1, 2, 3] }) }) },
-    ScriptApp: {
-      getService: () => ({ getUrl: () => 'https://x/exec' }),
-      getProjectTriggers: () => triggers.slice(),
-      newTrigger: fn => ({ timeBased: () => ({ at: () => ({ create: () => {
-        triggers.push({ getHandlerFunction: () => fn }); } }) }) }),
-      deleteTrigger: t => { const i = triggers.indexOf(t); if (i >= 0) triggers.splice(i, 1); }
-    },
-    Utilities: {
-      formatDate: d => new Date(d).toISOString().slice(0, 19).replace('T', ' '),
-      // Real Utilities.getUuid() returns a 36-char RFC-4122 UUID, and the code
-      // validates that shape, so the fake has to produce one -- and a UNIQUE one,
-      // since pending-entry ids must not collide.
-      getUuid: () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-        const r = Math.random() * 16 | 0;
-        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-      }),
-      base64Encode: () => 'b64'
-    },
-    // Route-aware FUB fake. opts.fubPeople seeds records that already exist, so
-    // the match-and-update path can be exercised for real rather than assumed.
-    UrlFetchApp: {
-      fetch: (url, o) => {
-        fetches.push({ url, o });
-        const code = opts.fubStatus || 200;
-        const people = opts.fubPeople || [];
-        const json = b => ({ getResponseCode: () => code, getContentText: () => JSON.stringify(b) });
-        const norm = v => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const dig  = v => { let d = String(v || '').replace(/\D/g, ''); if (d.length === 11 && d[0] === '1') d = d.slice(1); return d; };
-
-        if (/\/v1\/people\?email=/.test(url)) {
-          const q = norm(decodeURIComponent(url.split('email=')[1]));
-          return json({ people: people.filter(p => (p.emails || []).some(e => norm(e.value) === q)) });
-        }
-        if (/\/v1\/people\?phone=/.test(url)) {
-          const q = dig(decodeURIComponent(url.split('phone=')[1]));
-          return json({ people: people.filter(p => (p.phones || []).some(x => dig(x.value) === q)) });
-        }
-        const m = url.match(/\/v1\/people\/(\d+)$/);
-        if (m && (!o || (o.method || 'get') === 'get')) {
-          return json(people.find(p => String(p.id) === m[1]) || {});
-        }
-        if (m && o && o.method === 'put') return json({ id: Number(m[1]) });
-        return json({ id: 999 });
-      }
-    },
-    HtmlService: { createHtmlOutput: h => h, createTemplateFromFile: () => ({ evaluate: () => ({ setTitle: () => ({ addMetaTag: () => 'page' }) }) }) },
-    ContentService: { MimeType: { JSON: 'json' }, createTextOutput: t => ({ setMimeType: () => JSON.parse(t) }) },
-
-    // Helpers that live in Code.gs (shared global scope in a real project).
-    collapseSpaces: s => String(s || '').replace(/\s+/g, ' ').trim(),
-    makeValidationError: m => { const e = new Error(m); e.isValidation = true; return e; },
-    validateEmailField: e => { if (e && !/^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(e)) { const x = new Error('bad email'); x.isValidation = true; throw x; } },
-    validatePhoneField: p => { const d = String(p || '').replace(/\D/g, ''); if (p && (d.length < 10 || d.length > 15)) { const x = new Error('bad phone'); x.isValidation = true; throw x; } },
-    splitName: n => { const p = String(n).trim().split(/\s+/); const f = p.shift(); return { first: f, last: p.join(' ') }; },
-    jsonOut: o => {
-      // Faithful to ContentService: a TextOutput carries no payload properties,
-      // only getContent(). Anything that wants the data must parse it.
-      const body = JSON.stringify(o);
-      return { getContent: () => body, setMimeType() { return this; } };
-    },
-    sendErrorAlert: (context, detail) => { alerts.push({ context, detail }); },
-    getSubmitToken: () => 'tok',
-    safeJsonForScript_: v => JSON.stringify(v),
-    CONSENT_CUSTOM_FIELD: 'customConsentCapturedDate',
-    // The project's existing QA test-mode surface, stubbed. `qaMode` is what a
-    // test flips to simulate ?qatest= having matched.
-    QA_TEST_PREFIX: '[QA TEST] ',
-    QA_TEST_TAG: 'QA Test — Safe to Delete',
-    QA_TEST_NOTIFY_EMAIL: 'durand@thestawaszgroup.com',
-    QA_TEST_SECRET_PROPERTY: 'QA_TEST_SECRET',
-    QA_TEST_BACKGROUND_LEAD_IN: '[QA TEST] Created by a TSG QA test submission.',
-    isQaTestMode_: () => qa.active,
-    setQaTestModeFromPayload_: d => {
-      qa.active = !!(d && d.qaTestToken && cache['qa_test_' + d.qaTestToken] === '1');
-      return qa.active;
-    },
-    QA_TEST_CACHE_PREFIX: 'qa_test_',
-    QA_TEST_TOKEN_TTL_SECONDS: 1800,
-    FUB_SUBDOMAIN: 'homes571',
-    issueQaTestToken_: () => (opts.qaMode ? 'tok-uuid' : ''),
-    qaTestRecipients_: list => (opts.qaMode ? ['durand@thestawaszgroup.com']
-                                            : (Array.isArray(list) ? list : [list])),
-    Date, JSON, Math, String, Number, Object, Array, isNaN, parseInt, parseFloat
-  };
-  vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../RaffleCode.gs'), 'utf8'), sandbox);
-  sandbox.__sent = sent; sandbox.__fetches = fetches;
-  sandbox.__props = props; sandbox.__tabs = tabs; sandbox.__alerts = alerts;
-  sandbox.__shared = shared;
-  // Data rows only -- the header is row 1 and is never an entry.
-  sandbox.__data = name => (tabs[name || 'Entries'] ? tabs[name || 'Entries'].rows.slice(1) : []);
-  return sandbox;
-}
-
-const DURING = new Date('2026-09-19T16:00:00-04:00').getTime();
-const BEFORE = new Date('2026-09-18T12:00:00-04:00').getTime();
-const AFTER  = new Date('2026-09-19T18:20:00-04:00').getTime();
-
-function at(ms, fn) {
-  const real = Date.now;
-  Date.now = () => ms;
-  try { return fn(); } finally { Date.now = real; }
-}
-const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@mail-test.co', phone: '(215) 555-8123', consent: 'Yes' }, o);
-
-// Entry is two-step now. This drives it the way a real entrant does: submit
-// details, read the 6-digit code out of the email the fake MailApp captured,
-// type it back. Returns the FIRST step's result when that step did not ask for a
-// code -- i.e. a validation failure or an already-entered short-circuit.
-// Unwrap a ContentService TextOutput the way real calling code must.
-const J = r => (r && typeof r.getContent === 'function') ? JSON.parse(r.getContent()) : r;
-
-function enterFull(s, d, when) {
-  const r1 = J(at(when, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, d))));
-  if (!r1 || !r1.ok || !r1.needsCode) return r1;
-  const mail = s.__sent[s.__sent.length - 1];      // the code email just sent
-  if (!mail) throw new Error('needsCode but no email sent; result=' + JSON.stringify(r1));
-  const m = String(mail.subject).match(/(\d{6})/);
-  if (!m) throw new Error('no 6-digit code in subject: ' + mail.subject);
-  const code = m[1];
-  return J(at(when, () => s.raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code })));
-}
-// Draw-result emails only -- the inbox also holds verification codes now.
-const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
+const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURING, BEFORE, AFTER, counts } = require('./harness');
 
 // ---- Identity normalization ------------------------------------------------
 {
@@ -440,7 +238,7 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
   check('test draw: does not write the live Draw Result tab', !s.__tabs['Draw Result']);
 
   // 6. Having rehearsed, the real draw is still entirely available.
-  const liveAfter = at(AFTER, () => s.raffleDrawWinner_(false));
+  const liveAfter = at(AFTER, () => s.raffleDrawWinner_(false, true));
   check('a test draw does NOT consume the live draw', liveAfter.alreadyDrawn !== true);
   check('live draw finds no real entries (test ones are not eligible)',
     liveAfter.ok === false && /No eligible entries/.test(liveAfter.error));
@@ -458,7 +256,7 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
     fullName: 'Fake Tester', email: 'fake@mail-test.co', phone: '(267) 555-8222' }), DURING);
   eq('live sandbox: real entry on the live tab', s.__data('Entries').length, 1);
   eq('test sandbox: nothing on the live tab', t.__data('Entries').length, 0);
-  const res = at(AFTER, () => s.raffleDrawWinner_(false));
+  const res = at(AFTER, () => s.raffleDrawWinner_(false, true));
   eq('live draw picks the real person', res.result.winner.name, 'Real Person');
   eq('live draw pool excludes test entries entirely', res.result.totalEligible, 1);
 }
@@ -787,5 +585,6 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   check('suite left no live winner', s.__props.RAFFLE_WINNER_JSON === undefined);
 }
 
+const { passes, fails } = counts();
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
 process.exit(fails ? 1 : 0);

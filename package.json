@@ -2,11 +2,14 @@
   "name": "tsg-task-tracker",
   "version": "1.0.0",
   "private": true,
-  "description": "TSG Task Tracker — Apps Script backend (Code.gs) + dashboard (dashboard_final.html).",
+  "description": "TSG Task Tracker \u2014 Apps Script backend (Code.gs) + dashboard (dashboard_final.html).",
   "scripts": {
-    "test": "node test/test_codegs.js && node test/test_dashboard.js",
+    "test": "node test/test_codegs.js && node test/test_dashboard.js && node raffle/test/test_raffle.js && node raffle/test/test_redteam.js",
     "test:backend": "node test/test_codegs.js",
     "test:dashboard": "node test/test_dashboard.js",
+    "test:raffle": "node raffle/test/test_raffle.js",
+    "test:redteam": "node raffle/test/test_redteam.js",
+    "test:form": "node raffle/test/test_form.js",
     "push": "clasp push",
     "deploy": "node scripts/deploy.js"
   },
