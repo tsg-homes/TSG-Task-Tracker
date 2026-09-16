@@ -441,3 +441,18 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   smoke-tested from a cloud session; ask Durand to load it. clasp works because it uses
   googleapis.com.
 - Work on the branch the session names; never push to main without being told.
+
+## Pinned tasks and the two bonus tasks (2026-09-16, backend 2026-09-16.8, dashboard UI 2026-09-16.8)
+
+- Task field `pinned` (boolean, in `TSG_TASK_DIFF_FIELDS`, never touched by enrich). Dashboard:
+  `isPinned_` / `sortTasks` put pinned tasks ahead of every sort in every list; Board and Cards
+  render a "Pinned" section (`renderPinnedGroupHtml_`, `data-group="__pinned__"`) above every
+  group and drop pinned tasks from their own group; pin button on rows, cards and the modal
+  header (`togglePin`, history field `pinned`). Patches can set `pinned` on add/update.
+- Per Durand ("pin these two tasks to the top always, they are required for my bonus"): the
+  eight open FUB tasks (#1, #240, #252, #264, #265, #266, #267, #277) were collapsed into ONE
+  pinned task "FUB Go-Live — Agent Rollout, Lofty Migration, Automations and Forms (Bonus)"
+  (42 steps, phase-prefixed, each step's notes carry "[Merged from #id]"), and a pinned task
+  "SOPs 01–10 Live by the Dec 18 Review (Bonus)" (29 steps derived from the Ops Manual working
+  copy) was created. Both Critical, due 2026-12-18, tag `Bonus`. The FUB go-live date stays
+  PENDING (first step of the FUB task). Never split these back out or unpin them without Durand.
