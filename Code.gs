@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-16.1';
+const TSG_CODE_VERSION = '2026-09-16.2';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -810,8 +810,37 @@ function applyDataPatch_(doc, patch) {
     // recurring Ops Manual duties (SOP-sourced, dated by cadence) that feed the Today
     // view's Admin checklist client-side — see dash_fixed2.html's buildStandingItemChecks.
     var metaFields = Object.assign({}, patch.fields || {});
-    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat'].forEach(function(k) { delete metaFields[k]; });  // server-owned
+    // comments is server-owned too (2026-09-16): use add_comment / update_comment so two
+    // writers (the dashboard, a Claude session) never overwrite each other's threads.
+    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments'].forEach(function(k) { delete metaFields[k]; });  // server-owned
     Object.assign(doc.meta, metaFields);
+  } else if (patch.op === 'add_comment') {
+    // Comment mode (2026-09-16, #250, per Durand: "a toggle where I can comment on any
+    // visible element like Claude artifacts"). A comment is { id, ts, author, text,
+    // anchor: { kind: 'task'|'sub'|'group'|'tile'|'element', id?, idx?, label, path? },
+    // resolved, replies: [] }. Stored in meta.comments; Claude sessions read them from the
+    // data file and answer with add_comment (author 'Claude', replyTo) or update_comment.
+    var cm = patch.comment || {};
+    if (!String(cm.text || '').trim()) throw new Error('add_comment: text required');
+    doc.meta.comments = Array.isArray(doc.meta.comments) ? doc.meta.comments : [];
+    var entry = {
+      id: cm.id || ('c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
+      ts: cm.ts || now, author: cm.author || patch.source || 'unknown', text: String(cm.text),
+      anchor: cm.anchor || { kind: 'element', label: 'board' }, resolved: !!cm.resolved,
+      replyTo: cm.replyTo || null
+    };
+    doc.meta.comments.push(entry);
+  } else if (patch.op === 'update_comment') {
+    var list = Array.isArray(doc.meta.comments) ? doc.meta.comments : [];
+    var target = list.filter(function(x) { return x && x.id === patch.id; })[0];
+    if (!target) throw new Error('update_comment: no comment ' + patch.id);
+    if (patch.remove) { doc.meta.comments = list.filter(function(x) { return x.id !== patch.id && x.replyTo !== patch.id; }); }
+    else {
+      var cf = Object.assign({}, patch.fields || {});
+      ['id', 'ts', 'author'].forEach(function(k) { delete cf[k]; });
+      Object.assign(target, cf);
+      if (Object.prototype.hasOwnProperty.call(cf, 'resolved')) { target.resolvedTs = cf.resolved ? now : null; target.resolvedBy = cf.resolved ? (patch.source || 'unknown') : null; }
+    }
   } else if (patch.op === 'replace_all') {
     // A whole-document save — today this is only ever the dashboard's own doSave(),
     // submitted as a patch like everything else instead of written straight to disk
@@ -2072,6 +2101,16 @@ function doPost(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
+  // Tidy-with-Claude (2026-09-16, #250, per Durand: "button, and it also triggers rewrite of
+  // title, and all other fields as applicable"). Returns a PROPOSAL only; the dashboard shows
+  // before/after per field and applies what Durand accepts through its normal save.
+  if (requested === 'tidy') {
+    var tidyReq = {};
+    try { tidyReq = JSON.parse(body || '{}'); } catch (err) { tidyReq = {}; }
+    return ContentService.createTextOutput(JSON.stringify(tsgTidyProposal_(Number(tidyReq.taskId))))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   // Meeting-picker endpoints (2026-09-01) — neither touches the tracker data files, so
   // both are handled here, before the file-write whitelist below.
   if (requested === 'createMeeting') {
@@ -2112,7 +2151,7 @@ function doPost(e) {
   }
   if (['data', 'rulesets'].indexOf(requested) === -1) {
     return ContentService.createTextOutput(JSON.stringify({
-      ok: false, error: 'Unknown target: ' + requested + '. Expected data, rulesets, claude, createMeeting or linkMeeting.'
+      ok: false, error: 'Unknown target: ' + requested + '. Expected data, rulesets, claude, tidy, createMeeting or linkMeeting.'
     })).setMimeType(ContentService.MimeType.JSON);
   }
 
@@ -3312,6 +3351,54 @@ function tsgReestimate(apply, includeEstimated) {
     .createFile(name, JSON.stringify({ target: 'data', op: 'bulk', ops: ops }, null, 2), MimeType.PLAIN_TEXT);
   Logger.log('[reestimate] wrote ' + name + ' with ' + ops.length + ' op(s). Hit ?api=sync to apply.');
   return ops;
+}
+
+var TSG_TIDY_SYSTEM =
+  'You tidy one task on the Director of Operations\' tracker for a residential real estate team. ' +
+  'Return a cleaned-up version of the task as JSON. Rules:\n' +
+  '- title: one imperative line, at most 80 characters, specific (who/what). Keep names, addresses and numbers.\n' +
+  '- notes: rewrite into (1) a short "Current state" paragraph saying exactly where things stand, then (2) a ' +
+  '"Log" of dated bullets, oldest first, one per event, each starting with its date. Keep every fact, name, ' +
+  'date, phone number, dollar amount and URL verbatim. Drop chatter, duplicates and stale instructions that ' +
+  'later lines superseded. Never invent a fact. If the notes are already clean, return them unchanged.\n' +
+  '- priority (Critical|High|Medium|Low), taskType (Email|Call|Text/Chat|Meeting|Claude|Actionable Task), ' +
+  'group (one of EXISTING_GROUPS), estHours (number, 0.25-80), tags (0-3, prefer EXISTING_TAGS; never Triage, ' +
+  'Aging, Scheduling Stuck, Dependency Issue, needs-estimate, Claude): change a field ONLY when the title/notes ' +
+  'clearly justify it; otherwise return the current value.\n' +
+  '- rationale: one sentence on what you changed and why.\n' +
+  'Return ONLY the JSON object {"title","notes","priority","taskType","group","estHours","tags","rationale"}, no prose, no fences.';
+
+/** Proposal for the dashboard's Tidy button: current fields plus Claude's cleaned-up version, validated. */
+function tsgTidyProposal_(taskId) {
+  if (!taskId) return { ok: false, error: 'taskId required' };
+  if (!tsgApiKey_()) return { ok: false, error: 'No ANTHROPIC_API_KEY set in Script Properties.' };
+  var doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
+  var t = (doc.tasks || []).filter(function(x) { return x && x.id === taskId; })[0];
+  if (!t) return { ok: false, error: 'no task ' + taskId };
+  var groups = Array.from(new Set((doc.tasks || []).map(function(x) { return x.group; }).filter(Boolean)));
+  var tags = Array.from(new Set((doc.tasks || []).reduce(function(a, x) { return a.concat(x.tags || []); }, []))).filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1; });
+  var before = { title: t.title || '', notes: t.notes || '', priority: t.priority || 'Medium', taskType: t.taskType || 'Actionable Task', group: t.group || '', estHours: (typeof t.estHours === 'number') ? t.estHours : null, tags: (t.tags || []).slice() };
+  var user = 'CURRENT TASK: ' + JSON.stringify(Object.assign({ id: t.id, status: t.status, due: t.timelineEnd || '', subitems: (t.subitems || []).map(function(s) { return s.title; }) }, before), null, 1) +
+    '\n\nEXISTING_GROUPS: ' + JSON.stringify(groups) + '\nEXISTING_TAGS: ' + JSON.stringify(tags);
+  var raw = tsgClaude_(TSG_TIDY_SYSTEM, user, 2000);
+  var p = raw ? tsgExtractJson_(raw) : null;
+  if (!p) return { ok: false, error: 'Claude did not return a proposal.' };
+  var prios = (doc.meta && doc.meta.priority_values) || ['Critical', 'High', 'Medium', 'Low'];
+  var types = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Actionable Task'];
+  var proposal = {
+    title: String(p.title || before.title).trim().slice(0, 120) || before.title,
+    notes: (typeof p.notes === 'string') ? p.notes.trim() : before.notes,
+    priority: prios.indexOf(p.priority) !== -1 ? p.priority : before.priority,
+    taskType: types.indexOf(p.taskType) !== -1 ? p.taskType : before.taskType,
+    group: (p.group && groups.indexOf(p.group) !== -1) ? p.group : before.group,
+    estHours: (typeof p.estHours === 'number' && p.estHours > 0) ? Math.max(0.25, Math.min(80, Math.round(p.estHours * 4) / 4)) : before.estHours,
+    tags: Array.isArray(p.tags) ? p.tags.map(function(x) { return String(x).trim(); }).filter(function(x) { return x && TSG_RESERVED_TAGS.indexOf(x) === -1; }).slice(0, 3) : before.tags,
+    rationale: String(p.rationale || '').slice(0, 400)
+  };
+  // System tags on the task (Triage etc.) are never dropped by a tidy.
+  var keep = (t.tags || []).filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) !== -1 || tg === 'Self-created'; });
+  proposal.tags = Array.from(new Set(keep.concat(proposal.tags)));
+  return { ok: true, taskId: t.id, before: before, proposal: proposal };
 }
 
 /* ------------------------------------------------------------------ *

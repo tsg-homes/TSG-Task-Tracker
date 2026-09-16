@@ -999,6 +999,27 @@
   .dense-toggle { margin-left: 8px; }
   .depends-chip { background: var(--status-warn-bg); color: var(--status-warn); }
   .link-paste-row { display: flex; gap: 6px; align-items: center; }
+  /* Comment mode */
+  body.comment-mode .wrap, body.comment-mode .modal-card { cursor: crosshair; }
+  body.comment-mode #board tr.task-row:hover, body.comment-mode .task-card:hover, body.comment-mode .sub-item:hover, body.comment-mode .stat-tile:hover, body.comment-mode .group-head:hover { outline: 2px dashed var(--brand); outline-offset: -2px; }
+  #commentPopover { position: fixed; z-index: 10000; width: 320px; background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.35); display: flex; flex-direction: column; gap: 8px; }
+  #commentPopover .cp-anchor { font-size: 11.5px; color: var(--text-muted); }
+  .cp-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .comment-badge { display: inline-flex; align-items: center; margin-left: 6px; font-size: 10.5px; font-weight: 700; color: var(--status-warn); background: var(--status-warn-bg); border-radius: 999px; padding: 1px 7px; cursor: pointer; vertical-align: middle; }
+  .count-badge { font-size: 10px; font-weight: 700; color: #fff; background: var(--status-warn); border-radius: 999px; padding: 0 6px; margin-left: 4px; }
+  .count-badge:empty { display: none; }
+  .comment-list { display: flex; flex-direction: column; gap: 10px; }
+  .comment-item { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--surface-1); }
+  .comment-item.resolved { opacity: 0.6; }
+  .comment-head { font-size: 11.5px; color: var(--text-muted); margin-bottom: 4px; }
+  .comment-anchor { color: var(--brand); cursor: pointer; text-decoration: underline dotted; }
+  .comment-text { white-space: pre-wrap; font-size: 13px; margin-bottom: 6px; }
+  /* Tidy review */
+  .tidy-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+  .tidy-row { display: grid; grid-template-columns: 20px 90px 1fr 1fr; gap: 8px; align-items: start; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; }
+  .tidy-field { font-weight: 700; }
+  .tidy-before { color: var(--text-muted); text-decoration: line-through; white-space: pre-wrap; }
+  .tidy-after { white-space: pre-wrap; }
   .link-paste-row input { flex: 1; }
   .series-link-btn { margin-left: 8px; }
   .tag-input { width: 110px; padding: 2px 6px; font-size: 11.5px; }
@@ -1344,6 +1365,9 @@
     <button class="btn" id="btnReload">⟳ Reload</button>
     <button class="btn" id="btnExport">⤓ Export</button>
     <span class="toolbar-sep"></span>
+    <button class="btn" id="btnCommentMode" type="button" onclick="toggleCommentMode()" title="Comment mode: click anything on the board to leave a note on it">&#128172; Comment</button>
+    <button class="btn" id="btnComments" type="button" onclick="openCommentsPanel()" title="All comments">Comments <span class="count-badge" id="commentCount"></span></button>
+    <span class="toolbar-sep"></span>
     <span class="team-views" id="teamViews" title="A team member's tasks and delegated steps, as a pop-up. Shift-click opens the page they see."></span>
     <span class="count" id="resultCount"></span>
   </div>
@@ -1380,6 +1404,7 @@
       <h2 id="modalTitle"></h2>
       <div class="modal-header-actions">
         <span class="modal-nav-pos" id="modalNavPos"></span>
+        <button class="btn small" id="tidyBtn" onclick="tidyTask(currentModalTaskId)" title="Claude rewrites the title, notes and other fields; you review before anything changes">&#10024; Tidy</button>
         <button class="icon-btn danger" onclick="deleteCurrentModalTask()" title="Delete task"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>
         <button class="icon-btn" onclick="closeTaskCard()" title="Close">&#10005;</button>
       </div>
@@ -1467,7 +1492,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-16.2';
+  const UI_VERSION = '2026-09-16.3';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1690,6 +1715,205 @@
     if (e.shiftKey) { window.open(personViewUrl_(name), 'tsg-view-' + name.replace(/\W+/g, '-'), 'width=1280,height=860,noopener'); return; }
     openPersonView(name);
   });
+  // ---- Merge one task into another (2026-09-16, #250: "link tasks to merge them") ----
+  function mergeOptionsHtml_(t) {
+    return TASKS.filter(x => x.id !== t.id && rollupStatus(x) !== 'Done')
+      .sort((a, b) => a.title.localeCompare(b.title))
+      .map(x => `<option value="${x.id}">#${x.id} ${escapeHtml(x.title.length > 60 ? x.title.slice(0, 58) + '…' : x.title)}</option>`).join('');
+  }
+  function mergeTaskInto(sourceId) {
+    const sel = document.getElementById('mergeTarget');
+    const targetId = sel ? Number(sel.value) : 0;
+    const src = findTask(sourceId), dst = findTask(targetId);
+    if (!src || !dst || src === dst) return;
+    if (!confirm('Merge "' + src.title + '" into "' + dst.title + '"? Its notes, subtasks, links and tags fold into that task and this one is removed.')) return;
+    const stamp = todayISO();
+    if (src.notes && src.notes.trim()) dst.notes = (dst.notes ? dst.notes.trim() + '\n\n' : '') + '[Merged from #' + src.id + ' "' + src.title + '" on ' + stamp + ']\n' + src.notes.trim();
+    (src.subitems || []).forEach(sub => { dst.subitems = dst.subitems || []; dst.subitems.push(Object.assign({}, sub, { history: (sub.history || []).concat([{ ts: new Date().toISOString(), field: 'merged-from', from: null, to: '#' + src.id + ' ' + src.title }]) })); });
+    (src.docs || []).forEach(d => { dst.docs = dst.docs || []; if (!dst.docs.some(x => x.url === d.url)) dst.docs.push(d); });
+    if (src.doc && !dst.doc) dst.doc = src.doc;
+    dst.tags = [...new Set([...(dst.tags || []), ...(src.tags || [])])];
+    if (!dst.timelineEnd && src.timelineEnd) dst.timelineEnd = src.timelineEnd;
+    const deps = [...new Set([...dependsList(dst), ...dependsList(src)])].filter(x => x !== dst.id && x !== src.id);
+    dst.depends = deps.join(',');
+    // Anything that depended on the source now depends on the target.
+    TASKS.forEach(x => { if (x !== src && dependsList(x).includes(src.id)) { x.depends = [...new Set(dependsList(x).map(d => d === src.id ? dst.id : d))].filter(d => d !== x.id).join(','); } });
+    dst.history = dst.history || [];
+    dst.history.push({ ts: new Date().toISOString(), field: 'merged-from', from: null, to: '#' + src.id + ' "' + src.title + '" (notes, ' + (src.subitems || []).length + ' subtasks, ' + (src.docs || []).length + ' links, tags)' });
+    TASKS = TASKS.filter(x => x.id !== src.id);
+    currentFilteredOrder = currentFilteredOrder.filter(x => x !== src.id);
+    renderAll(); openTaskCard(dst.id); scheduleSave();
+  }
+
+  // ---- Tidy with Claude (2026-09-16, #250) ----
+  // POST target=tidy returns {before, proposal}; every changed field is shown before/after with
+  // a checkbox, and only what Durand accepts is applied (logged as accepted from Claude).
+  const TIDY_FIELDS = [['title', 'Title'], ['notes', 'Notes'], ['priority', 'Priority'], ['taskType', 'Type'], ['group', 'Group'], ['estHours', 'Estimate (h)'], ['tags', 'Tags']];
+  let TIDY_STATE = null;
+  async function tidyTask(id) {
+    const t = findTask(id);
+    if (!t) return;
+    const btn = document.getElementById('tidyBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Asking Claude…'; }
+    try {
+      const res = await apiFetch('target=tidy', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ taskId: id }) });
+      const data = await res.json();
+      if (!data || !data.ok) throw new Error((data && data.error) || 'Tidy failed');
+      showTidyReview_(id, data.before, data.proposal);
+    } catch (err) {
+      alert('Tidy failed: ' + (err.message || err));
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = '&#10024; Tidy'; }
+    }
+  }
+  function tidyValueText_(field, v) {
+    if (field === 'tags') return (v || []).join(', ') || '—';
+    if (v == null || v === '') return '—';
+    return String(v);
+  }
+  function showTidyReview_(id, before, proposal) {
+    const changed = TIDY_FIELDS.filter(([f]) => tidyValueText_(f, before[f]) !== tidyValueText_(f, proposal[f]));
+    TIDY_STATE = { id, before, proposal, changed: changed.map(([f]) => f) };
+    const rows = changed.length ? changed.map(([f, label]) => `
+      <label class="tidy-row"><input type="checkbox" class="tidy-pick" value="${f}" checked><span class="tidy-field">${label}</span>
+        <span class="tidy-before">${escapeHtml(tidyValueText_(f, before[f]))}</span><span class="tidy-after">${escapeHtml(tidyValueText_(f, proposal[f]))}</span></label>`).join('')
+      : '<div class="history-empty">Claude found nothing to change.</div>';
+    document.getElementById('dayViewTitle').textContent = 'Tidy: review Claude\'s rewrite';
+    setDayViewAdd_(null);
+    document.getElementById('dayViewBody').innerHTML = `
+      <div class="sched-detail-note">${escapeHtml(proposal.rationale || '')}</div>
+      <div class="tidy-list">${rows}</div>
+      <div class="meeting-modal-footer">
+        <button class="btn small" onclick="closeDayView()">Cancel</button>
+        ${changed.length ? '<button class="btn primary small" onclick="applyTidy_()">Apply selected</button>' : ''}
+      </div>`;
+    document.getElementById('dayViewModal').classList.add('open');
+  }
+  function applyTidy_() {
+    if (!TIDY_STATE) return;
+    const t = findTask(TIDY_STATE.id);
+    if (!t) return;
+    const picked = Array.from(document.querySelectorAll('.tidy-pick:checked')).map(el => el.value);
+    picked.forEach(f => {
+      const before = t[f], after = TIDY_STATE.proposal[f];
+      t[f] = f === 'tags' ? (after || []).slice() : after;
+      t.history = t.history || [];
+      t.history.push({ ts: new Date().toISOString(), field: f, from: f === 'tags' ? ((before || []).join(', ') || null) : (before == null || before === '' ? null : before), to: f === 'tags' ? ((after || []).join(', ') || null) : after, source: 'Claude (tidy), accepted by Durand' });
+    });
+    TIDY_STATE = null;
+    closeDayView();
+    renderAll(); openTaskCard(t.id); scheduleSave();
+  }
+
+  // ---- Comment mode (2026-09-16, #250, per Durand: "a toggle where I can comment on any
+  // visible element like Claude artifacts"). Toggle on, click anything, leave a note. Each
+  // comment is anchored to what was clicked (a task, a subtask, a group, a stat tile, or a
+  // generic element by label). Stored server-side in meta.comments through add_comment /
+  // update_comment ops, so a Claude session can read and reply to them from the data file.
+  let COMMENTS = [];
+  let commentMode = false;
+  function toggleCommentMode() {
+    commentMode = !commentMode;
+    document.body.classList.toggle('comment-mode', commentMode);
+    const b = document.getElementById('btnCommentMode');
+    if (b) b.classList.toggle('toggle-active', commentMode);
+    if (!commentMode) closeCommentPopover_();
+  }
+  function commentAnchorFor_(el) {
+    const row = el.closest('tr.task-row[data-id], .task-card[data-id]');
+    const sub = el.closest('.sub-item[data-sub-idx]');
+    if (sub) {
+      const parentRow = sub.closest('tr.sub-row');
+      const taskId = parentRow ? Number(parentRow.id.replace('subrow-', '')) : currentModalTaskId;
+      const t = findTask(taskId); const idx = Number(sub.dataset.subIdx);
+      const subTitle = t && t.subitems && t.subitems[idx] ? t.subitems[idx].title : 'subtask';
+      return { kind: 'sub', id: taskId, idx: idx, label: (t ? t.title : '#' + taskId) + ' → ' + subTitle };
+    }
+    if (row) { const id = Number(row.dataset.id); const t = findTask(id); return { kind: 'task', id: id, label: t ? '#' + id + ' ' + t.title : '#' + id }; }
+    const modal = el.closest('#taskModal');
+    if (modal && currentModalTaskId) { const t = findTask(currentModalTaskId); return { kind: 'task', id: currentModalTaskId, label: t ? '#' + t.id + ' ' + t.title : '#' + currentModalTaskId }; }
+    const group = el.closest('.group-section[data-group], .card-group');
+    if (group) { const g = group.dataset.group || (group.querySelector('.card-group-title') || {}).textContent || 'group'; return { kind: 'group', label: String(g).trim().split('\n')[0].slice(0, 60) }; }
+    const tile = el.closest('.stat-tile');
+    if (tile) return { kind: 'tile', label: ((tile.querySelector('.label') || tile).textContent || 'tile').trim().slice(0, 60) };
+    const text = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    const path = [];
+    let cur = el;
+    for (let i = 0; i < 4 && cur && cur !== document.body; i++) { path.unshift(cur.tagName.toLowerCase() + (cur.id ? '#' + cur.id : '') + (cur.classList.length ? '.' + Array.from(cur.classList).slice(0, 2).join('.') : '')); cur = cur.parentElement; }
+    return { kind: 'element', label: text || el.tagName.toLowerCase(), path: path.join(' > ') };
+  }
+  document.addEventListener('click', function(e) {
+    if (!commentMode) return;
+    const el = e.target;
+    if (el.closest('#commentPopover, #btnCommentMode, #btnComments, .toolbar, #dayViewModal, .modal-header-actions')) return;
+    if (!el.closest('.wrap, .modal-card')) return;
+    e.preventDefault(); e.stopPropagation();
+    openCommentPopover_(commentAnchorFor_(el), e.clientX, e.clientY);
+  }, true);
+  function openCommentPopover_(anchor, x, y) {
+    closeCommentPopover_();
+    const pop = document.createElement('div');
+    pop.id = 'commentPopover';
+    pop.innerHTML = `<div class="cp-anchor">On: <b>${escapeHtml(anchor.label)}</b></div>
+      <textarea class="text-input" id="commentText" rows="3" placeholder="Leave a comment for Claude or yourself…"></textarea>
+      <div class="cp-actions"><button type="button" class="btn small" onclick="closeCommentPopover_()">Cancel</button><button type="button" class="btn primary small" onclick="saveCommentFromPopover_()">Save comment</button></div>`;
+    pop.dataset.anchor = JSON.stringify(anchor);
+    const left = Math.min(x, (window.innerWidth || 1200) - 340), top = Math.min(y, (window.innerHeight || 800) - 200);
+    pop.style.left = Math.max(8, left) + 'px'; pop.style.top = Math.max(8, top) + 'px';
+    document.body.appendChild(pop);
+    const ta = document.getElementById('commentText'); if (ta) ta.focus();
+  }
+  function closeCommentPopover_() { const p = document.getElementById('commentPopover'); if (p) p.remove(); }
+  async function saveCommentFromPopover_() {
+    const pop = document.getElementById('commentPopover');
+    if (!pop) return;
+    const text = (document.getElementById('commentText').value || '').trim();
+    if (!text) return;
+    const anchor = JSON.parse(pop.dataset.anchor || '{}');
+    const comment = { id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), ts: new Date().toISOString(), author: 'Durand', text: text, anchor: anchor, resolved: false };
+    COMMENTS.push(comment); RAW_META.comments = COMMENTS;
+    closeCommentPopover_();
+    renderCommentCount_(); renderAll();
+    await postCommentOp_({ op: 'add_comment', comment: comment, source: 'Durand' });
+  }
+  async function postCommentOp_(op) {
+    try {
+      const res = await apiFetch('', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(op) });
+      const resp = await res.json();
+      if (resp && typeof resp.docVersion === 'number') RAW_META.docVersion = resp.docVersion;
+    } catch (err) { setSyncStatus('error', 'Comment not saved: ' + (err.message || err)); }
+  }
+  function commentsFor_(taskId) { return COMMENTS.filter(c => c && !c.resolved && c.anchor && (c.anchor.kind === 'task' || c.anchor.kind === 'sub') && c.anchor.id === taskId); }
+  function commentBadgeHtml_(taskId) {
+    const n = commentsFor_(taskId).length;
+    return n ? `<span class="comment-badge" onclick="event.stopPropagation(); openCommentsPanel(${taskId})" title="${n} open comment${n === 1 ? '' : 's'}">&#128172; ${n}</span>` : '';
+  }
+  function renderCommentCount_() {
+    const n = COMMENTS.filter(c => c && !c.resolved).length;
+    const el = document.getElementById('commentCount'); if (el) el.textContent = n ? String(n) : '';
+  }
+  function openCommentsPanel(taskId) {
+    const list = (taskId ? COMMENTS.filter(c => c.anchor && c.anchor.id === taskId) : COMMENTS.slice()).sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
+    document.getElementById('dayViewTitle').textContent = taskId ? 'Comments on #' + taskId : 'Comments';
+    setDayViewAdd_(null);
+    document.getElementById('dayViewBody').innerHTML = list.length ? '<div class="comment-list">' + list.map(c => `
+      <div class="comment-item ${c.resolved ? 'resolved' : ''}" data-cid="${escapeHtml(c.id)}">
+        <div class="comment-head"><b>${escapeHtml(c.author || '')}</b> · ${escapeHtml(formatDateTime(c.ts))} · <span class="comment-anchor" ${c.anchor && c.anchor.id ? `onclick="closeDayView(); openTaskCard(${c.anchor.id})"` : ''}>${escapeHtml(c.anchor ? c.anchor.label : '')}</span></div>
+        <div class="comment-text">${escapeHtml(c.text)}</div>
+        <div class="cp-actions"><button type="button" class="btn small" onclick="setCommentResolved_('${escapeHtml(c.id)}', ${c.resolved ? 'false' : 'true'})">${c.resolved ? 'Reopen' : 'Resolve'}</button><button type="button" class="btn small danger" onclick="deleteComment_('${escapeHtml(c.id)}')">Delete</button></div>
+      </div>`).join('') + '</div>' : '<div class="history-empty">No comments yet. Turn on Comment mode and click anything to leave one.</div>';
+    document.getElementById('dayViewModal').classList.add('open');
+  }
+  async function setCommentResolved_(cid, resolved) {
+    const c = COMMENTS.find(x => x.id === cid); if (!c) return;
+    c.resolved = resolved; renderCommentCount_(); renderAll(); openCommentsPanel();
+    await postCommentOp_({ op: 'update_comment', id: cid, fields: { resolved: resolved }, source: 'Durand' });
+  }
+  async function deleteComment_(cid) {
+    COMMENTS = COMMENTS.filter(x => x.id !== cid && x.replyTo !== cid); RAW_META.comments = COMMENTS;
+    renderCommentCount_(); renderAll(); openCommentsPanel();
+    await postCommentOp_({ op: 'update_comment', id: cid, remove: true, source: 'Durand' });
+  }
   function normalizeRoster(raw) {
     if (!Array.isArray(raw) || !raw.length) return DEFAULT_TEAM_ROSTER.slice();
     return raw.map(function(entry) {
@@ -2659,8 +2883,8 @@
     const subBadge = hasSubs ? `<span class="sub-count-badge">${t.subitems.filter(s => s.done).length}/${t.subitems.length}</span>` : '';
     const delegateLine = hasSubs ? `<div class="tc-row tc-delegates" title="Delegated to">→ ${escapeHtml(delegateSummaryText(t))}</div>` : '';
     return `
-      <div class="task-card" onclick="closeDayView(); onRowClick(event, ${t.id})">
-        <div class="tc-title"><span>${escapeHtml(t.title)}${subBadge}</span>${docLinkHtml(t)}${savedPill}<button class="icon-btn danger tc-delete" title="Delete task" onclick="event.stopPropagation(); deleteTask(${t.id})">${TRASH_ICON_SVG}</button></div>
+      <div class="task-card" data-id="${t.id}" onclick="closeDayView(); onRowClick(event, ${t.id})">
+        <div class="tc-title"><span>${escapeHtml(t.title)}${subBadge}${commentBadgeHtml_(t.id)}</span>${docLinkHtml(t)}${savedPill}<button class="icon-btn danger tc-delete" title="Delete task" onclick="event.stopPropagation(); deleteTask(${t.id})">${TRASH_ICON_SVG}</button></div>
         <div class="tc-row">${avatarHtml(t.owner)}<span class="pill ${statusClass(rollupStatus(t))}" style="pointer-events:none;">${escapeHtml(rollupStatus(t))}</span><span class="pill ${priorityClass(rollupPriority(t))}" style="pointer-events:none;">${escapeHtml(rollupPriority(t))}</span>${typeHtml}</div>
         ${delegateLine}
         <div class="tc-row">${tagsHtml}${estHtml}<span class="tc-due ${isOverdue(t) ? 'overdue' : ''}">${t.timelineEnd ? formatDate(t.timelineEnd) : 'No due date'}</span></div>
@@ -4296,7 +4520,7 @@
     let html = `
       <tr class="task-row" data-id="${t.id}" onclick="onRowClick(event, ${t.id})">
         <td>${hasSubs ? `<button class="icon-btn" onclick="toggleSub(${t.id})">${subOpen ? '▾' : '▸'}</button>` : ''}</td>
-        <td class="title-cell"><span class="ttl-edit" contenteditable="true" onblur="onTitleEdit(${t.id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>${hasSubs ? `<span class="sub-count-badge" title="${t.subitems.filter(s=>s.done).length} of ${t.subitems.length} subtasks done">${t.subitems.filter(s=>s.done).length}/${t.subitems.length}</span>` : ''}${docLinkHtml(t)}</td>
+        <td class="title-cell"><span class="ttl-edit" contenteditable="true" onblur="onTitleEdit(${t.id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>${commentBadgeHtml_(t.id)}${hasSubs ? `<span class="sub-count-badge" title="${t.subitems.filter(s=>s.done).length} of ${t.subitems.length} subtasks done">${t.subitems.filter(s=>s.done).length}/${t.subitems.length}</span>` : ''}${docLinkHtml(t)}</td>
         <td class="cell-group">
           <div class="cell-group-stack">
             <div class="cell-group-row owner-cell" title="Owner — accountable for this task">${avatarHtml(t.owner)}${ownerSelect(t.id, t.owner)}</div>
@@ -5103,6 +5327,7 @@
     }).join('');
     document.getElementById('modalMeta').innerHTML = [
       `<div class="modal-row"><b>Group</b><select class="due-input modal-group-select" onchange="modalGroupChange(${id}, this)">${groupSelectOptions_(t.group)}</select></div>`,
+      `<div class="modal-row"><b>Merge</b><span class="modal-tags"><select class="due-input modal-merge-select" id="mergeTarget"><option value="">Merge this task into…</option>${mergeOptionsHtml_(t)}</select><button type="button" class="btn small" onclick="mergeTaskInto(${id})">Merge</button></span></div>`,
       `<div class="modal-row"><b>Depends on</b><span class="modal-tags">${dependsChipsHtml_(t)}<select class="due-input modal-depends-select" onchange="modalAddDepends(${id}, this)"><option value="">+ add a task this waits on…</option>${dependsOptionsHtml_(t)}</select></span></div>`,
       `<div class="modal-row"><b>Owner</b><span class="modal-owner-wrap" title="Accountable for this task — confirming delegated subtasks are actually done is the owner's job">${avatarHtml(t.owner, 'lg')}${ownerSelect(id, t.owner)}</span></div>`,
       `<div class="modal-row"><b>Delegate</b><span class="modal-owner-wrap" title="Who is doing this task. It appears on their own page (subtasks can also be delegated one by one below).">${avatarHtml(taskDelegate(t), 'lg')}${taskDelegateSelect(id, taskDelegate(t))}</span></div>`,
@@ -5682,6 +5907,8 @@
     TASKS = doc.tasks;
     tsgNormalizeTaskDates_(TASKS);
     RAW_META = doc.meta || {};
+    COMMENTS = Array.isArray(RAW_META.comments) ? RAW_META.comments : [];
+    renderCommentCount_();
     TEAM_ROSTER = normalizeRoster(RAW_META.teamRoster);
     renderTeamViewButtons_();
     META.created = doc.meta && doc.meta.created;

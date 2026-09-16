@@ -988,6 +988,36 @@ section('Review gate: pushed delegate items carry Triage and stay off the person
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 
+section('Comments ops and the Tidy proposal (2026-09-16)');
+{
+  const d = { meta: { docVersion: 1, next_id: 5 }, tasks: [ { id: 1, title: 'Plan the fall mailer', owner: 'Durand', status: 'In Progress', priority: 'Medium', taskType: 'Actionable Task', group: 'Marketing', tags: ['Triage'], estHours: 2, timelineEnd: '', notes: 'talked to vendor. vendor said 665.78 for standard. also need 500 list', history: [], subitems: [] } ] };
+  sandbox.applyDataPatch_(d, { op: 'add_comment', comment: { text: 'Is this the right vendor?', author: 'Durand', anchor: { kind: 'task', id: 1, label: '#1 Plan the fall mailer' } }, source: 'Durand' });
+  check('add_comment stores an id, timestamp, author, anchor and text in meta.comments', d.meta.comments.length === 1 && /^c/.test(d.meta.comments[0].id) && d.meta.comments[0].author === 'Durand' && d.meta.comments[0].anchor.id === 1 && d.meta.comments[0].resolved === false);
+  const cid = d.meta.comments[0].id;
+  sandbox.applyDataPatch_(d, { op: 'add_comment', comment: { text: 'Yes: Hello Creative Pro, quote 9/15.', author: 'Claude', replyTo: cid, anchor: { kind: 'task', id: 1, label: '#1' } }, source: 'Claude' });
+  check('a Claude session can reply with replyTo', d.meta.comments.length === 2 && d.meta.comments[1].replyTo === cid && d.meta.comments[1].author === 'Claude');
+  sandbox.applyDataPatch_(d, { op: 'update_comment', id: cid, fields: { resolved: true }, source: 'Durand' });
+  check('update_comment resolves and stamps who/when', d.meta.comments[0].resolved === true && d.meta.comments[0].resolvedBy === 'Durand' && !!d.meta.comments[0].resolvedTs);
+  sandbox.applyDataPatch_(d, { op: 'set_meta', fields: { comments: [] } });
+  check('set_meta cannot wipe comments (server-owned)', d.meta.comments.length === 2);
+  sandbox.applyDataPatch_(d, { op: 'update_comment', id: cid, remove: true, source: 'Durand' });
+  check('removing a comment removes its replies too', d.meta.comments.length === 0);
+  let threw = false; try { sandbox.applyDataPatch_(d, { op: 'add_comment', comment: { text: '  ' } }); } catch (e) { threw = true; }
+  check('add_comment refuses empty text', threw);
+
+  // Tidy proposal: validated field by field, system tags kept
+  const FILE_IDS5 = vm.runInContext('FILE_IDS', sandbox);
+  const origGet5 = sandbox.DriveApp.getFileById;
+  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS5.data ? JSON.stringify(d) : '{}') }) });
+  claudeResponder = (system, user) => { if (!/tidy one task/i.test(system)) throw new Error('wrong prompt'); return { title: 'Plan the fall farming mailer with Hello Creative Pro', notes: 'Current state: vendor quoted $665.78 (standard postage) against the 500-contact list.\n\nLog:\n- 2026-09-15: talked to vendor; quote 665.78 standard; need the 500 list', priority: 'Bogus', taskType: 'Actionable Task', group: 'Nowhere', estHours: 3.1, tags: ['Mailers', 'Triage', 'x', 'y', 'z'], rationale: 'Split state from log.' }; };
+  const prop = sandbox.tsgTidyProposal_(1);
+  check('tidy returns before + proposal with the rewritten title and notes', prop.ok && prop.before.title === 'Plan the fall mailer' && /Hello Creative Pro/.test(prop.proposal.title) && /Current state/.test(prop.proposal.notes));
+  check('tidy keeps the current priority/group when the model proposes an unknown one, rounds hours, keeps system tags and caps topical tags at 3', prop.proposal.priority === 'Medium' && prop.proposal.group === 'Marketing' && prop.proposal.estHours === 3 && prop.proposal.tags.indexOf('Triage') !== -1 && prop.proposal.tags.filter(x => x !== 'Triage').length <= 3);
+  check('tidy never touches the document', d.tasks[0].title === 'Plan the fall mailer');
+  sandbox.DriveApp.getFileById = origGet5;
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+}
+
 section('Link picker: Drive search and link labels (2026-09-16)');
 {
   driveFilesFixture = [fakeDriveFile('Fall Flyer Draft.docx', 'https://drive.google.com/file/d/abc/view', { mimeType: 'application/vnd.google-apps.document' }), fakeDriveFile('Block Party Budget', 'https://docs.google.com/spreadsheets/d/xyz/edit', { mimeType: 'application/vnd.google-apps.spreadsheet' })];

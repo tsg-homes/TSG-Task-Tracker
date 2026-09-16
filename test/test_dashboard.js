@@ -61,7 +61,11 @@ const dom = new JSDOM(html, {
     window.__meetingsFetchUrls = [];
     window.fetch = async (url, opts) => {
       const u = String(url);
-      if (opts && opts.method === 'POST') return { ok: true, status: 200, json: async () => ({ ok: true, serverVersion: 1 }) };
+      if (opts && opts.method === 'POST') {
+        window.__posts = window.__posts || []; window.__posts.push({ url: u, body: opts.body });
+        if (u.includes('target=tidy')) return { ok: true, status: 200, json: async () => ({ ok: true, taskId: 2, before: { title: 'Text Marj About The Flyer Proof', notes: '', priority: 'Medium', taskType: 'Text/Chat', group: 'Marketing', estHours: 0.25, tags: [] }, proposal: { title: 'Text Marj: confirm the flyer proof is approved', notes: 'Current state: waiting on Marj.', priority: 'Medium', taskType: 'Text/Chat', group: 'Marketing', estHours: 0.25, tags: ['Flyers'], rationale: 'Sharpened the ask.' } }) };
+        return { ok: true, status: 200, json: async () => ({ ok: true, serverVersion: 1 }) };
+      }
       if (u.includes('api=data')) return { ok: true, status: 200, json: async () => fakeData };
       if (u.includes('api=calendar')) return { ok: true, status: 200, json: async () => [] };
       if (u.includes('api=meetings')) { window.__meetingsFetchUrls.push(u); return { ok: true, status: 200, json: async () => ({ events: window.__pickerEvents || [], bestGuessId: null }) }; }
@@ -171,6 +175,69 @@ setTimeout(async () => {
   });
   w.findTask(2).delegate = undefined; w.findTask(3).delegate = undefined;
 
+  // #250 backlog batch 3 (2026-09-16): merge into, Tidy review, comment mode
+  tryCall('merge: the source folds into the target (notes, subtasks, links, tags, dependents) and disappears', () => {
+    w.findTask(3).notes = 'source notes'; w.findTask(3).docs = [{ url: 'https://x.test/a', label: 'A', type: 'link' }]; w.findTask(3).tags = ['Ops-tag'];
+    w.findTask(3).subitems = [{ title: 'moved step', done: false, delegate: 'Durand', status: 'Not Started', tags: [], history: [] }];
+    w.findTask(1).depends = '3';
+    w.openTaskCard(3);
+    const sel = doc.getElementById('mergeTarget'); sel.value = '2';
+    if (sel.value !== '2') throw new Error('target 2 not offered');
+    w.mergeTaskInto(3);
+    if (w.findTask(3)) throw new Error('source still exists');
+    const dst = w.findTask(2);
+    if (!/Merged from #3/.test(dst.notes) || !/source notes/.test(dst.notes)) throw new Error('notes not folded: ' + dst.notes);
+    if (!dst.subitems.some(s => s.title === 'moved step')) throw new Error('subtask not moved');
+    if (!dst.docs.some(x => x.url === 'https://x.test/a') || dst.tags.indexOf('Ops-tag') === -1) throw new Error('links/tags not merged');
+    if (w.findTask(1).depends !== '2') throw new Error('dependent not repointed: ' + w.findTask(1).depends);
+    if (!dst.history.some(h => h.field === 'merged-from')) throw new Error('no merge history');
+    w.closeTaskCard();
+    w.findTask(1).depends = ''; dst.subitems = []; dst.docs = []; dst.tags = []; dst.notes = ''; dst.depends = '';
+    w.eval('TASKS').push({ id: 3, title: 'Overdue Task With A Past Due Date', owner: 'Durand', status: 'In Progress', priority: 'Medium', group: 'Ops', tags: [], taskType: 'Meeting', timelineEnd: '2026-09-02', progress: 0, depends: '', doc: '', docs: [], notes: '', estHours: 1, estDays: 1, estSource: 'claude', history: [{ ts: '2026-08-20T12:00:00Z', field: 'created', from: null, to: null }], subitems: [] });
+  });
+  await (async () => {
+    try {
+      w.openTaskCard(2);
+      await w.tidyTask(2);
+      const rows = doc.querySelectorAll('.tidy-row');
+      if (!doc.getElementById('dayViewModal').classList.contains('open') || rows.length !== 3) throw new Error('review rows: ' + rows.length);
+      const notesPick = Array.from(doc.querySelectorAll('.tidy-pick')).find(el => el.value === 'notes'); notesPick.checked = false;
+      w.applyTidy_();
+      const t2 = w.findTask(2);
+      if (t2.title !== 'Text Marj: confirm the flyer proof is approved' || t2.tags.indexOf('Flyers') === -1) throw new Error('accepted fields not applied');
+      if (t2.notes !== '') throw new Error('unchecked notes were applied');
+      if (!t2.history.some(h => h.field === 'title' && /Claude \(tidy\)/.test(h.source))) throw new Error('tidy not logged with its source');
+      t2.title = 'Text Marj About The Flyer Proof'; t2.tags = [];
+      w.closeTaskCard();
+      console.log('OK   - tidy: the proposal is reviewed per field and only accepted fields apply, logged as Claude (tidy)');
+    } catch (e) { console.log('FAIL - tidy ->', e.message); FAILS++; }
+    try {
+      w.setView('board');
+      w.toggleCommentMode();
+      if (!doc.body.classList.contains('comment-mode')) throw new Error('comment mode not on');
+      doc.querySelector('tr.task-row[data-id="2"] td.title-cell').dispatchEvent(new w.MouseEvent('click', { bubbles: true, clientX: 100, clientY: 100 }));
+      const pop = doc.getElementById('commentPopover');
+      if (!pop || !/#2 Text Marj/.test(pop.textContent)) throw new Error('popover not anchored to task 2');
+      doc.getElementById('commentText').value = 'Check with Marj first';
+      await w.saveCommentFromPopover_();
+      await new Promise(r => setTimeout(r, 10));
+      const posts = w.__posts || [];
+      const last = posts[posts.length - 1] && JSON.parse(posts[posts.length - 1].body);
+      if (!last || last.op !== 'add_comment' || last.comment.anchor.id !== 2 || last.comment.text !== 'Check with Marj first') throw new Error('add_comment not posted: ' + JSON.stringify(last));
+      if (!doc.querySelector('tr.task-row[data-id="2"] .comment-badge')) throw new Error('no comment badge on the row');
+      if (doc.getElementById('commentCount').textContent !== '1') throw new Error('toolbar count wrong');
+      w.toggleCommentMode();
+      w.openCommentsPanel();
+      if (!doc.querySelector('.comment-item')) throw new Error('panel empty');
+      const cid = w.eval('COMMENTS')[0].id;
+      await w.setCommentResolved_(cid, true);
+      if (doc.getElementById('commentCount').textContent !== '') throw new Error('resolved comment still counted');
+      await w.deleteComment_(cid);
+      w.closeDayView();
+      console.log('OK   - comment mode: click anchors a comment to the task, posts add_comment, shows badge and count, resolve/delete work');
+    } catch (e) { console.log('FAIL - comment mode ->', e.message); FAILS++; w.closeDayView(); if (doc.body.classList.contains('comment-mode')) w.toggleCommentMode(); }
+  })();
+
   // #250 backlog batch 2 (2026-09-16): link picker with Drive search and real labels; recurring series links
   await (async () => {
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -224,6 +291,7 @@ setTimeout(async () => {
     w.findTask(2).group = 'Marketing';
   });
   tryCall('task modal: dependencies can be added and removed with history', () => {
+    w.findTask(2).depends = ''; w.findTask(2).history = w.findTask(2).history.filter(h => h.field !== 'depends');
     w.openTaskCard(2);
     const sel = doc.querySelector('.modal-depends-select');
     if (!sel) throw new Error('no depends select');

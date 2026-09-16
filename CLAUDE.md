@@ -242,6 +242,44 @@ identifiers and environment facts that are otherwise only known from chat.
 - Dashboard adds send `ownerCreated: true` on `add_task`; the review gate skips them, so a
   delegate chosen on the dashboard is never held (only automation pushes are).
 
+## #250 backlog build-out (2026-09-16, backend 2026-09-16.2, dashboard UI 2026-09-16.3)
+
+Decided with Durand one by one on 2026-09-16; all built, item 13 was already in place.
+- Durand first: `sortPeople_` / `rosterNames` pin Durand ahead of everyone (owner filter,
+  owner sort, Workload, every person select).
+- Group is a dropdown (`groupSelectOptions_`, `modalGroupChange`, `ntGroupChange`) with a
+  "+ New group…" entry; tags autocomplete from `#tagOptions` (refilled by
+  `populateDynamicFilters`, `modalAddTagFrom`); notes/title contenteditables carry
+  `spellcheck="true"`.
+- Task-level dependencies editable in the modal (`dependsChipsHtml_`, `modalAddDepends`,
+  `modalRemoveDepends`; same `t.depends` comma list the Timeline drag writes).
+- Dense cards: a Cards group with more than `DENSE_CARD_THRESHOLD` (12) open cards renders
+  compact cards; per-group "Full cards / Compact" toggle (`denseOff`).
+- Link picker (`addManualDoc` -> `#linkModal`): Drive search through `api=driveSearch&q=`
+  (`tsgDriveSearch_`, files Durand owns, up to 15), upcoming meetings, or a pasted URL whose
+  label comes from `api=linkLabel&url=` (`tsgLabelForUrl_`: Drive/Docs file name; hostname
+  otherwise; NO fetch of arbitrary URLs). Labels are never typed by hand any more.
+- Recurring meetings: both calendar feeds carry `seriesId` (`getEventSeries().getId()`);
+  the picker's "Link the series" (`linkMeetingToTarget(ev, true)`) stamps
+  `item.meetingSeriesId` and a docs entry with `seriesId`; `todayMeetingBlockMatch_` /
+  `linkableToday` match any occurrence of the series on that day.
+- Merge (`mergeTaskInto`): the modal's Merge row folds notes (dated "[Merged from #id]"
+  block), subtasks, links, tags, due and dependencies into the target, repoints dependents,
+  logs `merged-from`, deletes the source.
+- Tidy (`tidyTask` -> POST `target=tidy` -> `tsgTidyProposal_` with `TSG_TIDY_SYSTEM`):
+  Claude proposes title/notes/priority/type/group/estHours/tags; validated server-side
+  (unknown values fall back to current, hours rounded to 0.25, system tags kept, 3 topical
+  tags max); the dashboard shows before/after per changed field with checkboxes and applies
+  only what Durand ticks, logged with source "Claude (tidy), accepted by Durand". Never
+  automatic; one Claude call per click.
+- Comment mode (toolbar "Comment" toggle, `commentMode`): click anything to leave a note
+  anchored to it (`commentAnchorFor_`: task / sub / group / tile / element). Stored in
+  `meta.comments` via NEW ops `add_comment` ({comment}) and `update_comment` ({id, fields}
+  or {id, remove:true}); `set_meta` can no longer write `comments`. Badges on rows/cards,
+  a toolbar count, and a Comments panel (resolve/reopen/delete). CLAUDE SESSIONS: read
+  `meta.comments` from the data file; reply with an `add_comment` inbox patch carrying
+  `author: 'Claude'` and `replyTo: <id>`, resolve with `update_comment`.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs
