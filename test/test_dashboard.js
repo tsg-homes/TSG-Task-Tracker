@@ -328,6 +328,66 @@ setTimeout(async () => {
     w.setView('board');
   });
 
+  // Errand tasks sit inside the Errands block (2026-09-16)
+  tryCall("an Errands-group task due today is placed inside the Errands block, not as its own work block, and grows the block", () => {
+    const today = w.todayISO();
+    const T = w.eval('TASKS');
+    T.push({ id: 910, title: 'Drop off the lockbox', owner: 'Durand', status: 'Not Started', priority: 'Medium', group: 'Errands', tags: [], taskType: 'Actionable Task',
+      timelineEnd: today, progress: 0, depends: '', doc: '', docs: [], notes: '', estHours: 0.5, estDays: 1, estSource: 'claude', location: '45 Baltimore Pike', travelMin: 30, history: [], subitems: [] });
+    const agenda = w.buildTodayAgenda(today);
+    const errand = agenda.schedule.find(i => i.kind === 'errand');
+    if (!errand) throw new Error('no Errands block');
+    if (!errand.items || errand.items.length !== 1 || errand.items[0].task.id !== 910) throw new Error('errand task not inside the block: ' + JSON.stringify(errand.items));
+    if (errand.items[0].minutes !== 60) throw new Error('minutes should be 30 est + 30 travel, got ' + errand.items[0].minutes);
+    if (errand.end - errand.start !== 60) throw new Error('block did not grow to 60 min: ' + (errand.end - errand.start));
+    if (agenda.schedule.some(i => i.kind === 'task' && i.items.some(c => c.task.id === 910))) throw new Error('errand task also placed as a work block');
+    if (agenda.unplaced.some(b => b.items.some(c => c.task.id === 910))) throw new Error('errand task listed as unplaced');
+    w.setView('today'); w.renderAll();
+    const line = [...doc.querySelectorAll('.today-item.type-errand .today-task-line')].find(el => /lockbox/.test(el.textContent));
+    if (!line) throw new Error('errand task line not rendered inside the Errands block');
+    if (!/30m travel/.test(line.textContent)) throw new Error('travel not shown: ' + line.textContent);
+    w.setView('board');
+    for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 910) T.splice(i, 1);
+  });
+  // Lockout while an add is saving (2026-09-16)
+  tryCall('the New Task modal is inert and cannot be closed while its add is in flight', () => {
+    w.openNewTaskModal({ group: 'Ops' });
+    doc.getElementById('ntTitle').value = 'Lockout check task';
+    doc.getElementById('ntGroup').value = 'Ops';
+    doc.getElementById('ntLocation').value = '12 Elm St';
+    let release;
+    const origFetch = w.fetch;
+    w.fetch = (url, opts) => new Promise(res => { release = () => res({ ok: true, status: 200, json: async () => ({ ok: true, docVersion: 9, addResult: { verdict: 'added', taskId: 911 } }) }); });
+    const p = w.confirmNewTask(doc.getElementById('ntConfirmBtn'));
+    const modal = doc.getElementById('newTaskModal');
+    if (!modal.classList.contains('busy')) throw new Error('modal not marked busy during the add');
+    w.closeNewTaskModal();
+    if (!modal.classList.contains('open')) throw new Error('modal closed while busy');
+    if (!w.eval('NT_BUSY')) throw new Error('NT_BUSY not set');
+    release();
+    p.then(() => {
+      w.fetch = origFetch;
+      if (modal.classList.contains('busy')) throw new Error('busy not cleared after the add');
+      if (modal.classList.contains('open')) throw new Error('modal should close after a successful add');
+      const added = w.findTask(911);
+      if (!added || added.location !== '12 Elm St') throw new Error('location not sent with the new task');
+      const T = w.eval('TASKS'); for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 911) T.splice(i, 1);
+      console.log('OK   - after the add answers, the modal unlocks, closes, and the location was sent');
+    }).catch(e => { w.fetch = origFetch; console.log('FAIL - after the add answers ->', e.message); FAILS++; });
+  });
+  tryCall('the task modal shows a Location row with the round trip and Settings has a Home base field', () => {
+    const t = w.findTask(3); t.location = 'Courthouse, Media PA'; t.travelMin = 40;
+    w.openTaskCard(3);
+    const row = [...doc.querySelectorAll('#modalMeta .modal-row')].find(r => /Location/.test(r.textContent));
+    if (!row) throw new Error('no Location row');
+    if (!/Courthouse/.test(row.textContent) || !/40 min round trip/.test(row.textContent)) throw new Error('location or travel missing: ' + row.textContent);
+    w.closeTaskCard();
+    delete t.location; delete t.travelMin;
+    w.eval("RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true; settingsTab = 'team';");
+    w.renderSettings();
+    if (!doc.getElementById('homeBaseInput')) throw new Error('no Home base input on the Team tab');
+  });
+
   // "+ Task" on pop-up lists (task #269): the button carries the list's context into the New Task modal
   tryCall('a pop-up list carries a + Task button that pre-fills the New Task modal', () => {
     w.openMultiTaskModal('Overdue', [1, 3], { due: '2026-09-15', status: 'In Progress' });

@@ -316,6 +316,30 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   `stop_reason: 'refusal'` is no answer. `tsgEstimatePrompt_` / `tsgEstimateParse_` split
   the estimator so callers can build many prompts and send them together.
 
+## Errands block, add lockout, task location (2026-09-16, backend 2026-09-16.4, dashboard UI 2026-09-16.4)
+
+- Errands block: a task in group `Errands` or tagged `Errand` that is on today's plate
+  (`todayInclude_`) sits INSIDE the Errands block as `items` (`getTodayErrandItems`,
+  `isErrandTask_`); `getTodayCandidates` skips it, so it is never a separate work block. The
+  block grows from 30 min to the sum of the items (estimate + round-trip travel). The row,
+  the block detail and the arrow nav treat an errand block with items like a task block.
+- Add lockout: `confirmNewTask` marks `#newTaskModal.busy` and sets `NT_BUSY`; the form is
+  inert (CSS) and `closeNewTaskModal` refuses (Cancel, backdrop, Escape) until `createTask`
+  answers. The inline group add form gets `.add-form.busy` the same way.
+- Location: task field `location` (free text; in `TSG_TASK_DIFF_FIELDS`). New Task modal
+  field `ntLocation`; task modal "Location" row (`modalEditLocation`, prompt); card badge
+  with the round trip. Settings > Team has a "Home base" input that posts
+  `set_meta {homeBase}` (`setHomeBase`; `HOME_BASE` / `RAW_META.homeBase`).
+- Round trip: `tsgApplyTravelTimes_` runs inside `tsgAutoScheduleDoc_` (every write): for a
+  located, open task whose `travelFor` key (location | homeBase, lower-cased) is stale it
+  calls `tsgRoundTripMinutes_` (Apps Script `Maps.newDirectionFinder`, DRIVING, both legs,
+  rounded up to 5 min), stamps `travelMin` + `travelFor`, logs `travelMin` with source
+  `Maps`; results cached 6 h in the script cache; at most `TSG_TRAVEL_PER_RUN_CAP` (10)
+  Maps calls per run; a Maps failure logs and leaves the task alone; clearing the location
+  deletes both fields; no home base means nothing is computed. `tsgItemHours_` (estimate +
+  travel) is what the scheduler seeds and places with. Work items on the dashboard carry
+  `tags`, `location`, `travelMin`.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs

@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-16.3';
+const TSG_CODE_VERSION = '2026-09-16.4';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -2397,7 +2397,7 @@ function backupTrackerFile_(key, payload) {
 // edits (replace_all) or 'unknown' if a caller genuinely didn't say. tags is diffed as
 // one whole-array entry rather than per-tag; every other field here is a plain scalar.
 var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
   'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done'];
 
@@ -4314,6 +4314,62 @@ function tsgFlagAgingTasks_(doc, todayIso) {
 var TSG_SCHEDULE_LOOP_CAP = 2000;
 var TSG_SCHEDULE_LOOP_WARN_AT = 1600; // 80% of the cap
 
+// Round-trip travel (2026-09-16, per Durand: "need to be able to add a location to a task
+// and you can calculate round trip time"). A task's `location` (free text: an address or a
+// place name) is driven from meta.homeBase (Settings > Team > Home base) with the Maps
+// service; the result lands on the task as `travelMin` (ROUND TRIP, driving, rounded up to
+// 5) with `travelFor` recording the location+base it was computed for, so it is only
+// recomputed when either changes. No home base, no location, or a Maps failure leaves
+// travelMin untouched (a failure logs). The Today view's Errands block and the scheduler
+// (tsgItemHours_) add travelMin to the task's own hours. Maps calls are capped per run and
+// each answer is cached 6 h.
+var TSG_TRAVEL_PER_RUN_CAP = 10;
+function tsgTravelKey_(location, base) {
+  return String(location || '').trim().toLowerCase() + ' | ' + String(base || '').trim().toLowerCase();
+}
+function tsgRoundTripMinutes_(base, location) {
+  var key = ('travel:' + tsgTravelKey_(location, base)).slice(0, 240);
+  var cache = null;
+  try { cache = CacheService.getScriptCache(); var hit = cache.get(key); if (hit != null) return Number(hit); } catch (e0) {}
+  var dir = Maps.newDirectionFinder().setOrigin(base).setDestination(location).setMode(Maps.DirectionFinder.Mode.DRIVING).getDirections();
+  var route = dir && dir.routes && dir.routes[0];
+  if (!route || !route.legs || !route.legs.length) throw new Error('no route found');
+  var secs = route.legs.reduce(function(a, l) { return a + ((l.duration && l.duration.value) || 0); }, 0);
+  var mins = Math.ceil((secs * 2) / 60 / 5) * 5;
+  try { if (cache) cache.put(key, String(mins), 21600); } catch (e1) {}
+  return mins;
+}
+function tsgApplyTravelTimes_(doc) {
+  var base = String((doc.meta && doc.meta.homeBase) || '').trim();
+  var calls = 0;
+  (doc.tasks || []).forEach(function(t) {
+    if (!t) return;
+    var loc = String(t.location || '').trim();
+    if (!loc) { if (t.travelMin != null || t.travelFor) { delete t.travelMin; delete t.travelFor; } return; }
+    if (!base) return;
+    var key = tsgTravelKey_(loc, base);
+    if (t.travelFor === key && typeof t.travelMin === 'number') return;
+    if (t.status === 'Done' || t.status === 'Cancelled') return;
+    if (calls >= TSG_TRAVEL_PER_RUN_CAP) return;
+    calls++;
+    try {
+      var mins = tsgRoundTripMinutes_(base, loc);
+      t.history = t.history || [];
+      t.history.push({ ts: new Date().toISOString(), field: 'travelMin', from: (typeof t.travelMin === 'number') ? t.travelMin : null, to: mins, source: 'Maps' });
+      t.travelMin = mins;
+      t.travelFor = key;
+    } catch (err) {
+      Logger.log('[travel] #' + t.id + ' "' + loc + '": ' + err.message);
+    }
+  });
+}
+/** Hours a work item costs on the schedule: its estimate plus round-trip travel when it has one. */
+function tsgItemHours_(r) {
+  var h = Number(r.estHours) || 0;
+  if (typeof r.travelMin === 'number' && r.travelMin > 0) h += r.travelMin / 60;
+  return h;
+}
+
 function tsgAutoScheduleDoc_(doc) {
   var tasks = doc.tasks || [];
 
@@ -4324,6 +4380,7 @@ function tsgAutoScheduleDoc_(doc) {
   tsgPurgeBogusRollupTagHistory_(doc);
   tsgMigrateAssigneeToDelegate_(doc);
   tsgRollupSubitemHours_(doc, new Date().toISOString());
+  tsgApplyTravelTimes_(doc);
   tsgFlagAgingTasks_(doc, tsgTodayIso_());
 
   var allItems = [];
@@ -4367,7 +4424,7 @@ function tsgAutoScheduleDoc_(doc) {
       if (existingSpan) tsgReserveConfirmCapacity_(addLoad, today, existingSpan.end);
       return;
     }
-    var hours = r.estHours || 0;
+    var hours = tsgItemHours_(r);
     if (!hours) return;
     var span = tsgScheduledSpan_(r);
     if (!span) return;
@@ -4507,7 +4564,7 @@ function tsgAutoScheduleDoc_(doc) {
 
     // Date-independent ceiling: the priority's chunk rate, never above a full day.
     var chunkCap = Math.min(TSG_CHUNK_RATE[priority] || TSG_CHUNK_RATE.Medium, TSG_DAY_CAPACITY);
-    var remaining = t.estHours;
+    var remaining = tsgItemHours_(t);
     var chunkDays = [];
     var firstDay = null, iter = 0;
     while (remaining > 0.001 && iter++ < 1000) {

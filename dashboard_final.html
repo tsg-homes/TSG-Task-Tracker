@@ -660,6 +660,12 @@
   .empty-state p { color: var(--text-secondary); font-size: 13.5px; }
 
   /* Task detail modal */
+  /* An add in flight (2026-09-16, per Durand: "there wasn't a lock out during saving"):
+     the form is inert and dimmed until the server answers; Cancel / backdrop / Escape wait. */
+  .modal-overlay.busy .meeting-form { pointer-events: none; opacity: 0.55; }
+  .modal-overlay.busy .meeting-form::after { content: 'Saving…'; display: block; text-align: center; font-weight: 700; margin-top: 8px; color: var(--muted); }
+  .add-form.busy { pointer-events: none; opacity: 0.55; }
+  .today-task-loc { color: var(--muted); font-size: 0.85em; }
   .modal-overlay {
     display: none;
     position: fixed;
@@ -1492,7 +1498,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-16.3';
+  const UI_VERSION = '2026-09-16.4';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1565,6 +1571,8 @@
   // nearest BoA branch..."). Populated from meta.errands on load; used to label the
   // ~10:00 AM Errands block in Today view.
   let ERRANDS = {};
+  // Home base address (meta.homeBase): the origin every task location's round trip is driven from.
+  let HOME_BASE = '';
   // Recurring Ops Manual duties (SOP-sourced), replacing the old generic "Work through
   // Ops Manual standing items" placeholder line. Populated from doc.meta.standingItems —
   // see buildStandingItemChecks() below for how these turn into dated checklist lines.
@@ -2878,6 +2886,7 @@
     const tagsHtml = (t.tags || []).length ? (t.tags || []).map(tag => tagChipHtml(tag)).join('') : '<span class="tc-empty-field">+ tags</span>';
     const typeHtml = typeBadgeHtml(t) || '<span class="tc-empty-field">+ type</span>';
     const estHtml = t.estHours ? `<span class="tc-est">${t.estHours}h est</span>` : '<span class="tc-empty-field">+ estimate</span>';
+    const locHtml = t.location ? `<span class="tc-est" title="${escapeHtml(t.location)}">&#128205; ${(typeof t.travelMin === 'number' && t.travelMin > 0) ? t.travelMin + 'm round trip' : 'located'}</span>` : '';
     const savedPill = JUST_SAVED_IDS.has(t.id) ? '<span class="saved-pill">&#10003; Saved</span>' : '';
     const hasSubs = t.subitems && t.subitems.length;
     const subBadge = hasSubs ? `<span class="sub-count-badge">${t.subitems.filter(s => s.done).length}/${t.subitems.length}</span>` : '';
@@ -2887,7 +2896,7 @@
         <div class="tc-title"><span>${escapeHtml(t.title)}${subBadge}${commentBadgeHtml_(t.id)}</span>${docLinkHtml(t)}${savedPill}<button class="icon-btn danger tc-delete" title="Delete task" onclick="event.stopPropagation(); deleteTask(${t.id})">${TRASH_ICON_SVG}</button></div>
         <div class="tc-row">${avatarHtml(t.owner)}<span class="pill ${statusClass(rollupStatus(t))}" style="pointer-events:none;">${escapeHtml(rollupStatus(t))}</span><span class="pill ${priorityClass(rollupPriority(t))}" style="pointer-events:none;">${escapeHtml(rollupPriority(t))}</span>${typeHtml}</div>
         ${delegateLine}
-        <div class="tc-row">${tagsHtml}${estHtml}<span class="tc-due ${isOverdue(t) ? 'overdue' : ''}">${t.timelineEnd ? formatDate(t.timelineEnd) : 'No due date'}</span></div>
+        <div class="tc-row">${tagsHtml}${estHtml}${locHtml}<span class="tc-due ${isOverdue(t) ? 'overdue' : ''}">${t.timelineEnd ? formatDate(t.timelineEnd) : 'No due date'}</span></div>
         ${bonusCountdownHtml_(t)}
         <div class="progress-wrap"><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div><span class="pct">${pct}%</span></div>
       </div>`;
@@ -3435,7 +3444,8 @@
         items.push({
           id: t.id, subIdx: null, isSubtask: false, parentTitle: null,
           title: t.title, displayTitle: t.title, taskType: t.taskType,
-          delegate: t.owner || 'Unassigned', status: t.status,
+          delegate: t.owner || 'Unassigned', status: t.status, tags: t.tags || [],
+          location: t.location || '', travelMin: (typeof t.travelMin === 'number') ? t.travelMin : 0,
           priority: t.priority, group: t.group, depends: t.depends,
           timelineEnd: t.timelineEnd, estHours: t.estHours,
           scheduledStart: t.scheduledStart, estDays: t.estDays, scheduledDays: t.scheduledDays,
@@ -3801,12 +3811,32 @@
     if (!include && t.status === 'In Progress') include = true;
     return { include: include, overdue: overdue };
   }
+  // Errand tasks (2026-09-16, per Durand: "adding a task to Errands didn't insert it into
+  // the block on the schedule"): a task in the Errands group, or tagged Errand, that is on
+  // today's plate is shown INSIDE the Errands block (see buildTodayFixed), never as a
+  // separate work block. Its minutes are its own estimate plus its round-trip travel.
+  function isErrandTask_(t) { return !t.isSubtask && ((t.group || '') === 'Errands' || (t.tags || []).indexOf('Errand') !== -1); }
+  function getTodayErrandItems(dateISO) {
+    const today = dateISO || todayISO();
+    const out = [];
+    getWorkItems(TASKS).forEach(t => {
+      if (!isErrandTask_(t) || t.status === 'Done') return;
+      if ((t.delegate || 'Unassigned') !== CALENDAR_OWNER) return;
+      const inc = todayInclude_(t, today);
+      if (!inc.include) return;
+      const minutes = Math.max(15, Math.round((t.estHours || 0.5) * 60)) + (t.travelMin || 0);
+      out.push({ task: t, minutes: minutes, overdue: inc.overdue, travelMin: t.travelMin || 0 });
+    });
+    out.sort((a, b) => (a.overdue === b.overdue) ? 0 : (a.overdue ? -1 : 1));
+    return out;
+  }
   function getTodayCandidates(dateISO) {
     const today = dateISO || todayISO();
     const out = [];
     getWorkItems(TASKS).forEach(t => {
       if (t.status === 'Done') return;
       if ((t.delegate || 'Unassigned') !== CALENDAR_OWNER) return;
+      if (isErrandTask_(t)) return; // shown inside the Errands block instead
       if (!t.isSubtask && TODAY_ADMIN_ELIGIBLE_TYPES.indexOf(t.taskType || 'Actionable Task') !== -1) return;
       // Meeting-linked items with a live matching calendar block for today are shown
       // attached to that block instead (see buildTodayFixed) — never as generic filler too.
@@ -3983,20 +4013,23 @@
     // pattern as Lunch below (try earlier in 15-min steps, then later). Computed before
     // Lunch so Lunch and the afternoon break naturally route around it. Title shows
     // today's specific errand text (meta.errands, keyed by ISO date) when set.
+    // The block grows to fit today's errand tasks (their minutes include round-trip travel).
+    const errandItems = getTodayErrandItems(today);
+    const errandMin = Math.max(TODAY_ERRAND_MIN, errandItems.reduce((a, c) => a + c.minutes, 0));
     let errandStart = hmToMin('10:00');
-    if (overlaps(errandStart, errandStart + TODAY_ERRAND_MIN)) {
+    if (overlaps(errandStart, errandStart + errandMin)) {
       let efound = false;
       for (let delta = 15; delta <= 150 && !efound; delta += 15) {
-        if (errandStart - delta >= hmToMin(TODAY_DAY_START) + TODAY_ADMIN_MIN && !overlaps(errandStart - delta, errandStart - delta + TODAY_ERRAND_MIN)) {
+        if (errandStart - delta >= hmToMin(TODAY_DAY_START) + TODAY_ADMIN_MIN && !overlaps(errandStart - delta, errandStart - delta + errandMin)) {
           errandStart = errandStart - delta; efound = true; break;
         }
-        if (errandStart + delta + TODAY_ERRAND_MIN <= hmToMin(TODAY_DAY_END) - TODAY_ADMIN_MIN && !overlaps(errandStart + delta, errandStart + delta + TODAY_ERRAND_MIN)) {
+        if (errandStart + delta + errandMin <= hmToMin(TODAY_DAY_END) - TODAY_ADMIN_MIN && !overlaps(errandStart + delta, errandStart + delta + errandMin)) {
           errandStart = errandStart + delta; efound = true; break;
         }
       }
     }
     const errandLabel = ERRANDS[today] ? ('Errand: ' + ERRANDS[today]) : 'Errands';
-    fixed.push({ kind: 'errand', title: errandLabel, start: errandStart, end: errandStart + TODAY_ERRAND_MIN });
+    fixed.push({ kind: 'errand', title: errandLabel, start: errandStart, end: errandStart + errandMin, items: errandItems });
 
     let lunchStart = 12 * 60;
     if (overlaps(lunchStart, lunchStart + TODAY_LUNCH_MIN)) {
@@ -4217,9 +4250,9 @@
     const rows = agenda.schedule.map((item, idx) => {
       const timeLabel = minToLabel(item.start) + ' – ' + minToLabel(item.end);
       let content;
-      if (item.kind === 'task') {
+      if (item.kind === 'task' || (item.kind === 'errand' && item.items && item.items.length)) {
         content = `<div class="today-title">${escapeHtml(item.title)}</div><div class="today-tasklist">` +
-          item.items.map(c => `<div class="today-task-line" onclick="event.stopPropagation(); openTaskCard(${c.task.id})">${avatarHtml(c.task.delegate)}<span>${escapeHtml(c.task.displayTitle)}</span><span class="today-task-mins">${Math.round(c.minutes)}m</span></div>`).join('') +
+          item.items.map(c => `<div class="today-task-line" onclick="event.stopPropagation(); openTaskCard(${c.task.id})">${avatarHtml(c.task.delegate)}<span>${escapeHtml(c.task.displayTitle)}${c.task.location ? ' <span class="today-task-loc">&#128205; ' + escapeHtml(c.task.location) + '</span>' : ''}</span><span class="today-task-mins" title="${c.travelMin ? 'includes ' + c.travelMin + ' min round trip' : ''}">${Math.round(c.minutes)}m${c.travelMin ? ' (' + c.travelMin + 'm travel)' : ''}</span></div>`).join('') +
           '</div>';
       } else if (item.kind === 'admin' && item.items && item.items.length) {
         content = `<div class="today-title">${escapeHtml(item.title)}</div><div class="today-tasklist">` +
@@ -4274,8 +4307,8 @@
   // block identically instead of maintaining two copies of the same per-kind logic.
   function scheduleBlockDetailBody(item) {
     const timeLabel = minToLabel(item.start) + ' – ' + minToLabel(item.end);
-    if (item.kind === 'task') {
-      return '<div class="card-grid">' + item.items.map(c => taskCardHtml(c.task)).join('') + '</div>';
+    if (item.kind === 'task' || (item.kind === 'errand' && item.items && item.items.length)) {
+      return '<div class="card-grid">' + item.items.map(c => taskCardHtml(findTask(c.task.id) || c.task)).join('') + '</div>';
     } else if (item.kind === 'admin') {
       return (item.items && item.items.length)
         ? '<div class="sched-detail-admin">' + item.items.map(a => adminLineHtml(a)).join('') + '</div>'
@@ -4308,7 +4341,7 @@
     const item = agenda.schedule[idx];
     if (!item) return;
     const timeLabel = minToLabel(item.start) + ' – ' + minToLabel(item.end);
-    if (item.kind === 'task') { currentFilteredOrder = item.items.map(c => c.task.id); navOrderScoped = true; }
+    if ((item.kind === 'task' || item.kind === 'errand') && item.items && item.items.length) { currentFilteredOrder = item.items.map(c => c.task.id); navOrderScoped = true; }
     document.getElementById('dayViewTitle').textContent = item.kind === 'calendar' ? item.title : item.title + ' · ' + timeLabel;
     setDayViewAdd_(schedulePrefill_(item, dateISO));
     document.getElementById('dayViewBody').innerHTML = scheduleBlockDetailBody(item);
@@ -4853,6 +4886,21 @@
 
   // Source link is a URL, not free text — a prompt() (same pattern as add/edit tag) avoids
   // the stray-HTML risk of pasting a link into a contenteditable span.
+  // Location + round-trip travel (2026-09-16): the address is free text; the server drives
+  // it from the Home base (Settings > Team) with the Maps service and stamps travelMin.
+  function travelLabel_(t) {
+    if (typeof t.travelMin === 'number' && t.travelMin > 0) return '· ' + t.travelMin + ' min round trip';
+    return HOME_BASE ? '· travel time pending (computed on save)' : '· set a Home base in Settings for the travel time';
+  }
+  function modalEditLocation(id) {
+    const t = findTask(id);
+    const before = t.location || '';
+    const val = prompt('Location (address or place name):', before);
+    if (val == null) return;
+    t.location = val.trim();
+    if (before !== t.location) logHistory(t, 'location', before || null, t.location || null);
+    renderAll(); openTaskCard(id); scheduleSave();
+  }
   function modalEditDoc(id) {
     const t = findTask(id);
     const before = t.doc || '';
@@ -5336,6 +5384,7 @@
       `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Actionable Task')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,
       `<div class="modal-row"><b>Due</b><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)"></div>`,
       (t.timelineEnd ? `<div class="modal-row"><b>Countdown</b>${bonusCountdownHtml_(t)}</div>` : ''),
+      `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button></span></div>`,
       `<div class="modal-row"><b>Estimate</b><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs</div>`,
       `<div class="modal-row"><b>Progress</b><span>${pct}%</span></div>`,
       `<div class="modal-row"><b>Tags</b><span class="modal-tags">${tagsChips}<input type="text" class="text-input tag-input" list="tagOptions" placeholder="+ tag" spellcheck="true" onkeydown="if(event.key==='Enter'){event.preventDefault();modalAddTagFrom(${id}, this);}" onchange="modalAddTagFrom(${id}, this)"></span></div>`,
@@ -5518,6 +5567,7 @@
           <label>Delegate<select class="due-input" id="ntDelegate" title="Who is doing it; it appears on their page">${personOptions(p.delegate || '', true)}</select></label>
           <label>Tags<input type="text" class="text-input" id="ntTags" list="tagOptions" placeholder="comma-separated" value="${escapeHtml((p.tags || []).join(', '))}"></label>
         </div>
+        <label>Location<input type="text" class="text-input" id="ntLocation" placeholder="Address or place — round-trip travel is added to the task" value="${escapeHtml(p.location || '')}"></label>
         <label>Notes<textarea class="text-input" id="ntNotes" rows="3" placeholder="Optional">${escapeHtml(p.notes || '')}</textarea></label>
         <div class="meeting-modal-footer">
           <button class="btn small" onclick="closeNewTaskModal()">Cancel</button>
@@ -5541,7 +5591,9 @@
     const titleInput = document.getElementById('ntTitle');
     if (titleInput) titleInput.focus();
   }
+  let NT_BUSY = false;
   function closeNewTaskModal() {
+    if (NT_BUSY) return; // an add is in flight; the modal unlocks when the server answers
     document.getElementById('newTaskModal').classList.remove('open');
   }
   function newTaskFieldsFromModal_() {
@@ -5563,15 +5615,21 @@
       history: [{ ts: new Date().toISOString(), field: 'created', from: null, to: null }]
     };
     if (delegate) fields.delegate = delegate;
+    const locEl = document.getElementById('ntLocation');
+    const location = locEl ? locEl.value.trim() : '';
+    if (location) fields.location = location;
     return fields;
   }
   async function confirmNewTask(btn) {
     const fields = newTaskFieldsFromModal_();
     if (!fields.title) { alert('Give the task a title first.'); return; }
     if (!fields.group) { alert('Pick or type a group for this task.'); return; }
+    const modal = document.getElementById('newTaskModal');
     btn.disabled = true; btn.textContent = 'Creating…';
-    const result = await createTask(fields);
-    btn.disabled = false; btn.textContent = 'Create task';
+    NT_BUSY = true; modal.classList.add('busy');
+    let result;
+    try { result = await createTask(fields); }
+    finally { NT_BUSY = false; modal.classList.remove('busy'); btn.disabled = false; btn.textContent = 'Create task'; }
     if (result.note) alert(result.note);
     if (result.ok) closeNewTaskModal();
   }
@@ -5655,7 +5713,10 @@
       history: [{ ts: new Date().toISOString(), field: 'created', from: null, to: null }]
     };
     if (keepOpen) openAddForms.add(g); else openAddForms.delete(g);
-    const result = await createTask(fields);
+    form.classList.add('busy');
+    let result;
+    try { result = await createTask(fields); }
+    finally { const f2 = document.getElementById('addform-' + cssId(g)); if (f2) f2.classList.remove('busy'); }
     if (result.note) alert(result.note);
     if (keepOpen) {
       const newForm = document.getElementById('addform-' + cssId(g));
@@ -5915,6 +5976,7 @@
     META.lastUpdated = (doc.meta && doc.meta.last_updated) || META.lastUpdated;
     nextId = (doc.meta && doc.meta.next_id) || (TASKS.length ? Math.max(...TASKS.map(t => t.id)) + 1 : 1);
     ERRANDS = (doc.meta && doc.meta.errands) || {};
+    HOME_BASE = (doc.meta && doc.meta.homeBase) || '';
     STANDING_ITEMS = (doc.meta && doc.meta.standingItems) || [];
     dataLoaded = true;
     document.getElementById('updatedStamp').textContent = 'Last updated ' + formatDate(META.lastUpdated);
@@ -6145,6 +6207,11 @@
     }).join('');
     return `
       <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Home base</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">The address every task location's round-trip travel time is driven from (the office, or home). Saved on its own; task travel times refresh on the next write.</div>
+        <input type="text" class="text-input" id="homeBaseInput" placeholder="Street address, city, state" value="${escapeHtml(HOME_BASE)}" onblur="setHomeBase(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+      </div>
+      <div class="modal-section">
         <div class="ruleset-block-head"><h3>Team Roster</h3><button class="btn small" onclick="syncFubRoster(false)">&#8635; Sync from FUB</button></div>
         <div class="history-empty" style="margin-bottom:10px;">Names here populate the Owner and Delegate dropdowns everywhere on the board, and the email feeds the meeting picker's guest invite. "Sync from FUB" pulls names/emails from Follow Up Boss and fills in matches by email or name &mdash; it only adds or fills in, never removes. Adding someone with "+ Add delegate" below only saves to this tracker; it never writes to FUB.</div>
         ${rows || '<div class="history-empty">No one on the roster yet.</div>'}
@@ -6155,6 +6222,22 @@
           <button class="btn small primary" onclick="addRosterMember()">+ Add delegate</button>
         </div>
       </div>`;
+  }
+  async function setHomeBase(value) {
+    const val = (value || '').trim();
+    if (val === HOME_BASE) return;
+    HOME_BASE = val;
+    RAW_META.homeBase = val;
+    setSyncStatus('saving');
+    try {
+      const res = await apiFetch('', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ op: 'set_meta', fields: { homeBase: val } }) });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const resp = await res.json();
+      if (resp && resp.ok === false && resp.error !== 'busy') throw new Error(resp.error || 'Save rejected');
+      if (resp && typeof resp.docVersion === 'number') RAW_META.docVersion = resp.docVersion;
+      setSyncStatus('saved');
+    } catch (err) { setSyncStatus('error', err.message || err); }
   }
   function addRosterMember() {
     const input = document.getElementById('newRosterName');

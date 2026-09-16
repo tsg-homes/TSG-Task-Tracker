@@ -13,6 +13,8 @@ let driveDocTextById = {};       // { fileId: text } consumed by the DocumentApp
 let driveSheetValuesById = {};   // { fileId: [[...]] } consumed by the SpreadsheetApp.openById stub
 let projectDashboardHtml = '';   // what HtmlService.createHtmlOutputFromFile('dashboard_final') returns
 let cacheStore = {};             // CacheService stub backing store
+let mapsCalls = 0;               // Maps.newDirectionFinder().getDirections() invocations
+let mapsDirections = { routes: [{ legs: [{ duration: { value: 840 } }] }] }; // 14 min one way
 let uuidCounter = 0;
 let personPageHtml = '<html>PERSON PAGE for __TSG_PERSON__ (as=__TSG_AS__)</html>';
 let claudeRequests = [];         // every request body sent to the Claude endpoint (parsed)
@@ -98,6 +100,13 @@ const sandbox = {
     createHtmlOutput: (h) => { const o = { html: h }; o.setTitle = () => o; o.addMetaTag = () => o; return o; },
     // The dashboard is a file in the script project; tests point it at a small fake page.
     createHtmlOutputFromFile: (name) => ({ getContent: () => (name === 'dashboard_final' ? projectDashboardHtml : (name === 'person' ? personPageHtml : '')) })
+  },
+  Maps: {
+    DirectionFinder: { Mode: { DRIVING: 'driving' } },
+    newDirectionFinder: () => {
+      const f = { setOrigin: () => f, setDestination: () => f, setMode: () => f, getDirections: () => { mapsCalls++; return mapsDirections; } };
+      return f;
+    }
   },
   CacheService: { getScriptCache: () => ({ get: (k) => (cacheStore[k] == null ? null : cacheStore[k]), put: (k, v) => { cacheStore[k] = v; }, remove: (k) => { delete cacheStore[k]; } }) },
   // Global MimeType (distinct from ContentService.MimeType above) — used by
@@ -565,6 +574,42 @@ section('Claude call plumbing (2026-09-16 efficiency pass)');
 
   vm.runInContext('TSG_CLAUDE_RUN_CALLS = ' + savedCalls, sandbox);
   claudeHttp = null;
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+}
+
+section('Task location and round-trip travel (2026-09-16)');
+{
+  claudeResponder = () => ({ estHours: 1, taskType: 'Actionable Task', subitems: [], priority: 'Medium', group: 'Errands', dependsOnTitle: null, tags: [], needsConfirmation: false, progress: 0, rationale: 'r' });
+  cacheStore = {}; mapsCalls = 0;
+  // Travel is computed in the scheduler pass that processInbox_ runs after every patch.
+  const write = (dd, patch) => { sandbox.applyDataPatch_(dd, patch); sandbox.tsgAutoScheduleDoc_(dd); };
+  const d = { meta: { next_id: 950, docVersion: 3, homeBase: '123 Main St, Media, PA' }, tasks: [] };
+  write(d, { op: 'add_task', ts: '2026-09-16T12:00:00Z', source: 'Durand', skipDedup: true, skipEnrich: true,
+    task: { title: 'Drop the signed listing agreement at the title company', group: 'Errands', owner: 'Durand', priority: 'Medium', estHours: 0.5, location: 'Title company, 45 Baltimore Pike, Media PA' } });
+  const t = d.tasks[0];
+  check('a located task gets a round-trip travelMin from Maps (14 min one way -> 30 round trip, rounded up to 5)', t.travelMin === 30 && mapsCalls === 1);
+  check('the computation is remembered per location+base and logged on the history', t.travelFor === 'title company, 45 baltimore pike, media pa | 123 main st, media, pa' && t.history.some(h => h.field === 'travelMin' && h.to === 30 && h.source === 'Maps'));
+  write(d, { op: 'update_task', id: t.id, fields: { priority: 'High' }, source: 'Durand' });
+  check('an unrelated write does not call Maps again', mapsCalls === 1 && t.travelMin === 30);
+  check('the scheduler charges estimate plus travel', sandbox.tsgItemHours_(t) === 1);
+  cacheStore = {};
+  write(d, { op: 'update_task', id: t.id, fields: { location: 'Somewhere else' }, source: 'Durand' });
+  check('a changed location recomputes', mapsCalls === 2 && t.travelFor.indexOf('somewhere else') === 0);
+  write(d, { op: 'update_task', id: t.id, fields: { location: '' }, source: 'Durand' });
+  check('clearing the location drops travelMin', t.travelMin === undefined && t.travelFor === undefined && mapsCalls === 2);
+  const d2 = { meta: { next_id: 960, docVersion: 3 }, tasks: [] };
+  write(d2, { op: 'add_task', ts: '2026-09-16T12:00:00Z', source: 'Durand', skipDedup: true, skipEnrich: true,
+    task: { title: 'Pick up signs from the print shop', group: 'Errands', owner: 'Durand', estHours: 0.5, location: 'Print shop' } });
+  check('no home base -> no Maps call, no travelMin', mapsCalls === 2 && d2.tasks[0].travelMin === undefined);
+  const saved = mapsDirections; mapsDirections = { routes: [] };
+  const d3 = { meta: { next_id: 970, docVersion: 3, homeBase: 'Base' }, tasks: [] };
+  write(d3, { op: 'add_task', ts: '2026-09-16T12:00:00Z', source: 'Durand', skipDedup: true, skipEnrich: true,
+    task: { title: 'Return the lockbox to the office supply', group: 'Errands', owner: 'Durand', estHours: 0.5, location: 'Nowhere' } });
+  check('a Maps failure leaves the task without travelMin and does not throw', d3.tasks[0].travelMin === undefined);
+  mapsDirections = saved;
+  write(d3, { op: 'set_meta', fields: { homeBase: 'New base' } });
+  check('set_meta can set homeBase', d3.meta.homeBase === 'New base');
+  check('location is a diffed task field', vm.runInContext('TSG_TASK_DIFF_FIELDS', sandbox).includes('location'));
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 
