@@ -304,6 +304,42 @@ KW Empower 676 KB → 4.6 KB, Ticketmaster inlined as vector. Whole page: 55 KB.
 To change a logo: replace the file in `assets/`, run `node tools/build-form.js`,
 re-paste `RaffleForm.html`.
 
+## QR code
+
+`assets/tsg-monogram.png` is the TSG monogram, cropped out of
+`TSG_2024_LOGO-01.png` from inside the capsule ring, used as the centre mark.
+
+```
+DEP=$(clasp list-deployments | grep -v '@HEAD' | grep -o 'AKfycb[A-Za-z0-9_-]*' | head -1)
+python3 tools/make-qr.py "https://script.google.com/macros/s/$DEP/exec?form=raffle" ~/Desktop
+```
+
+The URL is an **argument, never a constant** — it carries the deployment id, this
+repo is public, and `npm test` fails on any tracked file containing one. Pipe it
+from `clasp` rather than retyping it.
+
+Two things the script does that matter:
+
+- The centre mark is sized against error-correction headroom. The code is ECC
+  level H (~30% recoverable) and the white plate is fitted to the monogram's own
+  tall-narrow proportion rather than squared off — a square plate knocks out
+  noticeably more modules for the same visual size. It covers ~5% of the area.
+- **It refuses to emit a code it has not proved scannable.** Every output is
+  decoded back and compared to the exact input URL at 900/600/450px under blur,
+  12° rotation and a glare gradient. Any failure exits non-zero rather than
+  handing you a pretty code that does not work.
+
+It also writes a plain, unbranded code. Take it to the event as a fallback: if an
+old phone or bad light struggles with the branded one, swap the print and you
+lose only the logo.
+
+**Print at 8cm or larger** — it is a 61×61-module code. It scans smaller, but
+8–10cm on a table tent gives a comfortable arm's-length scan.
+
+**The URL does not change when you redeploy**, as long as you deploy to the
+existing deployment (`clasp deploy -i <id>`, or Manage deployments → Edit → New
+version). Creating a *new* deployment mints a new URL and kills every printed QR.
+
 ## Tests
 
 ```
