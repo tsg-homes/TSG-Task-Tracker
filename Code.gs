@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-16.4';
+const TSG_CODE_VERSION = '2026-09-16.5';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -297,8 +297,83 @@ function applyRulesetPatchOp_(doc, patch) {
   if (patch.historyEntry) doc.history.push(Object.assign({ ts: now }, patch.historyEntry));
 }
 
+// ---------------------------------------------------------------------------------------
+// Judgment queue (2026-09-16, per Durand: "i dont have a claude api" -> "use method 2 to
+// bypass the need for a key"). With no ANTHROPIC_API_KEY, every judgment the script would
+// have asked Claude for (a new task's estimate/type/subitems/priority/group/dependency/tags/
+// progress plus its Drive and calendar matches, a notes-progress read, a Tidy rewrite) is
+// written to doc.meta.judgments instead of being dropped. A scheduled Claude Code Routine
+// (hourly on weekdays) reads the data file, answers each request under its own judgment,
+// and sends {target:'data', op:'judgment', id, answer} inbox ops; applyDataPatch_ applies an
+// answer through the SAME field logic the live path uses (tsgApplyEstimateToTask_,
+// tsgSetProgressFromNotes_, tsgTidyValidate_) and removes the request. The queue is
+// server-owned: replace_all and set_meta never write it. Request shapes are documented in
+// README "Judgment queue". Nothing here runs when a key IS set: then the live call happens.
+// ---------------------------------------------------------------------------------------
+var TSG_JUDGMENT_QUEUE_CAP = 200;
+var TSG_CURRENT_DOC = null; // the document applyDataPatch_ is working on, for queueing from deep helpers
+function tsgJudgmentMode_() { return !tsgApiKey_(); }
+function tsgQueueJudgment_(doc, req) {
+  if (!doc || !req || req.taskId == null) return null;
+  doc.meta = doc.meta || {};
+  var q = Array.isArray(doc.meta.judgments) ? doc.meta.judgments : [];
+  var sub = (req.subIdx == null) ? null : req.subIdx;
+  // One pending request per kind + target: a newer one replaces the older.
+  q = q.filter(function(r) { return !(r && r.kind === req.kind && r.taskId === req.taskId && ((r.subIdx == null) ? null : r.subIdx) === sub); });
+  doc.meta.judgmentSeq = (doc.meta.judgmentSeq || 0) + 1;
+  req.id = 'J' + doc.meta.judgmentSeq;
+  req.ts = new Date().toISOString();
+  q.push(req);
+  if (q.length > TSG_JUDGMENT_QUEUE_CAP) q = q.slice(-TSG_JUDGMENT_QUEUE_CAP);
+  doc.meta.judgments = q;
+  return req.id;
+}
+/** Applies one answered request. Unknown / superseded ids are logged and ignored. */
+function tsgApplyJudgmentOp_(doc, patch, now) {
+  doc.meta = doc.meta || {};
+  var q = Array.isArray(doc.meta.judgments) ? doc.meta.judgments : [];
+  var req = q.filter(function(r) { return r && r.id === patch.id; })[0];
+  doc.meta.judgments = q.filter(function(r) { return !(r && r.id === patch.id); });
+  if (!req) { Logger.log('[judgment] unknown id ' + patch.id + ' (already applied or superseded)'); return; }
+  var answer = patch.answer;
+  if (!answer || typeof answer !== 'object') { Logger.log('[judgment] ' + req.id + ' dropped: no answer'); return; }
+  var source = patch.source || 'Claude';
+  var t = (doc.tasks || []).filter(function(x) { return x && x.id === req.taskId; })[0];
+  if (!t) { Logger.log('[judgment] ' + req.id + ': task #' + req.taskId + ' no longer exists'); return; }
+  if (req.kind === 'estimate') {
+    var est = tsgEstimateParse_(JSON.stringify(answer), req.need || [], t.title, {
+      driveCandidateCount: (req.driveCandidates || []).length, calendarCandidateCount: (req.calendarCandidates || []).length });
+    if (est.source === 'none') return;
+    tsgApplyEstimateToTask_(doc, t, est, req.need || [], {
+      now: now, source: source, personCreated: !!req.personCreated, batchSiblings: req.batchSiblings || [],
+      driveCands: req.driveCandidates ? { files: req.driveCandidates } : null,
+      calCands: req.calendarCandidates ? { events: req.calendarCandidates } : null,
+      deferred: true
+    });
+  } else if (req.kind === 'progress') {
+    var item = (req.subIdx == null) ? t : ((t.subitems || [])[req.subIdx] || null);
+    if (!item) return;
+    if (String(item.notes || '').trim() !== String(req.notes || '').trim()) { Logger.log('[judgment] ' + req.id + ' stale: notes changed since it was queued'); return; }
+    var status = item.done ? 'Done' : (item.status || 'Not Started');
+    if (status === 'Done') return;
+    if (typeof answer.progress !== 'number' || !isFinite(answer.progress)) return;
+    var pct = Math.max(0, Math.min(100, Math.round(answer.progress)));
+    var prev = item.progress;
+    tsgSetProgressFromNotes_(item, pct);
+    var hist = (req.subIdx == null) ? (t.history = t.history || []) : (item.history = item.history || []);
+    hist.push({ ts: now, field: 'progress', from: (typeof prev === 'number') ? prev : null, to: pct, source: source });
+  } else if (req.kind === 'tidy') {
+    var v = tsgTidyValidate_(doc, t, answer);
+    doc.meta.tidyProposals = doc.meta.tidyProposals || {};
+    doc.meta.tidyProposals[String(t.id)] = { before: v.before, proposal: v.proposal, ts: now, source: source };
+  } else {
+    Logger.log('[judgment] ' + req.id + ': unknown kind ' + req.kind);
+  }
+}
+
 function applyDataPatch_(doc, patch) {
   const now = patch.ts || new Date().toISOString();
+  TSG_CURRENT_DOC = doc;
 
   if (patch.op === 'bulk') {
     // 2026-09-10 per Durand: dependsOnTitle inference should see every task in this same
@@ -507,137 +582,13 @@ function applyDataPatch_(doc, patch) {
           driveCandidates: driveCands ? driveCands.listText : '',
           driveCandidateCount: driveCands ? driveCands.files.length : 0,
           calendarCandidates: calCands ? calCands.listText : '',
-          calendarCandidateCount: calCands ? calCands.events.length : 0
+          calendarCandidateCount: calCands ? calCands.events.length : 0,
+          driveList: driveCands ? driveCands.files : null,
+          calendarList: calCands ? calCands.events : null
         };
         est = tsgEstimateTask_(task.title, task.notes, task.priority, need, context);
-        const applied = [];
-        if (need.indexOf('estHours') !== -1 && est.estHours != null) {
-          task.estHours = est.estHours;
-          task.estDays = tsgEstDays_(est.estHours, task.priority || est.priority || 'Medium');
-          task.estSource = est.source;
-          applied.push('estHours (' + est.estHours + 'h)');
-          // 'Triage' tag repurposed 2026-08-26: flags a task whose estimate the estimator
-          // itself flagged as a genuine judgment call, so Durand knows to sanity-check it
-          // rather than trust it blindly — see the Today Admin block's "Confirm delegated
-          // work" line for the unrelated, differently-named delegate-confirmation rollup.
-          if (est.needsConfirmation) {
-            task.tags = Array.from(new Set(task.tags.concat(['Triage'])));
-            applied.push('flagged for estimate confirmation (Triage)');
-          }
-        } else if (need.indexOf('estHours') !== -1 && est.tags && est.tags.length) {
-          task.tags = Array.from(new Set(task.tags.concat(est.tags)));
-        }
-        if (need.indexOf('taskType') !== -1 && est.taskType) { task.taskType = est.taskType; applied.push('taskType'); }
-        // Type "Claude" with nobody named: Claude is the delegate (2026-09-15). A supplied
-        // delegate is never overridden.
-        if (task.taskType === 'Claude' && !tsgTaskDelegate_(task)) { task.delegate = 'Claude'; applied.push('delegate (Claude)'); }
-        if (need.indexOf('subitems') !== -1 && est.subitems && est.subitems.length) {
-          // A person-created task's estimate is split evenly across the steps it was just
-          // broken into, so the rollup and the scheduler have per-step hours to work with
-          // (steps with no hours are never queued). Durand's pipeline keeps the hours on
-          // the parent as before.
-          var perStep = (patch.personCreated && typeof task.estHours === 'number' && task.estHours > 0)
-            ? Math.max(0.25, Math.round((task.estHours / est.subitems.length) * 4) / 4) : null;
-          task.subitems = est.subitems.map(function(s) {
-            return { title: s.title, done: false, delegate: tsgDefaultSubitemDelegate_(task), status: 'Not Started',
-              priority: task.priority || 'Medium', tags: [], timelineEnd: '', progress: 0,
-              depends: '', doc: '', notes: '', estHours: perStep, estDays: null,
-              estSource: perStep != null ? 'claude' : 'none', taskType: 'Actionable Task',
-              history: [{ ts: now, field: 'created', from: null, to: null, source: patch.source || 'unknown' }] };
-          });
-          applied.push('subitems (' + task.subitems.length + ')');
-        }
-        if (need.indexOf('priority') !== -1 && est.priority) { task.priority = est.priority; applied.push('priority'); }
-        if (need.indexOf('group') !== -1 && est.group) { task.group = est.group; applied.push('group'); }
-        if (need.indexOf('dependsOnTitle') !== -1 && est.dependsOnTitle) {
-          const depMatch = doc.tasks.find(function(t) { return t.title === est.dependsOnTitle; });
-          if (depMatch) {
-            task.depends = String(depMatch.id);
-            applied.push('depends on #' + depMatch.id);
-          } else if (batchSiblings.indexOf(est.dependsOnTitle) !== -1) {
-            // The dependency is a real sibling in this same batch, just not added YET
-            // (it's listed later in the same bulk array, so it has no id yet). Stash a
-            // placeholder the 'bulk' handler resolves to a real id once every op in the
-            // batch has run — see the resolution pass right after the ops.forEach above.
-            task.depends = '~title:' + est.dependsOnTitle;
-            applied.push('depends on a later task in this same push ("' + est.dependsOnTitle + '") — resolving once the batch finishes');
-          }
-        }
-        if (need.indexOf('tags') !== -1 && est.tags && est.tags.length) {
-          task.tags = Array.from(new Set(task.tags.concat(est.tags)));
-          applied.push('tags (' + est.tags.join(', ') + ')');
-        }
-        if (need.indexOf('progress') !== -1 && est.progress != null) {
-          task.progress = est.progress;
-          if (est.progress > 0 && task.status === 'Not Started') task.status = 'In Progress';
-          applied.push('progress (' + est.progress + '%, from the notes)');
-        }
-        if (applied.length) {
-          task.history.push({
-            ts: now, field: 'auto-enriched', from: null,
-            to: 'Determined automatically: ' + applied.join(', ') + (est.rationale ? ' — ' + est.rationale : '')
-          });
-        }
-      }
-
-      // Drive doc auto-search (2026-09-10, matching revised same day per Durand — see
-      // tsgMatchFromParsed_'s comment) per Durand: "search the drive for any relevant docs."
-      // Read-only and owner-scoped — see tsgDriveCandidates_ for why (TSG's standing
-      // rule: Apps Script only ever touches files Durand owns, never a shared drive or a
-      // file someone else owns). Only runs when nothing was already supplied, and only
-      // auto-attaches a match Claude judged HIGH-confidence; a weaker candidate gets
-      // surfaced via Triage + a note instead of guessed at, same "infer, don't silently
-      // default" posture as priority/group below.
-      if (driveCands && est) {
-        var driveMatch = tsgDocFromCandidates_(driveCands, est.driveMatch);
-        if (driveMatch) {
-          if (driveMatch.confident) {
-            task.docs.push({ url: driveMatch.url, label: driveMatch.label, type: 'doc' });
-            task.history.push({ ts: now, field: 'doc-auto-linked', from: null,
-              to: driveMatch.label + (driveMatch.rationale ? ' — ' + driveMatch.rationale : '') });
-          } else {
-            task.tags = Array.from(new Set(task.tags.concat(['Triage'])));
-            task.notes = (task.notes ? task.notes + '\n\n' : '') +
-              'Possible related Drive doc found ("' + driveMatch.label + '") but not confident enough to ' +
-              'auto-link — review and attach manually if relevant: ' + driveMatch.url +
-              (driveMatch.rationale ? ' (' + driveMatch.rationale + ')' : '');
-            task.history.push({ ts: now, field: 'triage-flagged', from: null,
-              to: 'Possible related Drive doc found but not auto-linked: ' + driveMatch.label });
-          }
-        }
-      }
-
-      // Calendar meeting auto-search-and-link (2026-09-10, matching revised same day per
-      // Durand) per Durand: "search the calendar for related meetings, link them too."
-      // FUTURE EVENTS ONLY (never links a task to a meeting that already happened) — same
-      // window discipline as the manual picker (tsgListUpcomingMeetings_). Only runs for
-      // taskType "Meeting" (by now resolved, whether supplied or just set by the estimator
-      // above), only when no meeting is linked yet, and only auto-links a match Claude
-      // judged HIGH-confidence — see tsgCalendarCandidates_ / tsgMeetingFromCandidates_ for how. A softer candidate
-      // is Triage-flagged with a note rather than guessed at, since this writes with no
-      // human review (unlike the manual picker, which always shows Durand the full list).
-      if (calCands && est && task.taskType === 'Meeting' && !task.meetingDate) {
-        var meetingMatch = tsgMeetingFromCandidates_(calCands, est.meetingMatch);
-        if (meetingMatch) {
-          if (meetingMatch.confident) {
-            task.meetingDate = meetingMatch.date;
-            task.meetingStart = meetingMatch.start;
-            task.meetingEnd = meetingMatch.end;
-            if (!task.docs.some(function(d) { return d.url === meetingMatch.htmlLink; })) {
-              task.docs.push({ url: meetingMatch.htmlLink, label: meetingMatch.label, type: 'meeting' });
-            }
-            task.history.push({ ts: now, field: 'meeting-auto-linked', from: null,
-              to: meetingMatch.label + (meetingMatch.rationale ? ' — ' + meetingMatch.rationale : '') });
-          } else {
-            task.tags = Array.from(new Set(task.tags.concat(['Triage'])));
-            task.notes = (task.notes ? task.notes + '\n\n' : '') +
-              'Possible related meeting found on the calendar ("' + meetingMatch.label + '") but not confident ' +
-              'enough to auto-link — use "Link a meeting" on the task to confirm.' +
-              (meetingMatch.rationale ? ' (' + meetingMatch.rationale + ')' : '');
-            task.history.push({ ts: now, field: 'triage-flagged', from: null,
-              to: 'Possible related meeting found but not auto-linked: ' + meetingMatch.label });
-          }
-        }
+        tsgApplyEstimateToTask_(doc, task, est, need, { now: now, source: patch.source || 'unknown', personCreated: !!patch.personCreated,
+          batchSiblings: batchSiblings, driveCands: driveCands, calCands: calCands });
       }
 
       // 2026-09-09 per Durand: nothing should be SET BY DEFAULT if it can instead be
@@ -692,6 +643,11 @@ function applyDataPatch_(doc, patch) {
 
       task.id = doc.meta.next_id;
       doc.meta.next_id += 1;
+      // No API key: the estimator handed back the request it would have sent; queue it now
+      // that the task has an id. The Routine's answer lands through tsgApplyJudgmentOp_.
+      if (est && est.source === 'queued' && est.request) {
+        tsgQueueJudgment_(doc, Object.assign({ taskId: task.id, personCreated: !!patch.personCreated }, est.request));
+      }
       // A patch-created task needs the same 'created' history entry the dashboard's own
       // "+ Add" form writes, because that entry is the ONLY creation timestamp
       // tsgFlagAgingTasks_ will accept ("no reliable creation timestamp — don't guess").
@@ -736,7 +692,7 @@ function applyDataPatch_(doc, patch) {
     }
     Object.assign(t, patch.fields);
     if (Object.prototype.hasOwnProperty.call(t, 'assignee')) { if (!t.delegate && t.assignee) t.delegate = t.assignee; delete t.assignee; }
-    tsgApplyProgressFromNotes_(t, prevTaskSnapshot.notes, !!patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'progress'));
+    tsgApplyProgressFromNotes_(t, prevTaskSnapshot.notes, !!patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'progress'), { taskId: t.id });
     t.history = t.history || [];
     tsgLogFieldChanges_(t.history, prevTaskSnapshot, t, TSG_TASK_DIFF_FIELDS, now, patch.source);
     tsgStampLifecycleTimestamps_(t, now);
@@ -806,7 +762,7 @@ function applyDataPatch_(doc, patch) {
     if (Object.prototype.hasOwnProperty.call(f, 'status')) { f.done = (f.status === 'Done'); if (f.done) f.progress = 100; }
     else if (Object.prototype.hasOwnProperty.call(f, 'done')) { f.status = f.done ? 'Done' : (sub.status === 'Done' ? 'In Progress' : (sub.status || 'Not Started')); if (f.done) f.progress = 100; }
     Object.assign(sub, f);
-    tsgApplyProgressFromNotes_(sub, prevSubs[patch.index].notes, Object.prototype.hasOwnProperty.call(f, 'progress'));
+    tsgApplyProgressFromNotes_(sub, prevSubs[patch.index].notes, Object.prototype.hasOwnProperty.call(f, 'progress'), { taskId: patch.id, subIdx: patch.index });
     tsgStampSubitemTouchesForTask_(prevSubs, subs, now, patch.source);
   } else if (patch.op === 'add_subitem') {
     const t = doc.tasks.find(function(x) { return x.id === patch.id; });
@@ -829,8 +785,21 @@ function applyDataPatch_(doc, patch) {
     var metaFields = Object.assign({}, patch.fields || {});
     // comments is server-owned too (2026-09-16): use add_comment / update_comment so two
     // writers (the dashboard, a Claude session) never overwrite each other's threads.
-    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments'].forEach(function(k) { delete metaFields[k]; });  // server-owned
+    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals'].forEach(function(k) { delete metaFields[k]; });  // server-owned
     Object.assign(doc.meta, metaFields);
+    if (Object.prototype.hasOwnProperty.call(metaFields, 'homeBase')) {
+      try { PropertiesService.getScriptProperties().setProperty('TSG_HOME_BASE', String(metaFields.homeBase || '')); } catch (err) {}
+    }
+  } else if (patch.op === 'judgment') {
+    tsgApplyJudgmentOp_(doc, patch, now);
+  } else if (patch.op === 'request_tidy') {
+    // The dashboard's Tidy button with no API key: queue the rewrite for the Routine.
+    var tidyTask = (doc.tasks || []).filter(function(x) { return x && x.id === patch.id; })[0];
+    if (!tidyTask) throw new Error('request_tidy: no task ' + patch.id);
+    tsgQueueJudgment_(doc, { kind: 'tidy', taskId: tidyTask.id, title: tidyTask.title, before: tsgTidyBefore_(tidyTask),
+      due: tidyTask.timelineEnd || '', status: tidyTask.status || '', subitems: (tidyTask.subitems || []).map(function(s) { return s.title; }) });
+  } else if (patch.op === 'clear_tidy_proposal') {
+    if (doc.meta && doc.meta.tidyProposals) delete doc.meta.tidyProposals[String(patch.id)];
   } else if (patch.op === 'add_comment') {
     // Comment mode (2026-09-16, #250, per Durand: "a toggle where I can comment on any
     // visible element like Claude artifacts"). A comment is { id, ts, author, text,
@@ -1400,6 +1369,11 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify(tsgDriveSearch_(e.parameter.q)))
       .setMimeType(ContentService.MimeType.JSON);
   }
+  if (e.parameter.api === 'geocode') {
+    if (!tsgCheckToken_(e)) return tsgUnauthorized_();
+    return ContentService.createTextOutput(JSON.stringify(tsgGeocode_(e.parameter.q)))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
   if (e.parameter.api === 'linkLabel') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
     return ContentService.createTextOutput(JSON.stringify(tsgLabelForUrl_(e.parameter.url)))
@@ -1527,7 +1501,7 @@ function getCalendarHours_(startStr, endStr) {
     var title = ev.getTitle();
     var offSite = tsgIsOffSiteMeeting_(title, location);
     var prepMin = TSG_MEETING_PREP_MIN;
-    var travelMin = offSite ? TSG_MEETING_TRAVEL_MIN : 0;
+    var travelMin = offSite ? tsgEventTravelMinutes_(location) : 0;
     var bufferHours = (prepMin + travelMin * 2) / 60;
     var seriesId = null;
     try { if (ev.isRecurringEvent && ev.isRecurringEvent()) seriesId = ev.getEventSeries().getId(); } catch (e0) {}
@@ -1647,6 +1621,164 @@ function tsgListUpcomingMeetings_(startStr, endStr, titleHint, dueDate) {
 // as the other fields (NEEDED_FIELDS 'driveMatch' / 'meetingMatch'): a new task costs one
 // round-trip, not three. These helpers only gather the candidate lists and validate the
 // model's pick. The matching rules live in TSG_ESTIMATE_SYSTEM.
+/**
+ * Applies one estimator answer to a task: every field in `need` that came back, the Drive
+ * and calendar matches, the history line. Shared by the live add_task path and a queued
+ * judgment applied later (o.deferred), which is why every write is guarded by "is the
+ * field still open" — a task may have been edited between the request and the answer.
+ * o: {now, source, personCreated, batchSiblings, driveCands:{files:[{url,label}]},
+ *     calCands:{events:[{date,start,end,htmlLink,label}]}, deferred}
+ */
+function tsgApplyEstimateToTask_(doc, task, est, need, o) {
+  o = o || {};
+  var now = o.now || new Date().toISOString();
+  task.tags = Array.isArray(task.tags) ? task.tags : [];
+  if (!est || est.source === 'none' || est.source === 'queued') {
+    // Claude unreachable, or the request is queued for the Routine: the estimate is
+    // visibly missing until it lands, never silently defaulted.
+    if (need.indexOf('estHours') !== -1) task.tags = Array.from(new Set(task.tags.concat(['needs-estimate'])));
+    return [];
+  }
+  task.history = task.history || [];
+  if (!Array.isArray(task.docs)) task.docs = [];
+  const applied = [];
+  if (need.indexOf('estHours') !== -1 && est.estHours != null && (o.deferred ? task.estHours == null : true)) {
+    task.estHours = est.estHours;
+    task.estDays = tsgEstDays_(est.estHours, task.priority || est.priority || 'Medium');
+    task.estSource = est.source;
+    task.tags = task.tags.filter(function(tg) { return tg !== 'needs-estimate'; });
+    applied.push('estHours (' + est.estHours + 'h)');
+    // 'Triage' tag repurposed 2026-08-26: flags a task whose estimate the estimator
+    // itself flagged as a genuine judgment call, so Durand knows to sanity-check it
+    // rather than trust it blindly — see the Today Admin block's "Confirm delegated
+    // work" line for the unrelated, differently-named delegate-confirmation rollup.
+    if (est.needsConfirmation) {
+      task.tags = Array.from(new Set(task.tags.concat(['Triage'])));
+      applied.push('flagged for estimate confirmation (Triage)');
+    }
+  } else if (need.indexOf('estHours') !== -1 && est.tags && est.tags.length && !o.deferred) {
+    task.tags = Array.from(new Set(task.tags.concat(est.tags)));
+  }
+  if (need.indexOf('taskType') !== -1 && est.taskType && (!o.deferred || !task.taskType || task.taskType === 'Actionable Task')) { task.taskType = est.taskType; applied.push('taskType'); }
+  // Type "Claude" with nobody named: Claude is the delegate (2026-09-15). A supplied
+  // delegate is never overridden.
+  if (task.taskType === 'Claude' && !tsgTaskDelegate_(task)) { task.delegate = 'Claude'; applied.push('delegate (Claude)'); }
+  if (need.indexOf('subitems') !== -1 && est.subitems && est.subitems.length && !(task.subitems || []).length) {
+    // A person-created task's estimate is split evenly across the steps it was just
+    // broken into, so the rollup and the scheduler have per-step hours to work with
+    // (steps with no hours are never queued). Durand's pipeline keeps the hours on
+    // the parent as before.
+    var perStep = (o.personCreated && typeof task.estHours === 'number' && task.estHours > 0)
+      ? Math.max(0.25, Math.round((task.estHours / est.subitems.length) * 4) / 4) : null;
+    task.subitems = est.subitems.map(function(s) {
+      return { title: s.title, done: false, delegate: tsgDefaultSubitemDelegate_(task), status: 'Not Started',
+        priority: task.priority || 'Medium', tags: [], timelineEnd: '', progress: 0,
+        depends: '', doc: '', notes: '', estHours: perStep, estDays: null,
+        estSource: perStep != null ? 'claude' : 'none', taskType: 'Actionable Task',
+        history: [{ ts: now, field: 'created', from: null, to: null, source: o.source || 'unknown' }] };
+    });
+    applied.push('subitems (' + task.subitems.length + ')');
+  }
+  var fallbackFixed = false;
+  if (need.indexOf('priority') !== -1 && est.priority) { if (task.priority !== est.priority) fallbackFixed = true; task.priority = est.priority; applied.push('priority'); }
+  if (need.indexOf('group') !== -1 && est.group) { if (task.group !== est.group) fallbackFixed = true; task.group = est.group; applied.push('group'); }
+  if (o.deferred && (need.indexOf('priority') !== -1 || need.indexOf('group') !== -1)) {
+    // The add-time fallback (Medium / Unsorted, or a neighbour's values) wrote a
+    // "could not be determined ... Please confirm." paragraph; the real answer retires it.
+    var cleaned = String(task.notes || '').replace(/\n*(?:Priority|Group) (?:could not be determined by the estimator|inferred from the most similar existing task)[^]*?Please confirm\.\s*/g, '').trim();
+    if (cleaned !== String(task.notes || '').trim()) { task.notes = cleaned; fallbackFixed = true; }
+  }
+  if (need.indexOf('dependsOnTitle') !== -1 && est.dependsOnTitle && !task.depends) {
+    const depMatch = (doc.tasks || []).find(function(t) { return t && t.title === est.dependsOnTitle && t.id !== task.id; });
+    if (depMatch) {
+      task.depends = String(depMatch.id);
+      applied.push('depends on #' + depMatch.id);
+    } else if ((o.batchSiblings || []).indexOf(est.dependsOnTitle) !== -1 && !o.deferred) {
+      // The dependency is a real sibling in this same batch, just not added YET
+      // (it's listed later in the same bulk array, so it has no id yet). Stash a
+      // placeholder the 'bulk' handler resolves to a real id once every op in the
+      // batch has run — see the resolution pass right after the ops.forEach above.
+      task.depends = '~title:' + est.dependsOnTitle;
+      applied.push('depends on a later task in this same push ("' + est.dependsOnTitle + '") — resolving once the batch finishes');
+    }
+  }
+  if (need.indexOf('tags') !== -1 && est.tags && est.tags.length) {
+    task.tags = Array.from(new Set(task.tags.concat(est.tags)));
+    applied.push('tags (' + est.tags.join(', ') + ')');
+  }
+  if (need.indexOf('progress') !== -1 && est.progress != null && task.status !== 'Done' && !(o.deferred && typeof task.progress === 'number' && task.progress > 0)) {
+    task.progress = est.progress;
+    if (est.progress > 0 && task.status === 'Not Started') task.status = 'In Progress';
+    applied.push('progress (' + est.progress + '%, from the notes)');
+  }
+  if (applied.length) {
+    task.history.push({
+      ts: now, field: 'auto-enriched', from: null,
+      to: 'Determined ' + (o.deferred ? 'by the judgment queue' : 'automatically') + ': ' + applied.join(', ') + (est.rationale ? ' — ' + est.rationale : ''),
+      source: o.source || 'unknown'
+    });
+  }
+
+  // Drive doc auto-search (2026-09-10, matching revised same day per Durand — see
+  // tsgMatchFromParsed_'s comment) per Durand: "search the drive for any relevant docs."
+  // Read-only and owner-scoped — see tsgDriveCandidates_ for why (TSG's standing
+  // rule: Apps Script only ever touches files Durand owns, never a shared drive or a
+  // file someone else owns). Only runs when nothing was already supplied, and only
+  // auto-attaches a match Claude judged HIGH-confidence; a weaker candidate gets
+  // surfaced via Triage + a note instead of guessed at, same "infer, don't silently
+  // default" posture as priority/group.
+  if (o.driveCands && !task.doc && !task.docs.length) {
+    var driveMatch = tsgDocFromCandidates_(o.driveCands, est.driveMatch);
+    if (driveMatch) {
+      if (driveMatch.confident) {
+        task.docs.push({ url: driveMatch.url, label: driveMatch.label, type: 'doc' });
+        task.history.push({ ts: now, field: 'doc-auto-linked', from: null,
+          to: driveMatch.label + (driveMatch.rationale ? ' — ' + driveMatch.rationale : '') });
+      } else {
+        task.tags = Array.from(new Set(task.tags.concat(['Triage'])));
+        task.notes = (task.notes ? task.notes + '\n\n' : '') +
+          'Possible related Drive doc found ("' + driveMatch.label + '") but not confident enough to ' +
+          'auto-link — review and attach manually if relevant: ' + driveMatch.url +
+          (driveMatch.rationale ? ' (' + driveMatch.rationale + ')' : '');
+        task.history.push({ ts: now, field: 'triage-flagged', from: null,
+          to: 'Possible related Drive doc found but not auto-linked: ' + driveMatch.label });
+      }
+    }
+  }
+
+  // Calendar meeting auto-search-and-link (2026-09-10, matching revised same day per
+  // Durand) per Durand: "search the calendar for related meetings, link them too."
+  // FUTURE EVENTS ONLY (never links a task to a meeting that already happened) — same
+  // window discipline as the manual picker (tsgListUpcomingMeetings_). Only for a task
+  // whose resolved type is "Meeting", only when no meeting is linked yet, and only a
+  // match Claude judged HIGH-confidence is auto-linked; a softer candidate is
+  // Triage-flagged with a note rather than guessed at.
+  if (o.calCands && task.taskType === 'Meeting' && !task.meetingDate) {
+    var meetingMatch = tsgMeetingFromCandidates_(o.calCands, est.meetingMatch);
+    if (meetingMatch) {
+      if (meetingMatch.confident) {
+        task.meetingDate = meetingMatch.date;
+        task.meetingStart = meetingMatch.start;
+        task.meetingEnd = meetingMatch.end;
+        if (!task.docs.some(function(d) { return d.url === meetingMatch.htmlLink; })) {
+          task.docs.push({ url: meetingMatch.htmlLink, label: meetingMatch.label, type: 'meeting' });
+        }
+        task.history.push({ ts: now, field: 'meeting-auto-linked', from: null,
+          to: meetingMatch.label + (meetingMatch.rationale ? ' — ' + meetingMatch.rationale : '') });
+      } else {
+        task.tags = Array.from(new Set(task.tags.concat(['Triage'])));
+        task.notes = (task.notes ? task.notes + '\n\n' : '') +
+          'Possible related meeting found on the calendar ("' + meetingMatch.label + '") but not confident ' +
+          'enough to auto-link — use "Link a meeting" on the task to confirm.' +
+          (meetingMatch.rationale ? ' (' + meetingMatch.rationale + ')' : '');
+        task.history.push({ ts: now, field: 'triage-flagged', from: null,
+          to: 'Possible related meeting found but not auto-linked: ' + meetingMatch.label });
+      }
+    }
+  }
+  return applied;
+}
+
 function tsgMatchFromParsed_(parsed, candidateCount) {
   if (!parsed || typeof parsed !== 'object' || parsed.index == null || parsed.index === '') return null;
   var idx = Math.floor(Number(parsed.index)) - 1; // candidates are listed 1-based for the model
@@ -1672,12 +1804,14 @@ function tsgCalendarCandidates_(dueDate) {
     var events = cal.getEvents(start, end).filter(function(ev) { return !ev.isAllDayEvent(); });
     if (!events.length) return null;
     events = events.slice(0, 20); // keep the prompt bounded; a 20-event 2-6 week window is already generous
-    var listText = events.map(function(ev, i) {
-      return (i + 1) + '. "' + ev.getTitle() + '" — ' +
-        Utilities.formatDate(ev.getStartTime(), tz, 'yyyy-MM-dd') + ' ' +
-        Utilities.formatDate(ev.getStartTime(), tz, 'HH:mm') + '-' + Utilities.formatDate(ev.getEndTime(), tz, 'HH:mm');
-    }).join('\n');
-    return { events: events, listText: listText, tz: tz, cal: cal };
+    // Plain objects, so a queued judgment request can carry the same list.
+    var plain = events.map(function(ev) {
+      return { date: Utilities.formatDate(ev.getStartTime(), tz, 'yyyy-MM-dd'),
+        start: Utilities.formatDate(ev.getStartTime(), tz, 'HH:mm'), end: Utilities.formatDate(ev.getEndTime(), tz, 'HH:mm'),
+        htmlLink: tsgCalendarEventLink_(ev, cal), label: ev.getTitle() };
+    });
+    var listText = plain.map(function(ev, i) { return (i + 1) + '. "' + ev.label + '" — ' + ev.date + ' ' + ev.start + '-' + ev.end; }).join('\n');
+    return { events: plain, listText: listText };
   } catch (err) {
     Logger.log('[calendarSearch] failed: ' + err.message);
     return null;
@@ -1686,18 +1820,9 @@ function tsgCalendarCandidates_(dueDate) {
 /** The estimator's meetingMatch pick resolved against the gathered candidates. Null = no link. */
 function tsgMeetingFromCandidates_(cands, match) {
   if (!cands || !match) return null;
-  var ev = cands.events[match.idx];
+  var ev = (cands.events || [])[match.idx];
   if (!ev) return null;
-  var tz = cands.tz, tzStart = ev.getStartTime(), tzEnd = ev.getEndTime();
-  return {
-    date: Utilities.formatDate(tzStart, tz, 'yyyy-MM-dd'),
-    start: Utilities.formatDate(tzStart, tz, 'HH:mm'),
-    end: Utilities.formatDate(tzEnd, tz, 'HH:mm'),
-    htmlLink: tsgCalendarEventLink_(ev, cands.cal),
-    label: ev.getTitle(),
-    confident: match.confident,
-    rationale: match.rationale
-  };
+  return { date: ev.date, start: ev.start, end: ev.end, htmlLink: ev.htmlLink, label: ev.label, confident: match.confident, rationale: match.rationale };
 }
 
 // Drive doc auto-search (2026-09-10, extended same day per Durand to also read candidate
@@ -1801,11 +1926,12 @@ function tsgDriveCandidates_(title) {
     var candidates = [], n = 0;
     while (it.hasNext() && n < 8) { candidates.push(it.next()); n++; }
     if (!candidates.length) return null;
-    var listText = candidates.map(function(f, i) {
-      var snippet = tsgGetFileSnippet_(f);
-      return (i + 1) + '. ' + f.getName() + (snippet ? '\n   Content excerpt: "' + snippet + '"' : '');
+    // Plain objects, so a queued judgment request can carry the same list.
+    var files = candidates.map(function(f) { return { url: f.getUrl(), label: f.getName(), excerpt: tsgGetFileSnippet_(f) || '' }; });
+    var listText = files.map(function(f, i) {
+      return (i + 1) + '. ' + f.label + (f.excerpt ? '\n   Content excerpt: "' + f.excerpt + '"' : '');
     }).join('\n');
-    return { files: candidates, listText: listText };
+    return { files: files, listText: listText };
   } catch (err) {
     Logger.log('[driveSearch] failed for "' + title + '": ' + err.message);
     return null;
@@ -1814,9 +1940,9 @@ function tsgDriveCandidates_(title) {
 /** The estimator's driveMatch pick resolved against the gathered candidates. Null = no link. */
 function tsgDocFromCandidates_(cands, match) {
   if (!cands || !match) return null;
-  var f = cands.files[match.idx];
+  var f = (cands.files || [])[match.idx];
   if (!f) return null;
-  return { url: f.getUrl(), label: f.getName(), confident: match.confident, rationale: match.rationale };
+  return { url: f.url, label: f.label, confident: match.confident, rationale: match.rationale };
 }
 
 // FUB team roster sync (2026-09-01) — backs the dashboard's Team Roster sync, so Owner/
@@ -2397,7 +2523,7 @@ function backupTrackerFile_(key, payload) {
 // edits (replace_all) or 'unknown' if a caller genuinely didn't say. tags is diffed as
 // one whole-array entry rather than per-tag; every other field here is a plain scalar.
 var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
   'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done'];
 
@@ -3423,6 +3549,24 @@ function tsgEstimateParse_(raw, need, title, context) {
 
 function tsgEstimateTask_(title, notes, priority, need, context) {
   var p = tsgEstimatePrompt_(title, notes, priority, need, context);
+  context = context || {};
+  if (tsgJudgmentMode_()) {
+    // No key: hand the request to the queue (context.target known) or back to the caller
+    // (add_task queues it once the task has an id). The result is the "none" shape with
+    // source 'queued' so callers fall back exactly as for an unreachable Claude.
+    var req = { kind: 'estimate', need: p.need, title: String(title || ''), notes: String(notes || '').trim(), priority: priority || '',
+      batchSiblings: context.batchSiblings || [], driveCandidates: context.driveList || null, calendarCandidates: context.calendarList || null };
+    var out = tsgEstimateParse_(null, p.need, title, context);
+    out.source = 'queued';
+    if (context.target && context.target.taskId != null) {
+      req.taskId = context.target.taskId;
+      if (context.target.subIdx != null) req.subIdx = context.target.subIdx;
+      out.requestId = tsgQueueJudgment_(TSG_CURRENT_DOC, req);
+    } else {
+      out.request = req;
+    }
+    return out;
+  }
   var raw = tsgClaude_(p.system, p.user, p.maxTokens, false, p.opts);
   return tsgEstimateParse_(raw, p.need, title, context);
 }
@@ -3433,9 +3577,13 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
  * 0-100, or null when there is nothing to read or Claude is unavailable, so a caller can
  * leave the stored value alone. Empty notes are 0 without a call.
  */
-function tsgProgressFromNotes_(title, notes, priority) {
+function tsgProgressFromNotes_(title, notes, priority, target) {
   var clean = String(notes || '').trim();
   if (!clean) return 0;
+  if (tsgJudgmentMode_()) {
+    if (target && target.taskId != null) tsgQueueJudgment_(TSG_CURRENT_DOC, { kind: 'progress', taskId: target.taskId, subIdx: (target.subIdx == null) ? undefined : target.subIdx, title: String(title || ''), notes: clean, priority: priority || '' });
+    return null;
+  }
   var est = tsgEstimateTask_(title, clean, priority || '', ['progress'], {});
   return (est && est.source !== 'none' && est.progress != null) ? est.progress : null;
 }
@@ -3463,9 +3611,9 @@ function tsgSetProgressFromNotes_(item, pct) {
   item.progress = pct;
   if (pct > 0 && status === 'Not Started') item.status = 'In Progress';
 }
-function tsgApplyProgressFromNotes_(item, prevNotes, progressExplicit) {
+function tsgApplyProgressFromNotes_(item, prevNotes, progressExplicit, target) {
   if (!tsgProgressWanted_(item, prevNotes, progressExplicit)) return false;
-  var pct = tsgProgressFromNotes_(item.title, String(item.notes || '').trim(), item.priority);
+  var pct = tsgProgressFromNotes_(item.title, String(item.notes || '').trim(), item.priority, target);
   if (pct == null) return false;
   tsgSetProgressFromNotes_(item, pct);
   return true;
@@ -3490,9 +3638,13 @@ function tsgProgressFromNotesMany_(items) {
   var idxs = [];
   (items || []).forEach(function(it, i) { if (String(it && it.notes || '').trim()) idxs.push(i); else out[i] = 0; });
   if (!idxs.length) return out;
+  if (tsgJudgmentMode_()) {
+    idxs.forEach(function(i) { tsgProgressFromNotes_(items[i].title, items[i].notes, items[i].priority, items[i].target); });
+    return out;
+  }
   if (idxs.length === 1) {
     var one = items[idxs[0]];
-    out[idxs[0]] = tsgProgressFromNotes_(one.title, one.notes, one.priority);
+    out[idxs[0]] = tsgProgressFromNotes_(one.title, one.notes, one.priority, one.target);
     return out;
   }
   var CHUNK = 20, chunks = [], reqs = [];
@@ -3528,17 +3680,17 @@ function tsgApplyProgressFromNotesOnSave_(prevTasks, nextTasks) {
   (nextTasks || []).forEach(function(t) {
     if (!t) return;
     var p = prevById[t.id];
-    if (tsgProgressWanted_(t, p ? p.notes : '', !!p && !tsgValuesEqual_(p.progress, t.progress))) wanted.push(t);
+    if (tsgProgressWanted_(t, p ? p.notes : '', !!p && !tsgValuesEqual_(p.progress, t.progress))) wanted.push({ item: t, target: { taskId: t.id } });
     var ps = (p && Array.isArray(p.subitems)) ? p.subitems : [];
     (t.subitems || []).forEach(function(s, i) {
       if (!s) return;
       var q = ps[i];
-      if (tsgProgressWanted_(s, q ? q.notes : '', !!q && !tsgValuesEqual_(q.progress, s.progress))) wanted.push(s);
+      if (tsgProgressWanted_(s, q ? q.notes : '', !!q && !tsgValuesEqual_(q.progress, s.progress))) wanted.push({ item: s, target: { taskId: t.id, subIdx: i } });
     });
   });
   if (!wanted.length) return;
-  var pcts = tsgProgressFromNotesMany_(wanted.map(function(it) { return { title: it.title, notes: String(it.notes || '').trim(), priority: it.priority }; }));
-  wanted.forEach(function(it, i) { if (pcts[i] != null) tsgSetProgressFromNotes_(it, pcts[i]); });
+  var pcts = tsgProgressFromNotesMany_(wanted.map(function(w) { return { title: w.item.title, notes: String(w.item.notes || '').trim(), priority: w.item.priority, target: w.target }; }));
+  wanted.forEach(function(w, i) { if (pcts[i] != null) tsgSetProgressFromNotes_(w.item, pcts[i]); });
 }
 
 /* ------------------------------------------------------------------ *
@@ -3620,20 +3772,15 @@ var TSG_TIDY_SCHEMA = {
   }
 };
 /** Proposal for the dashboard's Tidy button: current fields plus Claude's cleaned-up version, validated. */
-function tsgTidyProposal_(taskId) {
-  if (!taskId) return { ok: false, error: 'taskId required' };
-  if (!tsgApiKey_()) return { ok: false, error: 'No ANTHROPIC_API_KEY set in Script Properties.' };
-  var doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
-  var t = (doc.tasks || []).filter(function(x) { return x && x.id === taskId; })[0];
-  if (!t) return { ok: false, error: 'no task ' + taskId };
+function tsgTidyBefore_(t) {
+  return { title: t.title || '', notes: t.notes || '', priority: t.priority || 'Medium', taskType: t.taskType || 'Actionable Task', group: t.group || '',
+    estHours: (typeof t.estHours === 'number') ? t.estHours : null, tags: (t.tags || []).slice() };
+}
+/** Validates a raw tidy answer against the board: unknown values fall back to the current ones, system tags are kept. */
+function tsgTidyValidate_(doc, t, p) {
   var groups = Array.from(new Set((doc.tasks || []).map(function(x) { return x.group; }).filter(Boolean)));
-  var tags = Array.from(new Set((doc.tasks || []).reduce(function(a, x) { return a.concat(x.tags || []); }, []))).filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1; });
-  var before = { title: t.title || '', notes: t.notes || '', priority: t.priority || 'Medium', taskType: t.taskType || 'Actionable Task', group: t.group || '', estHours: (typeof t.estHours === 'number') ? t.estHours : null, tags: (t.tags || []).slice() };
-  var user = 'CURRENT TASK: ' + JSON.stringify(Object.assign({ id: t.id, status: t.status, due: t.timelineEnd || '', subitems: (t.subitems || []).map(function(s) { return s.title; }) }, before), null, 1) +
-    '\n\nEXISTING_GROUPS: ' + JSON.stringify(groups) + '\nEXISTING_TAGS: ' + JSON.stringify(tags);
-  var raw = tsgClaude_(TSG_TIDY_SYSTEM, user, 2000, false, { schema: TSG_TIDY_SCHEMA });
-  var p = raw ? tsgExtractJson_(raw) : null;
-  if (!p) return { ok: false, error: 'Claude did not return a proposal.' };
+  var before = tsgTidyBefore_(t);
+  p = p || {};
   var prios = (doc.meta && doc.meta.priority_values) || ['Critical', 'High', 'Medium', 'Low'];
   var types = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Actionable Task'];
   var proposal = {
@@ -3649,7 +3796,32 @@ function tsgTidyProposal_(taskId) {
   // System tags on the task (Triage etc.) are never dropped by a tidy.
   var keep = (t.tags || []).filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) !== -1 || tg === 'Self-created'; });
   proposal.tags = Array.from(new Set(keep.concat(proposal.tags)));
-  return { ok: true, taskId: t.id, before: before, proposal: proposal };
+  return { before: before, proposal: proposal };
+}
+/**
+ * Proposal for the dashboard's Tidy button. With a key: one Claude call, answered now. With
+ * no key: a request_tidy inbox op queues the rewrite for the Routine and the dashboard shows
+ * "Review tidy" on the card once meta.tidyProposals[taskId] exists.
+ */
+function tsgTidyProposal_(taskId) {
+  if (!taskId) return { ok: false, error: 'taskId required' };
+  if (tsgJudgmentMode_()) {
+    var r = tsgQueueDataPatch_({ op: 'request_tidy', id: taskId, source: 'Durand' });
+    return { ok: true, queued: true, taskId: taskId, busy: !!(r && r.busy) };
+  }
+  var doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
+  var t = (doc.tasks || []).filter(function(x) { return x && x.id === taskId; })[0];
+  if (!t) return { ok: false, error: 'no task ' + taskId };
+  var groups = Array.from(new Set((doc.tasks || []).map(function(x) { return x.group; }).filter(Boolean)));
+  var tags = Array.from(new Set((doc.tasks || []).reduce(function(a, x) { return a.concat(x.tags || []); }, []))).filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1; });
+  var before = tsgTidyBefore_(t);
+  var user = 'CURRENT TASK: ' + JSON.stringify(Object.assign({ id: t.id, status: t.status, due: t.timelineEnd || '', subitems: (t.subitems || []).map(function(s) { return s.title; }) }, before), null, 1) +
+    '\n\nEXISTING_GROUPS: ' + JSON.stringify(groups) + '\nEXISTING_TAGS: ' + JSON.stringify(tags);
+  var raw = tsgClaude_(TSG_TIDY_SYSTEM, user, 2000, false, { schema: TSG_TIDY_SCHEMA });
+  var p = raw ? tsgExtractJson_(raw) : null;
+  if (!p) return { ok: false, error: 'Claude did not return a proposal.' };
+  var v = tsgTidyValidate_(doc, t, p);
+  return { ok: true, taskId: t.id, before: v.before, proposal: v.proposal };
 }
 
 /* ------------------------------------------------------------------ *
@@ -4327,37 +4499,82 @@ var TSG_TRAVEL_PER_RUN_CAP = 10;
 function tsgTravelKey_(location, base) {
   return String(location || '').trim().toLowerCase() + ' | ' + String(base || '').trim().toLowerCase();
 }
-function tsgRoundTripMinutes_(base, location) {
-  var key = ('travel:' + tsgTravelKey_(location, base)).slice(0, 240);
+var TSG_TRAVEL_CALLS = 0; // Maps calls this execution (tasks and calendar events together)
+/** ONE-WAY driving minutes from base to location, rounded up to 5; cached 6 h. Throws when Maps finds no route. */
+function tsgOneWayMinutes_(base, location) {
+  var key = ('travel1:' + tsgTravelKey_(location, base)).slice(0, 240);
   var cache = null;
   try { cache = CacheService.getScriptCache(); var hit = cache.get(key); if (hit != null) return Number(hit); } catch (e0) {}
+  if (TSG_TRAVEL_CALLS >= TSG_TRAVEL_PER_RUN_CAP) throw new Error('per-run Maps cap reached');
+  TSG_TRAVEL_CALLS++;
   var dir = Maps.newDirectionFinder().setOrigin(base).setDestination(location).setMode(Maps.DirectionFinder.Mode.DRIVING).getDirections();
   var route = dir && dir.routes && dir.routes[0];
   if (!route || !route.legs || !route.legs.length) throw new Error('no route found');
   var secs = route.legs.reduce(function(a, l) { return a + ((l.duration && l.duration.value) || 0); }, 0);
-  var mins = Math.ceil((secs * 2) / 60 / 5) * 5;
+  var mins = Math.max(5, Math.ceil(secs / 60 / 5) * 5);
   try { if (cache) cache.put(key, String(mins), 21600); } catch (e1) {}
   return mins;
 }
+function tsgRoundTripMinutes_(base, location) { return tsgOneWayMinutes_(base, location) * 2; }
+/** The home base for travel: meta.homeBase mirrored into a script property so the calendar feeds (no doc in hand) can read it. */
+function tsgHomeBase_(doc) {
+  var fromDoc = doc && doc.meta && String(doc.meta.homeBase || '').trim();
+  if (fromDoc) return fromDoc;
+  try { return String(PropertiesService.getScriptProperties().getProperty('TSG_HOME_BASE') || '').trim(); } catch (err) { return ''; }
+}
+/**
+ * Travel minutes a task actually charges, per its travelMode (2026-09-16, per Durand: "one
+ * way and round trip estimates, i can pick which, and show a total estimate too"):
+ * 'round' (default) = both legs, 'oneway' = one leg, 'none' = 0.
+ */
+function tsgTravelChargeMinutes_(r) {
+  if (!r || typeof r.travelMin !== 'number' || r.travelMin <= 0) return 0;
+  var mode = r.travelMode || 'round';
+  if (mode === 'none') return 0;
+  if (mode === 'oneway') return (typeof r.travelOneWayMin === 'number') ? r.travelOneWayMin : Math.round(r.travelMin / 2);
+  return r.travelMin;
+}
+/** Off-site calendar events: real driving time from the home base when one is set, else the flat default. */
+function tsgEventTravelMinutes_(location) {
+  var base = tsgHomeBase_(null);
+  var loc = String(location || '').trim();
+  if (!base || !loc) return TSG_MEETING_TRAVEL_MIN;
+  try { return tsgOneWayMinutes_(base, loc); } catch (err) { return TSG_MEETING_TRAVEL_MIN; }
+}
+/** Address search for the location picker: Maps geocoder, top matches as plain labels. */
+function tsgGeocode_(q) {
+  var query = String(q || '').trim();
+  if (query.length < 3) return { ok: true, places: [] };
+  try {
+    var res = Maps.newGeocoder().geocode(query);
+    var rows = (res && res.results) || [];
+    return { ok: true, places: rows.slice(0, 6).map(function(r) { return { label: r.formatted_address || '', name: (r.name || ''), types: r.types || [] }; }).filter(function(p) { return p.label; }) };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message || err), places: [] };
+  }
+}
 function tsgApplyTravelTimes_(doc) {
-  var base = String((doc.meta && doc.meta.homeBase) || '').trim();
+  var base = tsgHomeBase_(doc);
   var calls = 0;
   (doc.tasks || []).forEach(function(t) {
     if (!t) return;
     var loc = String(t.location || '').trim();
-    if (!loc) { if (t.travelMin != null || t.travelFor) { delete t.travelMin; delete t.travelFor; } return; }
+    if (!loc) { if (t.travelMin != null || t.travelFor) { delete t.travelMin; delete t.travelOneWayMin; delete t.travelFor; } return; }
     if (!base) return;
     var key = tsgTravelKey_(loc, base);
-    if (t.travelFor === key && typeof t.travelMin === 'number') return;
+    if (t.travelFor === key && typeof t.travelMin === 'number' && typeof t.travelOneWayMin === 'number') return;
     if (t.status === 'Done' || t.status === 'Cancelled') return;
     if (calls >= TSG_TRAVEL_PER_RUN_CAP) return;
     calls++;
     try {
-      var mins = tsgRoundTripMinutes_(base, loc);
+      var oneWay = tsgOneWayMinutes_(base, loc);
+      var mins = oneWay * 2;
       t.history = t.history || [];
       t.history.push({ ts: new Date().toISOString(), field: 'travelMin', from: (typeof t.travelMin === 'number') ? t.travelMin : null, to: mins, source: 'Maps' });
+      t.travelOneWayMin = oneWay;
       t.travelMin = mins;
       t.travelFor = key;
+      if (!t.travelMode) t.travelMode = 'round';
     } catch (err) {
       Logger.log('[travel] #' + t.id + ' "' + loc + '": ' + err.message);
     }
@@ -4365,9 +4582,7 @@ function tsgApplyTravelTimes_(doc) {
 }
 /** Hours a work item costs on the schedule: its estimate plus round-trip travel when it has one. */
 function tsgItemHours_(r) {
-  var h = Number(r.estHours) || 0;
-  if (typeof r.travelMin === 'number' && r.travelMin > 0) h += r.travelMin / 60;
-  return h;
+  return (Number(r.estHours) || 0) + tsgTravelChargeMinutes_(r) / 60;
 }
 
 function tsgAutoScheduleDoc_(doc) {

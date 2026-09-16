@@ -666,6 +666,9 @@
   .modal-overlay.busy .meeting-form::after { content: 'Saving…'; display: block; text-align: center; font-weight: 700; margin-top: 8px; color: var(--muted); }
   .add-form.busy { pointer-events: none; opacity: 0.55; }
   .today-task-loc { color: var(--muted); font-size: 0.85em; }
+  .modal-est-wrap { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .modal-travel { display: inline-flex; align-items: center; gap: 6px; }
+  .modal-total { white-space: nowrap; }
   .modal-overlay {
     display: none;
     position: fixed;
@@ -1463,6 +1466,16 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="locationModal" role="dialog" aria-modal="true" tabindex="-1" onclick="if(event.target===this) closeLocationPicker()">
+  <div class="modal-card meeting-card">
+    <div class="modal-header">
+      <h2>Set the location</h2>
+      <button class="icon-btn" onclick="closeLocationPicker()" title="Close">&#10005;</button>
+    </div>
+    <div id="locationModalBody"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="linkModal" role="dialog" aria-modal="true" tabindex="-1" onclick="if(event.target===this) closeLinkPicker()">
   <div class="modal-card meeting-card">
     <div class="modal-header">
@@ -1498,7 +1511,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-16.4';
+  const UI_VERSION = '2026-09-16.5';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1573,6 +1586,25 @@
   let ERRANDS = {};
   // Home base address (meta.homeBase): the origin every task location's round trip is driven from.
   let HOME_BASE = '';
+  // Travel a task charges per its travelMode (2026-09-16): 'round' (default) | 'oneway' | 'none'.
+  function travelMinutesFor_(t) {
+    if (!t || typeof t.travelMin !== 'number' || t.travelMin <= 0) return 0;
+    const mode = t.travelMode || 'round';
+    if (mode === 'none') return 0;
+    if (mode === 'oneway') return (typeof t.travelOneWayMin === 'number') ? t.travelOneWayMin : Math.round(t.travelMin / 2);
+    return t.travelMin;
+  }
+  function travelModeLabel_(t) {
+    const m = travelMinutesFor_(t);
+    if (!m) return '';
+    return m + 'm ' + ((t.travelMode || 'round') === 'oneway' ? 'one-way' : 'round trip');
+  }
+  function fmtHours_(h) { const r = Math.round(h * 4) / 4; return (r % 1 === 0 ? String(r) : r.toFixed(2).replace(/0$/, '')) + 'h'; }
+  // Pending judgment requests (meta.judgments) for a task: shown so a missing estimate reads as
+  // "queued for Claude", not as a gap nobody noticed.
+  function pendingJudgment_(taskId, kind) {
+    return ((RAW_META && RAW_META.judgments) || []).find(r => r && r.taskId === taskId && r.kind === kind && r.subIdx == null) || null;
+  }
   // Recurring Ops Manual duties (SOP-sourced), replacing the old generic "Work through
   // Ops Manual standing items" placeholder line. Populated from doc.meta.standingItems —
   // see buildStandingItemChecks() below for how these turn into dated checklist lines.
@@ -1676,7 +1708,7 @@
     { name: 'Jason', role: 'Agent', title: 'Agent', email: '', source: '', fubId: null },
     { name: 'Francini', role: 'Agent', title: 'Agent', email: '', source: '', fubId: null },
     { name: 'Rayma', role: 'Agent', title: 'Agent', email: '', source: '', fubId: null },
-    { name: 'Chelsea', role: 'Agent', title: 'Agent', email: '', source: '', fubId: null },
+    { name: 'Chelsey', role: 'Agent', title: 'Agent', email: '', source: '', fubId: null },
     { name: 'Erika', role: 'Admin', title: 'Admin, PA to Alex', email: '', source: '', fubId: null },
     { name: 'Perly', role: 'Admin', title: 'Admin, PA to Ryan, Rental Manager', email: '', source: '', fubId: null },
     { name: 'Marj', role: 'Marketing', title: 'Marketing', email: '', source: '', fubId: null }
@@ -1758,30 +1790,54 @@
   // a checkbox, and only what Durand accepts is applied (logged as accepted from Claude).
   const TIDY_FIELDS = [['title', 'Title'], ['notes', 'Notes'], ['priority', 'Priority'], ['taskType', 'Type'], ['group', 'Group'], ['estHours', 'Estimate (h)'], ['tags', 'Tags']];
   let TIDY_STATE = null;
+  // With no API key the server queues the rewrite (meta.judgments) and the hourly Claude
+  // Routine answers into meta.tidyProposals[taskId]; the button then reads "Review tidy".
+  function tidyProposalFor_(id) { return (RAW_META && RAW_META.tidyProposals && RAW_META.tidyProposals[String(id)]) || null; }
+  function refreshTidyButton_(id) {
+    const btn = document.getElementById('tidyBtn');
+    if (!btn) return;
+    const prop = tidyProposalFor_(id);
+    const pending = pendingJudgment_(id, 'tidy');
+    btn.disabled = false;
+    btn.innerHTML = prop ? '&#10024; Review tidy' : (pending ? '&#8987; Tidy requested' : '&#10024; Tidy');
+    btn.title = prop ? "Claude's rewrite is ready — review it field by field" : (pending ? 'Queued for the hourly Claude Routine; the proposal appears here when ready' : 'Claude rewrites the title, notes and other fields; you review before anything changes');
+  }
   async function tidyTask(id) {
     const t = findTask(id);
     if (!t) return;
+    const ready = tidyProposalFor_(id);
+    if (ready) { showTidyReview_(id, ready.before, ready.proposal, true); return; }
     const btn = document.getElementById('tidyBtn');
     if (btn) { btn.disabled = true; btn.textContent = 'Asking Claude…'; }
     try {
       const res = await apiFetch('target=tidy', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ taskId: id }) });
       const data = await res.json();
       if (!data || !data.ok) throw new Error((data && data.error) || 'Tidy failed');
-      showTidyReview_(id, data.before, data.proposal);
+      if (data.queued) {
+        RAW_META.judgments = ((RAW_META && RAW_META.judgments) || []).concat([{ id: 'pending', kind: 'tidy', taskId: id }]);
+        alert('Tidy requested. Claude answers within the hour; this button reads "Review tidy" when the proposal is ready.');
+        return;
+      }
+      showTidyReview_(id, data.before, data.proposal, false);
     } catch (err) {
       alert('Tidy failed: ' + (err.message || err));
     } finally {
-      if (btn) { btn.disabled = false; btn.innerHTML = '&#10024; Tidy'; }
+      refreshTidyButton_(id);
     }
+  }
+  async function clearTidyProposal_(id) {
+    if (RAW_META && RAW_META.tidyProposals) delete RAW_META.tidyProposals[String(id)];
+    try { await apiFetch('', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ op: 'clear_tidy_proposal', id: id }) }); } catch (err) {}
+    refreshTidyButton_(id);
   }
   function tidyValueText_(field, v) {
     if (field === 'tags') return (v || []).join(', ') || '—';
     if (v == null || v === '') return '—';
     return String(v);
   }
-  function showTidyReview_(id, before, proposal) {
+  function showTidyReview_(id, before, proposal, fromQueue) {
     const changed = TIDY_FIELDS.filter(([f]) => tidyValueText_(f, before[f]) !== tidyValueText_(f, proposal[f]));
-    TIDY_STATE = { id, before, proposal, changed: changed.map(([f]) => f) };
+    TIDY_STATE = { id, before, proposal, changed: changed.map(([f]) => f), fromQueue: !!fromQueue };
     const rows = changed.length ? changed.map(([f, label]) => `
       <label class="tidy-row"><input type="checkbox" class="tidy-pick" value="${f}" checked><span class="tidy-field">${label}</span>
         <span class="tidy-before">${escapeHtml(tidyValueText_(f, before[f]))}</span><span class="tidy-after">${escapeHtml(tidyValueText_(f, proposal[f]))}</span></label>`).join('')
@@ -1792,7 +1848,8 @@
       <div class="sched-detail-note">${escapeHtml(proposal.rationale || '')}</div>
       <div class="tidy-list">${rows}</div>
       <div class="meeting-modal-footer">
-        <button class="btn small" onclick="closeDayView()">Cancel</button>
+        <button class="btn small" onclick="closeDayView()">${fromQueue ? 'Keep for later' : 'Cancel'}</button>
+        ${fromQueue ? '<button class="btn small" onclick="dismissTidy_()">Discard proposal</button>' : ''}
         ${changed.length ? '<button class="btn primary small" onclick="applyTidy_()">Apply selected</button>' : ''}
       </div>`;
     document.getElementById('dayViewModal').classList.add('open');
@@ -1808,9 +1865,18 @@
       t.history = t.history || [];
       t.history.push({ ts: new Date().toISOString(), field: f, from: f === 'tags' ? ((before || []).join(', ') || null) : (before == null || before === '' ? null : before), to: f === 'tags' ? ((after || []).join(', ') || null) : after, source: 'Claude (tidy), accepted by Durand' });
     });
+    const fromQueue = TIDY_STATE.fromQueue;
     TIDY_STATE = null;
     closeDayView();
     renderAll(); openTaskCard(t.id); scheduleSave();
+    if (fromQueue) clearTidyProposal_(t.id);
+  }
+  function dismissTidy_() {
+    if (!TIDY_STATE) return;
+    const id = TIDY_STATE.id;
+    TIDY_STATE = null;
+    closeDayView();
+    clearTidyProposal_(id);
   }
 
   // ---- Comment mode (2026-09-16, #250, per Durand: "a toggle where I can comment on any
@@ -2886,7 +2952,7 @@
     const tagsHtml = (t.tags || []).length ? (t.tags || []).map(tag => tagChipHtml(tag)).join('') : '<span class="tc-empty-field">+ tags</span>';
     const typeHtml = typeBadgeHtml(t) || '<span class="tc-empty-field">+ type</span>';
     const estHtml = t.estHours ? `<span class="tc-est">${t.estHours}h est</span>` : '<span class="tc-empty-field">+ estimate</span>';
-    const locHtml = t.location ? `<span class="tc-est" title="${escapeHtml(t.location)}">&#128205; ${(typeof t.travelMin === 'number' && t.travelMin > 0) ? t.travelMin + 'm round trip' : 'located'}</span>` : '';
+    const locHtml = t.location ? `<span class="tc-est" title="${escapeHtml(t.location)}">&#128205; ${travelMinutesFor_(t) ? travelModeLabel_(t) + (t.estHours ? ' · ' + fmtHours_(t.estHours + travelMinutesFor_(t) / 60) + ' total' : '') : (typeof t.travelMin === 'number' && t.travelMin > 0 ? 'no travel counted' : 'located')}</span>` : '';
     const savedPill = JUST_SAVED_IDS.has(t.id) ? '<span class="saved-pill">&#10003; Saved</span>' : '';
     const hasSubs = t.subitems && t.subitems.length;
     const subBadge = hasSubs ? `<span class="sub-count-badge">${t.subitems.filter(s => s.done).length}/${t.subitems.length}</span>` : '';
@@ -3446,6 +3512,7 @@
           title: t.title, displayTitle: t.title, taskType: t.taskType,
           delegate: t.owner || 'Unassigned', status: t.status, tags: t.tags || [],
           location: t.location || '', travelMin: (typeof t.travelMin === 'number') ? t.travelMin : 0,
+          travelOneWayMin: (typeof t.travelOneWayMin === 'number') ? t.travelOneWayMin : null, travelMode: t.travelMode || 'round',
           priority: t.priority, group: t.group, depends: t.depends,
           timelineEnd: t.timelineEnd, estHours: t.estHours,
           scheduledStart: t.scheduledStart, estDays: t.estDays, scheduledDays: t.scheduledDays,
@@ -3824,8 +3891,9 @@
       if ((t.delegate || 'Unassigned') !== CALENDAR_OWNER) return;
       const inc = todayInclude_(t, today);
       if (!inc.include) return;
-      const minutes = Math.max(15, Math.round((t.estHours || 0.5) * 60)) + (t.travelMin || 0);
-      out.push({ task: t, minutes: minutes, overdue: inc.overdue, travelMin: t.travelMin || 0 });
+      const travel = travelMinutesFor_(t);
+      const minutes = Math.max(15, Math.round((t.estHours || 0.5) * 60)) + travel;
+      out.push({ task: t, minutes: minutes, overdue: inc.overdue, travelMin: travel });
     });
     out.sort((a, b) => (a.overdue === b.overdue) ? 0 : (a.overdue ? -1 : 1));
     return out;
@@ -4892,14 +4960,97 @@
     if (typeof t.travelMin === 'number' && t.travelMin > 0) return '· ' + t.travelMin + ' min round trip';
     return HOME_BASE ? '· travel time pending (computed on save)' : '· set a Home base in Settings for the travel time';
   }
-  function modalEditLocation(id) {
+  // Travel choice on the Estimate row (2026-09-16, per Durand: "an estimate for the task
+  // itself, plus one-way and round trip estimates, i can pick which, and show a total").
+  function travelRowHtml_(t) {
+    if (!t.location) return '';
+    if (!(typeof t.travelMin === 'number' && t.travelMin > 0)) return ' <span class="hist-time">· travel: ' + (HOME_BASE ? 'pending (computed on save)' : 'set a Home base in Settings') + '</span>';
+    const oneWay = (typeof t.travelOneWayMin === 'number') ? t.travelOneWayMin : Math.round(t.travelMin / 2);
+    const mode = t.travelMode || 'round';
+    const total = (t.estHours || 0) + travelMinutesFor_(t) / 60;
+    return ` <span class="modal-travel">+ travel <select class="due-input modal-travel-mode" onchange="modalTravelModeChange(${t.id}, this.value)">
+        <option value="none" ${mode === 'none' ? 'selected' : ''}>none</option>
+        <option value="oneway" ${mode === 'oneway' ? 'selected' : ''}>one-way ${oneWay} min</option>
+        <option value="round" ${mode === 'round' ? 'selected' : ''}>round trip ${t.travelMin} min</option>
+      </select> <b class="modal-total" title="Estimate plus the chosen travel">= ${fmtHours_(total)} total</b></span>`;
+  }
+  function modalTravelModeChange(id, val) {
     const t = findTask(id);
-    const before = t.location || '';
-    const val = prompt('Location (address or place name):', before);
-    if (val == null) return;
-    t.location = val.trim();
-    if (before !== t.location) logHistory(t, 'location', before || null, t.location || null);
+    const before = t.travelMode || 'round';
+    const after = ['none', 'oneway', 'round'].includes(val) ? val : 'round';
+    t.travelMode = after;
+    if (before !== after) logHistory(t, 'travelMode', before, after);
     renderAll(); openTaskCard(id); scheduleSave();
+  }
+  function modalEditLocation(id) {
+    openLocationPicker(findTask(id).location || '', function(val) {
+      const t = findTask(id);
+      const before = t.location || '';
+      t.location = val.trim();
+      if (before !== t.location) logHistory(t, 'location', before || null, t.location || null);
+      renderAll(); openTaskCard(id); scheduleSave();
+    });
+  }
+  // ---- Location picker (2026-09-16, per Durand: "location add should be a search too") ----
+  // Searches addresses through api=geocode (the Maps geocoder), lists locations already on
+  // other tasks, and always allows the typed text as-is. onPick(value) receives the choice.
+  let LOCATION_PICK = null, locationSearchDebounce = null, LOCATION_RESULTS = [];
+  function openLocationPicker(current, onPick) {
+    LOCATION_PICK = onPick;
+    document.getElementById('locationModalBody').innerHTML = `
+      <div class="meeting-form">
+        <label>Search an address or place<input type="text" class="text-input" id="locationSearch" placeholder="Street address, business name, town…" value="${escapeHtml(current || '')}" oninput="onLocationSearchInput_()" onkeydown="if(event.key==='Enter'){event.preventDefault();useTypedLocation_();}"></label>
+        <div class="meeting-list" id="locationResults"><div class="history-empty">Results appear here.</div></div>
+        <div class="sched-detail-note">Recently used</div>
+        <div class="meeting-list" id="locationRecent">${recentLocationsHtml_('')}</div>
+        <div class="meeting-modal-footer">
+          <button class="btn small" onclick="clearLocation_()">Clear location</button>
+          <button class="btn primary small" onclick="useTypedLocation_()">Use as typed</button>
+        </div>
+      </div>`;
+    document.getElementById('locationModal').classList.add('open');
+    const inp = document.getElementById('locationSearch'); if (inp) { inp.focus(); if (inp.value.trim().length >= 3) runLocationSearch_(); }
+  }
+  function closeLocationPicker() { document.getElementById('locationModal').classList.remove('open'); LOCATION_PICK = null; }
+  function recentLocations_() {
+    const seen = new Set();
+    return TASKS.map(t => (t.location || '').trim()).filter(l => { if (!l || seen.has(l.toLowerCase())) return false; seen.add(l.toLowerCase()); return true; }).slice(0, 12);
+  }
+  function recentLocationsHtml_(q) {
+    const needle = (q || '').trim().toLowerCase();
+    const list = recentLocations_().filter(l => !needle || l.toLowerCase().indexOf(needle) !== -1);
+    return list.length ? list.map(l => `<div class="meeting-row" onclick="pickLocation_(${JSON.stringify(l).replace(/"/g, '&quot;')})"><div class="meeting-row-main">${escapeHtml(l)}</div></div>`).join('') : '<div class="history-empty">No locations on other tasks yet.</div>';
+  }
+  function onLocationSearchInput_() {
+    clearTimeout(locationSearchDebounce);
+    const q = (document.getElementById('locationSearch') || {}).value || '';
+    const recent = document.getElementById('locationRecent'); if (recent) recent.innerHTML = recentLocationsHtml_(q);
+    locationSearchDebounce = setTimeout(runLocationSearch_, 350);
+  }
+  async function runLocationSearch_() {
+    const q = ((document.getElementById('locationSearch') || {}).value || '').trim();
+    const host = document.getElementById('locationResults');
+    if (!host) return;
+    if (q.length < 3) { host.innerHTML = '<div class="history-empty">Results appear here.</div>'; return; }
+    host.innerHTML = '<div class="history-empty">Searching…</div>';
+    try {
+      const res = await apiFetch('api=geocode&q=' + encodeURIComponent(q));
+      const data = await res.json();
+      LOCATION_RESULTS = (data && data.places) || [];
+      host.innerHTML = LOCATION_RESULTS.length
+        ? LOCATION_RESULTS.map((p, i) => `<div class="meeting-row" onclick="pickLocationResult_(${i})"><div class="meeting-row-main">${escapeHtml(p.label)}</div>${p.name ? '<div class="meeting-row-sub">' + escapeHtml(p.name) + '</div>' : ''}</div>`).join('')
+        : '<div class="history-empty">No address matches that' + (data && data.error ? ': ' + escapeHtml(data.error) : '') + '. "Use as typed" keeps it anyway.</div>';
+    } catch (err) {
+      host.innerHTML = '<div class="history-empty">Search failed: ' + escapeHtml(err.message || String(err)) + '</div>';
+    }
+  }
+  function pickLocationResult_(i) { const p = LOCATION_RESULTS[i]; if (p) pickLocation_(p.label); }
+  function pickLocation_(value) { const fn = LOCATION_PICK; closeLocationPicker(); if (fn) fn(String(value || '')); }
+  function useTypedLocation_() { pickLocation_(((document.getElementById('locationSearch') || {}).value || '').trim()); }
+  function clearLocation_() { pickLocation_(''); }
+  function ntPickLocation() {
+    const inp = document.getElementById('ntLocation');
+    openLocationPicker(inp ? inp.value : '', function(val) { const el = document.getElementById('ntLocation'); if (el) el.value = val; });
   }
   function modalEditDoc(id) {
     const t = findTask(id);
@@ -5343,7 +5494,7 @@
   // Escape closes the topmost open dialog. An editable field with focus is blurred first so
   // its onblur save runs before the dialog goes away.
   function closeTopmostModal_() {
-    const order = [['meetingModal', closeMeetingPicker], ['dayViewModal', closeDayView], ['newTaskModal', closeNewTaskModal], ['settingsModal', closeSettings], ['taskModal', closeTaskCard]];
+    const order = [['locationModal', closeLocationPicker], ['meetingModal', closeMeetingPicker], ['dayViewModal', closeDayView], ['newTaskModal', closeNewTaskModal], ['settingsModal', closeSettings], ['taskModal', closeTaskCard]];
     for (const [id, close] of order) {
       const el = document.getElementById(id);
       if (el && el.classList.contains('open')) {
@@ -5363,6 +5514,7 @@
   }
   document.addEventListener('keydown', handleModalNavKeydown);
   function openTaskCard(id) {
+    setTimeout(function() { refreshTidyButton_(id); }, 0);
     const t = findTask(id);
     if (!t) return;
     currentModalTaskId = id;
@@ -5385,7 +5537,7 @@
       `<div class="modal-row"><b>Due</b><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)"></div>`,
       (t.timelineEnd ? `<div class="modal-row"><b>Countdown</b>${bonusCountdownHtml_(t)}</div>` : ''),
       `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button></span></div>`,
-      `<div class="modal-row"><b>Estimate</b><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs</div>`,
+      `<div class="modal-row"><b>Estimate</b><span class="modal-est-wrap"><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs${pendingJudgment_(id, 'estimate') ? ' <span class="hist-time" title="No API key: the estimate request is queued for the hourly Claude Routine">· queued for Claude</span>' : ''}${travelRowHtml_(t)}</span></div>`,
       `<div class="modal-row"><b>Progress</b><span>${pct}%</span></div>`,
       `<div class="modal-row"><b>Tags</b><span class="modal-tags">${tagsChips}<input type="text" class="text-input tag-input" list="tagOptions" placeholder="+ tag" spellcheck="true" onkeydown="if(event.key==='Enter'){event.preventDefault();modalAddTagFrom(${id}, this);}" onchange="modalAddTagFrom(${id}, this)"></span></div>`,
       `<div class="modal-row"><b>Source</b><span class="modal-source">${t.doc ? `<a href="${escapeHtml(safeUrl(t.doc))}" target="_blank" rel="noopener" class="doc-link-text">${escapeHtml(t.doc)}</a>` : '<span class="modal-empty">Not linked — add the email or meeting doc this came from</span>'}<button type="button" class="icon-btn" onclick="modalEditDoc(${id})" title="${t.doc ? 'Edit source link' : 'Add source link'}">${t.doc ? '&#9998;' : '+ link'}</button></span></div>`,
@@ -5567,7 +5719,7 @@
           <label>Delegate<select class="due-input" id="ntDelegate" title="Who is doing it; it appears on their page">${personOptions(p.delegate || '', true)}</select></label>
           <label>Tags<input type="text" class="text-input" id="ntTags" list="tagOptions" placeholder="comma-separated" value="${escapeHtml((p.tags || []).join(', '))}"></label>
         </div>
-        <label>Location<input type="text" class="text-input" id="ntLocation" placeholder="Address or place — round-trip travel is added to the task" value="${escapeHtml(p.location || '')}"></label>
+        <label>Location<span class="link-paste-row"><input type="text" class="text-input" id="ntLocation" placeholder="Address or place — travel time is added to the task" value="${escapeHtml(p.location || '')}"><button type="button" class="btn small" onclick="ntPickLocation()" title="Search an address">Search</button></span></label>
         <label>Notes<textarea class="text-input" id="ntNotes" rows="3" placeholder="Optional">${escapeHtml(p.notes || '')}</textarea></label>
         <div class="meeting-modal-footer">
           <button class="btn small" onclick="closeNewTaskModal()">Cancel</button>

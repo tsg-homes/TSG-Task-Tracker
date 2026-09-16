@@ -346,6 +346,45 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   travel) is what the scheduler seeds and places with. Work items on the dashboard carry
   `tags`, `location`, `travelMin`.
 
+## Judgment queue, location search, travel modes (2026-09-16, backend 2026-09-16.5, dashboard UI 2026-09-16.5)
+
+- METHOD 2 per Durand ("use method 2 to bypass the need for a key"): with no API key every
+  judgment is queued in `meta.judgments` (`tsgQueueJudgment_`, ids `J<n>` from
+  `meta.judgmentSeq`, cap 200, one pending request per kind + target) and applied later by
+  `tsgApplyJudgmentOp_` from `{op:'judgment', id, answer}` inbox ops. Kinds: `estimate`
+  (queued by add_task after the id is minted; carries need, notes, plain Drive/calendar
+  candidates), `progress` (update_task / update_subitem / replace_all, one per changed item,
+  dropped on apply if the notes moved on), `tidy` (`request_tidy` op from the Tidy button;
+  the answer lands in `meta.tidyProposals[taskId]`, cleared by `clear_tidy_proposal`).
+  `judgments`, `judgmentSeq`, `tidyProposals` are server-owned (set_meta / replace_all
+  cannot write them). `TSG_CURRENT_DOC` is the doc applyDataPatch_ is working on, so deep
+  helpers can queue. `tsgApplyEstimateToTask_` is the one field-apply routine for both the
+  live path and a deferred answer (deferred: never overwrites a value set meanwhile, strips
+  needs-estimate and the fallback note). Protocol for the Routine: README "Judgment queue".
+  The Routine itself: "TSG Tracker — judgment queue", fresh cloud session hourly on
+  weekdays 11:00-21:00 UTC, Google Drive connector; its prompt is standalone (it does not
+  rely on this repo being checked out on the branch that holds this text).
+- Dashboard: Tidy button reads "Tidy requested" while a tidy request is pending and
+  "Review tidy" once `meta.tidyProposals[id]` exists (`refreshTidyButton_`, `tidyProposalFor_`;
+  review has Keep for later / Discard / Apply; apply or discard posts `clear_tidy_proposal`).
+  The Estimate row shows "queued for Claude" while an estimate request is pending
+  (`pendingJudgment_`).
+- Location search (per Durand: "location add should be a search too"): `#locationModal`
+  (`openLocationPicker(current, onPick)`): `api=geocode&q=` (`tsgGeocode_`, Maps geocoder,
+  top 6 formatted addresses), "Recently used" from other tasks' locations, "Use as typed",
+  "Clear location". Used by the task modal's Location row and the New Task modal's Search.
+- Travel modes (per Durand: "an estimate for the task itself, plus one-way and round trip
+  estimates, i can pick which, and show a total"): the server stamps `travelOneWayMin` and
+  `travelMin` (round trip); task field `travelMode` ('round' default | 'oneway' | 'none', in
+  `TSG_TASK_DIFF_FIELDS`). `tsgTravelChargeMinutes_` / dashboard `travelMinutesFor_` give the
+  charged minutes; `tsgItemHours_` = estimate + charged travel; the Estimate row has a
+  select (none / one-way N min / round trip N min) and "= X h total"; the card badge shows
+  the chosen travel and the total; the Errands block uses the same minutes. Home base is
+  mirrored into script property `TSG_HOME_BASE` by set_meta so the calendar feeds can use
+  it: an off-site calendar event's travel is the real one-way drive (`tsgEventTravelMinutes_`,
+  Maps, cached) instead of the flat 20 min when a home base is set. Maps calls are capped
+  per execution by `TSG_TRAVEL_CALLS` / `TSG_TRAVEL_PER_RUN_CAP`.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs

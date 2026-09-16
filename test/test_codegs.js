@@ -13,6 +13,9 @@ let driveDocTextById = {};       // { fileId: text } consumed by the DocumentApp
 let driveSheetValuesById = {};   // { fileId: [[...]] } consumed by the SpreadsheetApp.openById stub
 let projectDashboardHtml = '';   // what HtmlService.createHtmlOutputFromFile('dashboard_final') returns
 let cacheStore = {};             // CacheService stub backing store
+let apiKeyPresent = true;        // false = judgment-queue mode (no ANTHROPIC_API_KEY)
+let scriptProps = {};            // other script properties (TSG_HOME_BASE)
+let geocodeResults = [{ formatted_address: '45 Baltimore Pike, Media, PA 19063, USA', types: ['street_address'] }];
 let mapsCalls = 0;               // Maps.newDirectionFinder().getDirections() invocations
 let mapsDirections = { routes: [{ legs: [{ duration: { value: 840 } }] }] }; // 14 min one way
 let uuidCounter = 0;
@@ -36,8 +39,8 @@ const sandbox = {
   Logger: { log: () => {} },
   PropertiesService: {
     getScriptProperties: () => ({
-      getProperty: (k) => (k === 'ANTHROPIC_API_KEY' ? 'fake-key' : null),
-      setProperty: () => {}
+      getProperty: (k) => (k === 'ANTHROPIC_API_KEY' ? (apiKeyPresent ? 'fake-key' : null) : (scriptProps[k] == null ? null : scriptProps[k])),
+      setProperty: (k, v) => { scriptProps[k] = v; }
     })
   },
   ScriptApp: { getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/FAKE_DEPLOYMENT/exec' }) },
@@ -102,6 +105,7 @@ const sandbox = {
     createHtmlOutputFromFile: (name) => ({ getContent: () => (name === 'dashboard_final' ? projectDashboardHtml : (name === 'person' ? personPageHtml : '')) })
   },
   Maps: {
+    newGeocoder: () => ({ geocode: () => ({ results: geocodeResults }) }),
     DirectionFinder: { Mode: { DRIVING: 'driving' } },
     newDirectionFinder: () => {
       const f = { setOrigin: () => f, setDestination: () => f, setMode: () => f, getDirections: () => { mapsCalls++; return mapsDirections; } };
@@ -587,16 +591,22 @@ section('Task location and round-trip travel (2026-09-16)');
   write(d, { op: 'add_task', ts: '2026-09-16T12:00:00Z', source: 'Durand', skipDedup: true, skipEnrich: true,
     task: { title: 'Drop the signed listing agreement at the title company', group: 'Errands', owner: 'Durand', priority: 'Medium', estHours: 0.5, location: 'Title company, 45 Baltimore Pike, Media PA' } });
   const t = d.tasks[0];
-  check('a located task gets a round-trip travelMin from Maps (14 min one way -> 30 round trip, rounded up to 5)', t.travelMin === 30 && mapsCalls === 1);
+  check('a located task gets one-way and round-trip minutes from Maps (14 min one way -> 15 / 30, rounded up to 5)', t.travelOneWayMin === 15 && t.travelMin === 30 && t.travelMode === 'round' && mapsCalls === 1);
   check('the computation is remembered per location+base and logged on the history', t.travelFor === 'title company, 45 baltimore pike, media pa | 123 main st, media, pa' && t.history.some(h => h.field === 'travelMin' && h.to === 30 && h.source === 'Maps'));
   write(d, { op: 'update_task', id: t.id, fields: { priority: 'High' }, source: 'Durand' });
   check('an unrelated write does not call Maps again', mapsCalls === 1 && t.travelMin === 30);
-  check('the scheduler charges estimate plus travel', sandbox.tsgItemHours_(t) === 1);
+  check('the scheduler charges estimate plus the chosen travel: round trip by default', sandbox.tsgItemHours_(t) === 1);
+  t.travelMode = 'oneway';
+  check('...one-way when picked', sandbox.tsgItemHours_(t) === 0.75);
+  t.travelMode = 'none';
+  check('...none when picked', sandbox.tsgItemHours_(t) === 0.5);
+  t.travelMode = 'round';
+  vm.runInContext('TSG_TRAVEL_CALLS = 0', sandbox);
   cacheStore = {};
   write(d, { op: 'update_task', id: t.id, fields: { location: 'Somewhere else' }, source: 'Durand' });
   check('a changed location recomputes', mapsCalls === 2 && t.travelFor.indexOf('somewhere else') === 0);
   write(d, { op: 'update_task', id: t.id, fields: { location: '' }, source: 'Durand' });
-  check('clearing the location drops travelMin', t.travelMin === undefined && t.travelFor === undefined && mapsCalls === 2);
+  check('clearing the location drops travelMin', t.travelMin === undefined && t.travelOneWayMin === undefined && t.travelFor === undefined && mapsCalls === 2);
   const d2 = { meta: { next_id: 960, docVersion: 3 }, tasks: [] };
   write(d2, { op: 'add_task', ts: '2026-09-16T12:00:00Z', source: 'Durand', skipDedup: true, skipEnrich: true,
     task: { title: 'Pick up signs from the print shop', group: 'Errands', owner: 'Durand', estHours: 0.5, location: 'Print shop' } });
@@ -608,8 +618,74 @@ section('Task location and round-trip travel (2026-09-16)');
   check('a Maps failure leaves the task without travelMin and does not throw', d3.tasks[0].travelMin === undefined);
   mapsDirections = saved;
   write(d3, { op: 'set_meta', fields: { homeBase: 'New base' } });
-  check('set_meta can set homeBase', d3.meta.homeBase === 'New base');
+  check('set_meta can set homeBase and mirrors it into a script property for the calendar feeds', d3.meta.homeBase === 'New base' && scriptProps.TSG_HOME_BASE === 'New base');
+  cacheStore = {}; vm.runInContext('TSG_TRAVEL_CALLS = 0', sandbox);
+  check('an off-site calendar event charges the real one-way drive from the home base', sandbox.tsgEventTravelMinutes_('45 Baltimore Pike, Media PA') === 15);
+  scriptProps = {};
+  check('...and the flat default without a home base', sandbox.tsgEventTravelMinutes_('45 Baltimore Pike, Media PA') === 20);
+  check('geocode search returns plain address labels', JSON.stringify(sandbox.tsgGeocode_('45 Baltimore').places.map(p => p.label)) === JSON.stringify(['45 Baltimore Pike, Media, PA 19063, USA']) && sandbox.tsgGeocode_('ab').places.length === 0);
   check('location is a diffed task field', vm.runInContext('TSG_TASK_DIFF_FIELDS', sandbox).includes('location'));
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+}
+
+section('Judgment queue: no API key (2026-09-16, method 2)');
+{
+  apiKeyPresent = false;
+  claudeRequests = [];
+  claudeResponder = () => { throw new Error('no Claude call may happen without a key'); };
+  const write = (dd, patch) => { sandbox.applyDataPatch_(dd, patch); sandbox.tsgAutoScheduleDoc_(dd); };
+  driveFilesFixture = [fakeDriveFile('Listing Agreement Farina Di Vita.pdf', 'https://drive.google.com/file/d/abc123')];
+  const d = { meta: { next_id: 1000, docVersion: 3 }, tasks: [ { id: 1, title: 'Existing open task', group: 'Ops', status: 'Not Started', tags: [], history: [], subitems: [] } ] };
+  write(d, { op: 'add_task', ts: '2026-09-16T14:00:00Z', source: 'Claude', skipDedup: true,
+    task: { title: 'Send Farina Di Vita The Listing Agreement', owner: 'Durand', notes: 'Draft is ready, waiting on the signature' } });
+  const t = d.tasks.find(x => /Farina/.test(x.title));
+  const q = d.meta.judgments || [];
+  check('a new task with no key is created with the fallback (needs-estimate, Triage) and no Claude call', !!t && t.tags.includes('needs-estimate') && t.tags.includes('Triage') && claudeRequests.length === 0);
+  check('one estimate request is queued for it, carrying need, notes and the plain Drive candidates', q.length === 1 && q[0].kind === 'estimate' && q[0].taskId === t.id && q[0].id === 'J1' && q[0].need.includes('driveMatch') && q[0].driveCandidates[0].url === 'https://drive.google.com/file/d/abc123' && q[0].notes === 'Draft is ready, waiting on the signature');
+  check('the fallback note is on the task while the answer is pending', /could not be determined/.test(t.notes));
+  // the Routine answers
+  write(d, { op: 'judgment', id: 'J1', source: 'Claude (queue)', answer: { estHours: 0.5, taskType: 'Email', subitems: [], priority: 'High', group: 'Ops', dependsOnTitle: 'Existing open task', tags: ['Listings'], progress: 25, needsConfirmation: false, driveMatch: { index: 1, confident: true, rationale: 'Same agreement' }, meetingMatch: null, rationale: 'One email with an attachment.' } });
+  check('the answer fills every field: hours, type, priority, group, dependency, tags, progress', t.estHours === 0.5 && t.taskType === 'Email' && t.priority === 'High' && t.group === 'Ops' && t.depends === '1' && t.tags.includes('Listings') && t.progress === 25 && t.status === 'In Progress');
+  check('...removes needs-estimate and the fallback note, keeps Triage for review', !t.tags.includes('needs-estimate') && !/could not be determined/.test(t.notes) && t.tags.includes('Triage'));
+  check('...links the Drive doc from the stored candidates', (t.docs || []).some(dd => dd.url === 'https://drive.google.com/file/d/abc123'));
+  check('...logs the enrichment with the answer source and clears the request', t.history.some(h => h.field === 'auto-enriched' && h.source === 'Claude (queue)' && /judgment queue/.test(h.to)) && (d.meta.judgments || []).length === 0);
+  check('the task is scheduled once it has hours', !!t.estDays);
+  // progress: update_task and update_subitem
+  d.tasks.push({ id: 2, title: 'Parent with steps', owner: 'Durand', status: 'In Progress', priority: 'Medium', progress: 0, notes: '', tags: [], history: [], subitems: [ { title: 'step a', delegate: 'Durand', done: false, status: 'Not Started', progress: 0, notes: '' } ] });
+  write(d, { op: 'update_task', id: 1, fields: { notes: 'Called them, waiting on a callback' }, source: 'Durand' });
+  write(d, { op: 'update_task', id: 1, fields: { notes: 'Called them, they called back with pricing' }, source: 'Durand' });
+  write(d, { op: 'update_subitem', id: 2, index: 0, expectTitle: 'step a', fields: { notes: 'started drafting' }, source: 'Durand' });
+  const q2 = d.meta.judgments;
+  check('a notes change queues one progress request per target, the newer replacing the older', q2.length === 2 && q2.filter(r => r.kind === 'progress' && r.taskId === 1).length === 1 && q2.find(r => r.taskId === 1).notes === 'Called them, they called back with pricing' && q2.some(r => r.taskId === 2 && r.subIdx === 0));
+  const pid = q2.find(r => r.taskId === 1).id, sid = q2.find(r => r.taskId === 2).id;
+  write(d, { op: 'judgment', id: sid, answer: { progress: 30 } });
+  check('a progress answer lands on the subitem with a history line', d.tasks.find(x => x.id === 2).subitems[0].progress === 30 && d.tasks.find(x => x.id === 2).subitems[0].status === 'In Progress' && d.tasks.find(x => x.id === 2).subitems[0].history.some(h => h.field === 'progress' && h.to === 30));
+  write(d, { op: 'update_task', id: 1, fields: { notes: 'Changed again' }, source: 'Durand' });
+  write(d, { op: 'judgment', id: pid, answer: { progress: 60 } });
+  check('an answer whose notes were superseded is dropped (only the newer request remains)', d.tasks.find(x => x.id === 1).progress !== 60 && d.meta.judgments.length === 1 && d.meta.judgments[0].notes === 'Changed again');
+  // replace_all: two changed items -> two requests; the queue survives the save
+  const next = JSON.parse(JSON.stringify(d.tasks));
+  next.find(x => x.id === 1).notes = 'Menu confirmed, deposit paid'; next.find(x => x.id === 2).subitems[0].notes = 'half done';
+  write(d, { op: 'replace_all', baseVersion: d.meta.docVersion || 0, doc: { tasks: next, meta: { judgments: [] } } });
+  check('a dashboard save queues a request per changed item and cannot overwrite the queue', d.meta.judgments.length === 2 && d.meta.judgments.every(r => r.kind === 'progress'));
+  write(d, { op: 'set_meta', fields: { judgments: [], judgmentSeq: 0, tidyProposals: { x: 1 } } });
+  check('set_meta cannot touch judgments / judgmentSeq / tidyProposals', d.meta.judgments.length === 2 && d.meta.judgmentSeq > 0 && !d.meta.tidyProposals);
+  // tidy through the queue
+  write(d, { op: 'request_tidy', id: t.id, source: 'Durand' });
+  const tr = d.meta.judgments.find(r => r.kind === 'tidy');
+  check('request_tidy queues a tidy request with the current fields', !!tr && tr.taskId === t.id && tr.before.title === t.title);
+  write(d, { op: 'judgment', id: tr.id, source: 'Claude (queue)', answer: { title: 'Send Farina the listing agreement', notes: 'Current state: waiting on the signature.', priority: 'Bogus', taskType: 'Email', group: 'Nowhere', estHours: 0.5, tags: ['Listings', 'Triage', 'a', 'b', 'c'], rationale: 'Tightened.' } });
+  const prop = d.meta.tidyProposals && d.meta.tidyProposals[String(t.id)];
+  check('a tidy answer is validated and stored as a proposal for the dashboard', !!prop && prop.proposal.title === 'Send Farina the listing agreement' && prop.proposal.priority === t.priority && prop.proposal.group === t.group && prop.proposal.tags.includes('Triage') && prop.proposal.tags.filter(x => ['Listings', 'a', 'b', 'c'].includes(x)).length === 3);
+  write(d, { op: 'clear_tidy_proposal', id: t.id });
+  check('clear_tidy_proposal removes it', !d.meta.tidyProposals[String(t.id)]);
+  check('tsgTidyProposal_ with no key queues a request_tidy inbox patch and answers queued:true', (() => { const orig = sandbox.tsgQueueDataPatch_; let sent = null; sandbox.tsgQueueDataPatch_ = (pp) => { sent = pp; return { ok: true, docVersion: 1 }; }; const r = sandbox.tsgTidyProposal_(t.id); sandbox.tsgQueueDataPatch_ = orig; return r.ok === true && r.queued === true && sent && sent.op === 'request_tidy' && sent.id === t.id; })());
+  // unknown id, no answer
+  let threw = false;
+  try { write(d, { op: 'judgment', id: 'J999', answer: { progress: 1 } }); write(d, { op: 'judgment', id: d.meta.judgments[0].id, answer: null }); } catch (e) { threw = true; }
+  check('an unknown id or an empty answer never throws; an empty answer just drops the request', !threw && d.meta.judgments.length === 1);
+  apiKeyPresent = true;
+  driveFilesFixture = [];
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 
@@ -706,7 +782,7 @@ section('Subitem rollup respects the parent\'s own work (2026-09-14, task #12 re
   // Task #1 regression: a due date changed through the dashboard's full save must count as
   // explicit (dueOverride) so the rollup cannot pull it back to a subitem's date.
   d = { meta: { docVersion: 9 }, tasks: [{ id: 1, title: 'FUB Rollout', status: 'In Progress', timelineEnd: '2026-09-22', history: [],
-    subitems: [{ title: 'Rayma', done: true, timelineEnd: '2026-09-22' }, { title: 'Chelsea', done: false, timelineEnd: '2026-09-16' }] }] };
+    subitems: [{ title: 'Rayma', done: true, timelineEnd: '2026-09-22' }, { title: 'Chelsey', done: false, timelineEnd: '2026-09-16' }] }] };
   const saved3 = JSON.parse(JSON.stringify(d.tasks[0])); saved3.timelineEnd = '2026-10-08';
   sandbox.applyDataPatch_(d, { op: 'replace_all', ts: NOW, baseVersion: 9, doc: { meta: {}, tasks: [saved3] } });
   check('full save changing timelineEnd sets dueOverride', d.tasks[0].dueOverride === true);

@@ -69,6 +69,7 @@ const dom = new JSDOM(html, {
       if (u.includes('api=data')) return { ok: true, status: 200, json: async () => fakeData };
       if (u.includes('api=calendar')) return { ok: true, status: 200, json: async () => [] };
       if (u.includes('api=meetings')) { window.__meetingsFetchUrls.push(u); return { ok: true, status: 200, json: async () => ({ events: window.__pickerEvents || [], bestGuessId: null }) }; }
+      if (u.includes('api=geocode')) return { ok: true, status: 200, json: async () => ({ ok: true, places: [{ label: '45 Baltimore Pike, Media, PA 19063, USA', name: '' }] }) };
       if (u.includes('api=driveSearch')) return { ok: true, status: 200, json: async () => ({ ok: true, files: [{ name: 'Fall Flyer Draft', url: 'https://docs.google.com/document/d/FLYER/edit', mime: 'application/vnd.google-apps.document', modified: '2026-09-14' }] }) };
       if (u.includes('api=linkLabel')) return { ok: true, status: 200, json: async () => ({ ok: true, label: 'Resolved Title', kind: 'drive' }) };
       return { ok: true, status: 200, json: async () => ({ ok: true, users: [], events: [], meetings: [] }) };
@@ -391,6 +392,82 @@ setTimeout(async () => {
     w.renderSettings();
     if (!doc.getElementById('homeBaseInput')) throw new Error('no Home base input on the Team tab');
   });
+
+  // Location picker, travel mode + total, tidy through the judgment queue (2026-09-16)
+  await (async () => {
+    try {
+      const t3 = w.findTask(3);
+      t3.location = ''; delete t3.travelMin; delete t3.travelOneWayMin; delete t3.travelMode;
+      w.openTaskCard(3);
+      const locRow = [...doc.querySelectorAll('#modalMeta .modal-row')].find(r => /Location/.test(r.textContent));
+      locRow.querySelector('button.icon-btn').click();
+      if (!doc.getElementById('locationModal').classList.contains('open')) throw new Error('location picker did not open');
+      doc.getElementById('locationSearch').value = '45 Balt';
+      await w.runLocationSearch_();
+      const rows = doc.querySelectorAll('#locationResults .meeting-row');
+      if (rows.length !== 1 || !/Baltimore Pike/.test(rows[0].textContent)) throw new Error('geocode results not listed: ' + rows.length);
+      rows[0].click();
+      if (doc.getElementById('locationModal').classList.contains('open')) throw new Error('picker stayed open after a pick');
+      if (w.findTask(3).location !== '45 Baltimore Pike, Media, PA 19063, USA') throw new Error('picked address not set: ' + w.findTask(3).location);
+      if (!w.findTask(3).history.some(h => h.field === 'location')) throw new Error('location change not logged');
+      console.log('OK   - location picker: geocode search results are listed and a pick sets the task location');
+    } catch (e) { console.log('FAIL - location picker ->', e.message); FAILS++; }
+    try {
+      const t3 = w.findTask(3);
+      t3.estHours = 1; t3.travelMin = 30; t3.travelOneWayMin = 15; t3.travelMode = 'round';
+      w.openTaskCard(3);
+      const sel = doc.querySelector('#modalMeta .modal-travel-mode');
+      if (!sel || sel.value !== 'round') throw new Error('travel select missing or wrong default');
+      if (!/1\.5h total/.test(doc.querySelector('#modalMeta .modal-total').textContent)) throw new Error('round-trip total wrong: ' + doc.querySelector('#modalMeta .modal-total').textContent);
+      w.modalTravelModeChange(3, 'oneway');
+      if (!/1\.25h total/.test(doc.querySelector('#modalMeta .modal-total').textContent)) throw new Error('one-way total wrong');
+      if (!t3.history.some(h => h.field === 'travelMode' && h.to === 'oneway')) throw new Error('mode change not logged');
+      const cardHtml = w.taskCardHtml(w.findTask(3));
+      if (!/15m one-way/.test(cardHtml) || !/1\.25h total/.test(cardHtml)) throw new Error('card badge missing the chosen travel/total: ' + cardHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200));
+      w.modalTravelModeChange(3, 'none');
+      const items = w.getTodayErrandItems(w.todayISO());
+      w.closeTaskCard();
+      console.log('OK   - travel mode: one-way / round trip / none is a per-task choice, the total follows it, the card shows both');
+    } catch (e) { console.log('FAIL - travel mode ->', e.message); FAILS++; }
+    try {
+      const T = w.eval('TASKS');
+      T.push({ id: 912, title: 'Drop off the keys', owner: 'Durand', status: 'Not Started', priority: 'Medium', group: 'Errands', tags: [], taskType: 'Actionable Task', timelineEnd: w.todayISO(), progress: 0, depends: '', doc: '', docs: [], notes: '', estHours: 0.5, estDays: 1, estSource: 'claude', location: 'x', travelMin: 30, travelOneWayMin: 15, travelMode: 'oneway', history: [], subitems: [] });
+      const it = w.getTodayErrandItems(w.todayISO()).find(c => c.task.id === 912);
+      if (!it || it.minutes !== 45 || it.travelMin !== 15) throw new Error('errand minutes should be 30 + 15 one-way, got ' + (it && it.minutes));
+      for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 912) T.splice(i, 1);
+      console.log('OK   - errand block minutes follow the chosen travel mode');
+    } catch (e) { console.log('FAIL - errand minutes per mode ->', e.message); FAILS++; }
+    try {
+      const alerts = [];
+      w.alert = (m) => alerts.push(String(m));
+      const origFetch = w.fetch;
+      w.fetch = async (url, opts) => {
+        const u = String(url);
+        if (u.includes('target=tidy')) return { ok: true, status: 200, json: async () => ({ ok: true, queued: true, taskId: 3 }) };
+        return origFetch(url, opts);
+      };
+      w.openTaskCard(3);
+      await w.tidyTask(3);
+      if (!alerts.some(a => /Tidy requested/.test(a))) throw new Error('no queued notice: ' + JSON.stringify(alerts));
+      if (!/Tidy requested/.test(doc.getElementById('tidyBtn').textContent)) throw new Error('button not showing the pending state: ' + doc.getElementById('tidyBtn').textContent);
+      w.fetch = origFetch;
+      const RM = w.eval('RAW_META');
+      RM.judgments = [];
+      RM.tidyProposals = { '3': { before: { title: t3title(), notes: '', priority: 'Medium', taskType: 'Meeting', group: 'Ops', estHours: 1, tags: [] }, proposal: { title: 'Chase the overdue vendor call', notes: '', priority: 'Medium', taskType: 'Meeting', group: 'Ops', estHours: 1, tags: [], rationale: 'Sharper title.' } } };
+      function t3title() { return w.findTask(3).title; }
+      w.refreshTidyButton_(3);
+      if (!/Review tidy/.test(doc.getElementById('tidyBtn').textContent)) throw new Error('button not offering the ready proposal');
+      w.__posts = [];
+      await w.tidyTask(3);
+      if (!doc.getElementById('dayViewModal').classList.contains('open') || doc.querySelectorAll('.tidy-row').length !== 1) throw new Error('queued proposal not opened for review');
+      w.dismissTidy_();
+      if (RM.tidyProposals['3']) throw new Error('proposal not cleared locally');
+      await new Promise(r => setTimeout(r, 10));
+      if (!(w.__posts || []).some(p => /clear_tidy_proposal/.test(p.body) && /"id":3/.test(p.body))) throw new Error('clear_tidy_proposal not posted: ' + JSON.stringify(w.__posts));
+      w.closeTaskCard();
+      console.log('OK   - tidy with no key: queued notice, pending button state, then "Review tidy" from meta.tidyProposals and a clear op on dismiss');
+    } catch (e) { console.log('FAIL - tidy via the queue ->', e.message); FAILS++; }
+  })();
 
   // "+ Task" on pop-up lists (task #269): the button carries the list's context into the New Task modal
   tryCall('a pop-up list carries a + Task button that pre-fills the New Task modal', () => {
