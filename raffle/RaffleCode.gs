@@ -142,6 +142,14 @@ var RAFFLE_LIVE_SHEET_NAME  = 'Entries';
 var RAFFLE_TEST_SHEET_NAME  = 'Test Entries';
 var RAFFLE_TEST_WINNER_PROP = 'RAFFLE_TEST_WINNER_JSON';
 
+// Whoever runs setupRaffle() OWNS the entries sheet, and that is not
+// necessarily the account the web app runs as (executeAs: USER_DEPLOYING means
+// the deploying account). If those differ and the sheet is not shared, the web
+// app's SpreadsheetApp.openById throws and EVERY ENTRY ON THE DAY IS REFUSED.
+// So setup explicitly shares the sheet with both accounts rather than assuming
+// the right person happened to run it.
+var RAFFLE_SHEET_SHARE_WITH = ['info@tsg.homes', 'durand@thestawaszgroup.com'];
+
 var RAFFLE_SHEET_PROP   = 'RAFFLE_SHEET_ID';
 var RAFFLE_WINNER_PROP  = 'RAFFLE_WINNER_JSON';
 var RAFFLE_ADMIN_PROP   = 'RAFFLE_ADMIN_KEY';
@@ -226,6 +234,27 @@ function setupRaffle() {
     out.push('Entries sheet already exists: https://docs.google.com/spreadsheets/d/' + sheetId);
   }
 
+  // Share it, every run, whether the sheet is new or not -- this is also the
+  // repair path if setup was first run by the wrong account.
+  try {
+    var ssShare = SpreadsheetApp.openById(sheetId);
+    var owner = '';
+    try { owner = (ssShare.getOwner() && ssShare.getOwner().getEmail()) || ''; } catch (ownErr) { owner = ''; }
+    out.push('Entries sheet owner: ' + (owner || '(unknown)'));
+    RAFFLE_SHEET_SHARE_WITH.forEach(function (who) {
+      if (owner && who.toLowerCase() === owner.toLowerCase()) return;   // owner already has it
+      try {
+        ssShare.addEditor(who);
+        out.push('  shared with ' + who);
+      } catch (shareErr) {
+        out.push('  COULD NOT share with ' + who + ': ' + shareErr +
+                 '  <-- fix by hand, or entries may be refused on the day');
+      }
+    });
+  } catch (openErr) {
+    out.push('WARNING: could not open the entries sheet to share it: ' + openErr);
+  }
+
   if (!props.getProperty(RAFFLE_ADMIN_PROP)) {
     props.setProperty(RAFFLE_ADMIN_PROP,
       Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, ''));
@@ -243,6 +272,10 @@ function setupRaffle() {
   if (drawAt.getTime() > Date.now()) {
     ScriptApp.newTrigger('raffleScheduledDraw').timeBased().at(drawAt).create();
     out.push('Draw trigger armed for ' + raffleFmt_(drawAt) + ' ET.');
+    var runner = '';
+    try { runner = Session.getEffectiveUser().getEmail(); } catch (whoErr) { runner = '(unknown)'; }
+    out.push('Trigger will run as: ' + runner + '  (whoever ran setupRaffle owns it, ' +
+             'so the 6:15 result email comes from this account)');
   } else {
     out.push('WARNING: RAFFLE_DRAW_AT is in the past; no trigger armed. Draw manually.');
   }

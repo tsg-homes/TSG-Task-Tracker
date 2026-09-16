@@ -55,7 +55,10 @@ function makeSandbox(opts) {
     return sh;
   }
   const sheet = makeSheet('Entries', rows);
+  const shared = [];
   const ss = {
+    getOwner: () => ({ getEmail: () => opts.sheetOwner || 'durand@thestawaszgroup.com' }),
+    addEditor: e => { shared.push(e); },
     getSheets: () => Object.keys(tabs).map(k => tabs[k]),
     getSheetByName: n => tabs[n] || null,
     insertSheet: n => makeSheet(n, []),   // a new sheet is EMPTY; the code adds its own header
@@ -77,6 +80,7 @@ function makeSandbox(opts) {
     CacheService: { getScriptCache: () => ({ get: k => cache[k] || null, put: (k, v) => { cache[k] = v; }, remove: k => { delete cache[k]; } }) },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
     MailApp: { sendEmail: m => sent.push(m) },
+    Session: { getEffectiveUser: () => ({ getEmail: () => opts.runAs || 'info@tsg.homes' }) },
     DriveApp: { getFileById: () => ({ getBlob: () => ({ getContentType: () => 'image/png', getBytes: () => [1, 2, 3] }) }) },
     ScriptApp: { getService: () => ({ getUrl: () => 'https://x/exec' }), getProjectTriggers: () => [], newTrigger: () => ({ timeBased: () => ({ at: () => ({ create: () => {} }) }) }), deleteTrigger: () => {} },
     Utilities: {
@@ -148,6 +152,7 @@ function makeSandbox(opts) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../RaffleCode.gs'), 'utf8'), sandbox);
   sandbox.__sent = sent; sandbox.__fetches = fetches;
   sandbox.__props = props; sandbox.__tabs = tabs; sandbox.__alerts = alerts;
+  sandbox.__shared = shared;
   // Data rows only -- the header is row 1 and is never an entry.
   sandbox.__data = name => (tabs[name || 'Entries'] ? tabs[name || 'Entries'].rows.slice(1) : []);
   return sandbox;
@@ -676,6 +681,30 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
     alerts.some(a => /ambiguous FUB match/i.test(a.context)));
   check('the alert names both candidate records',
     alerts.some(a => /#501/.test(a.detail) && /#502/.test(a.detail)));
+}
+
+
+// ---- setupRaffle shares the sheet with BOTH accounts ------------------------
+// Whoever runs setup owns the sheet; the web app runs as the DEPLOYING account.
+// If those differ and the sheet is not shared, every entry on the day is refused.
+{
+  const s = makeSandbox({ sheetOwner: 'durand@thestawaszgroup.com', runAs: 'durand@thestawaszgroup.com' });
+  const out = s.setupRaffle();
+  check('setup shares the sheet with info@',
+    s.__shared.indexOf('info@tsg.homes') !== -1);
+  check('setup does not try to re-share with the owner',
+    s.__shared.indexOf('durand@thestawaszgroup.com') === -1);
+  check('setup reports the sheet owner', /Entries sheet owner/.test(out));
+  check('setup reports which account the trigger will run as', /Trigger will run as/.test(out));
+}
+{
+  // Run by info@ instead: durand@ should then be the one added.
+  const s = makeSandbox({ sheetOwner: 'info@tsg.homes', runAs: 'info@tsg.homes' });
+  s.setupRaffle();
+  check('run as info@, durand@ gets access',
+    s.__shared.indexOf('durand@thestawaszgroup.com') !== -1);
+  check('run as info@, info@ is not re-added',
+    s.__shared.indexOf('info@tsg.homes') === -1);
 }
 
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
