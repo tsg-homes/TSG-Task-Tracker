@@ -169,16 +169,17 @@ judgment, and writes the answers back as inbox ops. Until an answer lands a new 
 
 **Request shapes** (`meta.judgments[]`, each with `id` like `J17`, `ts`, `kind`, `taskId`):
 
-- `kind: "enrich"` — a new task, a task whose notes changed, or a Tidy re-run (`force: true`).
-  Fields: `need` (subset of `title`, `notes`, `estHours`, `taskType`, `subitems`, `priority`,
+- `kind: "enrich"` — a new task, a task or SUBTASK whose notes changed (`subIdx` + `subTitle`
+  set for a subtask; its `current.subtask` is true and it never asks for `group`,
+  `dependsOnTitle` or `subitems`), or a Tidy re-run (`force: true`). Polish the notes FIRST
+  and derive every other field from the polished text. Fields: `need` (subset of `title`, `notes`, `estHours`, `taskType`, `subitems`, `priority`,
   `group`, `dependsOnTitle`, `tags`, `progress`, `location`, `due`, `driveMatch`,
   `meetingMatch`), `title`, `notes` (free-flow text as typed), `priority`, `current` (the
   task's current fields: return them unchanged unless the title/notes clearly justify a
   change), `batchSiblings`, `driveCandidates` (`[{url, label, excerpt}]` or null),
   `calendarCandidates` (`[{date, start, end, htmlLink, label}]` or null), `personCreated`.
   Read `EXISTING_GROUPS` / `OPEN_TASK_TITLES` / `EXISTING_TAGS` from the data file itself.
-- `kind: "progress"` — a subitem's notes changed (`subIdx` set). Fields: `title`, `notes`,
-  `priority`. Answer `{progress}` from those notes only.
+- `kind: "progress"` — legacy; answer `{progress}` from the notes only.
 
 **Answer op** (one per request, in a `bulk` data patch dropped into `_Inbox`):
 
@@ -204,12 +205,15 @@ null; 0-3 topical tags, never a system tag; `progress` 0-100 from evidence in th
 `driveMatch` / `meetingMatch` `{index (1-based into the stored candidates), confident,
 rationale}` or null. `answer: null` drops a request; an unknown id is ignored.
 
-**What the server does with an answer** (`tsgApplyEstimateToTask_`): fills empty fields; a
+**What the server does with an answer** (`tsgApplyEstimateToTask_`, tasks and subtasks
+alike): the notes polish lands first, then the title, then a stated `location` / `due`
+(updated on every pass unless Durand set them by hand; never cleared), then the fields; a
 field Durand set by hand (a history line with a person's source) is kept unless the request
 was a Tidy re-run; title / notes / progress are skipped when Durand edited them after the
 request was queued, and the notes polish is skipped when the notes moved on; new steps are
-appended, existing ones kept; `location` and `due` fill only blanks; tags merge; every
-change gets its own history line with the answer's source. Verify by re-reading the data
+appended to a task, existing ones kept, a subtask never mints steps; tags merge; a confident
+Drive / calendar match is linked on every pass unless that link is already on the item;
+every change gets its own history line with the answer's source. Verify by re-reading the data
 file after a minute: the answered ids are gone from `meta.judgments`.
 
 ## Conventions carried over from prior work on this project

@@ -1511,7 +1511,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-16.6';
+  const UI_VERSION = '2026-09-16.7';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -4578,7 +4578,7 @@
             <select class="due-input sub-type-select" title="Type" onchange="onSubFieldChange(${t.id}, ${i}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (s.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select>
             ${s.taskType === 'Meeting' ? `<button type="button" class="icon-btn" onclick="openMeetingPicker(${t.id}, ${i})" title="Link a calendar meeting">${(s.docs || []).some(d => d.type === 'meeting') ? '&#128197; meeting' : '+ meeting'}</button>` : ''}
           </div>
-          <div class="sub-meta sub-docs-row">${docsListHtml(s.docs, t.id, i)}<button type="button" class="icon-btn" onclick="addManualDoc(${t.id}, ${i})" title="Add a link or file">+ link</button></div>
+          <div class="sub-meta sub-docs-row">${docsListHtml(s.docs, t.id, i)}<button type="button" class="icon-btn" onclick="addManualDoc(${t.id}, ${i})" title="Add a link or file">+ link</button>${s.location ? `<span class="today-task-loc" title="${escapeHtml(s.location)}">&#128205; ${escapeHtml(s.location)}${travelMinutesFor_(s) ? ' · ' + travelModeLabel_(s) : ''}</span>` : ''}</div>
           ${s.notes ? `<div class="sub-item-notes" contenteditable="true" onblur="onSubFieldEdit(${t.id}, ${i}, 'notes', this)">${escapeHtml(s.notes)}</div>` : `<div class="sub-item-notes sub-item-notes-empty" contenteditable="true" onblur="onSubFieldEdit(${t.id}, ${i}, 'notes', this)" data-placeholder="Add notes…"></div>`}
         </div>
       </div>`;

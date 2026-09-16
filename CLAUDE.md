@@ -413,6 +413,25 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   Estimate row has a method select (recommended marked) next to the mode select; card and
   Errands block label the method. Calendar events use the drive time.
 
+## Subtasks in the pass, polish first, links every update (2026-09-16, backend 2026-09-16.7, dashboard UI 2026-09-16.7)
+
+- Per Durand: "it should apply to subtasks fully as well, the note should be polished first,
+  infer location and due date as well, and add links at every update".
+- `tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts)` is the one entry
+  (`tsgEnrichTask_` wraps it): update_subitem (after its field log), add_subitem with notes,
+  and replace_all subitem notes changes all re-judge the SUBTASK with its own title/notes/
+  estimate/type/priority/tags/progress/location/due (never group, dependency or steps);
+  the request carries `subIdx` + `subTitle` and `current.subtask: true`; on apply the
+  subtask is found by index, else by title, else dropped. `TSG_SUBITEM_DIFF_FIELDS` logs
+  `location` / `travelMode` / `travelMethod` so hand edits count as hand-set.
+- Every pass gathers Drive candidates (from the item title) and, when the type is Meeting or
+  still open, calendar candidates; a confident match is linked unless the url is already on
+  the item. `location` and `due` update on any pass unless hand-set (never cleared).
+- `tsgApplyEstimateToTask_` applies the notes polish first, then the title, then
+  location/due, then the rest; the prompt says to polish first and derive from the polished
+  text. Travel (`tsgApplyTravelTimes_`) runs over subtasks too; the subtask row shows its
+  location and travel. Legacy `progress` requests still apply.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs

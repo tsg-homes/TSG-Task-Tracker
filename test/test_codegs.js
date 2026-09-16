@@ -665,7 +665,7 @@ section('Judgment queue: no API key (2026-09-16, method 2)');
   d.tasks.push({ id: 3, title: 'Quick thought', owner: 'Durand', status: 'Not Started', priority: 'Low', progress: 0, notes: '', tags: [], history: [ { ts: '2026-09-10T10:00:00Z', field: 'priority', from: 'Medium', to: 'Low', source: 'Durand' } ], subitems: [] });
   write(d, { op: 'update_task', id: 3, fields: { notes: 'call the title co about the farina closing, they said friday works, need the deed copy first' }, source: 'Durand' });
   const e3 = d.meta.judgments.find(r => r.kind === 'enrich' && r.taskId === 3);
-  check('a notes change on an existing task queues one enrich request that skips the priority Durand set by hand and asks for everything else', !!e3 && !e3.need.includes('priority') && ['title', 'notes', 'estHours', 'taskType', 'group', 'tags', 'progress', 'location', 'due', 'subitems'].every(f => e3.need.includes(f)) && e3.current.priority === 'Low');
+  check('a notes change on an existing task queues one enrich request that skips the priority Durand set by hand, asks for everything else, and carries Drive candidates for a link', !!e3 && !e3.need.includes('priority') && e3.need.includes('driveMatch') && e3.driveCandidates && e3.driveCandidates.length === 1 && ['title', 'notes', 'estHours', 'taskType', 'group', 'tags', 'progress', 'location', 'due', 'subitems'].every(f => e3.need.includes(f)) && e3.current.priority === 'Low');
   write(d, { op: 'update_task', id: 3, fields: { notes: 'call the title co about the farina closing, they said friday works, need the deed copy first. UPDATE: deed copy received' }, source: 'Durand' });
   check('a second notes edit replaces the pending request', d.meta.judgments.filter(r => r.kind === 'enrich' && r.taskId === 3).length === 1 && d.meta.judgments.find(r => r.taskId === 3).notes.indexOf('UPDATE') !== -1);
   const e3b = d.meta.judgments.find(r => r.taskId === 3);
@@ -680,15 +680,18 @@ section('Judgment queue: no API key (2026-09-16, method 2)');
   check('an answer whose notes were edited meanwhile keeps the hand edit and still applies the rest', d.tasks.find(x => x.id === 2).notes === 'edited again by hand' && d.tasks.find(x => x.id === 2).tags.includes('Ops') && d.tasks.find(x => x.id === 2).estHours === 1);
   // subitems keep the progress read
   write(d, { op: 'update_subitem', id: 2, index: 0, expectTitle: 'step a', fields: { notes: 'started drafting' }, source: 'Durand' });
-  const sid = d.meta.judgments.find(r => r.kind === 'progress' && r.taskId === 2 && r.subIdx === 0).id;
-  write(d, { op: 'judgment', id: sid, answer: { progress: 30 } });
-  check('a subitem notes change queues a progress read and the answer lands with a history line', d.tasks.find(x => x.id === 2).subitems[0].progress === 30 && d.tasks.find(x => x.id === 2).subitems[0].history.some(h => h.field === 'progress' && h.to === 30));
+  const sreq = d.meta.judgments.find(r => r.kind === 'enrich' && r.taskId === 2 && r.subIdx === 0);
+  check('a subtask notes change queues a full enrich request of its own (title, notes, estimate, tags, progress, location, due; no steps or group), with its title as a guard', !!sreq && sreq.subTitle === 'step a' && ['title', 'notes', 'estHours', 'tags', 'progress', 'location', 'due'].every(f => sreq.need.includes(f)) && !sreq.need.includes('subitems') && !sreq.need.includes('group') && sreq.current.subtask === true);
+  write(d, { op: 'judgment', id: sreq.id, source: 'Claude (queue)', answer: { title: 'Draft step A', notes: 'Current state: drafting.', estHours: 0.5, taskType: 'Actionable Task', priority: 'Medium', tags: ['Drafts'], progress: 30, location: '45 Baltimore Pike, Media PA', due: '2026-09-20', driveMatch: null, meetingMatch: null, needsConfirmation: false, rationale: 'r' } });
+  const sub0 = d.tasks.find(x => x.id === 2).subitems[0];
+  check('the subtask answer polishes its title and notes and fills its estimate, tags, location and due', sub0.title === 'Draft step A' && sub0.notes === 'Current state: drafting.' && sub0.estHours === 0.5 && sub0.tags.includes('Drafts') && sub0.location === '45 Baltimore Pike, Media PA' && sub0.timelineEnd === '2026-09-20' && !sub0.subitems);
+  check('a subtask notes change queues a progress read and the answer lands with a history line', d.tasks.find(x => x.id === 2).subitems[0].progress === 30 && d.tasks.find(x => x.id === 2).subitems[0].history.some(h => h.field === 'progress' && h.to === 30));
   // replace_all: a task notes change -> enrich, a subitem notes change -> progress; the queue survives the save
   d.meta.judgments = [];
   const next = JSON.parse(JSON.stringify(d.tasks));
   next.find(x => x.id === 1).notes = 'Menu confirmed, deposit paid'; next.find(x => x.id === 2).subitems[0].notes = 'half done';
   write(d, { op: 'replace_all', baseVersion: d.meta.docVersion || 0, doc: { tasks: next, meta: { judgments: [] } } });
-  check('a dashboard save queues an enrich for the task and a progress read for the subitem, and cannot overwrite the queue', d.meta.judgments.length === 2 && d.meta.judgments.some(r => r.kind === 'enrich' && r.taskId === 1) && d.meta.judgments.some(r => r.kind === 'progress' && r.taskId === 2 && r.subIdx === 0));
+  check('a dashboard save queues an enrich for the task and one for the subitem, and cannot overwrite the queue', d.meta.judgments.length === 2 && d.meta.judgments.some(r => r.kind === 'enrich' && r.taskId === 1) && d.meta.judgments.some(r => r.kind === 'enrich' && r.taskId === 2 && r.subIdx === 0 && r.subTitle === 'Draft step A'));
   write(d, { op: 'set_meta', fields: { judgments: [], judgmentSeq: 0, tidyProposals: { x: 1 } } });
   check('set_meta cannot touch judgments / judgmentSeq / tidyProposals', d.meta.judgments.length === 2 && d.meta.judgmentSeq > 0 && !d.meta.tidyProposals);
   // Tidy is a forced full re-run

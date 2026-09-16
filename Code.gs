@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-16.6';
+const TSG_CODE_VERSION = '2026-09-16.7';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -341,15 +341,25 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
   var t = (doc.tasks || []).filter(function(x) { return x && x.id === req.taskId; })[0];
   if (!t) { Logger.log('[judgment] ' + req.id + ': task #' + req.taskId + ' no longer exists'); return; }
   if (req.kind === 'enrich' || req.kind === 'estimate' || req.kind === 'tidy') {
+    var target = t;
+    if (req.subIdx != null) {
+      // A subtask: by index, falling back to its title if the list was reordered meanwhile.
+      target = (t.subitems || [])[req.subIdx] || null;
+      if (!target || (req.subTitle && String(target.title || '') !== String(req.subTitle))) {
+        target = (t.subitems || []).filter(function(s) { return s && req.subTitle && String(s.title || '') === String(req.subTitle); })[0] || null;
+      }
+      if (!target) { Logger.log('[judgment] ' + req.id + ': subtask no longer found on #' + t.id); return; }
+    }
     var need = req.need || ['title', 'notes', 'priority', 'taskType', 'group', 'estHours', 'tags'];
-    var est = tsgEstimateParse_(JSON.stringify(answer), need, t.title, {
+    var est = tsgEstimateParse_(JSON.stringify(answer), need, target.title, {
       driveCandidateCount: (req.driveCandidates || []).length, calendarCandidateCount: (req.calendarCandidates || []).length });
     if (est.source === 'none') return;
-    tsgApplyEstimateToTask_(doc, t, est, need, {
+    tsgApplyEstimateToTask_(doc, target, est, need, {
       now: now, source: source, personCreated: !!req.personCreated, batchSiblings: req.batchSiblings || [],
       driveCands: req.driveCandidates ? { files: req.driveCandidates } : null,
       calCands: req.calendarCandidates ? { events: req.calendarCandidates } : null,
-      deferred: true, sinceTs: req.ts || null, reqNotes: req.notes, force: !!req.force
+      deferred: true, sinceTs: req.ts || null, reqNotes: req.notes, force: !!req.force,
+      subitem: req.subIdx != null, parent: t
     });
   } else if (req.kind === 'progress') {
     var item = (req.subIdx == null) ? t : ((t.subitems || [])[req.subIdx] || null);
@@ -773,8 +783,10 @@ function applyDataPatch_(doc, patch) {
     if (Object.prototype.hasOwnProperty.call(f, 'status')) { f.done = (f.status === 'Done'); if (f.done) f.progress = 100; }
     else if (Object.prototype.hasOwnProperty.call(f, 'done')) { f.status = f.done ? 'Done' : (sub.status === 'Done' ? 'In Progress' : (sub.status || 'Not Started')); if (f.done) f.progress = 100; }
     Object.assign(sub, f);
-    tsgApplyProgressFromNotes_(sub, prevSubs[patch.index].notes, Object.prototype.hasOwnProperty.call(f, 'progress'), { taskId: patch.id, subIdx: patch.index });
+    var subNotesChanged = tsgNotesChanged_(sub, prevSubs[patch.index].notes);
     tsgStampSubitemTouchesForTask_(prevSubs, subs, now, patch.source);
+    // A subtask's notes change re-judges the subtask the same way a task's does (2026-09-16).
+    if (subNotesChanged) tsgEnrichItem_(doc, pt, sub, patch.index, now, patch.source || 'unknown', { progressExplicit: Object.prototype.hasOwnProperty.call(f, 'progress') });
   } else if (patch.op === 'add_subitem') {
     const t = doc.tasks.find(function(x) { return x.id === patch.id; });
     if (!t) throw new Error('add_subitem: task id not found: ' + patch.id);
@@ -783,6 +795,7 @@ function applyDataPatch_(doc, patch) {
     }
     t.subitems = t.subitems || [];
     t.subitems.push(patch.subitem);
+    if (String(patch.subitem.notes || '').trim()) tsgEnrichItem_(doc, t, patch.subitem, t.subitems.length - 1, now, patch.source || 'unknown', {});
     if (tsgIsDelegatePerson_(patch.subitem.delegate)) {
       t.history = t.history || [];
       tsgHoldForReview_(patch.subitem, t.history, now, 'Subitem "' + patch.subitem.title + '" held off ' + patch.subitem.delegate + "'s view until reviewed");
@@ -1659,6 +1672,26 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
   // progress additionally give way to anything he touched after the request was queued.
   var keep = function(field) { return !o.force && tsgUserTouched_(task, field, null); };
   var touchedSince = function(field) { return !o.force && o.sinceTs && tsgUserTouched_(task, field, o.sinceTs); };
+  // The note is polished FIRST (per Durand); everything below was derived from that text.
+  if (need.indexOf('notes') !== -1 && est.notes && est.notes !== String(task.notes || '').trim() && !touchedSince('notes') &&
+      (o.reqNotes == null || tsgStripFallbackNotes_(o.reqNotes) === tsgStripFallbackNotes_(task.notes))) {
+    task.history.push({ ts: now, field: 'notes', from: task.notes || null, to: est.notes, source: o.source || 'unknown' });
+    task.notes = est.notes; applied.push('notes polished');
+  }
+  if (need.indexOf('title') !== -1 && est.title && est.title !== task.title && !touchedSince('title')) {
+    task.history.push({ ts: now, field: 'title', from: task.title || null, to: est.title, source: o.source || 'unknown' });
+    task.title = est.title; applied.push('title polished');
+  }
+  // A stated place / deadline is lifted on every pass (per Durand: "infer location and due date
+  // as well"), unless Durand set that field by hand; an answer never clears one.
+  if (need.indexOf('location') !== -1 && est.location && est.location !== String(task.location || '').trim() && !keep('location')) {
+    task.history.push({ ts: now, field: 'location', from: task.location || null, to: est.location, source: o.source || 'unknown' });
+    task.location = est.location; applied.push('location (' + est.location + ')');
+  }
+  if (need.indexOf('due') !== -1 && est.due && est.due !== (task.timelineEnd || '') && !keep('timelineEnd')) {
+    task.history.push({ ts: now, field: 'timelineEnd', from: task.timelineEnd || null, to: est.due, source: o.source || 'unknown' });
+    task.timelineEnd = est.due; task.dueOverride = true; applied.push('due (' + est.due + ')');
+  }
   if (need.indexOf('estHours') !== -1 && est.estHours != null && !keep('estHours')) {
     task.estHours = est.estHours;
     task.estDays = tsgEstDays_(est.estHours, task.priority || est.priority || 'Medium');
@@ -1686,6 +1719,7 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
     if (est.progress > 0 && task.status === 'Not Started') task.status = 'In Progress';
     applied.push('progress (' + est.progress + '%, from the notes)');
   }
+  if (o.subitem) est.subitems = []; // a subtask never mints steps of its own
   if (need.indexOf('subitems') !== -1 && est.subitems && est.subitems.length) {
     // Steps already on the task are kept; only genuinely new ones are added.
     var have = (task.subitems || []).map(function(s) { return String(s && s.title || '').trim().toLowerCase(); });
@@ -1710,24 +1744,6 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
   var fallbackFixed = false;
   if (need.indexOf('priority') !== -1 && est.priority && !keep('priority')) { if (task.priority !== est.priority) { fallbackFixed = true; task.history.push({ ts: now, field: 'priority', from: task.priority || null, to: est.priority, source: o.source || 'unknown' }); } task.priority = est.priority; applied.push('priority'); }
   if (need.indexOf('group') !== -1 && est.group && !keep('group')) { if (task.group !== est.group) { fallbackFixed = true; task.history.push({ ts: now, field: 'group', from: task.group || null, to: est.group, source: o.source || 'unknown' }); } task.group = est.group; applied.push('group'); }
-  // Free-flow notes -> polished title / notes, a stated place, a stated deadline.
-  if (need.indexOf('title') !== -1 && est.title && est.title !== task.title && !touchedSince('title')) {
-    task.history.push({ ts: now, field: 'title', from: task.title || null, to: est.title, source: o.source || 'unknown' });
-    task.title = est.title; applied.push('title polished');
-  }
-  if (need.indexOf('notes') !== -1 && est.notes && est.notes !== String(task.notes || '').trim() && !touchedSince('notes') &&
-      (o.reqNotes == null || tsgStripFallbackNotes_(o.reqNotes) === tsgStripFallbackNotes_(task.notes))) {
-    task.history.push({ ts: now, field: 'notes', from: task.notes || null, to: est.notes, source: o.source || 'unknown' });
-    task.notes = est.notes; applied.push('notes polished');
-  }
-  if (need.indexOf('location') !== -1 && est.location && !String(task.location || '').trim()) {
-    task.history.push({ ts: now, field: 'location', from: null, to: est.location, source: o.source || 'unknown' });
-    task.location = est.location; applied.push('location (' + est.location + ')');
-  }
-  if (need.indexOf('due') !== -1 && est.due && !task.timelineEnd && !keep('timelineEnd')) {
-    task.history.push({ ts: now, field: 'timelineEnd', from: null, to: est.due, source: o.source || 'unknown' });
-    task.timelineEnd = est.due; task.dueOverride = true; applied.push('due (' + est.due + ')');
-  }
   if (o.deferred && (need.indexOf('priority') !== -1 || need.indexOf('group') !== -1)) {
     // The add-time fallback (Medium / Unsorted, or a neighbour's values) wrote a
     // "could not be determined ... Please confirm." paragraph; the real answer retires it.
@@ -1768,8 +1784,9 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
   // auto-attaches a match Claude judged HIGH-confidence; a weaker candidate gets
   // surfaced via Triage + a note instead of guessed at, same "infer, don't silently
   // default" posture as priority/group.
-  if (o.driveCands && !task.doc && !task.docs.length) {
+  if (o.driveCands) {
     var driveMatch = tsgDocFromCandidates_(o.driveCands, est.driveMatch);
+    if (driveMatch && (task.doc === driveMatch.url || task.docs.some(function(d) { return d && d.url === driveMatch.url; }))) driveMatch = null; // already linked
     if (driveMatch) {
       if (driveMatch.confident) {
         task.docs.push({ url: driveMatch.url, label: driveMatch.label, type: 'doc' });
@@ -1843,19 +1860,20 @@ function tsgCurrentSnapshot_(t) {
     subitems: (t.subitems || []).map(function(s) { return s.title; }) };
 }
 /** Which fields a notes change (or a Tidy re-run) re-judges on an existing task. */
-function tsgEnrichNeedFor_(task, opts) {
+function tsgEnrichNeedFor_(item, opts) {
   opts = opts || {};
-  var force = !!opts.force;
-  var keep = function(f) { return !force && tsgUserTouched_(task, f, null); };
-  var need = ['title', 'notes', 'tags', 'subitems'];
+  var force = !!opts.force, sub = !!opts.subitem;
+  var keep = function(f) { return !force && tsgUserTouched_(item, f, null); };
+  var need = ['title', 'notes', 'tags'];
+  if (!sub) need.push('subitems');
   if (!keep('estHours')) need.push('estHours');
   if (!keep('taskType')) need.push('taskType');
   if (!keep('priority')) need.push('priority');
-  if (!keep('group')) need.push('group');
-  if (!task.depends) need.push('dependsOnTitle');
-  if (!String(task.location || '').trim()) need.push('location');
-  if (!task.timelineEnd && !keep('timelineEnd')) need.push('due');
-  if (!opts.progressExplicit && !(task.subitems || []).length && task.status !== 'Done') need.push('progress');
+  if (!sub && !keep('group')) need.push('group');
+  if (!sub && !item.depends) need.push('dependsOnTitle');
+  if (!keep('location')) need.push('location');
+  if (!keep('timelineEnd')) need.push('due');
+  if (!opts.progressExplicit && !(item.subitems || []).length && item.status !== 'Done' && !item.done) need.push('progress');
   return need;
 }
 /**
@@ -1864,26 +1882,48 @@ function tsgEnrichNeedFor_(task, opts) {
  * itself). Used when a task's notes change (update_task, replace_all) and by request_tidy.
  */
 function tsgEnrichTask_(doc, task, now, source, opts) {
+  return tsgEnrichItem_(doc, task, task, null, now, source, opts);
+}
+/**
+ * Re-judge one item (a task, or a subtask by parent + index) from its title + notes: with a
+ * key, one estimator call applied now; without one, an 'enrich' request queued for the
+ * Routine. Drive and calendar candidates are gathered on every pass (per Durand, "add links
+ * at every update"); a link already on the item is never added twice.
+ */
+function tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts) {
   opts = opts || {};
-  if (!String(task.notes || '').trim() && !opts.force) {
+  var sub = subIdx != null;
+  if (!String(item.notes || '').trim() && !opts.force) {
     // Nothing to derive from; an emptied note just resets a notes-driven bar.
-    if (!opts.progressExplicit && !(task.subitems || []).length && task.status !== 'Done' && task.progress !== 0) tsgSetProgressFromNotes_(task, 0);
+    if (!opts.progressExplicit && !(item.subitems || []).length && item.status !== 'Done' && !item.done && item.progress !== 0) tsgSetProgressFromNotes_(item, 0);
     return null;
   }
-  var need = opts.need || tsgEnrichNeedFor_(task, opts);
+  var need = opts.need || tsgEnrichNeedFor_(item, Object.assign({ subitem: sub }, opts));
   if (!need.length) return null;
   var board = tsgBoardContext_(doc);
+  var driveCands = null, calCands = null;
+  if (!opts.skipLinks) {
+    driveCands = tsgDriveCandidates_(item.title);
+    if (driveCands) need.push('driveMatch');
+    if (!item.meetingDate && (item.taskType === 'Meeting' || !item.taskType || need.indexOf('taskType') !== -1)) { calCands = tsgCalendarCandidates_(item.timelineEnd); if (calCands) need.push('meetingMatch'); }
+  }
+  var current = tsgCurrentSnapshot_(item);
+  if (sub) { current.subtask = true; current.parentTitle = parent.title; }
   var context = { groups: board.groups, openTitles: board.openTitles, existingTags: board.existingTags, batchSiblings: [],
-    current: tsgCurrentSnapshot_(task), target: { taskId: task.id } };
-  var est = tsgEstimateTask_(task.title, task.notes, task.priority, need, context);
+    current: current, target: { taskId: parent.id, subIdx: sub ? subIdx : undefined }, subTitle: sub ? item.title : undefined,
+    driveCandidates: driveCands ? driveCands.listText : '', driveCandidateCount: driveCands ? driveCands.files.length : 0,
+    calendarCandidates: calCands ? calCands.listText : '', calendarCandidateCount: calCands ? calCands.events.length : 0,
+    driveList: driveCands ? driveCands.files : null, calendarList: calCands ? calCands.events : null };
+  var est = tsgEstimateTask_(item.title, item.notes, item.priority, need, context);
   if (est.source === 'queued' || est.source === 'none') {
     if (est.source === 'queued' && opts.force && doc.meta && doc.meta.judgments) {
       var last = doc.meta.judgments[doc.meta.judgments.length - 1];
-      if (last && last.taskId === task.id) last.force = true;
+      if (last && last.taskId === parent.id) last.force = true;
     }
     return est;
   }
-  tsgApplyEstimateToTask_(doc, task, est, need, { now: now, source: source || 'Claude', force: !!opts.force, reqNotes: String(task.notes || '').trim() });
+  tsgApplyEstimateToTask_(doc, item, est, need, { now: now, source: source || 'Claude', force: !!opts.force, reqNotes: String(item.notes || '').trim(),
+    subitem: sub, parent: parent, driveCands: driveCands, calCands: calCands });
   return est;
 }
 
@@ -2633,7 +2673,7 @@ function backupTrackerFile_(key, payload) {
 var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
   'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done', 'location', 'travelMode', 'travelMethod'];
 
 function tsgValuesEqual_(a, b) {
   if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a || []) === JSON.stringify(b || []);
@@ -3441,7 +3481,9 @@ var TSG_ESTIMATE_SYSTEM =
   'event, each starting with its date (use TODAY for undated statements). Keep every fact, name, ' +
   'date, phone number, dollar amount and URL verbatim; drop chatter, duplicates and instructions ' +
   'that later lines superseded; never invent a fact. The raw text may be a free-flow thought — ' +
-  'turn it into that structure. Return the notes unchanged when they are already clean.\n\n' +
+  'turn it into that structure. Return the notes unchanged when they are already clean. Do the ' +
+  'notes rewrite FIRST and derive every other field from the polished notes, not from the raw text. ' +
+  'For a SUBTASK (CURRENT_FIELDS carries subtask: true) the same rules apply to its own title/notes.\n\n' +
   'location — ONLY when requested: the place or street address the title/notes say the work ' +
   'happens at (an office, a property, a store, a courthouse), as a short searchable string; null ' +
   'when none is stated. Never guess one.\n\n' +
@@ -3690,7 +3732,7 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
     // (add_task queues it once the task has an id). The result is the "none" shape with
     // source 'queued' so callers fall back exactly as for an unreachable Claude.
     var req = { kind: 'enrich', need: p.need, title: String(title || ''), notes: String(notes || '').trim(), priority: priority || '',
-      current: context.current || null, batchSiblings: context.batchSiblings || [], driveCandidates: context.driveList || null, calendarCandidates: context.calendarList || null };
+      current: context.current || null, subTitle: context.subTitle, batchSiblings: context.batchSiblings || [], driveCandidates: context.driveList || null, calendarCandidates: context.calendarList || null };
     var out = tsgEstimateParse_(null, p.need, title, context);
     out.source = 'queued';
     if (context.target && context.target.taskId != null) {
@@ -3828,10 +3870,13 @@ function tsgApplyProgressFromNotesOnSave_(prevTasks, nextTasks, doc, now) {
     (t.subitems || []).forEach(function(s, i) {
       if (!s) return;
       var q = ps[i];
-      if (tsgProgressWanted_(s, q ? q.notes : '', !!q && !tsgValuesEqual_(q.progress, s.progress))) wanted.push({ item: s, target: { taskId: t.id, subIdx: i } });
+      if (tsgNotesChanged_(s, q ? q.notes : '')) enrichTasks.push({ task: t, sub: s, subIdx: i, progressExplicit: !!q && !tsgValuesEqual_(q.progress, s.progress) });
     });
   });
-  if (doc) enrichTasks.forEach(function(x) { tsgEnrichTask_(doc, x.task, now || new Date().toISOString(), 'Durand', { progressExplicit: x.progressExplicit }); });
+  if (doc) enrichTasks.forEach(function(x) {
+    if (x.sub) tsgEnrichItem_(doc, x.task, x.sub, x.subIdx, now || new Date().toISOString(), 'Durand', { progressExplicit: x.progressExplicit });
+    else tsgEnrichTask_(doc, x.task, now || new Date().toISOString(), 'Durand', { progressExplicit: x.progressExplicit });
+  });
   if (!wanted.length) return;
   var pcts = tsgProgressFromNotesMany_(wanted.map(function(w) { return { title: w.item.title, notes: String(w.item.notes || '').trim(), priority: w.item.priority, target: w.target }; }));
   wanted.forEach(function(w, i) { if (pcts[i] != null) tsgSetProgressFromNotes_(w.item, pcts[i]); });
@@ -4729,14 +4774,16 @@ function tsgGeocode_(q) {
 function tsgApplyTravelTimes_(doc) {
   var base = tsgHomeBase_(doc);
   var calls = 0;
-  (doc.tasks || []).forEach(function(t) {
+  var items = [];
+  (doc.tasks || []).forEach(function(t) { if (!t) return; items.push(t); (t.subitems || []).forEach(function(s) { if (s) items.push(s); }); });
+  items.forEach(function(t) {
     if (!t) return;
     var loc = String(t.location || '').trim();
     if (!loc) { if (t.travelMin != null || t.travelFor) { delete t.travelMin; delete t.travelOneWayMin; delete t.travelFor; delete t.travelOptions; delete t.travelRecommended; delete t.travelMethodUsed; } return; }
     if (!base) return;
     var key = tsgTravelKey_(loc, base);
     if (!(t.travelFor === key && t.travelOptions)) {
-      if (t.status === 'Done' || t.status === 'Cancelled') return;
+      if (t.status === 'Done' || t.status === 'Cancelled' || t.done) return;
       if (calls >= TSG_TRAVEL_PER_RUN_CAP) return;
       calls++;
       var opts = tsgTravelOptions_(base, loc);
