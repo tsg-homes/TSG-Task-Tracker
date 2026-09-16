@@ -27,13 +27,25 @@ function page(opts) {
     kiosk: '',
     qaTestToken: '',
     isTest: '',
+    // Derived server-side from RAFFLE_OPEN_AT; mirrored here so a rename of the
+    // template var shows up as a test failure rather than a blank page.
+    eventDate: 'Saturday, September 19, 2026',
+    eventDateShort: 'Saturday, September 19',
+    openTime: '3:00 PM',
     openAtMs: String(opts.openAt),
     closeAtMs: String(opts.closeAt),
     serverNowMs: String(opts.now)
   }, opts.vals || {});
-  const out = raw.replace(/<\?=\s*safeJsonForScript_\((\w+)\)\s*\?>/g, (m, name) => {
+  // Two tag shapes in the template: safeJsonForScript_(x) inside <script>, which
+  // Apps Script emits as a JSON literal, and a bare <?= x ?> in HTML text, which
+  // it emits as escaped text. Mirror both, so a renamed var fails loudly here.
+  let out = raw.replace(/<\?=\s*safeJsonForScript_\((\w+)\)\s*\?>/g, (m, name) => {
     if (!(name in vals)) throw new Error('template asks for unknown var: ' + name);
     return JSON.stringify(vals[name]);
+  });
+  out = out.replace(/<\?=\s*(\w+)\s*\?>/g, (m, name) => {
+    if (!(name in vals)) throw new Error('template asks for unknown var: ' + name);
+    return String(vals[name]);
   });
   if (/<\?=/.test(out)) throw new Error('unsubstituted template tag remains');
   const f = path.join(OUT, 'p' + Math.random().toString(36).slice(2) + '.html');
@@ -293,6 +305,37 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   await p.waitForTimeout(400);
   check('verify: start over returns to the form', await p.locator('#raffleForm').isVisible());
   check('verify: start over leaves the code panel', !(await p.locator('#codePanel').isVisible()));
+
+  // ---- 14. The event date is on the page, in every state ----
+  const dateOn = async (label, when) => {
+    await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: when }));
+    await p.waitForTimeout(350);
+    const hdr = await p.locator('header').textContent();
+    check('date in header — ' + label, /Saturday, September 19, 2026/.test(hdr));
+  };
+  await dateOn('before the party', OPEN - 86400000);
+  await dateOn('during the party', OPEN + 3600000);
+  await dateOn('after entries close', CLOSE + 3600000);
+
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000 }));
+  await p.waitForTimeout(300);
+  check('header shows the venue and hours',
+    /1342 N Hancock St/.test(await p.locator('header').textContent()));
+  check('prize card carries the date',
+    /Saturday, September 19/.test(await p.locator('.prize .when').textContent()));
+  check('prize card still shows both draw times',
+    /6:15 PM/.test(await p.locator('.prize .when').textContent()) &&
+    /6:30 PM/.test(await p.locator('.prize .when').textContent()));
+
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN - 86400000 }));
+  await p.waitForTimeout(300);
+  check('countdown panel names the opening time and date',
+    /3:00 PM, Saturday, September 19/.test(await p.locator('#beforePanel').textContent()));
+
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: CLOSE + 3600000 }));
+  await p.waitForTimeout(300);
+  check('closed panel names the date',
+    /Saturday, September 19/.test(await p.locator('#closedPanel').textContent()));
 
   await b.close();
   fs.rmSync(OUT, { recursive: true, force: true });

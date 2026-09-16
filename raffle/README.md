@@ -156,6 +156,45 @@ alerted to you by email, and re-pushed later with `raffleRetryFubFailures()`.
    are the real TSG Center City details. Per your instruction no licence number
    is printed; the brokerage is still identified as Keller Williams Empower.
 
+## What happens if the entrant is already in FUB
+
+**FUB does not merge on email.** Posting an address that already exists creates a
+**second person record** — that is this project's own established finding, and it
+is why `flagPossibleDuplicatesByEmail_` exists in `Code.gs`.
+
+So when a block-party entrant is already a TSG contact, the raffle creates a new
+FUB person and then tags **both** that new record and every pre-existing record
+sharing the address with **`Possible Duplicate`**, exactly as the Open House
+Sign-In and both Intake forms already do. Merging them is a human decision in
+FUB; the tag is what makes them findable.
+
+Best-effort by the same contract as the other callers: the entry has already
+succeeded by that point and is never reported as failed because the flagging
+step broke.
+
+## How entrants are identified
+
+Two different identities, for two different jobs — worth keeping straight:
+
+| | Used for | Keyed on |
+|---|---|---|
+| **Raffle entry** | one-entry-per-person, and the draw | the **sheet row**: normalized email **or** phone |
+| **FUB contact** | CRM record | FUB's own person id |
+
+The drawing never consults FUB. One-entry-per-person is enforced on the sheet,
+matching on normalized email **or** normalized phone — country code stripped and
+punctuation removed, so `+1 215.555.8123` and `(215) 555-8123` are the same
+person. Matching on *either* is deliberate: someone entering twice usually varies
+one and not the other (a nickname, a work vs personal address, the phone typed
+differently).
+
+A consequence worth knowing: **a couple sharing one phone or one email counts as
+one entrant.** For a household prize that is arguably right, but it is a choice,
+not an accident — say so if you want it changed to email-only.
+
+The winner is identified by the sheet row, and the result email carries name,
+phone and email so you can find them at the party without opening FUB.
+
 ## Verification
 
 Entry is **two-step**: details → a 6-digit code emailed instantly → type it back.

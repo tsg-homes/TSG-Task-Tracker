@@ -26,6 +26,10 @@ body{margin:0;font-family:'Lato',Arial,sans-serif;background:var(--tsg-gray);col
 header{background:var(--tsg-green);color:var(--tsg-white);padding:26px 20px 22px;text-align:center;}
 header .wordmark{font-family:'Playfair Display',serif;font-weight:700;font-size:24px;letter-spacing:1px;line-height:1.15;}
 header .subtitle{margin-top:6px;font-size:12px;letter-spacing:2.5px;text-transform:uppercase;opacity:0.85;}
+header .eventdate{margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.22);
+  font-size:13px;font-weight:700;letter-spacing:.3px;opacity:.95;}
+header .eventdate .loc{display:block;font-weight:400;font-size:11.5px;opacity:.75;margin-top:3px;
+  letter-spacing:.2px;}
 main{max-width:520px;margin:0 auto;padding:18px 16px 40px;}
 
 /* ---- Prize hero ---- */
@@ -124,6 +128,10 @@ body.qa-test{padding-top:62px;}
 <header>
   <div class="wordmark">THE STAWASZ GROUP</div>
   <div class="subtitle">Block Party 2026</div>
+  <div class="eventdate">
+    <?= eventDate ?>
+    <span class="loc">1342 N Hancock St, Philadelphia &middot; 3:00&ndash;7:00 PM</span>
+  </div>
 </header>
 
 <main>
@@ -139,7 +147,7 @@ body.qa-test{padding-top:62px;}
     <div class="kicker">Enter to win</div>
     <div class="amount">$300</div>
     <div class="desc">toward any Ticketmaster purchase</div>
-    <div class="when">Winner drawn at <b>6:15 PM</b> &middot; Announced at <b>6:30 PM</b></div>
+    <div class="when"><?= eventDateShort ?><br>Winner drawn at <b>6:15 PM</b> &middot; Announced at <b>6:30 PM</b></div>
   </div>
 
   <!-- Entries not open yet -->
@@ -152,13 +160,14 @@ body.qa-test{padding-top:62px;}
       <div class="unit"><div class="n" id="cS">0</div><div class="l">Secs</div></div>
     </div>
     <div class="soon" id="countSoon" style="display:none">Opening now&hellip;</div>
-    <p>Entries open when the party starts &mdash; <b>3:00 PM, Saturday 19 September</b>.</p>
+    <p>Entries open when the party starts &mdash; <b><?= openTime ?>, <?= eventDateShort ?></b>.</p>
     <p>Come find us at the TSG table!</p>
   </div>
 
   <!-- Entries closed / drawing done -->
   <div class="panel" id="closedPanel">
     <h2>Entries are closed</h2>
+    <p>TSG Block Party &mdash; <b><?= eventDateShort ?></b></p>
     <p>The drawing is complete.</p>
     <div class="big">Winner announced at 6:30 PM</div>
     <p style="margin-top:14px">Thanks for coming out &mdash; see you next year.</p>
@@ -181,6 +190,7 @@ body.qa-test{padding-top:62px;}
     <h2 id="successTitle">You&rsquo;re entered!</h2>
     <p id="successMsg">Good luck.</p>
     <div class="big">Winner announced at 6:30 PM</div>
+    <p style="margin-top:6px"><?= eventDateShort ?></p>
     <p style="margin-top:14px">You must be present at 6:30 to claim on the spot &mdash; if you&rsquo;ve left, we&rsquo;ll call you.</p>
   </div>
 

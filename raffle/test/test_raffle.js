@@ -29,6 +29,7 @@ function makeSandbox(opts) {
   const sent = [];
   const fetches = [];
   const cache = {};
+  const dupFlagCalls = [];
 
   // Multi-tab fake: the whole point of the test/live split is that they are
   // different sheets, so the fake has to model that rather than share one array.
@@ -117,6 +118,8 @@ function makeSandbox(opts) {
     QA_TEST_NOTIFY_EMAIL: 'durand@thestawaszgroup.com',
     QA_TEST_BACKGROUND_LEAD_IN: '[QA TEST] Created by a TSG QA test submission.',
     isQaTestMode_: () => !!opts.qaMode,
+    // Real helper lives in Code.gs; record that the raffle actually calls it.
+    flagPossibleDuplicatesByEmail_: (email, id, key) => { dupFlagCalls.push({ email, id, key }); },
     issueQaTestToken_: () => (opts.qaMode ? 'tok-uuid' : ''),
     qaTestRecipients_: list => (opts.qaMode ? ['durand@thestawaszgroup.com']
                                             : (Array.isArray(list) ? list : [list])),
@@ -125,7 +128,7 @@ function makeSandbox(opts) {
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../RaffleCode.gs'), 'utf8'), sandbox);
   sandbox.__sent = sent; sandbox.__fetches = fetches;
-  sandbox.__props = props; sandbox.__tabs = tabs;
+  sandbox.__props = props; sandbox.__tabs = tabs; sandbox.__dupFlags = dupFlagCalls;
   // Data rows only -- the header is row 1 and is never an entry.
   sandbox.__data = name => (tabs[name || 'Entries'] ? tabs[name || 'Entries'].rows.slice(1) : []);
   return sandbox;
@@ -551,6 +554,19 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
   const okRes = at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' },
     entry({ email: 'jane.oh@inbox-two.co', phone: '(267) 234-5678' }))));
   check('a plausible real entrant is accepted', okRes.ok === true && okRes.needsCode === true);
+}
+
+
+// ---- Already-in-FUB entrants ----------------------------------------------
+// FUB does not merge on email: posting an address that already exists creates a
+// SECOND person record. Every other write path in this project flags that; the
+// raffle must too.
+{
+  const s = makeSandbox();
+  enterFull(s, entry(), DURING);
+  eq('raffle flags possible duplicates after a create', s.__dupFlags.length, 1);
+  eq('flagged on the entrant email', s.__dupFlags[0].email, 'dana@mail-test.co');
+  check('flagged against the new person id', s.__dupFlags[0].id === 999);
 }
 
 console.log('\n' + passes + ' passed, ' + fails + ' failed');

@@ -315,6 +315,11 @@ function raffleServeForm_(e, baseUrl) {
   // dead at 6:15 -- all without a reload. It measures against the SERVER clock,
   // not the visitor's, so a phone with a wrong clock still opens and closes on
   // time. The server re-checks the window on every submit regardless.
+  // Derived from RAFFLE_OPEN_AT, never typed a second time -- change the event
+  // date in one place and every line on the page follows.
+  tmpl.eventDate     = Utilities.formatDate(new Date(RAFFLE_OPEN_AT), RAFFLE_TZ, 'EEEE, MMMM d, yyyy');
+  tmpl.eventDateShort= Utilities.formatDate(new Date(RAFFLE_OPEN_AT), RAFFLE_TZ, 'EEEE, MMMM d');
+  tmpl.openTime      = Utilities.formatDate(new Date(RAFFLE_OPEN_AT), RAFFLE_TZ, 'h:mm a');
   tmpl.openAtMs      = String(new Date(RAFFLE_OPEN_AT).getTime());
   tmpl.closeAtMs     = String(new Date(RAFFLE_CLOSE_AT).getTime());
   tmpl.serverNowMs   = String(Date.now());
@@ -627,6 +632,17 @@ function rafflePushToFub_(name, email, phone, test) {
     if (personId) {
       try { raffleAddNote_(personId, name, apiKey, test); }
       catch (noteErr) { Logger.log('Raffle note failed for person ' + personId + ': ' + noteErr); }
+
+      // FUB does NOT merge on email -- posting an address that already exists
+      // creates a SECOND person record. That is established by this project's
+      // own flagPossibleDuplicatesByEmail_, which the open-house and both intake
+      // paths already call after every create. The raffle has to do the same or
+      // a block-party entrant who is already a TSG contact quietly becomes a
+      // duplicate with nothing marking it. Best-effort by the same contract as
+      // the other callers: the entry already succeeded and must never be
+      // reported as failed because this secondary step broke.
+      try { flagPossibleDuplicatesByEmail_(email, personId, apiKey); }
+      catch (dupErr) { Logger.log('Raffle duplicate flagging failed: ' + dupErr); }
     }
     return { ok: true, personId: personId };
 
