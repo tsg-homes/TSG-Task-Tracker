@@ -32,23 +32,42 @@ untouched — nothing public goes anywhere near its Anthropic key or script toke
 | `test/test_raffle.js` | 72 unit tests for `RaffleCode.gs`. |
 | `test/test_form.js` | 47 browser tests for the built page (countdown, open/close flips, payload). |
 
-## Setup (about 15 minutes, all on your machine)
+## Deployment status
 
-1. **Add the two files** to the Apps Script project: `RaffleCode` (.gs) and
-   `RaffleForm` (.html). Names are case-sensitive and must match exactly, or
-   `createTemplateFromFile('RaffleForm')` throws.
-2. **Apply the two one-line hooks** in `PATCH-Code.gs.md`.
-3. **Run `setupRaffle()`** once from the editor. It creates the entries
-   spreadsheet, generates `RAFFLE_ADMIN_KEY`, and arms the 6:15 PM draw trigger.
-   Re-running is safe — it reuses the sheet and never arms two draws.
-4. **Re-authorize.** The raffle adds Spreadsheet, Mail and Trigger scopes, so
-   Google will prompt. This is unavoidable and it is why step 6 matters. (It
-   does *not* add a Drive scope — all four logos are baked into the page.)
-5. **Deploy** a new version of the existing deployment (same exec URL).
-6. **Re-test the Open House form** (`?form=openhouse` or the bare URL) and the
-   intake form (`?form=buyer-seller`) before you walk away. Re-authorization
-   touches the whole project, not just the new code.
-7. **Run `raffleAdminLinks()`** and keep the output. It prints four URLs.
+**Pushed and deployed on 2026-09-16.** All six project files are live and were
+verified byte-identical after the push (the two untouched files, `OpenHouseForm`
+and `ClientIntake`, included). The two `Code.gs` hooks are in at lines 740 and
+2177. Deployed as **version @30** to the *existing* deployment, so the public URL
+and any printed QR code are unchanged.
+
+### One step left, and only you can do it
+
+`setupRaffle()` still has to be run **once from the Apps Script editor**. It
+could not be run remotely — `clasp run` needs the project linked to a standard
+GCP project, which it is not (`Error code NOT_FOUND`). Running it from the
+editor is also what triggers the one-time scope consent.
+
+1. Open the project → select `setupRaffle` in the function dropdown → **Run**.
+2. Approve the prompt. The only genuinely *new* scope is trigger creation
+   (`script.scriptapp`) — Mail and Spreadsheet were already granted, because
+   `sendErrorAlert` and `logConsentRecord` already use them.
+3. Check the log: it should report the entries sheet, the generated
+   `RAFFLE_ADMIN_KEY`, and `Draw trigger armed for 2026-09-19 18:15:00 ET`.
+4. Run `raffleAdminLinks()` and keep the output (status + manual-draw URLs).
+
+**This must happen before 3:00 PM Saturday.** Until it does, the form renders
+fine but an entry cannot be saved, and the 6:15 draw is not armed. Entries are
+refused before Saturday 3:00 PM anyway — and that window check runs *before*
+anything touches the sheet — so nothing is broken in the meantime.
+
+### Then verify (I could not — this session's proxy blocks `script.google.com`)
+
+- `<exec>?form=raffle` → the countdown page.
+- The bare `<exec>` URL → Open House Sign-In, unchanged.
+- `<exec>?form=buyer-seller` → the intake form, unchanged.
+
+The last two matter: version @30 republished the whole project, not just the
+raffle.
 
 ## The four URLs
 
