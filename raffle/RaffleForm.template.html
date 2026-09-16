@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base target="_top">
+<title>Enter to Win | TSG Block Party 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Lato:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* TSG palette — same values the Open House Sign-In page uses, so the two
+     public forms are visibly the same brand. */
+  --tsg-green:#15464A;
+  --tsg-green-dark:#0d2e31;
+  --tsg-gray:#f4f5f5;
+  --tsg-gray-border:#dfe3e3;
+  --tsg-white:#ffffff;
+  --tsg-red:#a5342b;
+  --eagles-green:#004C54;
+  --eagles-silver:#A5ACAF;
+  --tm-blue:#009cde;
+}
+*{box-sizing:border-box;}
+body{margin:0;font-family:'Lato',Arial,sans-serif;background:var(--tsg-gray);color:#1c1c1c;-webkit-font-smoothing:antialiased;}
+header{background:var(--tsg-green);color:var(--tsg-white);padding:26px 20px 22px;text-align:center;}
+header .wordmark{font-family:'Playfair Display',serif;font-weight:700;font-size:24px;letter-spacing:1px;line-height:1.15;}
+header .subtitle{margin-top:6px;font-size:12px;letter-spacing:2.5px;text-transform:uppercase;opacity:0.85;}
+main{max-width:520px;margin:0 auto;padding:18px 16px 40px;}
+
+/* ---- Prize hero ---- */
+.prize{background:linear-gradient(160deg,var(--eagles-green) 0%,#01343a 100%);color:#fff;border-radius:10px;padding:22px 20px 20px;text-align:center;margin-bottom:18px;box-shadow:0 2px 10px rgba(0,0,0,0.12);}
+.prize .marks{display:flex;align-items:center;justify-content:center;gap:16px;margin-bottom:14px;}
+.prize .marks img.eagles{height:52px;width:auto;display:block;}
+.prize .marks .tm{width:132px;display:block;}
+.prize .marks .tm svg{width:100%;height:auto;display:block;}
+.prize .marks .x{color:var(--eagles-silver);font-size:15px;font-weight:700;opacity:.75;}
+.prize .kicker{font-size:11px;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;}
+.prize .amount{font-family:'Playfair Display',serif;font-weight:700;font-size:52px;line-height:1;margin:4px 0 2px;}
+.prize .desc{font-size:15px;font-weight:700;}
+.prize .when{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.18);font-size:13px;opacity:.92;}
+
+/* ---- Form ---- */
+fieldset{background:var(--tsg-white);border:1px solid var(--tsg-gray-border);border-radius:8px;padding:18px 20px 20px;margin:0 0 16px;}
+legend{font-family:'Playfair Display',serif;font-weight:700;font-size:17px;color:var(--tsg-green);padding:0 6px;}
+.field{margin-top:14px;}
+.field:first-of-type{margin-top:4px;}
+label{display:block;font-weight:700;font-size:14px;margin-bottom:6px;}
+.req{color:var(--tsg-red);}
+input[type=text],input[type=email],input[type=tel]{width:100%;padding:12px 12px;border:1px solid var(--tsg-gray-border);border-radius:6px;font-size:16px;font-family:inherit;background:var(--tsg-white);}
+input:focus{outline:2px solid var(--tsg-green);outline-offset:1px;}
+.errmsg{font-size:12px;color:var(--tsg-red);margin-top:4px;min-height:14px;}
+
+/* ---- Consent ---- */
+.consent{background:#fbfbfb;border:1px solid var(--tsg-gray-border);border-radius:8px;padding:16px 18px;margin-bottom:14px;}
+.consent-row{display:flex;align-items:flex-start;gap:11px;}
+.consent-row input{margin-top:3px;width:18px;height:18px;flex:0 0 auto;}
+.consent-row label{font-weight:400;font-size:12.5px;line-height:1.5;margin-bottom:0;}
+details{margin-top:12px;border-top:1px solid var(--tsg-gray-border);padding-top:10px;}
+details summary{cursor:pointer;font-size:12.5px;font-weight:700;color:var(--tsg-green);}
+details .rules{font-size:11.5px;line-height:1.55;color:#4a5252;margin-top:10px;}
+details .rules h4{margin:12px 0 4px;font-size:11.5px;color:#1c1c1c;}
+details .rules p{margin:0 0 6px;}
+.disclaimer{font-size:11px;line-height:1.5;color:#5c6666;background:#f0f2f2;border-left:3px solid var(--eagles-silver);padding:10px 12px;border-radius:0 5px 5px 0;margin-top:12px;}
+
+button{background:var(--tsg-green);color:var(--tsg-white);border:none;border-radius:6px;padding:17px;font-size:17px;font-weight:900;font-family:'Lato',Arial,sans-serif;cursor:pointer;width:100%;letter-spacing:.5px;}
+button:active{background:var(--tsg-green-dark);}
+button:disabled{opacity:.5;cursor:not-allowed;}
+#submitErr{font-size:13px;color:var(--tsg-red);margin-top:10px;text-align:center;min-height:16px;}
+#website{position:absolute;left:-9999px;top:-9999px;}
+
+/* ---- Panels ---- */
+.panel{display:none;background:var(--tsg-white);border:1px solid var(--tsg-gray-border);border-radius:10px;padding:34px 22px;text-align:center;}
+.panel h2{font-family:'Playfair Display',serif;color:var(--tsg-green);margin:0 0 10px;font-size:26px;}
+.panel p{font-size:15px;line-height:1.5;color:#4a5252;margin:0 0 6px;}
+.panel .big{font-size:20px;font-weight:900;color:var(--eagles-green);margin-top:14px;}
+.hidden{display:none !important;}
+
+/* ---- Footer ---- */
+footer{background:var(--tsg-green);color:#fff;padding:26px 20px 30px;text-align:center;}
+footer .logos{display:flex;align-items:center;justify-content:center;gap:20px;flex-wrap:wrap;margin-bottom:16px;}
+footer .logos img{height:40px;width:auto;display:block;}
+footer .logos .rule{width:1px;height:32px;background:rgba(255,255,255,.28);}
+footer .name{font-family:'Playfair Display',serif;font-weight:700;font-size:16px;}
+footer .brokerage{font-size:10.5px;letter-spacing:2px;text-transform:uppercase;opacity:.7;margin-top:4px;}
+footer .contact{font-size:12.5px;line-height:1.75;margin-top:14px;opacity:.92;}
+footer .contact a{color:#fff;text-decoration:none;border-bottom:1px solid rgba(255,255,255,.35);}
+footer .fine{font-size:10.5px;opacity:.6;margin-top:16px;line-height:1.5;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">THE STAWASZ GROUP</div>
+  <div class="subtitle">Block Party 2026</div>
+</header>
+
+<main>
+
+  <!-- Prize hero. The two third-party marks sit here with the non-affiliation
+       disclaimer below the form; see the OFFICIAL RULES section 12. -->
+  <div class="prize">
+    <div class="marks">
+      <img class="eagles" src="{{EAGLES_DATA_URI}}" alt="Philadelphia Eagles">
+      <span class="x">&#215;</span>
+      <span class="tm">{{TICKETMASTER_SVG}}</span>
+    </div>
+    <div class="kicker">Enter to win</div>
+    <div class="amount">$300</div>
+    <div class="desc">toward any Ticketmaster purchase</div>
+    <div class="when">Winner drawn at <b>6:15 PM</b> &middot; Announced at <b>6:30 PM</b></div>
+  </div>
+
+  <!-- Entries not open yet -->
+  <div class="panel" id="beforePanel">
+    <h2>Not open yet</h2>
+    <p>Entries open when the party starts at <b>3:00 PM on Saturday, September 19</b>.</p>
+    <p>Come find us at the TSG table!</p>
+  </div>
+
+  <!-- Entries closed / drawing done -->
+  <div class="panel" id="closedPanel">
+    <h2>Entries are closed</h2>
+    <p>The drawing is complete.</p>
+    <div class="big">Winner announced at 6:30 PM</div>
+    <p style="margin-top:14px">Thanks for coming out &mdash; see you next year.</p>
+  </div>
+
+  <!-- Success -->
+  <div class="panel" id="successPanel">
+    <h2 id="successTitle">You&rsquo;re entered!</h2>
+    <p id="successMsg">Good luck.</p>
+    <div class="big">Winner announced at 6:30 PM</div>
+    <p style="margin-top:14px">You must be present at 6:30 to claim on the spot &mdash; if you&rsquo;ve left, we&rsquo;ll call you.</p>
+  </div>
+
+  <div id="formWrap">
+    <form id="raffleForm" novalidate>
+      <input type="text" id="website" name="website" autocomplete="off" tabindex="-1" aria-hidden="true">
+
+      <fieldset>
+        <legend>Your Entry</legend>
+        <div class="field">
+          <label for="fullName">Full Name <span class="req">*</span></label>
+          <input type="text" id="fullName" autocomplete="name" autocapitalize="words">
+          <div class="errmsg" id="nameErr"></div>
+        </div>
+        <div class="field">
+          <label for="phone">Phone <span class="req">*</span></label>
+          <input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="(215) 555-0123">
+          <div class="errmsg" id="phoneErr"></div>
+        </div>
+        <div class="field">
+          <label for="email">Email <span class="req">*</span></label>
+          <input type="email" id="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@example.com">
+          <div class="errmsg" id="emailErr"></div>
+        </div>
+      </fieldset>
+
+      <div class="consent">
+        <div class="consent-row">
+          <input type="checkbox" id="consent">
+          <label for="consent">
+            <b>Required to enter.</b> By checking this box and submitting this entry, I confirm I am
+            at least 18 years old and a legal U.S. resident, and I have read and agree to the
+            Official Rules below. I give my express written consent for The Stawasz Group to contact
+            me at the phone number and email address I provided &mdash; including by autodialed or
+            pre-recorded calls and text messages &mdash; about this drawing and about real estate
+            services. Message and data rates may apply; message frequency varies. Reply STOP to opt
+            out at any time, or HELP for help. I understand this consent is required to enter this
+            drawing and is not a condition of purchasing any goods or services.
+          </label>
+        </div>
+        <div class="errmsg" id="consentErr"></div>
+
+        <details>
+          <summary>Official Rules &mdash; read before entering</summary>
+          <div class="rules">
+            <h4>1. No purchase necessary</h4>
+            <p>NO PURCHASE OR PAYMENT OF ANY KIND IS NECESSARY TO ENTER OR WIN. A purchase or payment
+               will not improve your chances of winning. Void where prohibited by law.</p>
+
+            <h4>2. Sponsor</h4>
+            <p>The Stawasz Group, 728 S Broad St, Philadelphia, PA 19146 &mdash; a real estate team at
+               Keller Williams Empower (the &ldquo;Sponsor&rdquo;).</p>
+
+            <h4>3. Eligibility</h4>
+            <p>Open to legal residents of the United States who are 18 years of age or older at the
+               time of entry and who attend the TSG Block Party on September 19, 2026. Employees,
+               agents and independent contractors of Sponsor and of Keller Williams Empower, and
+               their immediate family and household members, are not eligible to win.</p>
+
+            <h4>4. Entry period</h4>
+            <p>Entries are accepted only between 3:00 PM and 6:15 PM Eastern Time on Saturday,
+               September 19, 2026. Entries submitted outside that window are not accepted.</p>
+
+            <h4>5. How to enter &mdash; one entry per person</h4>
+            <p>Submit this form with your full name, phone number and email address, and accept these
+               Official Rules. <b>LIMIT ONE (1) ENTRY PER PERSON.</b> Duplicate entries, matched by
+               email address or phone number, are disregarded. Automated, robotic, scripted or bulk
+               entries are void.</p>
+
+            <h4>6. Prize</h4>
+            <p>One (1) prize: a $300 Ticketmaster gift card, redeemable toward any Ticketmaster
+               purchase, subject to Ticketmaster&rsquo;s own terms and conditions. Approximate Retail
+               Value (ARV): $300.00. Total ARV of all prizes: $300.00. No cash or other substitution,
+               except by Sponsor, who may substitute a prize of equal or greater value. The prize is
+               awarded &ldquo;as is&rdquo; with no warranty of any kind. All federal, state and local
+               taxes on the prize are the sole responsibility of the winner.</p>
+
+            <h4>7. Odds</h4>
+            <p>Odds of winning depend on the number of eligible entries received.</p>
+
+            <h4>8. Winner selection, notification and claim</h4>
+            <p>One (1) potential winner is selected by random drawing from all eligible entries at
+               approximately 6:15 PM ET on September 19, 2026, and announced at approximately 6:30 PM
+               ET at the event. The winner need not be present to win. If the winner is not present at
+               the announcement, Sponsor will attempt to notify the winner using the contact
+               information provided. If the winner cannot be reached, declines the prize, is found
+               ineligible, or fails to claim the prize within fourteen (14) days of the drawing, the
+               prize may be forfeited and an alternate winner drawn at random from the remaining
+               eligible entries.</p>
+
+            <h4>9. Publicity</h4>
+            <p>Except where prohibited, acceptance of the prize constitutes the winner&rsquo;s consent
+               to Sponsor&rsquo;s use of the winner&rsquo;s first name, last initial and likeness for
+               promotional purposes, without further compensation.</p>
+
+            <h4>10. Privacy and consent to contact</h4>
+            <p>The name, phone number and email address you provide are stored in Sponsor&rsquo;s
+               customer relationship management system and used to administer this drawing and to
+               contact you as described in the consent above. Sponsor does not sell your personal
+               information. You may ask us to delete your information or stop contacting you at any
+               time by emailing <a href="mailto:info@tsg.homes">info@tsg.homes</a>, by replying STOP to
+               a text message, or by using the unsubscribe link in any email.</p>
+
+            <h4>11. Release and limitation of liability</h4>
+            <p>By entering, you release Sponsor, Keller Williams Empower, and their respective
+               officers, directors, employees and agents from any liability for any loss, harm,
+               damage, injury, cost or expense arising out of participation in this promotion or the
+               acceptance, use or misuse of the prize.</p>
+
+            <h4>12. No affiliation with Ticketmaster, the Philadelphia Eagles or the NFL</h4>
+            <p>This promotion is in no way sponsored, endorsed, administered by, or associated with
+               Ticketmaster L.L.C., Live Nation Entertainment, Inc., the Philadelphia Eagles, the
+               National Football League, or any of their respective affiliates. All trademarks are the
+               property of their respective owners.</p>
+
+            <h4>13. Governing law</h4>
+            <p>This promotion is governed by the laws of the Commonwealth of Pennsylvania, without
+               regard to its conflict of law principles.</p>
+
+            <h4>14. Winner list</h4>
+            <p>For the name of the winner, email <a href="mailto:info@tsg.homes">info@tsg.homes</a>
+               within 30 days of the drawing.</p>
+          </div>
+        </details>
+
+        <div class="disclaimer">
+          This promotion is not sponsored, endorsed by, or associated with Ticketmaster,
+          Live Nation, the Philadelphia Eagles or the NFL. All trademarks are the property of their
+          respective owners.
+        </div>
+      </div>
+
+      <button type="submit" id="submitBtn">Enter the Drawing</button>
+      <div id="submitErr" role="alert"></div>
+    </form>
+  </div>
+</main>
+
+<footer>
+  <div class="logos">
+    <img src="<?= tsgLogo ?>" alt="The Stawasz Group">
+    <span class="rule"></span>
+    <img src="<?= kwLogo ?>" alt="Keller Williams Empower">
+  </div>
+  <div class="name">The Stawasz Group</div>
+  <div class="brokerage">Keller Williams Empower</div>
+  <div class="contact">
+    728 S Broad St, Philadelphia, PA 19146<br>
+    <a href="tel:+16108287000">610-828-7000</a> &middot;
+    <a href="mailto:info@tsg.homes">info@tsg.homes</a><br>
+    <a href="https://tsg.homes">tsg.homes</a>
+  </div>
+  <div class="fine">
+    &copy; 2026 The Stawasz Group. Each Keller Williams office is independently owned and operated.
+  </div>
+</footer>
+
+<script>
+(function(){
+  var API        = <?= safeJsonForScript_(baseUrl) ?>;
+  var TOKEN      = <?= safeJsonForScript_(submitToken) ?>;
+  var KIOSK      = <?= safeJsonForScript_(kiosk) ?> === '1';
+  var STATE      = <?= safeJsonForScript_(entryState) ?>;
+  var CLOSE_MS   = Number(<?= safeJsonForScript_(closeAtMs) ?>);
+  var SERVER_MS  = Number(<?= safeJsonForScript_(serverNowMs) ?>);
+
+  // The page must go dead at 6:15 even if it has been sitting open on someone's
+  // phone since 3pm. The client clock can be wrong by minutes, so everything is
+  // measured against the SERVER's clock: we take the offset once at load and
+  // apply it from then on. The server re-checks the window on submit regardless,
+  // so this is purely so nobody fills in a form that is already dead.
+  var skew = SERVER_MS - Date.now();
+  function serverNow(){ return Date.now() + skew; }
+
+  var formWrap     = document.getElementById('formWrap');
+  var beforePanel  = document.getElementById('beforePanel');
+  var closedPanel  = document.getElementById('closedPanel');
+  var successPanel = document.getElementById('successPanel');
+  var form         = document.getElementById('raffleForm');
+  var btn          = document.getElementById('submitBtn');
+
+  function show(el){
+    formWrap.classList.add('hidden');
+    [beforePanel, closedPanel, successPanel].forEach(function(p){ p.style.display='none'; });
+    if (el) el.style.display='block';
+  }
+  function showForm(){
+    formWrap.classList.remove('hidden');
+    [beforePanel, closedPanel, successPanel].forEach(function(p){ p.style.display='none'; });
+  }
+
+  function applyState(){
+    if (serverNow() >= CLOSE_MS) { show(closedPanel); return true; }
+    if (STATE === 'before') { show(beforePanel); return true; }
+    return false;
+  }
+  if (!applyState()) showForm();
+
+  // Flip the page to "entries closed" the moment the window ends, without a
+  // reload. Checked every second so 6:15:00 is 6:15:00.
+  setInterval(function(){
+    if (serverNow() >= CLOSE_MS && closedPanel.style.display !== 'block') {
+      show(closedPanel);
+    }
+  }, 1000);
+
+  // Live US phone formatting — this is a party, on a phone, one-handed.
+  var phoneEl = document.getElementById('phone');
+  phoneEl.addEventListener('input', function(){
+    var d = phoneEl.value.replace(/\D/g,'').slice(0,10);
+    phoneEl.value = d.length > 6 ? '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6)
+                  : d.length > 3 ? '(' + d.slice(0,3) + ') ' + d.slice(3)
+                  : d.length > 0 ? '(' + d : '';
+  });
+
+  function setErr(id, msg){ document.getElementById(id).textContent = msg || ''; }
+
+  function validate(v){
+    var ok = true;
+    setErr('nameErr'); setErr('phoneErr'); setErr('emailErr'); setErr('consentErr');
+    if (!v.fullName || v.fullName.indexOf(' ') === -1) {
+      setErr('nameErr','Enter your first and last name.'); ok = false;
+    }
+    if (v.phone.replace(/\D/g,'').length < 10) {
+      setErr('phoneErr','Enter a 10-digit phone number.'); ok = false;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(v.email)) {
+      setErr('emailErr','Enter a valid email address.'); ok = false;
+    }
+    if (v.consent !== 'Yes') {
+      setErr('consentErr','You must accept the Official Rules to enter.'); ok = false;
+    }
+    return ok;
+  }
+
+  form.addEventListener('submit', function(ev){
+    ev.preventDefault();
+    document.getElementById('submitErr').textContent = '';
+
+    var payload = {
+      formType: 'raffle',
+      formToken: TOKEN,
+      website:  document.getElementById('website').value,
+      fullName: document.getElementById('fullName').value.replace(/\s+/g,' ').trim(),
+      phone:    phoneEl.value.trim(),
+      email:    document.getElementById('email').value.trim().toLowerCase(),
+      consent:  document.getElementById('consent').checked ? 'Yes' : 'No'
+    };
+    if (!validate(payload)) return;
+
+    if (serverNow() >= CLOSE_MS) { show(closedPanel); return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Entering…';
+
+    fetch(API, {
+      method: 'POST',
+      // text/plain keeps this a CORS "simple request" — Apps Script web apps
+      // do not answer preflight OPTIONS, so application/json would fail here.
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      btn.disabled = false;
+      btn.textContent = 'Enter the Drawing';
+      if (res && res.ok) {
+        document.getElementById('successTitle').textContent =
+          res.already ? 'You’re already in!' : 'You’re entered!';
+        document.getElementById('successMsg').textContent =
+          res.already ? 'We already have your entry — one per person.' : 'Good luck.';
+        show(successPanel);
+        form.reset();
+        // Kiosk mode: hand the iPad back to the table ready for the next person.
+        if (KIOSK) setTimeout(function(){ if (!applyState()) showForm(); }, 6000);
+      } else {
+        document.getElementById('submitErr').textContent =
+          (res && res.error) || 'Something went wrong. Grab someone from TSG.';
+      }
+    })
+    .catch(function(){
+      btn.disabled = false;
+      btn.textContent = 'Enter the Drawing';
+      document.getElementById('submitErr').textContent =
+        'Could not reach us — check your signal and try again, or find someone from TSG.';
+    });
+  });
+})();
+</script>
+</body>
+</html>
