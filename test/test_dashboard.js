@@ -64,7 +64,9 @@ const dom = new JSDOM(html, {
       if (opts && opts.method === 'POST') return { ok: true, status: 200, json: async () => ({ ok: true, serverVersion: 1 }) };
       if (u.includes('api=data')) return { ok: true, status: 200, json: async () => fakeData };
       if (u.includes('api=calendar')) return { ok: true, status: 200, json: async () => [] };
-      if (u.includes('api=meetings')) { window.__meetingsFetchUrls.push(u); return { ok: true, status: 200, json: async () => ({ events: [], bestGuessId: null }) }; }
+      if (u.includes('api=meetings')) { window.__meetingsFetchUrls.push(u); return { ok: true, status: 200, json: async () => ({ events: window.__pickerEvents || [], bestGuessId: null }) }; }
+      if (u.includes('api=driveSearch')) return { ok: true, status: 200, json: async () => ({ ok: true, files: [{ name: 'Fall Flyer Draft', url: 'https://docs.google.com/document/d/FLYER/edit', mime: 'application/vnd.google-apps.document', modified: '2026-09-14' }] }) };
+      if (u.includes('api=linkLabel')) return { ok: true, status: 200, json: async () => ({ ok: true, label: 'Resolved Title', kind: 'drive' }) };
       return { ok: true, status: 200, json: async () => ({ ok: true, users: [], events: [], meetings: [] }) };
     };
     window.onerror = function(msg, src, line, col, err) { errors.push({ msg, stack: err && err.stack }); return true; };
@@ -168,6 +170,44 @@ setTimeout(async () => {
     if (/__TSG_API_URL__/.test(opened[0].url)) throw new Error('placeholder leaked into the URL');
   });
   w.findTask(2).delegate = undefined; w.findTask(3).delegate = undefined;
+
+  // #250 backlog batch 2 (2026-09-16): link picker with Drive search and real labels; recurring series links
+  await (async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    try {
+      w.addManualDoc(2, null);
+      if (!doc.getElementById('linkModal').classList.contains('open')) throw new Error('link picker did not open');
+      doc.getElementById('linkSearch').value = 'fall flyer';
+      w.onLinkSearchInput_();
+      await wait(400);
+      const row = doc.querySelector('#linkResults .meeting-row');
+      if (!row || !/Fall Flyer Draft/.test(row.textContent)) throw new Error('no search result rendered');
+      row.click();
+      const docs2 = w.findTask(2).docs;
+      if (!docs2.some(x => x.url === 'https://docs.google.com/document/d/FLYER/edit' && x.label === 'Fall Flyer Draft')) throw new Error('picked file not added with its name: ' + JSON.stringify(docs2));
+      if (doc.getElementById('linkModal').classList.contains('open')) throw new Error('picker stayed open');
+      w.addManualDoc(2, null);
+      doc.getElementById('linkPaste').value = 'https://docs.google.com/document/d/PASTED/edit';
+      await w.addPastedLink_();
+      if (!w.findTask(2).docs.some(x => x.url.indexOf('PASTED') !== -1 && x.label === 'Resolved Title')) throw new Error('pasted link did not take the resolved label');
+      w.findTask(2).docs = [];
+      console.log('OK   - link picker: Drive search adds the file under its own name; a pasted link gets its resolved label');
+    } catch (e) { console.log('FAIL - link picker ->', e.message); FAILS++; w.closeLinkPicker(); }
+    try {
+      w.eval('MEETING_PICKER_TARGET = { taskId: 3, subIdx: null }');
+      const ev = { id: 'evt1', recurring: true, seriesId: 'SERIES-1', title: 'Weekly check-in', start: '2026-09-22T14:00:00.000Z', end: '2026-09-22T15:00:00.000Z', dateLabel: 'Tue, Sep 22', timeLabel: '10:00 AM–11:00 AM', htmlLink: 'https://calendar.google.com/event?eid=abc' };
+      await w.linkMeetingToTarget(ev, true);
+      const t3 = w.findTask(3);
+      if (t3.meetingSeriesId !== 'SERIES-1' || !t3.docs.some(x => x.seriesId === 'SERIES-1' && /every occurrence/.test(x.label))) throw new Error('series link not recorded: ' + JSON.stringify([t3.meetingSeriesId, t3.docs]));
+      const today = w.todayISO();
+      const CAL = w.eval('CALENDAR_EVENTS');
+      CAL.push({ title: 'Weekly check-in', seriesId: 'SERIES-1', date: today, start: '10:00', end: '11:00', hours: 1, bufferedHours: 1.17 });
+      const match = w.todayMeetingBlockMatch_({ meetingSeriesId: 'SERIES-1', meetingDate: '2026-09-22', meetingStart: '10:00' }, today);
+      if (!match || match.seriesId !== 'SERIES-1') throw new Error('series occurrence today not matched');
+      CAL.pop(); delete t3.meetingSeriesId; t3.docs = []; delete t3.meetingDate; delete t3.meetingStart; delete t3.meetingEnd;
+      console.log('OK   - recurring: linking the series stamps meetingSeriesId and any occurrence of the series matches on the schedule');
+    } catch (e) { console.log('FAIL - recurring series ->', e.message); FAILS++; }
+  })();
 
   // #250 backlog batch 1 (2026-09-16): Durand first, group dropdown, tag autocomplete, dependencies in the modal, dense cards
   tryCall('people lists put Durand first, then A to Z', () => {

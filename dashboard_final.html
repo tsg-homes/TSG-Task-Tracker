@@ -998,6 +998,9 @@
   .card-grid.dense .pill { font-size: 10px; padding: 2px 7px; }
   .dense-toggle { margin-left: 8px; }
   .depends-chip { background: var(--status-warn-bg); color: var(--status-warn); }
+  .link-paste-row { display: flex; gap: 6px; align-items: center; }
+  .link-paste-row input { flex: 1; }
+  .series-link-btn { margin-left: 8px; }
   .tag-input { width: 110px; padding: 2px 6px; font-size: 11.5px; }
   .modal-group-select, .modal-depends-select { max-width: 320px; }
 
@@ -1429,6 +1432,16 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="linkModal" role="dialog" aria-modal="true" tabindex="-1" onclick="if(event.target===this) closeLinkPicker()">
+  <div class="modal-card meeting-card">
+    <div class="modal-header">
+      <h2>Add a link</h2>
+      <button class="icon-btn" onclick="closeLinkPicker()" title="Close">&#10005;</button>
+    </div>
+    <div id="linkModalBody"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="meetingModal" role="dialog" aria-modal="true" tabindex="-1" onclick="if(event.target===this) closeMeetingPicker()">
   <div class="modal-card meeting-card">
     <div class="modal-header">
@@ -1454,7 +1467,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-16.1';
+  const UI_VERSION = '2026-09-16.2';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1730,16 +1743,109 @@
     if (!t) return null;
     return { t: t, item: subIdx == null ? t : t.subitems[subIdx] };
   }
+  // ---- Link picker (2026-09-16, #250: "instead of asking for the URL, offer a search box";
+  // "links take their label from the link itself"). Search Drive by words, pick an upcoming
+  // meeting, or paste a URL; the label is the file's real name / the meeting title / the
+  // hostname, never something typed by hand.
+  let LINK_TARGET = null;
+  let linkSearchDebounce = null;
   function addManualDoc(taskId, subIdx) {
-    const url = prompt('Link or file URL:');
-    if (!url || !url.trim()) return;
-    const label = prompt('Label (optional):', '') || '';
-    const ctx = docsItem_(taskId, subIdx);
+    LINK_TARGET = { taskId: taskId, subIdx: (subIdx == null ? null : subIdx) };
+    document.getElementById('linkModalBody').innerHTML = `
+      <div class="meeting-form">
+        <label>Search your Drive<input type="text" class="text-input" id="linkSearch" placeholder="Type a few words from the file name or contents" oninput="onLinkSearchInput_()"></label>
+        <div class="meeting-list" id="linkResults"><div class="history-empty">Results appear here.</div></div>
+        <label>Or paste a link<span class="link-paste-row"><input type="text" class="text-input" id="linkPaste" placeholder="https://…" onkeydown="if(event.key==='Enter'){event.preventDefault();addPastedLink_();}"><button type="button" class="btn small primary" onclick="addPastedLink_()">Add</button></span></label>
+        <div class="sched-detail-note">Upcoming meetings</div>
+        <div class="meeting-list" id="linkMeetings"><div class="history-empty">Loading…</div></div>
+      </div>`;
+    document.getElementById('linkModal').classList.add('open');
+    const inp = document.getElementById('linkSearch'); if (inp) inp.focus();
+    loadLinkMeetings_();
+  }
+  function closeLinkPicker() { document.getElementById('linkModal').classList.remove('open'); LINK_TARGET = null; }
+  function onLinkSearchInput_() {
+    clearTimeout(linkSearchDebounce);
+    linkSearchDebounce = setTimeout(runLinkSearch_, 300);
+  }
+  async function runLinkSearch_() {
+    const q = (document.getElementById('linkSearch') || {}).value || '';
+    const host = document.getElementById('linkResults');
+    if (!host) return;
+    if (q.trim().length < 2) { host.innerHTML = '<div class="history-empty">Results appear here.</div>'; return; }
+    host.innerHTML = '<div class="history-empty">Searching…</div>';
+    try {
+      const res = await apiFetch('api=driveSearch&q=' + encodeURIComponent(q.trim()));
+      const data = await res.json();
+      const files = (data && data.files) || [];
+      LINK_RESULTS = files;
+      host.innerHTML = files.length
+        ? files.map((f, i) => `<div class="meeting-row" onclick="addLinkResult_(${i})"><div class="meeting-row-main"><b>${escapeHtml(f.name)}</b></div><div class="meeting-row-sub">${escapeHtml(linkKindLabel_(f.mime))}${f.modified ? ' · ' + escapeHtml(f.modified) : ''}</div></div>`).join('')
+        : '<div class="history-empty">Nothing in your Drive matches that.</div>';
+    } catch (err) {
+      host.innerHTML = '<div class="history-empty">Search failed: ' + escapeHtml(err.message || String(err)) + '</div>';
+    }
+  }
+  let LINK_RESULTS = [];
+  function linkKindLabel_(mime) {
+    const m = String(mime || '');
+    if (m.indexOf('document') !== -1) return 'Google Doc';
+    if (m.indexOf('spreadsheet') !== -1) return 'Google Sheet';
+    if (m.indexOf('presentation') !== -1) return 'Google Slides';
+    if (m.indexOf('folder') !== -1) return 'Folder';
+    if (m.indexOf('pdf') !== -1) return 'PDF';
+    return m ? m.split('/').pop() : 'File';
+  }
+  function addLinkResult_(i) {
+    const f = LINK_RESULTS[i];
+    if (!f) return;
+    addDocToTarget_(f.url, f.name);
+  }
+  async function addPastedLink_() {
+    const inp = document.getElementById('linkPaste');
+    const url = (inp && inp.value || '').trim();
+    if (!url) return;
+    let label = '';
+    try {
+      const res = await apiFetch('api=linkLabel&url=' + encodeURIComponent(url));
+      const data = await res.json();
+      if (data && data.ok && data.label) label = data.label;
+    } catch (err) { /* fall through to the hostname */ }
+    if (!label) { const m = /^https?:\/\/([^\/?#]+)/i.exec(url); label = m ? m[1].replace(/^www\./, '') : url; }
+    addDocToTarget_(url, label);
+  }
+  function addDocToTarget_(url, label) {
+    if (!LINK_TARGET) return;
+    const ctx = docsItem_(LINK_TARGET.taskId, LINK_TARGET.subIdx);
     if (!ctx) return;
     if (!Array.isArray(ctx.item.docs)) ctx.item.docs = [];
-    ctx.item.docs.push({ url: url.trim(), label: label.trim() || url.trim(), type: 'link' });
-    logHistory(ctx.t, subIdx == null ? 'doc' : 'subitem-doc', null, label.trim() || url.trim());
+    if (!ctx.item.docs.some(d => d.url === url)) ctx.item.docs.push({ url: url, label: label || url, type: 'link' });
+    logHistory(ctx.t, LINK_TARGET.subIdx == null ? 'doc' : 'subitem-doc', null, label || url);
+    const taskId = LINK_TARGET.taskId;
+    closeLinkPicker();
     renderAll(); if (currentModalTaskId === taskId) openTaskCard(taskId); scheduleSave();
+  }
+  let LINK_MEETINGS = [];
+  async function loadLinkMeetings_() {
+    const host = document.getElementById('linkMeetings');
+    if (!host) return;
+    try {
+      const res = await apiFetch('api=meetings&start=' + todayISO() + '&end=' + addDays(todayISO(), 14));
+      const data = await res.json();
+      LINK_MEETINGS = Array.isArray(data.events) ? data.events : [];
+      host.innerHTML = LINK_MEETINGS.length
+        ? LINK_MEETINGS.map((ev, i) => `<div class="meeting-row" onclick="addLinkMeeting_(${i})"><div class="meeting-row-main"><b>${escapeHtml(ev.title)}</b>${ev.recurring ? '<span class="meeting-agenda-badge" title="Recurring">Series</span>' : ''}</div><div class="meeting-row-sub">${escapeHtml(ev.dateLabel || '')} · ${escapeHtml(ev.timeLabel || '')}</div></div>`).join('')
+        : '<div class="history-empty">No meetings in the next two weeks.</div>';
+    } catch (err) {
+      host.innerHTML = '<div class="history-empty">Could not load meetings.</div>';
+    }
+  }
+  async function addLinkMeeting_(i) {
+    const ev = LINK_MEETINGS[i];
+    if (!ev || !LINK_TARGET) return;
+    MEETING_PICKER_TARGET = { taskId: LINK_TARGET.taskId, subIdx: LINK_TARGET.subIdx };
+    closeLinkPicker();
+    await linkMeetingToTarget(ev);
   }
   function removeDoc(taskId, subIdx, di) {
     const ctx = docsItem_(taskId, subIdx);
@@ -3098,7 +3204,7 @@
             priority: s.priority || t.priority, group: t.group, depends: '',
             timelineEnd: s.timelineEnd, estHours: s.estHours,
             scheduledStart: s.scheduledStart, estDays: s.estDays, scheduledDays: s.scheduledDays,
-            meetingDate: s.meetingDate, meetingStart: s.meetingStart, meetingEnd: s.meetingEnd
+            meetingDate: s.meetingDate, meetingStart: s.meetingStart, meetingEnd: s.meetingEnd, meetingSeriesId: s.meetingSeriesId
           });
         });
       } else {
@@ -3109,7 +3215,7 @@
           priority: t.priority, group: t.group, depends: t.depends,
           timelineEnd: t.timelineEnd, estHours: t.estHours,
           scheduledStart: t.scheduledStart, estDays: t.estDays, scheduledDays: t.scheduledDays,
-          meetingDate: t.meetingDate, meetingStart: t.meetingStart, meetingEnd: t.meetingEnd
+          meetingDate: t.meetingDate, meetingStart: t.meetingStart, meetingEnd: t.meetingEnd, meetingSeriesId: t.meetingSeriesId
         });
       }
     });
@@ -3438,7 +3544,12 @@
   // picked it up yet, this returns null and the item falls back to the normal queue rather
   // than silently disappearing from the schedule.
   function todayMeetingBlockMatch_(item, dateISO) {
-    if (!item || !item.meetingDate || item.meetingDate !== dateISO || !item.meetingStart) return null;
+    if (!item) return null;
+    if (item.meetingSeriesId) {
+      const bySeries = CALENDAR_EVENTS.find(ev => ev && ev.date === dateISO && ev.seriesId && ev.seriesId === item.meetingSeriesId);
+      if (bySeries) return bySeries;
+    }
+    if (!item.meetingDate || item.meetingDate !== dateISO || !item.meetingStart) return null;
     return CALENDAR_EVENTS.find(ev => ev && ev.date === dateISO && ev.start === item.meetingStart) || null;
   }
   const TODAY_CHUNK_BY_PRIORITY = { Critical: 60, High: 45, Medium: 30, Low: 20 };
@@ -3620,7 +3731,8 @@
     // showing up as their own generic filler blocks (see the matching exclusion in
     // getTodayCandidates).
     const linkableToday = getWorkItems(TASKS).filter(t => t.status !== 'Done'
-      && (t.delegate || 'Unassigned') === CALENDAR_OWNER && t.meetingDate === today && t.meetingStart);
+      && (t.delegate || 'Unassigned') === CALENDAR_OWNER
+      && ((t.meetingDate === today && t.meetingStart) || (t.meetingSeriesId && CALENDAR_EVENTS.some(ev => ev && ev.date === today && ev.seriesId === t.meetingSeriesId))));
     const events = CALENDAR_EVENTS.filter(ev => ev && ev.date === today && ev.start && ev.end)
       .map(ev => {
         const meetingStart = hmToMin(ev.start), meetingEnd = hmToMin(ev.end);
@@ -3636,7 +3748,7 @@
           start: meetingStart - prepMin - travelMin, end: meetingEnd + travelMin,
           meetingStart: meetingStart, meetingEnd: meetingEnd,
           location: ev.location || '', offSite: offSite, prepMin: prepMin, travelMin: travelMin,
-          linkedItems: linkableToday.filter(t => t.meetingStart === ev.start)
+          linkedItems: linkableToday.filter(t => (t.meetingSeriesId && ev.seriesId && t.meetingSeriesId === ev.seriesId) || (t.meetingDate === today && t.meetingStart === ev.start))
         };
       })
       .filter(ev => ev.end > ev.start);
@@ -4614,7 +4726,7 @@
       ? MEETING_PICKER_EVENTS.map(function(ev, idx) {
           const isGuess = ev.id === MEETING_PICKER_BEST_GUESS;
           return `<div class="meeting-row ${isGuess ? 'meeting-row-guess' : ''}" onclick="confirmMeetingLinkByIndex(${idx})">
-            <div class="meeting-row-main"><b>${escapeHtml(ev.title)}</b>${isGuess ? '<span class="meeting-guess-badge">Best guess</span>' : ''}${ev.agendaDocUrl ? '<span class="meeting-agenda-badge" title="Has a linked agenda doc">Agenda</span>' : ''}</div>
+            <div class="meeting-row-main"><b>${escapeHtml(ev.title)}</b>${isGuess ? '<span class="meeting-guess-badge">Best guess</span>' : ''}${ev.agendaDocUrl ? '<span class="meeting-agenda-badge" title="Has a linked agenda doc">Agenda</span>' : ''}${ev.recurring ? `<button type="button" class="btn small series-link-btn" onclick="event.stopPropagation(); confirmMeetingSeriesByIndex(${idx})" title="Link every occurrence of this recurring meeting, not just this one">Link the series</button>` : ''}</div>
             <div class="meeting-row-sub">${escapeHtml(ev.dateLabel)} · ${escapeHtml(ev.timeLabel)}${ev.location ? ' · ' + escapeHtml(ev.location) : ''}</div>
           </div>`;
         }).join('')
@@ -4633,6 +4745,15 @@
     const ev = MEETING_PICKER_EVENTS[idx];
     if (!ev) return;
     await linkMeetingToTarget(ev);
+  }
+  // Recurring series (2026-09-16, #250: "recurring event linkage"): the link follows every
+  // occurrence. The item keeps meetingDate/meetingStart from the picked instance so it still
+  // lands on that day's block, and carries meetingSeriesId so any other day's occurrence of
+  // the same series claims it too (todayMeetingBlockMatch_ / linkableToday).
+  async function confirmMeetingSeriesByIndex(idx) {
+    const ev = MEETING_PICKER_EVENTS[idx];
+    if (!ev || !ev.seriesId) return;
+    await linkMeetingToTarget(ev, true);
   }
   function startNewMeetingForm() {
     MEETING_PICKER_MODE = 'create';
@@ -4747,15 +4868,18 @@
       btn.disabled = false; btn.textContent = 'Create & link';
     }
   }
-  async function linkMeetingToTarget(ev) {
+  async function linkMeetingToTarget(ev, wholeSeries) {
     const target = currentMeetingTarget_();
     if (!target) return;
     const t = target.t, s = target.s, item = target.item;
-    const label = ev.title + (ev.dateLabel ? ' — ' + ev.dateLabel : '');
+    const label = wholeSeries ? (ev.title + ' (every occurrence)') : (ev.title + (ev.dateLabel ? ' — ' + ev.dateLabel : ''));
     if (!Array.isArray(item.docs)) item.docs = [];
     if (!item.docs.some(d => d.url === ev.htmlLink)) {
-      item.docs.push({ url: ev.htmlLink, label: label, type: 'meeting' });
+      const entry = { url: ev.htmlLink, label: label, type: 'meeting' };
+      if (wholeSeries && ev.seriesId) entry.seriesId = ev.seriesId;
+      item.docs.push(entry);
     }
+    if (wholeSeries && ev.seriesId) item.meetingSeriesId = ev.seriesId; else delete item.meetingSeriesId;
     if (!item.taskType) item.taskType = 'Meeting';
     // Stamp the real meeting's date/time onto the item itself (2026-09-08, per Durand:
     // "move meeting linked tasks to their linked meeting on the schedule") so Today's

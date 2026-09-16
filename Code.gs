@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-15.11';
+const TSG_CODE_VERSION = '2026-09-16.1';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -1345,6 +1345,20 @@ function doGet(e) {
       tsgListUpcomingMeetings_(e.parameter.start, e.parameter.end, e.parameter.titleHint, e.parameter.dueDate)
     )).setMimeType(ContentService.MimeType.JSON);
   }
+  // Link picker (2026-09-16, #250: "add link offers a search box"; "links take their label
+  // from the link itself"). driveSearch lists files Durand owns matching the words typed;
+  // linkLabel resolves a pasted Drive/Docs URL to the file's real name. Neither fetches
+  // an arbitrary URL: a non-Google link gets its hostname as the label, client-side.
+  if (e.parameter.api === 'driveSearch') {
+    if (!tsgCheckToken_(e)) return tsgUnauthorized_();
+    return ContentService.createTextOutput(JSON.stringify(tsgDriveSearch_(e.parameter.q)))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  if (e.parameter.api === 'linkLabel') {
+    if (!tsgCheckToken_(e)) return tsgUnauthorized_();
+    return ContentService.createTextOutput(JSON.stringify(tsgLabelForUrl_(e.parameter.url)))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
   if (e.parameter.api === 'fubUsers') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
     return ContentService.createTextOutput(JSON.stringify(tsgListFubUsers_()))
@@ -1469,8 +1483,11 @@ function getCalendarHours_(startStr, endStr) {
     var prepMin = TSG_MEETING_PREP_MIN;
     var travelMin = offSite ? TSG_MEETING_TRAVEL_MIN : 0;
     var bufferHours = (prepMin + travelMin * 2) / 60;
+    var seriesId = null;
+    try { if (ev.isRecurringEvent && ev.isRecurringEvent()) seriesId = ev.getEventSeries().getId(); } catch (e0) {}
     out.push({
       title: title,
+      seriesId: seriesId,
       date: Utilities.formatDate(ev.getStartTime(), tz, 'yyyy-MM-dd'),
       hours: Math.round(hours * 4) / 4,
       bufferedHours: Math.round((hours + bufferHours) * 4) / 4,
@@ -1546,8 +1563,12 @@ function tsgListUpcomingMeetings_(startStr, endStr, titleHint, dueDate) {
   events.forEach(function(ev) {
     if (ev.isAllDayEvent()) return;
     var desc = ev.getDescription() || '';
+    var recurring = false, seriesId = null;
+    try { recurring = !!ev.isRecurringEvent(); if (recurring) seriesId = ev.getEventSeries().getId(); } catch (e0) {}
     out.push({
       id: ev.getId(),
+      recurring: recurring,
+      seriesId: seriesId,
       title: ev.getTitle(),
       start: ev.getStartTime().toISOString(),
       end: ev.getEndTime().toISOString(),
@@ -1709,6 +1730,45 @@ function tsgGetFileSnippet_(file) {
     return ''; // unreadable this way — the caller judges on file name alone, never fails the search over it
   }
 }
+/** Files Durand owns whose title or text contains every significant word typed. Up to 15. */
+function tsgDriveSearch_(q) {
+  var words = String(q || '').trim().split(/\s+/).filter(function(w) { return w.length >= 2; }).slice(0, 6);
+  if (!words.length) return { ok: true, files: [] };
+  try {
+    var clause = words.map(function(w) {
+      var esc = w.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      return "(title contains '" + esc + "' or fullText contains '" + esc + "')";
+    }).join(' and ');
+    var it = DriveApp.searchFiles("'me' in owners and trashed = false and " + clause);
+    var files = [], n = 0;
+    while (it.hasNext() && n < 15) {
+      var f = it.next(); n++;
+      var mime = ''; try { mime = f.getMimeType ? f.getMimeType() : ''; } catch (e1) {}
+      var modified = ''; try { modified = f.getLastUpdated ? Utilities.formatDate(f.getLastUpdated(), Session.getScriptTimeZone(), 'yyyy-MM-dd') : ''; } catch (e2) {}
+      files.push({ name: f.getName(), url: f.getUrl(), mime: mime, modified: modified });
+    }
+    return { ok: true, files: files };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message || err), files: [] };
+  }
+}
+/** A label for a pasted URL: the Drive file's name for Google Drive/Docs links, else the hostname. */
+function tsgLabelForUrl_(url) {
+  var u = String(url || '').trim();
+  if (!u) return { ok: false, error: 'empty url' };
+  var m = /(?:\/d\/|[?&]id=)([A-Za-z0-9_-]{20,})/.exec(u);
+  if (/(docs|drive)\.google\.com/.test(u) && m) {
+    try {
+      var name = DriveApp.getFileById(m[1]).getName();
+      if (name) return { ok: true, label: name, kind: 'drive' };
+    } catch (err) { /* not ours, or not a file: fall through */ }
+    return { ok: true, label: 'Google Drive file', kind: 'drive' };
+  }
+  if (/calendar\.google\.com/.test(u)) return { ok: true, label: 'Calendar event', kind: 'calendar' };
+  var host = /^https?:\/\/([^\/?#]+)/i.exec(u);
+  return { ok: true, label: host ? host[1].replace(/^www\./, '') : u, kind: 'web' };
+}
+
 function tsgSearchDriveForTask_(title, notes) {
   var words = tsgDriveSearchWords_(title);
   // Fewer than 2 significant words is too little signal to even retrieve candidates —

@@ -988,6 +988,25 @@ section('Review gate: pushed delegate items carry Triage and stay off the person
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 
+section('Link picker: Drive search and link labels (2026-09-16)');
+{
+  driveFilesFixture = [fakeDriveFile('Fall Flyer Draft.docx', 'https://drive.google.com/file/d/abc/view', { mimeType: 'application/vnd.google-apps.document' }), fakeDriveFile('Block Party Budget', 'https://docs.google.com/spreadsheets/d/xyz/edit', { mimeType: 'application/vnd.google-apps.spreadsheet' })];
+  let r = sandbox.tsgDriveSearch_('fall flyer');
+  check('driveSearch returns the matching files with name, url and mime', r.ok && r.files.length === 2 && r.files[0].name === 'Fall Flyer Draft.docx' && /document/.test(r.files[0].mime));
+  check('driveSearch with nothing typed returns an empty list without searching', sandbox.tsgDriveSearch_('').files.length === 0 && sandbox.tsgDriveSearch_('a').files.length === 0);
+  const origGet = sandbox.DriveApp.getFileById;
+  sandbox.DriveApp.getFileById = (id) => ({ getName: () => 'Resolved ' + id, getBlob: () => ({ getDataAsString: () => '{}' }) });
+  r = sandbox.tsgLabelForUrl_('https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit');
+  check('linkLabel resolves a Docs URL to the file name', r.ok && r.label === 'Resolved 1AbCdEfGhIjKlMnOpQrStUvWxYz012345' && r.kind === 'drive');
+  sandbox.DriveApp.getFileById = () => { throw new Error('nope'); };
+  r = sandbox.tsgLabelForUrl_('https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/view');
+  check('linkLabel falls back to a generic Drive label when the file is not readable', r.ok && r.label === 'Google Drive file');
+  sandbox.DriveApp.getFileById = origGet;
+  r = sandbox.tsgLabelForUrl_('https://www.zillow.com/homedetails/123');
+  check('linkLabel uses the hostname for any other URL and never fetches it', r.ok && r.label === 'zillow.com' && r.kind === 'web');
+  driveFilesFixture = [];
+}
+
 section('Scheduler: a whole task owned by someone other than Durand is paced, not capacity-charged (2026-09-15)');
 {
   const doc = { meta: { docVersion: 1 }, tasks: [
