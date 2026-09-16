@@ -86,6 +86,16 @@ footer .contact{font-size:13px;line-height:1.75;color:#4a5252;margin-top:14px;}
 footer .contact a{color:var(--tsg-green);text-decoration:none;font-weight:700;}
 footer .fine{font-size:10.5px;color:#9aa3a3;margin-top:16px;line-height:1.5;}
 
+/* QA TEST MODE banner. Same treatment as the Open House Sign-In page: loud,
+   fixed, deliberately outside the TSG palette so it cannot be mistaken for part
+   of the real form. Present in the markup on every load but display:none unless
+   doGet actually handed the page a test token. */
+#qaTestBanner{display:none;position:fixed;top:0;left:0;right:0;z-index:9999;
+  background:#b3271e;color:#fff;font-weight:700;font-size:13px;line-height:1.35;
+  text-align:center;padding:11px 14px;letter-spacing:.3px;
+  border-bottom:4px solid #ffd400;box-shadow:0 2px 8px rgba(0,0,0,.25);}
+body.qa-test{padding-top:62px;}
+
 /* Countdown to doors-open */
 #beforePanel .count{display:flex;justify-content:center;gap:10px;margin:18px 0 6px;}
 #beforePanel .unit{background:var(--tsg-green);color:#fff;border-radius:8px;padding:10px 0;min-width:66px;}
@@ -95,6 +105,10 @@ footer .fine{font-size:10.5px;color:#9aa3a3;margin-top:16px;line-height:1.5;}
 </style>
 </head>
 <body>
+
+<div id="qaTestBanner" role="alert">
+  TEST MODE — entries go to the Test Entries tab, tagged in FUB, and can never win the real prize
+</div>
 
 <header>
   <div class="wordmark">THE STAWASZ GROUP</div>
@@ -304,6 +318,8 @@ footer .fine{font-size:10.5px;color:#9aa3a3;margin-top:16px;line-height:1.5;}
   var API        = <?= safeJsonForScript_(baseUrl) ?>;
   var TOKEN      = <?= safeJsonForScript_(submitToken) ?>;
   var KIOSK      = <?= safeJsonForScript_(kiosk) ?> === '1';
+  var QA_TOKEN   = <?= safeJsonForScript_(qaTestToken) ?>;   // '' on a normal load
+  var IS_TEST    = <?= safeJsonForScript_(isTest) ?> === '1';
   var OPEN_MS    = Number(<?= safeJsonForScript_(openAtMs) ?>);
   var CLOSE_MS   = Number(<?= safeJsonForScript_(closeAtMs) ?>);
   var SERVER_MS  = Number(<?= safeJsonForScript_(serverNowMs) ?>);
@@ -339,10 +355,19 @@ footer .fine{font-size:10.5px;color:#9aa3a3;margin-top:16px;line-height:1.5;}
   }
 
   function phase(){
+    // Test mode is always 'open'. Without this the rehearsal page would just
+    // show the countdown and there would be nothing to submit -- the server
+    // relaxes the same check, and only for a verified test token.
+    if (IS_TEST) return 'open';
     var t = serverNow();
     if (t < OPEN_MS)  return 'before';
     if (t >= CLOSE_MS) return 'closed';
     return 'open';
+  }
+
+  if (IS_TEST) {
+    document.body.classList.add('qa-test');
+    document.getElementById('qaTestBanner').style.display = 'block';
   }
 
   var cD = document.getElementById('cD'), cH = document.getElementById('cH'),
@@ -425,6 +450,7 @@ footer .fine{font-size:10.5px;color:#9aa3a3;margin-top:16px;line-height:1.5;}
     var payload = {
       formType: 'raffle',
       formToken: TOKEN,
+      qaTestToken: QA_TOKEN,
       website:  document.getElementById('website').value,
       fullName: document.getElementById('fullName').value.replace(/\s+/g,' ').trim(),
       phone:    phoneEl.value.trim(),

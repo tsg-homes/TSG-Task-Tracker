@@ -25,6 +25,8 @@ function page(opts) {
     submitToken: 'tok',
     baseUrl: 'https://example.invalid/exec',
     kiosk: '',
+    qaTestToken: '',
+    isTest: '',
     openAtMs: String(opts.openAt),
     closeAtMs: String(opts.closeAt),
     serverNowMs: String(opts.now)
@@ -172,6 +174,60 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   check('wording: non-affiliation disclaimer visible without opening the rules',
     /not sponsored, endorsed by, or associated with/i.test(
       await p.locator('.disclaimer').textContent()));
+
+  // ---- 12. Test mode vs live ----
+  // Live page, well before the party: countdown, no banner.
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN - 86400000 }));
+  await p.waitForTimeout(300);
+  check('live: no test banner', !(await p.locator('#qaTestBanner').isVisible()));
+  check('live: countdown shown before the party', await p.locator('#beforePanel').isVisible());
+
+  // Same moment, but in test mode: banner up and the form is usable.
+  await p.goto(page({
+    openAt: OPEN, closeAt: CLOSE, now: OPEN - 86400000,
+    vals: { qaTestToken: 'b1f0c2d3-4e5f-6a7b-8c9d-0e1f2a3b4c5d', isTest: '1' }
+  }));
+  await p.waitForTimeout(300);
+  check('test: banner is visible', await p.locator('#qaTestBanner').isVisible());
+  check('test: banner warns it cannot win the real prize',
+    /never win the real prize/i.test(await p.locator('#qaTestBanner').textContent()));
+  check('test: form is usable a day BEFORE the party', await p.locator('#raffleForm').isVisible());
+  check('test: countdown is not shown', !(await p.locator('#beforePanel').isVisible()));
+
+  // Test mode after the close is still usable — a rehearsal is not time-boxed.
+  await p.goto(page({
+    openAt: OPEN, closeAt: CLOSE, now: CLOSE + 86400000,
+    vals: { qaTestToken: 'b1f0c2d3-4e5f-6a7b-8c9d-0e1f2a3b4c5d', isTest: '1' }
+  }));
+  await p.waitForTimeout(300);
+  check('test: form usable AFTER the 6:15 close too', await p.locator('#raffleForm').isVisible());
+  check('test: closed panel not shown', !(await p.locator('#closedPanel').isVisible()));
+
+  // The token must reach the server, or doPost treats it as production.
+  let tbody = null;
+  await p.route('**/exec', r => { tbody = JSON.parse(r.request().postData()); r.fulfill({ status: 200, body: '{"ok":true}' }); });
+  await p.fill('#fullName', 'Rehearsal Tester');
+  await p.fill('#phone', '2155550123');
+  await p.fill('#email', 'rehearsal@example.com');
+  await p.check('#consent');
+  await p.click('#submitBtn');
+  await p.waitForTimeout(600);
+  check('test: payload carries the qaTestToken',
+    tbody && tbody.qaTestToken === 'b1f0c2d3-4e5f-6a7b-8c9d-0e1f2a3b4c5d');
+  check('test: consent still required and sent', tbody && tbody.consent === 'Yes');
+
+  // A live page must never send a token value.
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000 }));
+  await p.waitForTimeout(250);
+  let lbody = null;
+  await p.route('**/exec', r => { lbody = JSON.parse(r.request().postData()); r.fulfill({ status: 200, body: '{"ok":true}' }); });
+  await p.fill('#fullName', 'Real Person');
+  await p.fill('#phone', '2155550188');
+  await p.fill('#email', 'real@example.com');
+  await p.check('#consent');
+  await p.click('#submitBtn');
+  await p.waitForTimeout(600);
+  check('live: qaTestToken sent empty', lbody && lbody.qaTestToken === '');
 
   await b.close();
   fs.rmSync(OUT, { recursive: true, force: true });

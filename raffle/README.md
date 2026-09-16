@@ -139,6 +139,58 @@ alerted to you by email, and re-pushed later with `raffleRetryFubFailures()`.
    are the real TSG Center City details. Per your instruction no licence number
    is printed; the brokerage is still identified as Keller Williams Empower.
 
+## Test mode vs live
+
+You cannot test the live form before Saturday — the entry window refuses
+everything outside 3:00–6:15 PM on 19 Sep. Test mode exists for exactly that.
+
+It reuses the project's **existing** QA test mode (the `QA_TEST_*` block in
+`Code.gs`), so there is one test-mode concept across all three forms, not two.
+It needs the `QA_TEST_SECRET` script property set — the same one the open-house
+and intake forms already use.
+
+| | Live | Test |
+|---|---|---|
+| URL | `?form=raffle` | `?form=raffle&qatest=<QA_TEST_SECRET>` |
+| Entry window | enforced (Sat 3:00–6:15) | **bypassed** — works any time |
+| Entries land in | `Entries` tab | `Test Entries` tab |
+| FUB record | normal | name prefixed `[QA TEST] `, tagged `QA Test — Safe to Delete` |
+| Winner stored as | `RAFFLE_WINNER_JSON` | `RAFFLE_TEST_WINNER_JSON` |
+| Draw result tab | `Draw Result` | `Draw Result (TEST)` |
+| Result email | Durand + Ryan | Durand only |
+| On-screen | normal page | red TEST MODE banner, impossible to miss |
+
+**Test entries can never win the real prize.** That is structural, not a filter:
+the live draw reads the `Entries` tab and the test draw reads `Test Entries`,
+and there is no code path joining them. A test draw also writes its own winner
+property, so it cannot consume the live draw's one-shot lock — you can rehearse
+as often as you like and the real 6:15 draw is still pending and unaffected. The
+6:15 trigger itself calls `raffleDrawWinner_(false)` explicitly, so it is always
+the live draw even if something else is in test mode.
+
+**Test mode relaxes exactly one check — the entry window.** `Code.gs`'s own test
+mode is documented as "a LABELLING and ROUTING change only; by construction it
+cannot relax a check", and this is a deliberate, single departure from that,
+logged loudly every time it fires. The form token, rate limit, honeypot,
+required fields, consent and one-entry-per-person all still apply in test mode,
+and there are tests asserting each of those.
+
+### Rehearsing the whole thing
+
+1. `<exec>?form=raffle&qatest=<secret>` → enter a few fake people.
+2. `<exec>?form=raffle&action=status&key=<admin key>&test=1` → check the count.
+3. `<exec>?form=raffle&action=draw&key=<admin key>&test=1` → rehearse the draw.
+   You get the winner page and the result email, exactly as Saturday will look.
+4. `raffleResetTest()` in the editor → wipes test entries, the test winner and
+   the `Draw Result (TEST)` tab. Touches nothing live. Safe to run at any time,
+   including during the party.
+
+`raffleAdminLinks()` prints all of these with the key filled in.
+
+Clean-up note: test entries **are** written to FUB for real, because that is the
+point of a rehearsal — but they are prefixed and tagged, so filter FUB on
+`QA Test — Safe to Delete` and delete them when you are done.
+
 ## Branding
 
 All four marks are **baked into the built page**, not fetched at runtime: the

@@ -41,6 +41,30 @@ var RAFFLE_RESULT_EMAIL = 'durand@thestawaszgroup.com,ryan@thestawaszgroup.com,r
 var RAFFLE_SOURCE = 'TSG Block Party 2026 - Raffle';
 var RAFFLE_TAGS   = ['Block Party 2026', 'Block Party Raffle Entrant', 'Event Lead'];
 
+// ---------- Test mode vs live ----------
+// Reuses this project's EXISTING QA test mode (see the QA_TEST_* block in
+// Code.gs) rather than inventing a second one: ?form=raffle&qatest=<QA_TEST_SECRET>
+// mints a token, the page carries it, and doPost resolves isQaTestMode_() before
+// either of the raffle hooks is reached. One test-mode concept for the whole
+// project.
+//
+// Test entries live in their OWN sheet tab and a test draw records its winner
+// under its OWN script property. That separation is structural, not a filter:
+// there is no code path by which a test entry can be drawn as the real winner,
+// and a test draw cannot consume the real draw's one-shot idempotency lock.
+//
+// !! ONE DELIBERATE DIFFERENCE FROM Code.gs's TEST MODE. That one is documented
+// as "a LABELLING and ROUTING change only; by construction it cannot relax a
+// check". The raffle's test mode DOES relax exactly one check: the entry window.
+// It has to -- entries are refused outside 3:00-6:15 PM on 19 Sep, so with the
+// window enforced there is no way to test the form before the party, which is
+// the entire point. Every other check still runs unchanged: form token, rate
+// limit, honeypot, required fields, consent, and one-entry-per-person. The
+// relaxation is logged loudly every time it happens.
+var RAFFLE_LIVE_SHEET_NAME  = 'Entries';
+var RAFFLE_TEST_SHEET_NAME  = 'Test Entries';
+var RAFFLE_TEST_WINNER_PROP = 'RAFFLE_TEST_WINNER_JSON';
+
 var RAFFLE_SHEET_PROP   = 'RAFFLE_SHEET_ID';
 var RAFFLE_WINNER_PROP  = 'RAFFLE_WINNER_JSON';
 var RAFFLE_ADMIN_PROP   = 'RAFFLE_ADMIN_KEY';
@@ -78,10 +102,28 @@ function rafflePhoneKey_(phone) {
   return digits;
 }
 
-function raffleSheet_() {
+// The live tab and the test tab are different sheets in the same spreadsheet,
+// so Durand can see both side by side. The test tab is created on first use, so
+// an existing setup does not need setupRaffle() re-run to gain one.
+function raffleSheet_(test) {
   var id = PropertiesService.getScriptProperties().getProperty(RAFFLE_SHEET_PROP);
   if (!id) throw new Error(RAFFLE_SHEET_PROP + ' is not set. Run setupRaffle() once from the editor.');
-  return SpreadsheetApp.openById(id).getSheets()[0];
+  var ss = SpreadsheetApp.openById(id);
+  if (!test) {
+    return ss.getSheetByName(RAFFLE_LIVE_SHEET_NAME) || ss.getSheets()[0];
+  }
+  var sh = ss.getSheetByName(RAFFLE_TEST_SHEET_NAME);
+  if (!sh) {
+    sh = ss.insertSheet(RAFFLE_TEST_SHEET_NAME);
+    sh.appendRow(RAFFLE_SHEET_HEADERS);
+    sh.setFrozenRows(1);
+    sh.getRange(1, 1, 1, RAFFLE_SHEET_HEADERS.length).setFontWeight('bold').setBackground('#fde2e1');
+  }
+  return sh;
+}
+
+function raffleWinnerProp_(test) {
+  return test ? RAFFLE_TEST_WINNER_PROP : RAFFLE_WINNER_PROP;
 }
 
 // ---------- One-time setup ----------
@@ -147,7 +189,15 @@ function raffleAdminLinks() {
     'LIVE ENTRY COUNT (private):\n' +
     base + '?form=raffle&action=status&key=' + key + '\n\n' +
     'MANUAL DRAW — backup if the 6:15 trigger misfires (private):\n' +
-    base + '?form=raffle&action=draw&key=' + key;
+    base + '?form=raffle&action=draw&key=' + key + '\n\n' +
+    '--- TEST MODE (needs the QA_TEST_SECRET script property) ---\n' +
+    'TEST FORM — accepts entries any time, writes to the "' + RAFFLE_TEST_SHEET_NAME + '" tab:\n' +
+    base + '?form=raffle&qatest=<QA_TEST_SECRET>\n\n' +
+    'TEST ENTRY COUNT:\n' +
+    base + '?form=raffle&action=status&key=' + key + '&test=1\n\n' +
+    'TEST DRAW — rehearses the whole draw, emails only ' + QA_TEST_NOTIFY_EMAIL + ':\n' +
+    base + '?form=raffle&action=draw&key=' + key + '&test=1\n\n' +
+    'Run raffleResetTest() in the editor to wipe test data and rehearse again.';
   Logger.log(msg);
   return msg;
 }
@@ -156,6 +206,11 @@ function raffleAdminLinks() {
 // ---------- doGet branch (reached from Code.gs's one-line hook) ----------
 function raffleServeForm_(e, baseUrl) {
   var action = (e.parameter.action || '').toString().toLowerCase();
+  // ?qatest=<QA_TEST_SECRET> mints the token AND flips this execution into test
+  // mode. A wrong or absent value returns '' and renders the ordinary live page,
+  // so nothing about the response reveals whether the secret was close.
+  var qaTestToken = issueQaTestToken_(e);
+  var isTest = !!qaTestToken;
 
   if (action === 'status' || action === 'draw') {
     var key = PropertiesService.getScriptProperties().getProperty(RAFFLE_ADMIN_PROP);
@@ -164,14 +219,19 @@ function raffleServeForm_(e, baseUrl) {
     if (!key || (e.parameter.key || '').toString() !== key) {
       return HtmlService.createHtmlOutput('<p style="font-family:sans-serif">Not found.</p>');
     }
-    if (action === 'status') return raffleStatusPage_();
-    return raffleDrawPage_();
+    // Admin endpoints pick their mode from ?test=1 rather than from the page
+    // token, so a rehearsal draw can be fired straight from a bookmark.
+    var adminTest = String(e.parameter.test || '') === '1';
+    if (action === 'status') return raffleStatusPage_(adminTest);
+    return raffleDrawPage_(adminTest);
   }
 
   var tmpl = HtmlService.createTemplateFromFile('RaffleForm');
   tmpl.submitToken   = getSubmitToken();
   tmpl.baseUrl       = baseUrl;
   tmpl.kiosk         = (e.parameter.kiosk || '') ? '1' : '';
+  tmpl.qaTestToken   = qaTestToken;   // '' on every normal load
+  tmpl.isTest        = isTest ? '1' : '';
   tmpl.prizeShort    = RAFFLE_PRIZE_SHORT;
   tmpl.announceAt    = RAFFLE_ANNOUNCE_AT;
   // The page runs its own clock: it counts down to 3:00, opens itself, and goes
@@ -182,7 +242,7 @@ function raffleServeForm_(e, baseUrl) {
   tmpl.closeAtMs     = String(new Date(RAFFLE_CLOSE_AT).getTime());
   tmpl.serverNowMs   = String(Date.now());
   return tmpl.evaluate()
-    .setTitle('Enter to Win | ' + RAFFLE_EVENT_NAME)
+    .setTitle((isTest ? QA_TEST_PREFIX : '') + 'Enter to Win | ' + RAFFLE_EVENT_NAME)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
@@ -195,14 +255,16 @@ function raffleEntryState_() {
   return 'open';
 }
 
-function raffleStatusPage_() {
-  var rows = raffleReadEntries_();
-  var winner = raffleStoredWinner_();
+function raffleStatusPage_(test) {
+  var rows = raffleReadEntries_(test);
+  var winner = raffleStoredWinner_(test);
   var html = '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:520px">' +
+    (test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
+            'border-radius:6px;margin-bottom:14px">TEST DATA — not the live raffle</div>' : '') +
     '<h2 style="margin:0 0 4px">' + RAFFLE_EVENT_NAME + '</h2>' +
     '<p style="color:#666;margin:0 0 20px">Entry state: <b>' + raffleEntryState_() + '</b></p>' +
     '<div style="font-size:64px;font-weight:700;color:#15464A;line-height:1">' + rows.length + '</div>' +
-    '<div style="color:#666;margin-bottom:20px">eligible entries</div>';
+    '<div style="color:#666;margin-bottom:20px">eligible ' + (test ? 'TEST ' : '') + 'entries</div>';
   if (winner) {
     html += '<div style="background:#15464A;color:#fff;padding:16px;border-radius:8px">' +
       '<div style="opacity:.8;font-size:12px;letter-spacing:1px">WINNER DRAWN ' + winner.drawnAt + '</div>' +
@@ -215,8 +277,8 @@ function raffleStatusPage_() {
   return HtmlService.createHtmlOutput(html);
 }
 
-function raffleDrawPage_() {
-  var res = raffleDrawWinner_();
+function raffleDrawPage_(test) {
+  var res = raffleDrawWinner_(test);
   if (!res.ok) {
     return HtmlService.createHtmlOutput(
       '<div style="font-family:system-ui,sans-serif;padding:24px"><h2>Draw not completed</h2><p>' +
@@ -224,6 +286,8 @@ function raffleDrawPage_() {
   }
   var w = res.result.winner;
   var html = '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:520px">' +
+    (test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
+            'border-radius:6px;margin-bottom:14px">TEST DRAW — the real 6:15 draw is untouched</div>' : '') +
     (res.alreadyDrawn ? '<p style="background:#fff3cd;padding:10px;border-radius:6px">' +
       'A winner was already drawn at ' + res.result.drawnAt + '. Showing that result — ' +
       'the draw is deliberately not repeatable.</p>' : '') +
@@ -248,6 +312,9 @@ function raffleDrawPage_() {
 // is called, as has sanitizeSubmission() and the honeypot check. Do not re-do
 // them here; do not skip them by calling this from anywhere else.
 function raffleHandleSubmission_(d) {
+  // Resolved by setQaTestModeFromPayload_ in doPost, before this hook is
+  // reached. Read once here so every branch below agrees on which mode it is.
+  var test = isQaTestMode_();
   try {
     var name  = collapseSpaces(d.fullName);
     var email = String(d.email || '').trim().toLowerCase();
@@ -270,13 +337,21 @@ function raffleHandleSubmission_(d) {
 
     // Entry window. Re-checked here so a link saved from the event can't be
     // used to enter after the draw, and so nobody can enter before it opens.
+    // THE one check test mode relaxes -- see the RAFFLE_TEST_* block at the top
+    // of this file for why, and note it is the only one.
     var state = raffleEntryState_();
-    if (state === 'before') {
-      throw makeValidationError('Entries are not open yet. Come find us at the party!');
-    }
-    if (state === 'closed') {
-      throw makeValidationError('Entries are closed — the winner is announced at ' +
-        RAFFLE_ANNOUNCE_AT + '. Thanks for coming out!');
+    if (test) {
+      Logger.log('RAFFLE TEST MODE: entry-window check BYPASSED (real state was "' + state +
+        '"). This is the only check test mode relaxes; the entry is being written to the "' +
+        RAFFLE_TEST_SHEET_NAME + '" tab and cannot be drawn as the real winner.');
+    } else {
+      if (state === 'before') {
+        throw makeValidationError('Entries are not open yet. Come find us at the party!');
+      }
+      if (state === 'closed') {
+        throw makeValidationError('Entries are closed — the winner is announced at ' +
+          RAFFLE_ANNOUNCE_AT + '. Thanks for coming out!');
+      }
     }
 
     var emailKey = raffleEmailKey_(email);
@@ -291,7 +366,7 @@ function raffleHandleSubmission_(d) {
     }
     var appended;
     try {
-      var existing = raffleReadEntries_();
+      var existing = raffleReadEntries_(test);
       for (var i = 0; i < existing.length; i++) {
         if ((emailKey && existing[i].emailKey === emailKey) ||
             (phoneKey && existing[i].phoneKey === phoneKey)) {
@@ -304,16 +379,16 @@ function raffleHandleSubmission_(d) {
           });
         }
       }
-      appended = raffleAppendEntry_(name, email, phone);
+      appended = raffleAppendEntry_(name, email, phone, test);
     } finally {
       try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
     }
 
     // The entry is now safely recorded. Everything past this point is
     // best-effort and must never turn a saved entry into a visible failure.
-    var fub = rafflePushToFub_(name, email, phone);
+    var fub = rafflePushToFub_(name, email, phone, test);
     try {
-      raffleRecordFubOutcome_(appended.row, fub);
+      raffleRecordFubOutcome_(appended.row, fub, test);
     } catch (recErr) {
       Logger.log('raffleRecordFubOutcome_ failed: ' + recErr);
     }
@@ -343,18 +418,19 @@ function raffleHandleSubmission_(d) {
   }
 }
 
-function raffleAppendEntry_(name, email, phone) {
-  var sh = raffleSheet_();
+function raffleAppendEntry_(name, email, phone, test) {
+  var sh = raffleSheet_(test);
   sh.appendRow([
     raffleFmt_(raffleNow_()), name, email, phone,
-    'Yes', RAFFLE_CONSENT_VERSION, RAFFLE_EVENT_NAME,
+    'Yes', RAFFLE_CONSENT_VERSION,
+    test ? (QA_TEST_PREFIX + RAFFLE_EVENT_NAME) : RAFFLE_EVENT_NAME,
     'pending', '', 'Yes'
   ]);
   return { row: sh.getLastRow() };
 }
 
-function raffleRecordFubOutcome_(row, fub) {
-  var sh = raffleSheet_();
+function raffleRecordFubOutcome_(row, fub, test) {
+  var sh = raffleSheet_(test);
   sh.getRange(row, 8).setValue(fub.ok ? 'ok' : ('failed: ' + String(fub.error).slice(0, 200)));
   if (fub.personId) sh.getRange(row, 9).setValue(fub.personId);
 }
@@ -362,8 +438,8 @@ function raffleRecordFubOutcome_(row, fub) {
 // Reads every entry row into objects. Small by construction (the party is
 // capped at 125), so a full read per submission is cheap and keeps the
 // duplicate check reading the same source of truth the draw will.
-function raffleReadEntries_() {
-  var sh = raffleSheet_();
+function raffleReadEntries_(test) {
+  var sh = raffleSheet_(test);
   var last = sh.getLastRow();
   if (last < 2) return [];
   var values = sh.getRange(2, 1, last - 1, RAFFLE_SHEET_HEADERS.length).getValues();
@@ -387,20 +463,21 @@ function raffleReadEntries_() {
 }
 
 // ---------- FUB ----------
-function rafflePushToFub_(name, email, phone) {
+function rafflePushToFub_(name, email, phone, test) {
   try {
     var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
     if (!apiKey) return { ok: false, error: 'FUB_API_KEY script property is not set.' };
 
     var parts = splitName(name);
     var payload = {
-      firstName: parts.first,
+      firstName: (test ? QA_TEST_PREFIX : '') + parts.first,
       lastName: parts.last,
       source: RAFFLE_SOURCE,
-      tags: RAFFLE_TAGS.slice(),
+      tags: test ? RAFFLE_TAGS.concat([QA_TEST_TAG]) : RAFFLE_TAGS.slice(),
       emails: [{ value: email }],
       phones: [{ value: phone.replace(/\D/g, '') }],
-      background: raffleBackground_(name, email, phone)
+      background: (test ? (QA_TEST_BACKGROUND_LEAD_IN + '\n\n') : '') +
+                  raffleBackground_(name, email, phone)
     };
     // Same structured consent capture the open-house and intake forms use
     // (FUB custom field id 23, "Consent — Captured Date"). Entry requires
@@ -426,7 +503,7 @@ function rafflePushToFub_(name, email, phone) {
     // is a much smaller problem than a missing contact, so a note failure does
     // not fail the push.
     if (personId) {
-      try { raffleAddNote_(personId, name, apiKey); }
+      try { raffleAddNote_(personId, name, apiKey, test); }
       catch (noteErr) { Logger.log('Raffle note failed for person ' + personId + ': ' + noteErr); }
     }
     return { ok: true, personId: personId };
@@ -452,14 +529,14 @@ function raffleBackground_(name, email, phone) {
   ].join('\n');
 }
 
-function raffleAddNote_(personId, name, apiKey) {
+function raffleAddNote_(personId, name, apiKey, test) {
   var resp = UrlFetchApp.fetch('https://api.followupboss.com/v1/notes', {
     method: 'post',
     contentType: 'application/json',
     headers: { Authorization: 'Basic ' + Utilities.base64Encode(apiKey + ':') },
     payload: JSON.stringify({
       personId: personId,
-      subject: 'Block Party 2026 — raffle entry',
+      subject: (test ? QA_TEST_PREFIX : '') + 'Block Party 2026 — raffle entry',
       body: 'Met at the TSG Block Party, Sat 9/19/2026, 1342 N Hancock St. Entered the ' +
             RAFFLE_PRIZE_SHORT + ' drawing and consented to follow-up. ' +
             'Warm event lead — worth a personal call, not just a drip.',
@@ -491,8 +568,8 @@ function raffleRetryFubFailures() {
 }
 
 // ---------- The draw ----------
-function raffleStoredWinner_() {
-  var raw = PropertiesService.getScriptProperties().getProperty(RAFFLE_WINNER_PROP);
+function raffleStoredWinner_(test) {
+  var raw = PropertiesService.getScriptProperties().getProperty(raffleWinnerProp_(test));
   if (!raw) return null;
   try { return JSON.parse(raw); } catch (err) { return null; }
 }
@@ -500,18 +577,18 @@ function raffleStoredWinner_() {
 // Deliberately NOT repeatable. Once a winner is recorded it is returned as-is
 // on every subsequent call, so a double-fired trigger, a refreshed admin page
 // or a second tap can never re-roll a drawing that has already happened.
-function raffleDrawWinner_() {
+function raffleDrawWinner_(test) {
   var props = PropertiesService.getScriptProperties();
-  var existing = raffleStoredWinner_();
+  var existing = raffleStoredWinner_(test);
   if (existing) return { ok: true, alreadyDrawn: true, result: existing };
 
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) return { ok: false, error: 'Could not acquire the draw lock; try again.' };
   try {
-    existing = raffleStoredWinner_();               // re-read inside the lock
+    existing = raffleStoredWinner_(test);          // re-read inside the lock
     if (existing) return { ok: true, alreadyDrawn: true, result: existing };
 
-    var entries = raffleReadEntries_();
+    var entries = raffleReadEntries_(test);
     if (!entries.length) {
       return { ok: false, error: 'No eligible entries — nothing to draw.' };
     }
@@ -527,15 +604,16 @@ function raffleDrawWinner_() {
 
     var slim = function (e) { return { name: e.name, email: e.email, phone: e.phone, row: e.row }; };
     var result = {
+      test: !!test,
       drawnAt: raffleFmt_(raffleNow_()),
       totalEligible: entries.length,
       winner: slim(pool[0]),
       backups: pool.slice(1, 1 + RAFFLE_BACKUP_COUNT).map(slim)
     };
 
-    props.setProperty(RAFFLE_WINNER_PROP, JSON.stringify(result));
-    try { raffleWriteDrawTab_(result); } catch (tabErr) { Logger.log('Draw tab write failed: ' + tabErr); }
-    try { raffleEmailResult_(result); } catch (mailErr) {
+    props.setProperty(raffleWinnerProp_(test), JSON.stringify(result));
+    try { raffleWriteDrawTab_(result, test); } catch (tabErr) { Logger.log('Draw tab write failed: ' + tabErr); }
+    try { raffleEmailResult_(result, test); } catch (mailErr) {
       Logger.log('Draw email failed: ' + mailErr);
       return { ok: true, alreadyDrawn: false, result: result, emailFailed: true };
     }
@@ -548,7 +626,7 @@ function raffleDrawWinner_() {
 // The 6:15 trigger target. Thin on purpose: all the logic (and the
 // already-drawn guard) lives in raffleDrawWinner_.
 function raffleScheduledDraw() {
-  var res = raffleDrawWinner_();
+  var res = raffleDrawWinner_(false);   // the 6:15 trigger is always the LIVE draw
   if (!res.ok) {
     Logger.log('Scheduled draw did not complete: ' + res.error);
     try {
@@ -558,13 +636,14 @@ function raffleScheduledDraw() {
   }
 }
 
-function raffleWriteDrawTab_(result) {
+function raffleWriteDrawTab_(result, test) {
   var ss = SpreadsheetApp.openById(
     PropertiesService.getScriptProperties().getProperty(RAFFLE_SHEET_PROP));
-  var sh = ss.getSheetByName('Draw Result') || ss.insertSheet('Draw Result');
+  var tab = test ? 'Draw Result (TEST)' : 'Draw Result';
+  var sh = ss.getSheetByName(tab) || ss.insertSheet(tab);
   sh.clear();
   var rows = [
-    ['Event', RAFFLE_EVENT_NAME],
+    ['Event', (test ? QA_TEST_PREFIX : '') + RAFFLE_EVENT_NAME],
     ['Prize', RAFFLE_PRIZE_SHORT],
     ['Drawn at (ET)', result.drawnAt],
     ['Eligible entries', result.totalEligible],
@@ -582,11 +661,17 @@ function raffleWriteDrawTab_(result) {
   sh.getRange(6, 1, 1, 2).setFontWeight('bold').setFontSize(14);
 }
 
-function raffleEmailResult_(result) {
+function raffleEmailResult_(result, test) {
   var w = result.winner;
   var lines = [
-    RAFFLE_EVENT_NAME + ' — RAFFLE RESULT',
-    '',
+    (test ? QA_TEST_PREFIX : '') + RAFFLE_EVENT_NAME + ' — RAFFLE RESULT',
+    ''];
+  if (test) {
+    lines.push('*** THIS IS A TEST DRAW. Not the real winner. ***',
+      'Drawn from the "' + RAFFLE_TEST_SHEET_NAME + '" tab. The real 6:15 draw is',
+      'untouched and still pending.', '');
+  }
+  lines = lines.concat([
     'WINNER: ' + w.name,
     'Phone:  ' + w.phone,
     'Email:  ' + w.email,
@@ -596,7 +681,7 @@ function raffleEmailResult_(result) {
     'Eligible entries: ' + result.totalEligible,
     'Announce at:      ' + RAFFLE_ANNOUNCE_AT,
     ''
-  ];
+  ]);
   if (result.backups.length) {
     lines.push('BACKUPS (in order, if the winner has already left):');
     result.backups.forEach(function (b, i) {
@@ -610,9 +695,12 @@ function raffleEmailResult_(result) {
   lines.push('This draw is recorded and is not repeatable — re-running the draw');
   lines.push('returns this same winner by design.');
 
+  // In test mode this collapses to QA_TEST_NOTIFY_EMAIL only -- Ryan does not
+  // get paged about a rehearsal.
   MailApp.sendEmail({
-    to: RAFFLE_RESULT_EMAIL,
-    subject: '🏈 Block Party Raffle Winner: ' + w.name + ' (' + result.totalEligible + ' entries)',
+    to: qaTestRecipients_(RAFFLE_RESULT_EMAIL.split(',')).join(','),
+    subject: (test ? QA_TEST_PREFIX : '🏈 ') + 'Block Party Raffle Winner: ' + w.name +
+             ' (' + result.totalEligible + ' entries)',
     body: lines.join('\n')
   });
 }
@@ -622,5 +710,22 @@ function raffleEmailResult_(result) {
 // not reachable from any URL — it has to be run by hand from the editor.
 function raffleResetDrawDANGER() {
   PropertiesService.getScriptProperties().deleteProperty(RAFFLE_WINNER_PROP);
-  Logger.log('Recorded winner cleared. The next draw will pick a NEW winner.');
+  Logger.log('Recorded LIVE winner cleared. The next live draw will pick a NEW winner.');
+}
+
+// Wipes the test tab and the test winner so a rehearsal can be run again from
+// clean. Touches nothing live -- safe to run as often as you like, including
+// during the party.
+function raffleResetTest() {
+  PropertiesService.getScriptProperties().deleteProperty(RAFFLE_TEST_WINNER_PROP);
+  var sh = raffleSheet_(true);
+  var last = sh.getLastRow();
+  if (last > 1) sh.deleteRows(2, last - 1);
+  var ss = SpreadsheetApp.openById(
+    PropertiesService.getScriptProperties().getProperty(RAFFLE_SHEET_PROP));
+  var tab = ss.getSheetByName('Draw Result (TEST)');
+  if (tab) ss.deleteSheet(tab);
+  var msg = 'Test entries and test draw cleared. Live entries and the live draw are untouched.';
+  Logger.log(msg);
+  return msg;
 }

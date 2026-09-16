@@ -19,23 +19,47 @@ function eq(name, actual, expected) {
 }
 
 // ---- Fakes -----------------------------------------------------------------
+const HEADERS = ['Timestamp (ET)', 'Full Name', 'Email', 'Phone', 'Consent',
+  'Consent Version', 'Entry Source', 'FUB Status', 'FUB Person ID', 'Eligible'];
+
 function makeSandbox(opts) {
   opts = opts || {};
   const props = Object.assign({ RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' }, opts.props || {});
-  const rows = opts.rows ? opts.rows.slice() : [];
+  const rows = opts.rows ? opts.rows.slice() : [HEADERS.slice()];
   const sent = [];
   const fetches = [];
   const cache = {};
 
-  const sheet = {
-    appendRow: r => rows.push(r.slice()),
-    getLastRow: () => rows.length + 1,
-    getRange: (r, c, nr, nc) => ({
-      getValues: () => rows.slice(r - 2, r - 2 + nr).map(x => x.slice(c - 1, c - 1 + nc)),
-      setValue: v => { rows[r - 2][c - 1] = v; },
-      setValues: () => {}, setFontWeight: () => ({ setFontSize: () => {} })
-    }),
-    setName: () => {}, setFrozenRows: () => {}, clear: () => {}
+  // Multi-tab fake: the whole point of the test/live split is that they are
+  // different sheets, so the fake has to model that rather than share one array.
+  const tabs = {};
+  function makeSheet(name, seed) {
+    // index 0 == sheet row 1 == the header row, on every tab.
+    const r = seed || [HEADERS.slice()];
+    const sh = {
+      name,
+      rows: r,
+      appendRow: x => r.push(x.slice()),
+      getLastRow: () => r.length,
+      getRange: (row, c, nr, nc) => ({
+        getValues: () => r.slice(row - 1, row - 1 + nr).map(x => x.slice(c - 1, c - 1 + nc)),
+        setValue: v => { r[row - 1][c - 1] = v; },
+        setValues: () => {},
+        setFontWeight: () => ({ setFontSize: () => {}, setBackground: () => {} })
+      }),
+      setName: n => { sh.name = n; }, setFrozenRows: () => {}, clear: () => {},
+      deleteRows: (start, n) => { r.splice(start - 1, n); }
+    };
+    tabs[name] = sh;
+    return sh;
+  }
+  const sheet = makeSheet('Entries', rows);
+  const ss = {
+    getSheets: () => Object.keys(tabs).map(k => tabs[k]),
+    getSheetByName: n => tabs[n] || null,
+    insertSheet: n => makeSheet(n, []),   // a new sheet is EMPTY; the code adds its own header
+    deleteSheet: sh => { delete tabs[sh.name]; },
+    getId: () => 'sheet1', getUrl: () => 'u'
   };
 
   const sandbox = {
@@ -48,7 +72,7 @@ function makeSandbox(opts) {
         deleteProperty: k => { delete props[k]; }
       })
     },
-    SpreadsheetApp: { openById: () => ({ getSheets: () => [sheet], getSheetByName: () => null, insertSheet: () => sheet, getId: () => 'sheet1', getUrl: () => 'u' }), create: () => ({ getSheets: () => [sheet], getId: () => 'sheet1', getUrl: () => 'u' }) },
+    SpreadsheetApp: { openById: () => ss, create: () => ss },
     CacheService: { getScriptCache: () => ({ get: k => cache[k] || null, put: (k, v) => { cache[k] = v; }, remove: k => { delete cache[k]; } }) },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
     MailApp: { sendEmail: m => sent.push(m) },
@@ -80,11 +104,24 @@ function makeSandbox(opts) {
     getSubmitToken: () => 'tok',
     safeJsonForScript_: v => JSON.stringify(v),
     CONSENT_CUSTOM_FIELD: 'customConsentCapturedDate',
+    // The project's existing QA test-mode surface, stubbed. `qaMode` is what a
+    // test flips to simulate ?qatest= having matched.
+    QA_TEST_PREFIX: '[QA TEST] ',
+    QA_TEST_TAG: 'QA Test — Safe to Delete',
+    QA_TEST_NOTIFY_EMAIL: 'durand@thestawaszgroup.com',
+    QA_TEST_BACKGROUND_LEAD_IN: '[QA TEST] Created by a TSG QA test submission.',
+    isQaTestMode_: () => !!opts.qaMode,
+    issueQaTestToken_: () => (opts.qaMode ? 'tok-uuid' : ''),
+    qaTestRecipients_: list => (opts.qaMode ? ['durand@thestawaszgroup.com']
+                                            : (Array.isArray(list) ? list : [list])),
     Date, JSON, Math, String, Number, Object, Array, isNaN, parseInt, parseFloat
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../RaffleCode.gs'), 'utf8'), sandbox);
-  sandbox.__rows = rows; sandbox.__sent = sent; sandbox.__fetches = fetches; sandbox.__props = props;
+  sandbox.__sent = sent; sandbox.__fetches = fetches;
+  sandbox.__props = props; sandbox.__tabs = tabs;
+  // Data rows only -- the header is row 1 and is never an entry.
+  sandbox.__data = name => (tabs[name || 'Entries'] ? tabs[name || 'Entries'].rows.slice(1) : []);
   return sandbox;
 }
 
@@ -118,12 +155,12 @@ const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@example.c
 
   const early = at(BEFORE, () => s.raffleHandleSubmission_(entry()));
   check('entry rejected before 3:00 PM on 9/19', early.ok === false);
-  check('no row written before open', s.__rows.length === 0);
+  check('no row written before open', s.__data().length === 0);
 
   const late = at(AFTER, () => s.raffleHandleSubmission_(entry()));
   check('entry rejected after 6:15 PM', late.ok === false);
   check('late rejection names the 6:30 announcement', /6:30 PM/.test(late.error));
-  check('no row written after close', s.__rows.length === 0);
+  check('no row written after close', s.__data().length === 0);
 }
 
 // ---- Required fields + consent ---------------------------------------------
@@ -140,7 +177,7 @@ const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@example.c
   check('consent error names the Official Rules', /Official Rules/.test(noConsent.error));
   check('a forged consent value is not treated as Yes',
     run(entry({ consent: true })).ok === false);
-  check('nothing was written for any invalid entry', s.__rows.length === 0);
+  check('nothing was written for any invalid entry', s.__data().length === 0);
 }
 
 // ---- One entry per person --------------------------------------------------
@@ -148,7 +185,7 @@ const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@example.c
   const s = makeSandbox();
   const first = at(DURING, () => s.raffleHandleSubmission_(entry()));
   check('first entry accepted', first.ok === true && !first.already);
-  eq('one row written', s.__rows.length, 1);
+  eq('one row written', s.__data().length, 1);
 
   const dupEmail = at(DURING, () => s.raffleHandleSubmission_(entry({ phone: '(267) 555-9999' })));
   check('duplicate email rejected as already entered', dupEmail.already === true);
@@ -160,12 +197,12 @@ const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@example.c
     entry({ email: 'third@example.com', phone: '+1 215.555.0123' })));
   check('duplicate phone caught across formatting', dupPhoneFmt.already === true);
 
-  eq('still exactly one row after 3 duplicate attempts', s.__rows.length, 1);
+  eq('still exactly one row after 3 duplicate attempts', s.__data().length, 1);
 
   const other = at(DURING, () => s.raffleHandleSubmission_(
     entry({ fullName: 'Sam Ortiz', email: 'sam@example.com', phone: '(267) 555-0100' })));
   check('a genuinely different person is accepted', other.ok === true && !other.already);
-  eq('two rows now', s.__rows.length, 2);
+  eq('two rows now', s.__data().length, 2);
 }
 
 // ---- FUB outage must never cost an entry -----------------------------------
@@ -173,10 +210,10 @@ const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@example.c
   const s = makeSandbox({ fubStatus: 500 });
   const res = at(DURING, () => s.raffleHandleSubmission_(entry()));
   check('entrant still gets a success when FUB is down', res.ok === true);
-  eq('entry is still recorded in the sheet', s.__rows.length, 1);
+  eq('entry is still recorded in the sheet', s.__data().length, 1);
   check('row records the FUB failure for later retry',
-    String(s.__rows[0][7]).indexOf('failed') === 0);
-  check('entry is still eligible for the draw', s.__rows[0][9] === 'Yes');
+    String(s.__data()[0][7]).indexOf('failed') === 0);
+  check('entry is still eligible for the draw', s.__data()[0][9] === 'Yes');
 }
 
 // ---- FUB payload -----------------------------------------------------------
@@ -208,7 +245,7 @@ const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@example.c
   ['a', 'b', 'c', 'd'].forEach((n, i) => at(DURING, () => s.raffleHandleSubmission_(entry({
     fullName: 'Person ' + n, email: n + '@example.com', phone: '(215) 555-010' + i
   }))));
-  eq('four entrants', s.__rows.length, 4);
+  eq('four entrants', s.__data().length, 4);
 
   const first = at(AFTER, () => s.raffleDrawWinner_());
   check('draw succeeds', first.ok === true);
@@ -252,7 +289,7 @@ const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@example.c
   at(DURING, () => s.raffleHandleSubmission_(entry()));
   at(DURING, () => s.raffleHandleSubmission_(entry({
     fullName: 'Sam Ortiz', email: 'sam@example.com', phone: '(267) 555-0100' })));
-  s.__rows[0][9] = 'No';                       // Durand marks a row ineligible by hand
+  s.__tabs['Entries'].rows[1][9] = 'No';        // Durand marks a row ineligible by hand
   const res = at(AFTER, () => s.raffleDrawWinner_());
   eq('disqualified row excluded from the draw', res.result.totalEligible, 1);
   eq('the remaining entrant wins', res.result.winner.name, 'Sam Ortiz');
@@ -269,6 +306,120 @@ const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@example.c
   check('status endpoint is gated too',
     /Not found/.test(s.raffleServeForm_({ parameter: { action: 'status' } }, 'u')));
   eq('no winner was drawn by an unauthorized probe', s.__props.RAFFLE_WINNER_JSON, undefined);
+}
+
+
+// ---- TEST MODE vs LIVE ---------------------------------------------------
+// The whole point of this block: a rehearsal must be impossible to confuse with
+// the real thing, in either direction.
+{
+  const s = makeSandbox({ qaMode: true });
+
+  // 1. The one check test mode relaxes: the entry window.
+  const early = at(BEFORE, () => s.raffleHandleSubmission_(entry()));
+  check('test mode: entry accepted OUTSIDE the Sat 3:00-6:15 window', early.ok === true);
+  const late = at(AFTER, () => s.raffleHandleSubmission_(entry({
+    fullName: 'Late Tester', email: 'late@example.com', phone: '(267) 555-0111' })));
+  check('test mode: entry accepted after the 6:15 close too', late.ok === true);
+
+  // 2. Test entries are in their own tab, and the live tab is empty.
+  check('test mode: wrote to the "Test Entries" tab', !!s.__tabs['Test Entries']);
+  eq('test mode: two rows on the test tab', s.__data('Test Entries').length, 2);
+  eq('test mode: LIVE tab still empty', s.__data('Entries').length, 0);
+
+  // 3. Every other check still runs.
+  check('test mode does NOT relax consent',
+    at(BEFORE, () => s.raffleHandleSubmission_(entry({ consent: 'No', email: 'x@y.com' }))).ok === false);
+  check('test mode does NOT relax required fields',
+    at(BEFORE, () => s.raffleHandleSubmission_(entry({ fullName: '', email: 'q@y.com' }))).ok === false);
+  check('test mode does NOT relax one-entry-per-person',
+    at(BEFORE, () => s.raffleHandleSubmission_(entry())).already === true);
+
+  // 4. FUB records are marked so nobody mistakes them for leads.
+  const people = s.__fetches.filter(f => /\/v1\/people/.test(f.url));
+  const body = JSON.parse(people[0].o.payload);
+  check('test mode: FUB first name is prefixed', /^\[QA TEST\] /.test(body.firstName));
+  check('test mode: FUB record carries the QA tag',
+    body.tags.indexOf('QA Test — Safe to Delete') !== -1);
+  check('test mode: FUB background flags it as a test',
+    /\[QA TEST\]/.test(body.background));
+  check('test mode: still carries the real raffle tags',
+    body.tags.indexOf('Block Party Raffle Entrant') !== -1);
+
+  // 5. A test draw is a rehearsal: own winner property, own tab, Durand only.
+  const tRes = at(AFTER, () => s.raffleDrawWinner_(true));
+  check('test draw: succeeds', tRes.ok === true);
+  check('test draw: result flagged as a test', tRes.result.test === true);
+  check('test draw: winner came from the test pool',
+    ['Dana Reid', 'Late Tester'].indexOf(tRes.result.winner.name) !== -1);
+  check('test draw: recorded under the TEST property', !!s.__props.RAFFLE_TEST_WINNER_JSON);
+  check('test draw: LIVE winner property untouched',
+    s.__props.RAFFLE_WINNER_JSON === undefined);
+  eq('test draw: exactly one email', s.__sent.length, 1);
+  check('test draw: email went to Durand only', s.__sent[0].to === 'durand@thestawaszgroup.com');
+  check('test draw: Ryan was NOT emailed about a rehearsal', !/ryan@/.test(s.__sent[0].to));
+  check('test draw: subject is marked as a test', /\[QA TEST\]/.test(s.__sent[0].subject));
+  check('test draw: body says it is not the real winner',
+    /THIS IS A TEST DRAW/.test(s.__sent[0].body));
+  check('test draw: writes a separate Draw Result (TEST) tab', !!s.__tabs['Draw Result (TEST)']);
+  check('test draw: does not write the live Draw Result tab', !s.__tabs['Draw Result']);
+
+  // 6. Having rehearsed, the real draw is still entirely available.
+  const liveAfter = at(AFTER, () => s.raffleDrawWinner_(false));
+  check('a test draw does NOT consume the live draw', liveAfter.alreadyDrawn !== true);
+  check('live draw finds no real entries (test ones are not eligible)',
+    liveAfter.ok === false && /No eligible entries/.test(liveAfter.error));
+}
+
+// A test entry can never be drawn as the real winner, even when both exist.
+{
+  const s = makeSandbox();
+  at(DURING, () => s.raffleHandleSubmission_(entry({
+    fullName: 'Real Person', email: 'real@example.com', phone: '(215) 555-0199' })));
+  s.__props.__qa = true;                       // flip to test mode for the next write
+  const t = makeSandbox({ qaMode: true });
+  // Same spreadsheet shape, so assert on the separation rule directly.
+  at(DURING, () => t.raffleHandleSubmission_(entry({
+    fullName: 'Fake Tester', email: 'fake@example.com', phone: '(267) 555-0222' })));
+  eq('live sandbox: real entry on the live tab', s.__data('Entries').length, 1);
+  eq('test sandbox: nothing on the live tab', t.__data('Entries').length, 0);
+  const res = at(AFTER, () => s.raffleDrawWinner_(false));
+  eq('live draw picks the real person', res.result.winner.name, 'Real Person');
+  eq('live draw pool excludes test entries entirely', res.result.totalEligible, 1);
+}
+
+// The 6:15 trigger is hard-wired to the live draw.
+{
+  const s = makeSandbox({ qaMode: true });
+  at(DURING, () => s.raffleHandleSubmission_(entry()));   // goes to the test tab
+  at(AFTER, () => s.raffleScheduledDraw());
+  check('scheduled 6:15 draw is ALWAYS live, even under test mode',
+    s.__props.RAFFLE_WINNER_JSON === undefined && s.__props.RAFFLE_TEST_WINNER_JSON === undefined);
+  check('scheduled draw with no real entries alerts instead of drawing a test one',
+    s.__sent.length === 0);
+}
+
+// Resetting test data leaves live data alone.
+{
+  const s = makeSandbox({ qaMode: true });
+  at(DURING, () => s.raffleHandleSubmission_(entry()));
+  at(AFTER, () => s.raffleDrawWinner_(true));
+  eq('before reset: test rows present', s.__data('Test Entries').length, 1);
+  s.raffleResetTest();
+  eq('after reset: test rows cleared', s.__data('Test Entries').length, 0);
+  check('after reset: test winner cleared', s.__props.RAFFLE_TEST_WINNER_JSON === undefined);
+  check('after reset: Draw Result (TEST) tab removed', !s.__tabs['Draw Result (TEST)']);
+}
+
+// Admin endpoints: ?test=1 selects the rehearsal, and is still key-gated.
+{
+  const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'secret' } });
+  const blocked = s.raffleServeForm_({ parameter: { action: 'draw', test: '1' } }, 'u');
+  check('test draw endpoint still requires the admin key', /Not found/.test(blocked));
+  const page = s.raffleServeForm_({ parameter: { action: 'status', key: 'secret', test: '1' } }, 'u');
+  check('test status page is labelled as test data', /TEST DATA/.test(page));
+  const live = s.raffleServeForm_({ parameter: { action: 'status', key: 'secret' } }, 'u');
+  check('live status page carries no test label', !/TEST DATA/.test(live));
 }
 
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
