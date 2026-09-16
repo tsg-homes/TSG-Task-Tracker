@@ -423,7 +423,7 @@ setTimeout(async () => {
       if (!/1\.25h total/.test(doc.querySelector('#modalMeta .modal-total').textContent)) throw new Error('one-way total wrong');
       if (!t3.history.some(h => h.field === 'travelMode' && h.to === 'oneway')) throw new Error('mode change not logged');
       const cardHtml = w.taskCardHtml(w.findTask(3));
-      if (!/15m one-way/.test(cardHtml) || !/1\.25h total/.test(cardHtml)) throw new Error('card badge missing the chosen travel/total: ' + cardHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200));
+      if (!/15m drive one-way/.test(cardHtml) || !/1\.25h total/.test(cardHtml)) throw new Error('card badge missing the chosen travel/total: ' + cardHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200));
       w.modalTravelModeChange(3, 'none');
       const items = w.getTodayErrandItems(w.todayISO());
       w.closeTaskCard();
@@ -448,25 +448,31 @@ setTimeout(async () => {
       };
       w.openTaskCard(3);
       await w.tidyTask(3);
-      if (!alerts.some(a => /Tidy requested/.test(a))) throw new Error('no queued notice: ' + JSON.stringify(alerts));
-      if (!/Tidy requested/.test(doc.getElementById('tidyBtn').textContent)) throw new Error('button not showing the pending state: ' + doc.getElementById('tidyBtn').textContent);
+      if (!alerts.some(a => /Queued\. Claude re-judges/.test(a))) throw new Error('no queued notice: ' + JSON.stringify(alerts));
+      if (!/Claude queued/.test(doc.getElementById('tidyBtn').textContent)) throw new Error('button not showing the pending state: ' + doc.getElementById('tidyBtn').textContent);
+      const estRow = [...doc.querySelectorAll('#modalMeta .modal-row')].find(r => /Estimate/.test(r.textContent));
+      if (!/queued for Claude/.test(estRow.textContent)) throw new Error('Estimate row not showing the pending state');
       w.fetch = origFetch;
-      const RM = w.eval('RAW_META');
-      RM.judgments = [];
-      RM.tidyProposals = { '3': { before: { title: t3title(), notes: '', priority: 'Medium', taskType: 'Meeting', group: 'Ops', estHours: 1, tags: [] }, proposal: { title: 'Chase the overdue vendor call', notes: '', priority: 'Medium', taskType: 'Meeting', group: 'Ops', estHours: 1, tags: [], rationale: 'Sharper title.' } } };
-      function t3title() { return w.findTask(3).title; }
+      w.eval('RAW_META').judgments = [];
       w.refreshTidyButton_(3);
-      if (!/Review tidy/.test(doc.getElementById('tidyBtn').textContent)) throw new Error('button not offering the ready proposal');
-      w.__posts = [];
-      await w.tidyTask(3);
-      if (!doc.getElementById('dayViewModal').classList.contains('open') || doc.querySelectorAll('.tidy-row').length !== 1) throw new Error('queued proposal not opened for review');
-      w.dismissTidy_();
-      if (RM.tidyProposals['3']) throw new Error('proposal not cleared locally');
-      await new Promise(r => setTimeout(r, 10));
-      if (!(w.__posts || []).some(p => /clear_tidy_proposal/.test(p.body) && /"id":3/.test(p.body))) throw new Error('clear_tidy_proposal not posted: ' + JSON.stringify(w.__posts));
+      if (!/Re-run Claude/.test(doc.getElementById('tidyBtn').textContent)) throw new Error('button not back to Re-run Claude');
       w.closeTaskCard();
-      console.log('OK   - tidy with no key: queued notice, pending button state, then "Review tidy" from meta.tidyProposals and a clear op on dismiss');
+      console.log('OK   - tidy is automatic: the button queues a forced re-run, shows "Claude queued" and the Estimate row says queued for Claude');
     } catch (e) { console.log('FAIL - tidy via the queue ->', e.message); FAILS++; }
+    try {
+      w.openNewTaskModal({});
+      doc.getElementById('ntTitle').value = '';
+      doc.getElementById('ntNotes').value = 'need to call the title co about the farina closing, friday works, get the deed copy first';
+      w.eval("window.fetch = async (url, opts) => ({ ok: true, status: 200, json: async () => ({ ok: true, docVersion: 9, addResult: { verdict: 'added', taskId: 913 } }) });");
+      await w.confirmNewTask(doc.getElementById('ntConfirmBtn'));
+      const added = w.findTask(913);
+      if (!added) throw new Error('note-only task not created');
+      if (!/^need to call the title co about the farina closing/.test(added.title) || added.title.length > 80 || !/…$/.test(added.title)) throw new Error('working title should be the first line, trimmed to 80: ' + added.title);
+      if (added.group !== 'Unsorted') throw new Error('group should default to Unsorted for a note-only task: ' + added.group);
+      const T = w.eval('TASKS'); for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 913) T.splice(i, 1);
+      w.fetch = origFetch;
+      console.log('OK   - a note alone creates a task: first line as the working title, Unsorted group, the rest left to Claude');
+    } catch (e) { console.log('FAIL - note-only add ->', e.message); FAILS++; }
   })();
 
   // "+ Task" on pop-up lists (task #269): the button carries the list's context into the New Task modal

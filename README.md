@@ -164,53 +164,53 @@ The script has no `ANTHROPIC_API_KEY`. Instead of calling the API, every judgmen
 have asked for is queued in the data file at `meta.judgments` (server-owned; `replace_all`
 and `set_meta` cannot write it). A scheduled Claude Code Routine ("TSG Tracker — judgment
 queue", hourly on weekdays) reads the data file, answers each request under its own
-judgment, and writes the answers back as inbox ops. Nothing in the queue is applied until an
-answer arrives; the task meanwhile carries `needs-estimate` + `Triage` and the usual fallback
-note, so a gap is visible, never silent.
+judgment, and writes the answers back as inbox ops. Until an answer lands a new task carries
+`needs-estimate` + `Triage` and the usual fallback note, so a gap is visible, never silent.
 
 **Request shapes** (`meta.judgments[]`, each with `id` like `J17`, `ts`, `kind`, `taskId`):
 
-- `kind: "estimate"` — a new task. Fields: `need` (subset of `estHours`, `taskType`,
-  `subitems`, `priority`, `group`, `dependsOnTitle`, `tags`, `progress`, `driveMatch`,
-  `meetingMatch`), `title`, `notes`, `priority` (known value or `""`), `batchSiblings`
-  (titles pushed in the same batch), `driveCandidates` (`[{url, label, excerpt}]` or null),
+- `kind: "enrich"` — a new task, a task whose notes changed, or a Tidy re-run (`force: true`).
+  Fields: `need` (subset of `title`, `notes`, `estHours`, `taskType`, `subitems`, `priority`,
+  `group`, `dependsOnTitle`, `tags`, `progress`, `location`, `due`, `driveMatch`,
+  `meetingMatch`), `title`, `notes` (free-flow text as typed), `priority`, `current` (the
+  task's current fields: return them unchanged unless the title/notes clearly justify a
+  change), `batchSiblings`, `driveCandidates` (`[{url, label, excerpt}]` or null),
   `calendarCandidates` (`[{date, start, end, htmlLink, label}]` or null), `personCreated`.
   Read `EXISTING_GROUPS` / `OPEN_TASK_TITLES` / `EXISTING_TAGS` from the data file itself.
-- `kind: "progress"` — the notes of a task (`subIdx` absent) or a subitem (`subIdx` set)
-  changed. Fields: `title`, `notes`, `priority`. Answer only from those notes.
-- `kind: "tidy"` — Durand pressed Tidy. Fields: `title`, `before` (`{title, notes, priority,
-  taskType, group, estHours, tags}`), `due`, `status`, `subitems` (titles).
+- `kind: "progress"` — a subitem's notes changed (`subIdx` set). Fields: `title`, `notes`,
+  `priority`. Answer `{progress}` from those notes only.
 
 **Answer op** (one per request, in a `bulk` data patch dropped into `_Inbox`):
 
 ```json
 {"target":"data","op":"bulk","source":"Claude (queue)","ops":[
-  {"op":"judgment","id":"J17","answer":{"estHours":0.5,"taskType":"Email","subitems":[],
-   "priority":"High","group":"Ops","dependsOnTitle":null,"tags":["Listings"],"progress":25,
-   "needsConfirmation":false,"driveMatch":{"index":1,"confident":true,"rationale":"…"},
-   "meetingMatch":null,"rationale":"…"}},
-  {"op":"judgment","id":"J18","answer":{"progress":60}},
-  {"op":"judgment","id":"J19","answer":{"title":"…","notes":"…","priority":"Medium",
-   "taskType":"Call","group":"Ops","estHours":0.5,"tags":["…"],"rationale":"…"}}
+  {"op":"judgment","id":"J17","answer":{"title":"Send Farina the listing agreement for signature",
+   "notes":"Current state: …\n\nLog:\n- 2026-09-16: …","estHours":0.5,"taskType":"Email",
+   "subitems":[],"priority":"High","group":"Ops","dependsOnTitle":null,"tags":["Listings"],
+   "progress":25,"location":"Farina Di Vita, Media PA","due":"2026-09-19","needsConfirmation":false,
+   "driveMatch":{"index":1,"confident":true,"rationale":"…"},"meetingMatch":null,"rationale":"…"}},
+  {"op":"judgment","id":"J18","answer":{"progress":60}}
 ]}
 ```
 
-Rules the answer must follow are the estimator's own (`TSG_ESTIMATE_SYSTEM` and
-`TSG_TIDY_SYSTEM` in `Code.gs`): only fields in `need`; hours are hands-on time from the
-calibration table; `taskType` is one of Email | Call | Text/Chat | Meeting | Claude |
-Actionable Task; `priority` one of Critical | High | Medium | Low; `group` an existing group
-unless nothing fits; `dependsOnTitle` an exact open title or null; 0-3 topical tags, never a
-system tag (Triage, Aging, Scheduling Stuck, Dependency Issue, needs-estimate, Claude);
-`progress` 0-100 from evidence of completed work in the notes only; `driveMatch` /
-`meetingMatch` are `{index (1-based into the stored candidates), confident, rationale}` or
-null, and `meetingMatch` only when the type is Meeting. `answer: null` drops a request. An
-unknown or superseded id is ignored. The server validates everything again on apply
-(`tsgApplyJudgmentOp_`): a progress answer whose notes changed since is dropped, a tidy
-answer becomes `meta.tidyProposals[taskId]` for Durand to review on the card, an estimate
-answer never overwrites a value Durand set in the meantime.
+Rules are the estimator's own (`TSG_ESTIMATE_SYSTEM` in `Code.gs`): only fields in `need`;
+`title` one imperative line, max 80 chars, derived from a free-flow note when the title is a
+placeholder; `notes` rewritten as "Current state" + dated "Log" keeping every fact verbatim;
+hours are hands-on time from the calibration table; `taskType` one of Email | Call |
+Text/Chat | Meeting | Claude | Actionable Task; `priority` one of Critical | High | Medium |
+Low; `group` an existing group unless nothing fits; `dependsOnTitle` an exact open title or
+null; 0-3 topical tags, never a system tag; `progress` 0-100 from evidence in the notes;
+`location` a stated place or null; `due` a stated deadline as YYYY-MM-DD or null;
+`driveMatch` / `meetingMatch` `{index (1-based into the stored candidates), confident,
+rationale}` or null. `answer: null` drops a request; an unknown id is ignored.
 
-Verify by re-reading the data file after a minute: the answered ids are gone from
-`meta.judgments`.
+**What the server does with an answer** (`tsgApplyEstimateToTask_`): fills empty fields; a
+field Durand set by hand (a history line with a person's source) is kept unless the request
+was a Tidy re-run; title / notes / progress are skipped when Durand edited them after the
+request was queued, and the notes polish is skipped when the notes moved on; new steps are
+appended, existing ones kept; `location` and `due` fill only blanks; tags merge; every
+change gets its own history line with the answer's source. Verify by re-reading the data
+file after a minute: the answered ids are gone from `meta.judgments`.
 
 ## Conventions carried over from prior work on this project
 

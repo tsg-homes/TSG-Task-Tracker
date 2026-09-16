@@ -385,6 +385,34 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   Maps, cached) instead of the flat 20 min when a home base is set. Maps calls are capped
   per execution by `TSG_TRAVEL_CALLS` / `TSG_TRAVEL_PER_RUN_CAP`.
 
+## Free-flow notes, automatic tidy, travel methods (2026-09-16, backend 2026-09-16.6, dashboard UI 2026-09-16.6)
+
+- Per Durand: "write a free flow thought into a new (or existing) task note and Claude
+  populates all fields from that and polishes the note itself"; "the tidy should now just be
+  automatic"; "travel method, walk/drive/transit - and make a recommendation".
+- Queue kind `enrich` replaces `estimate` and `tidy`. add_task asks for `title` + `notes`
+  polish (and `location` / `due` when blank) whenever notes are present; a task whose notes
+  change (update_task after its field log, replace_all) goes through `tsgEnrichTask_` with
+  `tsgEnrichNeedFor_` (everything except fields Durand set by hand per `tsgUserTouched_`:
+  a history line for the field with a person's source; no source = automation); emptied
+  notes only reset a notes-driven bar. `request_tidy` = `tsgEnrichTask_(force)`: every field
+  re-judged, applied automatically, no proposal (`meta.tidyProposals` is dead). The estimator
+  prompt/schema carry `title`, `notes`, `location`, `due`, a `TODAY` line and
+  `CURRENT_FIELDS` (`tsgCurrentSnapshot_`). `tsgApplyEstimateToTask_` guards: `keep(field)`
+  (hand-set, unless force), `touchedSince(field)` for title/notes/progress, stale notes via
+  `tsgStripFallbackNotes_`; progress lands before new steps are appended; steps merge by
+  title; every change gets a history line with the answer's source.
+- Dashboard: New Task needs only a note (title = first line, group Unsorted, Claude fixes
+  both); the Tidy button is "Re-run Claude" / "Claude queued"; the Estimate row says
+  "queued for Claude" while an enrich request is pending.
+- Travel methods: `travelOptions {drive, walk, transit}` one-way minutes (Maps, three calls
+  per location, cached 6 h, null when unroutable), `travelRecommended`
+  (`tsgRecommendTravel_`: walk <= 15 min, else transit within 30% of driving, else drive),
+  `travelMethod` (Durand's pick, in `TSG_TASK_DIFF_FIELDS`), `travelMethodUsed`, and the
+  effective `travelOneWayMin` / `travelMin` recomputed on every write without Maps. The
+  Estimate row has a method select (recommended marked) next to the mode select; card and
+  Errands block label the method. Calendar events use the drive time.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs

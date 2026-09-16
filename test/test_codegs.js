@@ -106,9 +106,10 @@ const sandbox = {
   },
   Maps: {
     newGeocoder: () => ({ geocode: () => ({ results: geocodeResults }) }),
-    DirectionFinder: { Mode: { DRIVING: 'driving' } },
+    DirectionFinder: { Mode: { DRIVING: 'driving', WALKING: 'walking', TRANSIT: 'transit' } },
     newDirectionFinder: () => {
-      const f = { setOrigin: () => f, setDestination: () => f, setMode: () => f, getDirections: () => { mapsCalls++; return mapsDirections; } };
+      let mode = 'driving';
+      const f = { setOrigin: () => f, setDestination: () => f, setMode: (m) => { mode = m; return f; }, getDirections: () => { mapsCalls++; if (mode === 'transit') return { routes: [] }; if (mode === 'walking') return mapsDirections.routes.length ? { routes: [{ legs: [{ duration: { value: 2400 } }] }] } : mapsDirections; return mapsDirections; } };
       return f;
     }
   },
@@ -591,10 +592,17 @@ section('Task location and round-trip travel (2026-09-16)');
   write(d, { op: 'add_task', ts: '2026-09-16T12:00:00Z', source: 'Durand', skipDedup: true, skipEnrich: true,
     task: { title: 'Drop the signed listing agreement at the title company', group: 'Errands', owner: 'Durand', priority: 'Medium', estHours: 0.5, location: 'Title company, 45 Baltimore Pike, Media PA' } });
   const t = d.tasks[0];
-  check('a located task gets one-way and round-trip minutes from Maps (14 min one way -> 15 / 30, rounded up to 5)', t.travelOneWayMin === 15 && t.travelMin === 30 && t.travelMode === 'round' && mapsCalls === 1);
-  check('the computation is remembered per location+base and logged on the history', t.travelFor === 'title company, 45 baltimore pike, media pa | 123 main st, media, pa' && t.history.some(h => h.field === 'travelMin' && h.to === 30 && h.source === 'Maps'));
+  check('a located task gets one-way and round-trip minutes from Maps (14 min drive -> 15 / 30, rounded up to 5), three methods asked once', t.travelOneWayMin === 15 && t.travelMin === 30 && t.travelMode === 'round' && mapsCalls === 3);
+  check('all three methods are stored and drive is recommended (walk 40 min, no transit route)', t.travelOptions.drive === 15 && t.travelOptions.walk === 40 && t.travelOptions.transit === null && t.travelRecommended === 'drive' && t.travelMethodUsed === 'drive');
+  t.travelMethod = 'walk'; sandbox.tsgAutoScheduleDoc_(d);
+  check('picking walk switches the effective minutes without a Maps call', t.travelOneWayMin === 40 && t.travelMin === 80 && t.travelMethodUsed === 'walk' && mapsCalls === 3);
+  t.travelMethod = 'transit'; sandbox.tsgAutoScheduleDoc_(d);
+  check('picking a method Maps could not route falls back to the recommendation', t.travelMethodUsed === 'drive' && t.travelOneWayMin === 15);
+  t.travelMethod = '';  sandbox.tsgAutoScheduleDoc_(d);
+  check('the recommendation rule: a short walk wins, transit within 30% of driving wins, else drive', sandbox.tsgRecommendTravel_({ drive: 20, walk: 10, transit: 25 }) === 'walk' && sandbox.tsgRecommendTravel_({ drive: 20, walk: 40, transit: 25 }) === 'transit' && sandbox.tsgRecommendTravel_({ drive: 20, walk: 40, transit: 40 }) === 'drive' && sandbox.tsgRecommendTravel_({ drive: null, walk: null, transit: 30 }) === 'transit');
+  check('the computation is remembered per location+base and logged on the history', t.travelFor === 'title company, 45 baltimore pike, media pa | 123 main st, media, pa' && t.history.some(h => h.field === 'travelOptions' && /drive 15 min/.test(h.to) && h.source === 'Maps'));
   write(d, { op: 'update_task', id: t.id, fields: { priority: 'High' }, source: 'Durand' });
-  check('an unrelated write does not call Maps again', mapsCalls === 1 && t.travelMin === 30);
+  check('an unrelated write does not call Maps again', mapsCalls === 3 && t.travelMin === 30);
   check('the scheduler charges estimate plus the chosen travel: round trip by default', sandbox.tsgItemHours_(t) === 1);
   t.travelMode = 'oneway';
   check('...one-way when picked', sandbox.tsgItemHours_(t) === 0.75);
@@ -604,13 +612,13 @@ section('Task location and round-trip travel (2026-09-16)');
   vm.runInContext('TSG_TRAVEL_CALLS = 0', sandbox);
   cacheStore = {};
   write(d, { op: 'update_task', id: t.id, fields: { location: 'Somewhere else' }, source: 'Durand' });
-  check('a changed location recomputes', mapsCalls === 2 && t.travelFor.indexOf('somewhere else') === 0);
+  check('a changed location recomputes', mapsCalls === 6 && t.travelFor.indexOf('somewhere else') === 0);
   write(d, { op: 'update_task', id: t.id, fields: { location: '' }, source: 'Durand' });
-  check('clearing the location drops travelMin', t.travelMin === undefined && t.travelOneWayMin === undefined && t.travelFor === undefined && mapsCalls === 2);
+  check('clearing the location drops travelMin', t.travelMin === undefined && t.travelOneWayMin === undefined && t.travelFor === undefined && t.travelOptions === undefined && mapsCalls === 6);
   const d2 = { meta: { next_id: 960, docVersion: 3 }, tasks: [] };
   write(d2, { op: 'add_task', ts: '2026-09-16T12:00:00Z', source: 'Durand', skipDedup: true, skipEnrich: true,
     task: { title: 'Pick up signs from the print shop', group: 'Errands', owner: 'Durand', estHours: 0.5, location: 'Print shop' } });
-  check('no home base -> no Maps call, no travelMin', mapsCalls === 2 && d2.tasks[0].travelMin === undefined);
+  check('no home base -> no Maps call, no travelMin', mapsCalls === 6 && d2.tasks[0].travelMin === undefined);
   const saved = mapsDirections; mapsDirections = { routes: [] };
   const d3 = { meta: { next_id: 970, docVersion: 3, homeBase: 'Base' }, tasks: [] };
   write(d3, { op: 'add_task', ts: '2026-09-16T12:00:00Z', source: 'Durand', skipDedup: true, skipEnrich: true,
@@ -641,44 +649,55 @@ section('Judgment queue: no API key (2026-09-16, method 2)');
   const t = d.tasks.find(x => /Farina/.test(x.title));
   const q = d.meta.judgments || [];
   check('a new task with no key is created with the fallback (needs-estimate, Triage) and no Claude call', !!t && t.tags.includes('needs-estimate') && t.tags.includes('Triage') && claudeRequests.length === 0);
-  check('one estimate request is queued for it, carrying need, notes and the plain Drive candidates', q.length === 1 && q[0].kind === 'estimate' && q[0].taskId === t.id && q[0].id === 'J1' && q[0].need.includes('driveMatch') && q[0].driveCandidates[0].url === 'https://drive.google.com/file/d/abc123' && q[0].notes === 'Draft is ready, waiting on the signature');
+  check('one enrich request is queued for it: fields, the polish of title and notes, location and due, plus the plain Drive candidates', q.length === 1 && q[0].kind === 'enrich' && q[0].taskId === t.id && q[0].id === 'J1' && ['driveMatch', 'title', 'notes', 'location', 'due', 'progress', 'estHours'].every(f => q[0].need.includes(f)) && q[0].driveCandidates[0].url === 'https://drive.google.com/file/d/abc123' && q[0].notes === 'Draft is ready, waiting on the signature' && q[0].current && q[0].current.title === t.title);
   check('the fallback note is on the task while the answer is pending', /could not be determined/.test(t.notes));
-  // the Routine answers
-  write(d, { op: 'judgment', id: 'J1', source: 'Claude (queue)', answer: { estHours: 0.5, taskType: 'Email', subitems: [], priority: 'High', group: 'Ops', dependsOnTitle: 'Existing open task', tags: ['Listings'], progress: 25, needsConfirmation: false, driveMatch: { index: 1, confident: true, rationale: 'Same agreement' }, meetingMatch: null, rationale: 'One email with an attachment.' } });
-  check('the answer fills every field: hours, type, priority, group, dependency, tags, progress', t.estHours === 0.5 && t.taskType === 'Email' && t.priority === 'High' && t.group === 'Ops' && t.depends === '1' && t.tags.includes('Listings') && t.progress === 25 && t.status === 'In Progress');
-  check('...removes needs-estimate and the fallback note, keeps Triage for review', !t.tags.includes('needs-estimate') && !/could not be determined/.test(t.notes) && t.tags.includes('Triage'));
+  // the Routine answers: every field, the polished title and notes, a lifted place and deadline
+  write(d, { op: 'judgment', id: 'J1', source: 'Claude (queue)', answer: { title: 'Send Farina Di Vita the listing agreement for signature', notes: 'Current state: draft ready, waiting on the signature.\n\nLog:\n- 2026-09-16: draft prepared', estHours: 0.5, taskType: 'Email', subitems: ['Email the agreement', 'Chase the signature'], priority: 'High', group: 'Ops', dependsOnTitle: 'Existing open task', tags: ['Listings'], progress: 25, location: 'Farina Di Vita, Media PA', due: '2026-09-19', needsConfirmation: false, driveMatch: { index: 1, confident: true, rationale: 'Same agreement' }, meetingMatch: null, rationale: 'One email with an attachment.' } });
+  check('the answer fills every field: hours, type, priority, group, dependency, tags, subitems', t.estHours === 0.5 && t.taskType === 'Email' && t.priority === 'High' && t.group === 'Ops' && t.depends === '1' && t.tags.includes('Listings') && t.subitems.length === 2);
+  check('...polishes the title and the notes, logging the previous text', t.title === 'Send Farina Di Vita the listing agreement for signature' && /^Current state:/.test(t.notes) && t.history.some(h => h.field === 'notes' && /Draft is ready/.test(h.from) && h.source === 'Claude (queue)') && t.history.some(h => h.field === 'title' && h.source === 'Claude (queue)'));
+  check('...lifts the stated place and deadline into location and due', t.location === 'Farina Di Vita, Media PA' && t.timelineEnd === '2026-09-19' && t.dueOverride === true);
+  check('...progress from the notes lands before the new steps are added; needs-estimate and the fallback note are gone, Triage stays', t.progress === 25 && t.status === 'In Progress' && !t.tags.includes('needs-estimate') && !/could not be determined/.test(t.notes) && t.tags.includes('Triage'));
   check('...links the Drive doc from the stored candidates', (t.docs || []).some(dd => dd.url === 'https://drive.google.com/file/d/abc123'));
   check('...logs the enrichment with the answer source and clears the request', t.history.some(h => h.field === 'auto-enriched' && h.source === 'Claude (queue)' && /judgment queue/.test(h.to)) && (d.meta.judgments || []).length === 0);
   check('the task is scheduled once it has hours', !!t.estDays);
-  // progress: update_task and update_subitem
+  // a free-flow note on an EXISTING task re-judges it; a value Durand set by hand is kept
   d.tasks.push({ id: 2, title: 'Parent with steps', owner: 'Durand', status: 'In Progress', priority: 'Medium', progress: 0, notes: '', tags: [], history: [], subitems: [ { title: 'step a', delegate: 'Durand', done: false, status: 'Not Started', progress: 0, notes: '' } ] });
-  write(d, { op: 'update_task', id: 1, fields: { notes: 'Called them, waiting on a callback' }, source: 'Durand' });
-  write(d, { op: 'update_task', id: 1, fields: { notes: 'Called them, they called back with pricing' }, source: 'Durand' });
+  d.tasks.push({ id: 3, title: 'Quick thought', owner: 'Durand', status: 'Not Started', priority: 'Low', progress: 0, notes: '', tags: [], history: [ { ts: '2026-09-10T10:00:00Z', field: 'priority', from: 'Medium', to: 'Low', source: 'Durand' } ], subitems: [] });
+  write(d, { op: 'update_task', id: 3, fields: { notes: 'call the title co about the farina closing, they said friday works, need the deed copy first' }, source: 'Durand' });
+  const e3 = d.meta.judgments.find(r => r.kind === 'enrich' && r.taskId === 3);
+  check('a notes change on an existing task queues one enrich request that skips the priority Durand set by hand and asks for everything else', !!e3 && !e3.need.includes('priority') && ['title', 'notes', 'estHours', 'taskType', 'group', 'tags', 'progress', 'location', 'due', 'subitems'].every(f => e3.need.includes(f)) && e3.current.priority === 'Low');
+  write(d, { op: 'update_task', id: 3, fields: { notes: 'call the title co about the farina closing, they said friday works, need the deed copy first. UPDATE: deed copy received' }, source: 'Durand' });
+  check('a second notes edit replaces the pending request', d.meta.judgments.filter(r => r.kind === 'enrich' && r.taskId === 3).length === 1 && d.meta.judgments.find(r => r.taskId === 3).notes.indexOf('UPDATE') !== -1);
+  const e3b = d.meta.judgments.find(r => r.taskId === 3);
+  write(d, { op: 'judgment', id: e3b.id, source: 'Claude (queue)', answer: { title: 'Call the title company about the Farina closing', notes: 'Current state: deed copy received; call the title company, Friday works.\n\nLog:\n- 2026-09-16: deed copy received', estHours: 0.25, taskType: 'Call', group: 'Ops', tags: ['Closings'], progress: 50, location: null, due: '2026-09-18', subitems: [], dependsOnTitle: null, priority: 'High', needsConfirmation: false, rationale: 'One call.' } });
+  const t3 = d.tasks.find(x => x.id === 3);
+  check('the answer polishes the existing task and fills its blanks, but the hand-set priority stays', t3.title === 'Call the title company about the Farina closing' && t3.taskType === 'Call' && t3.estHours === 0.25 && t3.timelineEnd === '2026-09-18' && t3.progress === 50 && t3.status === 'In Progress' && t3.priority === 'Low');
+  // stale: notes edited after the request -> the polish is skipped, nothing else is lost
+  write(d, { op: 'update_task', id: 2, fields: { notes: 'first thought' }, source: 'Durand' });
+  const e2 = d.meta.judgments.find(r => r.taskId === 2);
+  d.tasks.find(x => x.id === 2).notes = 'edited again by hand';
+  write(d, { op: 'judgment', id: e2.id, source: 'Claude (queue)', answer: { title: 'Parent with steps', notes: 'Current state: polished.', tags: ['Ops'], estHours: 1, taskType: 'Actionable Task', priority: 'Medium', group: 'Ops', subitems: [], dependsOnTitle: null, location: null, due: null, needsConfirmation: false, rationale: 'r' } });
+  check('an answer whose notes were edited meanwhile keeps the hand edit and still applies the rest', d.tasks.find(x => x.id === 2).notes === 'edited again by hand' && d.tasks.find(x => x.id === 2).tags.includes('Ops') && d.tasks.find(x => x.id === 2).estHours === 1);
+  // subitems keep the progress read
   write(d, { op: 'update_subitem', id: 2, index: 0, expectTitle: 'step a', fields: { notes: 'started drafting' }, source: 'Durand' });
-  const q2 = d.meta.judgments;
-  check('a notes change queues one progress request per target, the newer replacing the older', q2.length === 2 && q2.filter(r => r.kind === 'progress' && r.taskId === 1).length === 1 && q2.find(r => r.taskId === 1).notes === 'Called them, they called back with pricing' && q2.some(r => r.taskId === 2 && r.subIdx === 0));
-  const pid = q2.find(r => r.taskId === 1).id, sid = q2.find(r => r.taskId === 2).id;
+  const sid = d.meta.judgments.find(r => r.kind === 'progress' && r.taskId === 2 && r.subIdx === 0).id;
   write(d, { op: 'judgment', id: sid, answer: { progress: 30 } });
-  check('a progress answer lands on the subitem with a history line', d.tasks.find(x => x.id === 2).subitems[0].progress === 30 && d.tasks.find(x => x.id === 2).subitems[0].status === 'In Progress' && d.tasks.find(x => x.id === 2).subitems[0].history.some(h => h.field === 'progress' && h.to === 30));
-  write(d, { op: 'update_task', id: 1, fields: { notes: 'Changed again' }, source: 'Durand' });
-  write(d, { op: 'judgment', id: pid, answer: { progress: 60 } });
-  check('an answer whose notes were superseded is dropped (only the newer request remains)', d.tasks.find(x => x.id === 1).progress !== 60 && d.meta.judgments.length === 1 && d.meta.judgments[0].notes === 'Changed again');
-  // replace_all: two changed items -> two requests; the queue survives the save
+  check('a subitem notes change queues a progress read and the answer lands with a history line', d.tasks.find(x => x.id === 2).subitems[0].progress === 30 && d.tasks.find(x => x.id === 2).subitems[0].history.some(h => h.field === 'progress' && h.to === 30));
+  // replace_all: a task notes change -> enrich, a subitem notes change -> progress; the queue survives the save
+  d.meta.judgments = [];
   const next = JSON.parse(JSON.stringify(d.tasks));
   next.find(x => x.id === 1).notes = 'Menu confirmed, deposit paid'; next.find(x => x.id === 2).subitems[0].notes = 'half done';
   write(d, { op: 'replace_all', baseVersion: d.meta.docVersion || 0, doc: { tasks: next, meta: { judgments: [] } } });
-  check('a dashboard save queues a request per changed item and cannot overwrite the queue', d.meta.judgments.length === 2 && d.meta.judgments.every(r => r.kind === 'progress'));
+  check('a dashboard save queues an enrich for the task and a progress read for the subitem, and cannot overwrite the queue', d.meta.judgments.length === 2 && d.meta.judgments.some(r => r.kind === 'enrich' && r.taskId === 1) && d.meta.judgments.some(r => r.kind === 'progress' && r.taskId === 2 && r.subIdx === 0));
   write(d, { op: 'set_meta', fields: { judgments: [], judgmentSeq: 0, tidyProposals: { x: 1 } } });
   check('set_meta cannot touch judgments / judgmentSeq / tidyProposals', d.meta.judgments.length === 2 && d.meta.judgmentSeq > 0 && !d.meta.tidyProposals);
-  // tidy through the queue
-  write(d, { op: 'request_tidy', id: t.id, source: 'Durand' });
-  const tr = d.meta.judgments.find(r => r.kind === 'tidy');
-  check('request_tidy queues a tidy request with the current fields', !!tr && tr.taskId === t.id && tr.before.title === t.title);
-  write(d, { op: 'judgment', id: tr.id, source: 'Claude (queue)', answer: { title: 'Send Farina the listing agreement', notes: 'Current state: waiting on the signature.', priority: 'Bogus', taskType: 'Email', group: 'Nowhere', estHours: 0.5, tags: ['Listings', 'Triage', 'a', 'b', 'c'], rationale: 'Tightened.' } });
-  const prop = d.meta.tidyProposals && d.meta.tidyProposals[String(t.id)];
-  check('a tidy answer is validated and stored as a proposal for the dashboard', !!prop && prop.proposal.title === 'Send Farina the listing agreement' && prop.proposal.priority === t.priority && prop.proposal.group === t.group && prop.proposal.tags.includes('Triage') && prop.proposal.tags.filter(x => ['Listings', 'a', 'b', 'c'].includes(x)).length === 3);
-  write(d, { op: 'clear_tidy_proposal', id: t.id });
-  check('clear_tidy_proposal removes it', !d.meta.tidyProposals[String(t.id)]);
+  // Tidy is a forced full re-run
+  write(d, { op: 'request_tidy', id: 3, source: 'Durand' });
+  const tr = d.meta.judgments.find(r => r.kind === 'enrich' && r.taskId === 3);
+  check('request_tidy queues a forced enrich request that re-judges even hand-set fields', !!tr && tr.force === true && tr.need.includes('priority'));
+  write(d, { op: 'judgment', id: tr.id, source: 'Claude (queue)', answer: { title: t3.title, notes: t3.notes, priority: 'High', taskType: 'Call', group: 'Ops', estHours: 0.25, tags: ['Closings', 'Triage', 'a', 'b', 'c'], subitems: [], dependsOnTitle: null, location: null, due: null, progress: 50, needsConfirmation: false, rationale: 'Tidy.' } });
+  const t3b = d.tasks.find(x => x.id === 3); // replace_all swapped the task objects
+  check('a Tidy answer applies automatically, may change a hand-set field, and never hands out a system tag', t3b.priority === 'High' && !t3b.tags.includes('Triage') && t3b.tags.filter(x => ['a', 'b', 'c'].includes(x)).length <= 2 && t3b.history.some(h => h.field === 'priority' && h.to === 'High' && h.source === 'Claude (queue)'));
   check('tsgTidyProposal_ with no key queues a request_tidy inbox patch and answers queued:true', (() => { const orig = sandbox.tsgQueueDataPatch_; let sent = null; sandbox.tsgQueueDataPatch_ = (pp) => { sent = pp; return { ok: true, docVersion: 1 }; }; const r = sandbox.tsgTidyProposal_(t.id); sandbox.tsgQueueDataPatch_ = orig; return r.ok === true && r.queued === true && sent && sent.op === 'request_tidy' && sent.id === t.id; })());
   // unknown id, no answer
   let threw = false;
@@ -1032,7 +1051,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   claudeCalls = [];
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { status: 'Blocked', notes: 'Sent the proof to the printer, waiting on them' } })));
   let d = JSON.parse(disk);
-  check('update: a notes edit reads progress from the notes through the estimator', r.ok === true && claudeCalls.length === 1 && /NEEDED_FIELDS: \["progress"\]/.test(claudeCalls[0]) && d.tasks[1].progress === 40 && d.tasks[1].notes === 'Sent the proof to the printer, waiting on them');
+  check('update: a notes edit re-judges the task in ONE estimator call (progress among the fields) and applies the progress', r.ok === true && claudeCalls.length === 1 && /NEEDED_FIELDS: \[[^\]]*"progress"/.test(claudeCalls[0]) && /"title"/.test(claudeCalls[0]) && d.tasks[1].progress === 40 && d.tasks[1].notes === 'Sent the proof to the printer, waiting on them');
   check('update: a status set in the same edit is kept, not replaced by In Progress', d.tasks[1].status === 'Blocked');
   check('update: history records Marj as the source', d.tasks[1].history.some(h => h.source === 'Marj' && h.field === 'status'));
   claudeCalls = []; progressAnswer = 25;
@@ -1042,11 +1061,11 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   claudeCalls = [];
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 3, fields: { notes: '' } })));
   d = JSON.parse(disk);
-  check('update: clearing the notes resets progress to 0 without a Claude call', r.ok === true && claudeCalls.length === 0 && d.tasks[2].progress === 0);
+  check('update: clearing the notes makes no Claude call; a task that has steps by now keeps its bar from them', r.ok === true && claudeCalls.length === 0 && (d.tasks[2].progress === 0 || d.tasks[2].subitems.length > 0));
   claudeCalls = []; progressAnswer = 90;
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 5, fields: { notes: 'nearly there' } })));
   d = JSON.parse(disk);
-  check('update: notes on a task with subitems never call Claude; the subitems own the bar', r.ok === true && claudeCalls.length === 0 && d.tasks[4].notes === 'nearly there' && d.tasks[4].progress === 0);
+  check('update: notes on a task with subitems are still polished in one call, but progress is not asked for; the subitems own the bar', r.ok === true && claudeCalls.length === 1 && !/"progress"/.test(claudeCalls[0]) && d.tasks[4].notes === 'nearly there' && d.tasks[4].progress === 0);
   const savedResponder = claudeResponder;
   claudeResponder = () => ({ rationale: 'no number this time' });
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { notes: 'more notes' } })));
@@ -1139,10 +1158,13 @@ section('Progress follows the notes on every write path (2026-09-15)');
   calls = [];
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { priority: 'High' }, source: 'Claude' });
   check('update_task without a notes change makes no call', calls.length === 0 && d.tasks[0].progress === 60);
+  calls = [];
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'new notes', progress: 15 }, source: 'Claude' });
-  check('update_task: an explicit progress in the same patch wins, no call', calls.length === 0 && d.tasks[0].progress === 15);
+  check('update_task: an explicit progress in the same patch wins; the re-judge call does not ask for progress', calls.length === 1 && !/"progress"/.test(calls[0]) && d.tasks[0].progress === 15);
+  calls = [];
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 2, fields: { notes: 'parent notes changed' }, source: 'Claude' });
-  check('update_task: a task with subitems is skipped (its bar comes from the subitems)', calls.length === 0 && d.tasks[1].progress === 0);
+  check('update_task: a task with subitems is re-judged without progress (its bar comes from the subitems)', calls.length === 1 && !/"progress"/.test(calls[0]) && d.tasks[1].progress === 0);
+  calls = [];
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 3, fields: { notes: 'done notes changed' }, source: 'Claude' });
   check('update_task: a Done task is skipped', calls.length === 0 && d.tasks[2].progress === 100);
   // update_subitem
@@ -1156,13 +1178,13 @@ section('Progress follows the notes on every write path (2026-09-15)');
   next[1].subitems[0].notes = 'half done';                        // subitem notes changed -> re-read
   next[2].notes = 'reworded';                                     // Done -> skipped
   sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: 5, doc: { tasks: next } });
-  check('replace_all re-reads progress for the task and the subitem whose notes changed, not the Done one — in ONE call', calls.length === 1 && /^ITEMS:/.test(calls[0]) && d.tasks[0].progress === 75 && d.tasks[1].subitems[0].progress === 75 && d.tasks[2].progress === 100);
+  check('replace_all re-judges the task whose notes changed (one call) and reads the changed subitem (one ITEMS call), not the Done one', calls.length === 2 && calls.some(u => /"title"/.test(u)) && d.tasks[0].progress === 75 && d.tasks[1].subitems[0].progress === 75 && d.tasks[2].progress === 100);
   check('replace_all logs the derived progress as Durand', d.tasks[0].history.some(h => h.field === 'progress' && h.to === 75 && h.source === 'Durand'));
   d = d0(); calls = [];
   const next2 = JSON.parse(JSON.stringify(d.tasks));
   next2[0].notes = 'typed both'; next2[0].progress = 40;
   sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: 5, doc: { tasks: next2 } });
-  check('replace_all: a progress typed in the same save wins over the notes', calls.length === 0 && d.tasks[0].progress === 40);
+  check('replace_all: a progress typed in the same save wins over the notes (the re-judge does not ask for it)', calls.length === 1 && !/"progress"/.test(calls[0]) && d.tasks[0].progress === 40);
   d = d0(); calls = [];
   sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: 5, doc: { tasks: JSON.parse(JSON.stringify(d.tasks)) } });
   check('replace_all with no notes change makes no call', calls.length === 0);

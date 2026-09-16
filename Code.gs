@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-16.5';
+const TSG_CODE_VERSION = '2026-09-16.6';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -340,15 +340,16 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
   var source = patch.source || 'Claude';
   var t = (doc.tasks || []).filter(function(x) { return x && x.id === req.taskId; })[0];
   if (!t) { Logger.log('[judgment] ' + req.id + ': task #' + req.taskId + ' no longer exists'); return; }
-  if (req.kind === 'estimate') {
-    var est = tsgEstimateParse_(JSON.stringify(answer), req.need || [], t.title, {
+  if (req.kind === 'enrich' || req.kind === 'estimate' || req.kind === 'tidy') {
+    var need = req.need || ['title', 'notes', 'priority', 'taskType', 'group', 'estHours', 'tags'];
+    var est = tsgEstimateParse_(JSON.stringify(answer), need, t.title, {
       driveCandidateCount: (req.driveCandidates || []).length, calendarCandidateCount: (req.calendarCandidates || []).length });
     if (est.source === 'none') return;
-    tsgApplyEstimateToTask_(doc, t, est, req.need || [], {
+    tsgApplyEstimateToTask_(doc, t, est, need, {
       now: now, source: source, personCreated: !!req.personCreated, batchSiblings: req.batchSiblings || [],
       driveCands: req.driveCandidates ? { files: req.driveCandidates } : null,
       calCands: req.calendarCandidates ? { events: req.calendarCandidates } : null,
-      deferred: true
+      deferred: true, sinceTs: req.ts || null, reqNotes: req.notes, force: !!req.force
     });
   } else if (req.kind === 'progress') {
     var item = (req.subIdx == null) ? t : ((t.subitems || [])[req.subIdx] || null);
@@ -362,10 +363,6 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
     tsgSetProgressFromNotes_(item, pct);
     var hist = (req.subIdx == null) ? (t.history = t.history || []) : (item.history = item.history || []);
     hist.push({ ts: now, field: 'progress', from: (typeof prev === 'number') ? prev : null, to: pct, source: source });
-  } else if (req.kind === 'tidy') {
-    var v = tsgTidyValidate_(doc, t, answer);
-    doc.meta.tidyProposals = doc.meta.tidyProposals || {};
-    doc.meta.tidyProposals[String(t.id)] = { before: v.before, proposal: v.proposal, ts: now, source: source };
   } else {
     Logger.log('[judgment] ' + req.id + ': unknown kind ' + req.kind);
   }
@@ -555,6 +552,15 @@ function applyDataPatch_(doc, patch) {
       // Progress follows the notes board-wide (2026-09-15, per Durand): a new task with
       // notes has its bar read from them, whoever pushed it.
       if (String(task.notes || '').trim() && task.status !== 'Done' && !(typeof task.progress === 'number' && task.progress > 0)) need.push('progress');
+      // Free-flow notes (2026-09-16, per Durand: "write a free flow thought into a task note
+      // and Claude populates all fields from that and polishes the note itself"): with notes
+      // present the title and the notes are polished, and a stated place / deadline is lifted
+      // into location / due when those are empty.
+      if (String(task.notes || '').trim()) {
+        need.push('title', 'notes');
+        if (!String(task.location || '').trim()) need.push('location');
+        if (!task.timelineEnd) need.push('due');
+      }
 
       // One merged call per new task (2026-09-16): the Drive and calendar candidates are
       // gathered up front and judged in the SAME estimator request as the other fields
@@ -579,6 +585,7 @@ function applyDataPatch_(doc, patch) {
           openTitles: board.openTitles,
           existingTags: board.existingTags,
           batchSiblings: batchSiblings,
+          current: tsgCurrentSnapshot_(task),
           driveCandidates: driveCands ? driveCands.listText : '',
           driveCandidateCount: driveCands ? driveCands.files.length : 0,
           calendarCandidates: calCands ? calCands.listText : '',
@@ -692,9 +699,13 @@ function applyDataPatch_(doc, patch) {
     }
     Object.assign(t, patch.fields);
     if (Object.prototype.hasOwnProperty.call(t, 'assignee')) { if (!t.delegate && t.assignee) t.delegate = t.assignee; delete t.assignee; }
-    tsgApplyProgressFromNotes_(t, prevTaskSnapshot.notes, !!patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'progress'), { taskId: t.id });
+    var notesChanged = tsgNotesChanged_(t, prevTaskSnapshot.notes);
     t.history = t.history || [];
     tsgLogFieldChanges_(t.history, prevTaskSnapshot, t, TSG_TASK_DIFF_FIELDS, now, patch.source);
+    // Free-flow notes (2026-09-16): a notes change re-judges the whole task (title/notes
+    // polish, fields left blank or set by automation, progress). Runs AFTER the field log so
+    // the enrichment's own history lines carry their own source, not this patch's.
+    if (notesChanged) tsgEnrichTask_(doc, t, now, patch.source || 'unknown', { progressExplicit: !!patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'progress') });
     tsgStampLifecycleTimestamps_(t, now);
     if (patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'subitems')) {
       tsgStampSubitemTouchesForTask_(prevSubitems, t.subitems, now, patch.source);
@@ -793,11 +804,12 @@ function applyDataPatch_(doc, patch) {
   } else if (patch.op === 'judgment') {
     tsgApplyJudgmentOp_(doc, patch, now);
   } else if (patch.op === 'request_tidy') {
-    // The dashboard's Tidy button with no API key: queue the rewrite for the Routine.
+    // The Tidy button (2026-09-16, per Durand: "the tidy should now just be automatic"): a
+    // full re-run of the enrichment on one task, applied when the answer lands, no review
+    // step. force: even fields Durand set by hand are re-judged this once.
     var tidyTask = (doc.tasks || []).filter(function(x) { return x && x.id === patch.id; })[0];
     if (!tidyTask) throw new Error('request_tidy: no task ' + patch.id);
-    tsgQueueJudgment_(doc, { kind: 'tidy', taskId: tidyTask.id, title: tidyTask.title, before: tsgTidyBefore_(tidyTask),
-      due: tidyTask.timelineEnd || '', status: tidyTask.status || '', subitems: (tidyTask.subitems || []).map(function(s) { return s.title; }) });
+    tsgEnrichTask_(doc, tidyTask, now, patch.source || 'Durand', { force: true });
   } else if (patch.op === 'clear_tidy_proposal') {
     if (doc.meta && doc.meta.tidyProposals) delete doc.meta.tidyProposals[String(patch.id)];
   } else if (patch.op === 'add_comment') {
@@ -850,7 +862,7 @@ function applyDataPatch_(doc, patch) {
     const incoming = patch.doc || {};
     const nextTasks = incoming.tasks || doc.tasks;
     tsgCaptureExplicitEditsFromSave_(doc.tasks, nextTasks);
-    tsgApplyProgressFromNotesOnSave_(doc.tasks, nextTasks);
+    tsgApplyProgressFromNotesOnSave_(doc.tasks, nextTasks, doc, now);
     tsgStampStatusChanges_(doc.tasks, nextTasks, now, 'Durand');
     tsgStampSubitemTouches_(doc.tasks, nextTasks, now, 'Durand');
     doc.tasks = nextTasks;
@@ -1642,7 +1654,12 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
   task.history = task.history || [];
   if (!Array.isArray(task.docs)) task.docs = [];
   const applied = [];
-  if (need.indexOf('estHours') !== -1 && est.estHours != null && (o.deferred ? task.estHours == null : true)) {
+  // A value Durand set by hand (a history line for that field whose source is not automation)
+  // is never overwritten by an answer, unless this is a forced Tidy re-run. Title / notes /
+  // progress additionally give way to anything he touched after the request was queued.
+  var keep = function(field) { return !o.force && tsgUserTouched_(task, field, null); };
+  var touchedSince = function(field) { return !o.force && o.sinceTs && tsgUserTouched_(task, field, o.sinceTs); };
+  if (need.indexOf('estHours') !== -1 && est.estHours != null && !keep('estHours')) {
     task.estHours = est.estHours;
     task.estDays = tsgEstDays_(est.estHours, task.priority || est.priority || 'Medium');
     task.estSource = est.source;
@@ -1656,32 +1673,61 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
       task.tags = Array.from(new Set(task.tags.concat(['Triage'])));
       applied.push('flagged for estimate confirmation (Triage)');
     }
-  } else if (need.indexOf('estHours') !== -1 && est.tags && est.tags.length && !o.deferred) {
-    task.tags = Array.from(new Set(task.tags.concat(est.tags)));
   }
-  if (need.indexOf('taskType') !== -1 && est.taskType && (!o.deferred || !task.taskType || task.taskType === 'Actionable Task')) { task.taskType = est.taskType; applied.push('taskType'); }
+  if (need.indexOf('taskType') !== -1 && est.taskType && !keep('taskType') && est.taskType !== task.taskType) { task.taskType = est.taskType; applied.push('taskType'); }
   // Type "Claude" with nobody named: Claude is the delegate (2026-09-15). A supplied
   // delegate is never overridden.
   if (task.taskType === 'Claude' && !tsgTaskDelegate_(task)) { task.delegate = 'Claude'; applied.push('delegate (Claude)'); }
-  if (need.indexOf('subitems') !== -1 && est.subitems && est.subitems.length && !(task.subitems || []).length) {
+  // Progress from the notes is applied BEFORE any new steps are added: the guard below reads
+  // the task as it was when the notes were judged.
+  if (need.indexOf('progress') !== -1 && est.progress != null && task.status !== 'Done' && !touchedSince('progress') && !(task.subitems || []).length) {
+    if (task.progress !== est.progress) task.history.push({ ts: now, field: 'progress', from: (typeof task.progress === 'number') ? task.progress : null, to: est.progress, source: o.source || 'unknown' });
+    task.progress = est.progress;
+    if (est.progress > 0 && task.status === 'Not Started') task.status = 'In Progress';
+    applied.push('progress (' + est.progress + '%, from the notes)');
+  }
+  if (need.indexOf('subitems') !== -1 && est.subitems && est.subitems.length) {
+    // Steps already on the task are kept; only genuinely new ones are added.
+    var have = (task.subitems || []).map(function(s) { return String(s && s.title || '').trim().toLowerCase(); });
+    est.subitems = est.subitems.filter(function(s) { return have.indexOf(String(s.title || '').trim().toLowerCase()) === -1; });
+  }
+  if (need.indexOf('subitems') !== -1 && est.subitems && est.subitems.length) {
     // A person-created task's estimate is split evenly across the steps it was just
     // broken into, so the rollup and the scheduler have per-step hours to work with
     // (steps with no hours are never queued). Durand's pipeline keeps the hours on
     // the parent as before.
     var perStep = (o.personCreated && typeof task.estHours === 'number' && task.estHours > 0)
       ? Math.max(0.25, Math.round((task.estHours / est.subitems.length) * 4) / 4) : null;
-    task.subitems = est.subitems.map(function(s) {
+    task.subitems = (task.subitems || []).concat(est.subitems.map(function(s) {
       return { title: s.title, done: false, delegate: tsgDefaultSubitemDelegate_(task), status: 'Not Started',
         priority: task.priority || 'Medium', tags: [], timelineEnd: '', progress: 0,
         depends: '', doc: '', notes: '', estHours: perStep, estDays: null,
         estSource: perStep != null ? 'claude' : 'none', taskType: 'Actionable Task',
         history: [{ ts: now, field: 'created', from: null, to: null, source: o.source || 'unknown' }] };
-    });
-    applied.push('subitems (' + task.subitems.length + ')');
+    }));
+    applied.push('subitems (+' + est.subitems.length + ')');
   }
   var fallbackFixed = false;
-  if (need.indexOf('priority') !== -1 && est.priority) { if (task.priority !== est.priority) fallbackFixed = true; task.priority = est.priority; applied.push('priority'); }
-  if (need.indexOf('group') !== -1 && est.group) { if (task.group !== est.group) fallbackFixed = true; task.group = est.group; applied.push('group'); }
+  if (need.indexOf('priority') !== -1 && est.priority && !keep('priority')) { if (task.priority !== est.priority) { fallbackFixed = true; task.history.push({ ts: now, field: 'priority', from: task.priority || null, to: est.priority, source: o.source || 'unknown' }); } task.priority = est.priority; applied.push('priority'); }
+  if (need.indexOf('group') !== -1 && est.group && !keep('group')) { if (task.group !== est.group) { fallbackFixed = true; task.history.push({ ts: now, field: 'group', from: task.group || null, to: est.group, source: o.source || 'unknown' }); } task.group = est.group; applied.push('group'); }
+  // Free-flow notes -> polished title / notes, a stated place, a stated deadline.
+  if (need.indexOf('title') !== -1 && est.title && est.title !== task.title && !touchedSince('title')) {
+    task.history.push({ ts: now, field: 'title', from: task.title || null, to: est.title, source: o.source || 'unknown' });
+    task.title = est.title; applied.push('title polished');
+  }
+  if (need.indexOf('notes') !== -1 && est.notes && est.notes !== String(task.notes || '').trim() && !touchedSince('notes') &&
+      (o.reqNotes == null || tsgStripFallbackNotes_(o.reqNotes) === tsgStripFallbackNotes_(task.notes))) {
+    task.history.push({ ts: now, field: 'notes', from: task.notes || null, to: est.notes, source: o.source || 'unknown' });
+    task.notes = est.notes; applied.push('notes polished');
+  }
+  if (need.indexOf('location') !== -1 && est.location && !String(task.location || '').trim()) {
+    task.history.push({ ts: now, field: 'location', from: null, to: est.location, source: o.source || 'unknown' });
+    task.location = est.location; applied.push('location (' + est.location + ')');
+  }
+  if (need.indexOf('due') !== -1 && est.due && !task.timelineEnd && !keep('timelineEnd')) {
+    task.history.push({ ts: now, field: 'timelineEnd', from: null, to: est.due, source: o.source || 'unknown' });
+    task.timelineEnd = est.due; task.dueOverride = true; applied.push('due (' + est.due + ')');
+  }
   if (o.deferred && (need.indexOf('priority') !== -1 || need.indexOf('group') !== -1)) {
     // The add-time fallback (Medium / Unsorted, or a neighbour's values) wrote a
     // "could not be determined ... Please confirm." paragraph; the real answer retires it.
@@ -1706,15 +1752,10 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
     task.tags = Array.from(new Set(task.tags.concat(est.tags)));
     applied.push('tags (' + est.tags.join(', ') + ')');
   }
-  if (need.indexOf('progress') !== -1 && est.progress != null && task.status !== 'Done' && !(o.deferred && typeof task.progress === 'number' && task.progress > 0)) {
-    task.progress = est.progress;
-    if (est.progress > 0 && task.status === 'Not Started') task.status = 'In Progress';
-    applied.push('progress (' + est.progress + '%, from the notes)');
-  }
   if (applied.length) {
     task.history.push({
       ts: now, field: 'auto-enriched', from: null,
-      to: 'Determined ' + (o.deferred ? 'by the judgment queue' : 'automatically') + ': ' + applied.join(', ') + (est.rationale ? ' — ' + est.rationale : ''),
+      to: 'Determined ' + (o.deferred ? 'by the judgment queue' : 'automatically') + (o.force ? ' (Tidy re-run)' : '') + ': ' + applied.join(', ') + (est.rationale ? ' — ' + est.rationale : ''),
       source: o.source || 'unknown'
     });
   }
@@ -1777,6 +1818,73 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
     }
   }
   return applied;
+}
+
+/** Notes without the add-time "could not be determined ... Please confirm." fallback paragraphs. */
+function tsgStripFallbackNotes_(notes) {
+  return String(notes || '').replace(/\n*(?:Priority|Group) (?:could not be determined by the estimator|inferred from the most similar existing task)[^]*?Please confirm\.\s*/g, '').trim();
+}
+/** True when a history line for `field` (after sinceTs, if given) came from a person rather than automation. */
+function tsgUserTouched_(task, field, sinceTs) {
+  return (task && task.history || []).some(function(h) {
+    if (!h || h.field !== field) return false;
+    if (sinceTs && !(String(h.ts || '') > String(sinceTs))) return false;
+    var src = String(h.source || '');
+    // No source = automation (the scheduler's auto-scheduled stamps, legacy rollups); every
+    // hand edit since 2026-09 carries 'Durand' or a roster name.
+    return !!src && !/^(Claude|Maps|system)/i.test(src) && src !== 'unknown';
+  });
+}
+/** The fields the estimator is told to keep unless the notes clearly justify a change. */
+function tsgCurrentSnapshot_(t) {
+  return { title: t.title || '', priority: t.priority || '', group: t.group || '', taskType: t.taskType || '',
+    estHours: (typeof t.estHours === 'number') ? t.estHours : null, tags: (t.tags || []).filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1; }),
+    due: t.timelineEnd || '', location: t.location || '', status: t.status || '', delegate: tsgTaskDelegate_(t) || '',
+    subitems: (t.subitems || []).map(function(s) { return s.title; }) };
+}
+/** Which fields a notes change (or a Tidy re-run) re-judges on an existing task. */
+function tsgEnrichNeedFor_(task, opts) {
+  opts = opts || {};
+  var force = !!opts.force;
+  var keep = function(f) { return !force && tsgUserTouched_(task, f, null); };
+  var need = ['title', 'notes', 'tags', 'subitems'];
+  if (!keep('estHours')) need.push('estHours');
+  if (!keep('taskType')) need.push('taskType');
+  if (!keep('priority')) need.push('priority');
+  if (!keep('group')) need.push('group');
+  if (!task.depends) need.push('dependsOnTitle');
+  if (!String(task.location || '').trim()) need.push('location');
+  if (!task.timelineEnd && !keep('timelineEnd')) need.push('due');
+  if (!opts.progressExplicit && !(task.subitems || []).length && task.status !== 'Done') need.push('progress');
+  return need;
+}
+/**
+ * Re-judge one existing task from its title + notes: with a key, one estimator call applied
+ * now; without one, an 'enrich' request queued for the Routine (target known, so it queues
+ * itself). Used when a task's notes change (update_task, replace_all) and by request_tidy.
+ */
+function tsgEnrichTask_(doc, task, now, source, opts) {
+  opts = opts || {};
+  if (!String(task.notes || '').trim() && !opts.force) {
+    // Nothing to derive from; an emptied note just resets a notes-driven bar.
+    if (!opts.progressExplicit && !(task.subitems || []).length && task.status !== 'Done' && task.progress !== 0) tsgSetProgressFromNotes_(task, 0);
+    return null;
+  }
+  var need = opts.need || tsgEnrichNeedFor_(task, opts);
+  if (!need.length) return null;
+  var board = tsgBoardContext_(doc);
+  var context = { groups: board.groups, openTitles: board.openTitles, existingTags: board.existingTags, batchSiblings: [],
+    current: tsgCurrentSnapshot_(task), target: { taskId: task.id } };
+  var est = tsgEstimateTask_(task.title, task.notes, task.priority, need, context);
+  if (est.source === 'queued' || est.source === 'none') {
+    if (est.source === 'queued' && opts.force && doc.meta && doc.meta.judgments) {
+      var last = doc.meta.judgments[doc.meta.judgments.length - 1];
+      if (last && last.taskId === task.id) last.force = true;
+    }
+    return est;
+  }
+  tsgApplyEstimateToTask_(doc, task, est, need, { now: now, source: source || 'Claude', force: !!opts.force, reqNotes: String(task.notes || '').trim() });
+  return est;
 }
 
 function tsgMatchFromParsed_(parsed, candidateCount) {
@@ -2523,7 +2631,7 @@ function backupTrackerFile_(key, payload) {
 // edits (replace_all) or 'unknown' if a caller genuinely didn't say. tags is diffed as
 // one whole-array entry rather than per-tag; every other field here is a plain scalar.
 var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
   'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done'];
 
@@ -3324,6 +3432,22 @@ var TSG_ESTIMATE_SYSTEM =
   'task\'s title, notes, and due date against each candidate\'s title and date/time. If more than ' +
   'one candidate could plausibly be it, or none clearly is, return null — linking the wrong meeting ' +
   'is worse than linking none. Same shape and confidence rule as driveMatch.\n\n' +
+  'title — ONLY when requested: the task title rewritten as one imperative line, at most 80 ' +
+  'characters, specific (who/what), keeping names, addresses and numbers. When the notes are a ' +
+  'free-flow thought and the title is a placeholder, derive the title from the notes. Return the ' +
+  'current title unchanged when it is already good.\n\n' +
+  'notes — ONLY when requested: the notes rewritten into (1) a short "Current state" paragraph ' +
+  'saying exactly where things stand, then (2) a "Log" of dated bullets, oldest first, one per ' +
+  'event, each starting with its date (use TODAY for undated statements). Keep every fact, name, ' +
+  'date, phone number, dollar amount and URL verbatim; drop chatter, duplicates and instructions ' +
+  'that later lines superseded; never invent a fact. The raw text may be a free-flow thought — ' +
+  'turn it into that structure. Return the notes unchanged when they are already clean.\n\n' +
+  'location — ONLY when requested: the place or street address the title/notes say the work ' +
+  'happens at (an office, a property, a store, a courthouse), as a short searchable string; null ' +
+  'when none is stated. Never guess one.\n\n' +
+  'due — ONLY when requested: an ISO date (YYYY-MM-DD) when the title/notes state a real deadline ' +
+  'or a specific day ("by Friday", "before the 20th", "on 9/22"), resolved against TODAY; null ' +
+  'otherwise.\n\n' +
   'needsConfirmation — ONLY relevant when estHours is one of the requested fields; ignore this ' +
   'field otherwise. true if a human should sanity-check the estHours you gave before it\'s trusted, ' +
   'false if you\'re genuinely confident in it. Say true when: the notes are too thin to really pin ' +
@@ -3343,6 +3467,7 @@ var TSG_ESTIMATE_SYSTEM =
   '"tags": ["..."], "progress": <integer 0-100>, ' +
   '"driveMatch": {"index": <1-based or null>, "confident": <boolean>, "rationale": "..."}|null, ' +
   '"meetingMatch": {"index": <1-based or null>, "confident": <boolean>, "rationale": "..."}|null, ' +
+  '"title": "...", "notes": "...", "location": "..."|null, "due": "YYYY-MM-DD"|null, ' +
   '"needsConfirmation": <boolean>, ' +
   '"rationale": "<one short sentence covering whatever you determined>"}';
 
@@ -3422,7 +3547,11 @@ function tsgEstimateSchema_(need) {
     tags: { type: 'array', items: { type: 'string' } },
     progress: { type: 'integer' },
     driveMatch: match,
-    meetingMatch: match
+    meetingMatch: match,
+    title: { type: 'string' },
+    notes: { type: 'string' },
+    location: nullable({ type: 'string' }),
+    due: nullable({ type: 'string' })
   };
   var props = {}, req = [];
   need.forEach(function(f) { if (all[f]) { props[f] = all[f]; req.push(f); } });
@@ -3459,8 +3588,10 @@ function tsgEstimatePrompt_(title, notes, priority, need, context) {
     'Task title: ' + String(title || '(untitled)'),
     'Notes:\n' + (clean || '(none)'),
     'Known priority (if already set): ' + (priority || '(not set)'),
+    'TODAY: ' + tsgTodayIso_(),
     'NEEDED_FIELDS: ' + JSON.stringify(need)
   ];
+  if (context.current) userParts.push('CURRENT_FIELDS (return these unchanged unless the title/notes clearly justify a change): ' + JSON.stringify(context.current));
   if (need.indexOf('dependsOnTitle') !== -1 && context.batchSiblings && context.batchSiblings.length) {
     userParts.push('BATCH_SIBLING_TITLES: ' + JSON.stringify(context.batchSiblings));
   }
@@ -3487,7 +3618,7 @@ function tsgEstimateParse_(raw, need, title, context) {
     return {
       estHours: null, taskType: null, subitems: [],
       priority: null, group: null, dependsOnTitle: null, progress: null,
-      driveMatch: null, meetingMatch: null,
+      driveMatch: null, meetingMatch: null, title: null, notes: null, location: null, due: null,
       tags: ['needs-estimate'], source: 'none', rationale: null, needsConfirmation: false
     };
   }
@@ -3495,7 +3626,7 @@ function tsgEstimateParse_(raw, need, title, context) {
   var out = {
     estHours: null, taskType: null, subitems: [],
     priority: null, group: null, dependsOnTitle: null, progress: null,
-    driveMatch: null, meetingMatch: null,
+    driveMatch: null, meetingMatch: null, title: null, notes: null, location: null, due: null,
     tags: [], source: 'claude', rationale: parsed.rationale || null,
     // Only meaningful when estHours was actually requested/returned this call — see the
     // "Triage" tag repurpose (2026-08-26): a self-assessed low-confidence estimate gets
@@ -3542,6 +3673,10 @@ function tsgEstimateParse_(raw, need, title, context) {
   if (need.indexOf('meetingMatch') !== -1) {
     out.meetingMatch = tsgMatchFromParsed_(parsed.meetingMatch, context.calendarCandidateCount || 0);
   }
+  if (need.indexOf('title') !== -1 && typeof parsed.title === 'string' && parsed.title.trim()) out.title = parsed.title.trim().slice(0, 120);
+  if (need.indexOf('notes') !== -1 && typeof parsed.notes === 'string' && parsed.notes.trim()) out.notes = parsed.notes.trim();
+  if (need.indexOf('location') !== -1 && typeof parsed.location === 'string' && parsed.location.trim()) out.location = parsed.location.trim().slice(0, 200);
+  if (need.indexOf('due') !== -1 && typeof parsed.due === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.due.trim())) out.due = parsed.due.trim();
 
   Logger.log('[estimate] "' + title + '" -> ' + JSON.stringify(out) + ' (claude): ' + (parsed.rationale || ''));
   return out;
@@ -3554,8 +3689,8 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
     // No key: hand the request to the queue (context.target known) or back to the caller
     // (add_task queues it once the task has an id). The result is the "none" shape with
     // source 'queued' so callers fall back exactly as for an unreachable Claude.
-    var req = { kind: 'estimate', need: p.need, title: String(title || ''), notes: String(notes || '').trim(), priority: priority || '',
-      batchSiblings: context.batchSiblings || [], driveCandidates: context.driveList || null, calendarCandidates: context.calendarList || null };
+    var req = { kind: 'enrich', need: p.need, title: String(title || ''), notes: String(notes || '').trim(), priority: priority || '',
+      current: context.current || null, batchSiblings: context.batchSiblings || [], driveCandidates: context.driveList || null, calendarCandidates: context.calendarList || null };
     var out = tsgEstimateParse_(null, p.need, title, context);
     out.source = 'queued';
     if (context.target && context.target.taskId != null) {
@@ -3673,14 +3808,22 @@ function tsgProgressFromNotesMany_(items) {
   return out;
 }
 /** replace_all variant: pairs tasks by id and subitems by index, like the history stamping does; one call for the lot. */
-function tsgApplyProgressFromNotesOnSave_(prevTasks, nextTasks) {
+/** An OPEN item whose notes actually changed (subitems or not). */
+function tsgNotesChanged_(item, prevNotes) {
+  if (!item) return false;
+  var status = item.done ? 'Done' : (item.status || 'Not Started');
+  if (status === 'Done') return false;
+  return String(item.notes || '').trim() !== String(prevNotes || '').trim();
+}
+function tsgApplyProgressFromNotesOnSave_(prevTasks, nextTasks, doc, now) {
   var prevById = {};
   (prevTasks || []).forEach(function(t) { if (t) prevById[t.id] = t; });
-  var wanted = [];
+  var wanted = [], enrichTasks = [];
   (nextTasks || []).forEach(function(t) {
     if (!t) return;
     var p = prevById[t.id];
-    if (tsgProgressWanted_(t, p ? p.notes : '', !!p && !tsgValuesEqual_(p.progress, t.progress))) wanted.push({ item: t, target: { taskId: t.id } });
+    var explicitProgress = !!p && !tsgValuesEqual_(p.progress, t.progress);
+    if (tsgNotesChanged_(t, p ? p.notes : '')) enrichTasks.push({ task: t, progressExplicit: explicitProgress });
     var ps = (p && Array.isArray(p.subitems)) ? p.subitems : [];
     (t.subitems || []).forEach(function(s, i) {
       if (!s) return;
@@ -3688,6 +3831,7 @@ function tsgApplyProgressFromNotesOnSave_(prevTasks, nextTasks) {
       if (tsgProgressWanted_(s, q ? q.notes : '', !!q && !tsgValuesEqual_(q.progress, s.progress))) wanted.push({ item: s, target: { taskId: t.id, subIdx: i } });
     });
   });
+  if (doc) enrichTasks.forEach(function(x) { tsgEnrichTask_(doc, x.task, now || new Date().toISOString(), 'Durand', { progressExplicit: x.progressExplicit }); });
   if (!wanted.length) return;
   var pcts = tsgProgressFromNotesMany_(wanted.map(function(w) { return { title: w.item.title, notes: String(w.item.notes || '').trim(), priority: w.item.priority, target: w.target }; }));
   wanted.forEach(function(w, i) { if (pcts[i] != null) tsgSetProgressFromNotes_(w.item, pcts[i]); });
@@ -4501,21 +4645,50 @@ function tsgTravelKey_(location, base) {
 }
 var TSG_TRAVEL_CALLS = 0; // Maps calls this execution (tasks and calendar events together)
 /** ONE-WAY driving minutes from base to location, rounded up to 5; cached 6 h. Throws when Maps finds no route. */
-function tsgOneWayMinutes_(base, location) {
-  var key = ('travel1:' + tsgTravelKey_(location, base)).slice(0, 240);
+var TSG_TRAVEL_METHODS = ['drive', 'walk', 'transit'];
+function tsgOneWayMinutes_(base, location, method) {
+  method = TSG_TRAVEL_METHODS.indexOf(method) !== -1 ? method : 'drive';
+  var mode = method === 'walk' ? Maps.DirectionFinder.Mode.WALKING : method === 'transit' ? Maps.DirectionFinder.Mode.TRANSIT : Maps.DirectionFinder.Mode.DRIVING;
+  var key = ('travel1:' + method + ':' + tsgTravelKey_(location, base)).slice(0, 240);
   var cache = null;
   try { cache = CacheService.getScriptCache(); var hit = cache.get(key); if (hit != null) return Number(hit); } catch (e0) {}
   if (TSG_TRAVEL_CALLS >= TSG_TRAVEL_PER_RUN_CAP) throw new Error('per-run Maps cap reached');
   TSG_TRAVEL_CALLS++;
-  var dir = Maps.newDirectionFinder().setOrigin(base).setDestination(location).setMode(Maps.DirectionFinder.Mode.DRIVING).getDirections();
+  var dir = Maps.newDirectionFinder().setOrigin(base).setDestination(location).setMode(mode).getDirections();
   var route = dir && dir.routes && dir.routes[0];
-  if (!route || !route.legs || !route.legs.length) throw new Error('no route found');
+  if (!route || !route.legs || !route.legs.length) throw new Error('no ' + method + ' route found');
   var secs = route.legs.reduce(function(a, l) { return a + ((l.duration && l.duration.value) || 0); }, 0);
   var mins = Math.max(5, Math.ceil(secs / 60 / 5) * 5);
   try { if (cache) cache.put(key, String(mins), 21600); } catch (e1) {}
   return mins;
 }
-function tsgRoundTripMinutes_(base, location) { return tsgOneWayMinutes_(base, location) * 2; }
+function tsgRoundTripMinutes_(base, location) { return tsgOneWayMinutes_(base, location, 'drive') * 2; }
+/** One-way minutes per method; a method Maps cannot route (transit, often) is null. */
+function tsgTravelOptions_(base, location) {
+  var out = {};
+  TSG_TRAVEL_METHODS.forEach(function(m) { try { out[m] = tsgOneWayMinutes_(base, location, m); } catch (err) { out[m] = null; } });
+  return out;
+}
+/**
+ * Recommendation (2026-09-16, per Durand: "walk/drive/transit - and make a recommendation"):
+ * walk when it is a short walk (<= 15 min); transit when it is within 30% of driving (no
+ * parking, no wheel time); otherwise drive; else whatever Maps could route.
+ */
+function tsgRecommendTravel_(opts) {
+  opts = opts || {};
+  if (opts.walk != null && opts.walk <= 15) return 'walk';
+  if (opts.transit != null && opts.drive != null && opts.transit <= opts.drive * 1.3) return 'transit';
+  if (opts.drive != null) return 'drive';
+  if (opts.transit != null) return 'transit';
+  if (opts.walk != null) return 'walk';
+  return null;
+}
+/** The method a task actually travels by: Durand's pick when Maps could route it, else the recommendation. */
+function tsgTravelMethodUsed_(t) {
+  var opts = (t && t.travelOptions) || {};
+  if (t && t.travelMethod && opts[t.travelMethod] != null) return t.travelMethod;
+  return (t && t.travelRecommended) || tsgRecommendTravel_(opts);
+}
 /** The home base for travel: meta.homeBase mirrored into a script property so the calendar feeds (no doc in hand) can read it. */
 function tsgHomeBase_(doc) {
   var fromDoc = doc && doc.meta && String(doc.meta.homeBase || '').trim();
@@ -4539,7 +4712,7 @@ function tsgEventTravelMinutes_(location) {
   var base = tsgHomeBase_(null);
   var loc = String(location || '').trim();
   if (!base || !loc) return TSG_MEETING_TRAVEL_MIN;
-  try { return tsgOneWayMinutes_(base, loc); } catch (err) { return TSG_MEETING_TRAVEL_MIN; }
+  try { return tsgOneWayMinutes_(base, loc, 'drive'); } catch (err) { return TSG_MEETING_TRAVEL_MIN; }
 }
 /** Address search for the location picker: Maps geocoder, top matches as plain labels. */
 function tsgGeocode_(q) {
@@ -4559,25 +4732,31 @@ function tsgApplyTravelTimes_(doc) {
   (doc.tasks || []).forEach(function(t) {
     if (!t) return;
     var loc = String(t.location || '').trim();
-    if (!loc) { if (t.travelMin != null || t.travelFor) { delete t.travelMin; delete t.travelOneWayMin; delete t.travelFor; } return; }
+    if (!loc) { if (t.travelMin != null || t.travelFor) { delete t.travelMin; delete t.travelOneWayMin; delete t.travelFor; delete t.travelOptions; delete t.travelRecommended; delete t.travelMethodUsed; } return; }
     if (!base) return;
     var key = tsgTravelKey_(loc, base);
-    if (t.travelFor === key && typeof t.travelMin === 'number' && typeof t.travelOneWayMin === 'number') return;
-    if (t.status === 'Done' || t.status === 'Cancelled') return;
-    if (calls >= TSG_TRAVEL_PER_RUN_CAP) return;
-    calls++;
-    try {
-      var oneWay = tsgOneWayMinutes_(base, loc);
-      var mins = oneWay * 2;
-      t.history = t.history || [];
-      t.history.push({ ts: new Date().toISOString(), field: 'travelMin', from: (typeof t.travelMin === 'number') ? t.travelMin : null, to: mins, source: 'Maps' });
-      t.travelOneWayMin = oneWay;
-      t.travelMin = mins;
+    if (!(t.travelFor === key && t.travelOptions)) {
+      if (t.status === 'Done' || t.status === 'Cancelled') return;
+      if (calls >= TSG_TRAVEL_PER_RUN_CAP) return;
+      calls++;
+      var opts = tsgTravelOptions_(base, loc);
+      if (opts.drive == null && opts.walk == null && opts.transit == null) { Logger.log('[travel] #' + t.id + ' "' + loc + '": no route by any method'); return; }
+      t.travelOptions = opts;
+      t.travelRecommended = tsgRecommendTravel_(opts);
       t.travelFor = key;
       if (!t.travelMode) t.travelMode = 'round';
-    } catch (err) {
-      Logger.log('[travel] #' + t.id + ' "' + loc + '": ' + err.message);
+      t.history = t.history || [];
+      t.history.push({ ts: new Date().toISOString(), field: 'travelOptions', from: null,
+        to: TSG_TRAVEL_METHODS.filter(function(m) { return opts[m] != null; }).map(function(m) { return m + ' ' + opts[m] + ' min'; }).join(', ') + ' — recommended: ' + t.travelRecommended, source: 'Maps' });
     }
+    // Effective minutes follow the chosen (or recommended) method; recomputed on every
+    // write so a method change on the dashboard takes effect without a Maps call.
+    var used = tsgTravelMethodUsed_(t);
+    var oneWay = used ? t.travelOptions[used] : null;
+    if (oneWay == null) { delete t.travelOneWayMin; delete t.travelMin; return; }
+    t.travelMethodUsed = used;
+    t.travelOneWayMin = oneWay;
+    t.travelMin = oneWay * 2;
   });
 }
 /** Hours a work item costs on the schedule: its estimate plus round-trip travel when it has one. */
