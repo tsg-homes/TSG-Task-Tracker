@@ -590,25 +590,129 @@ function raffleReadEntries_(test) {
 }
 
 // ---------- FUB ----------
+// Per Durand 2026-09-16, this does NOT create-and-tag-duplicates the way the
+// other forms do. It matches an existing contact confidently, UPDATES it with
+// whatever is new, and preserves what was there as a note. Rationale: FUB does
+// not merge on email, so a create always makes a second record -- which means
+// the raffle tags would land on a brand-new empty record while the real contact,
+// with all its history, got nothing.
+//
+// MATCH CONFIDENCE. Wrongly merging two different people corrupts real CRM data,
+// so this is deliberately conservative. A candidate is confident only when:
+//   email matches AND (last name OR first name OR phone also matches)
+//   -- or --
+//   phone matches AND BOTH first and last name match
+// Email alone is NOT enough, and phone alone is NOT enough: a couple sharing one
+// address or one mobile is the common case, and they are two different people.
+// If two or more candidates clear the bar, that is ambiguous, not confident --
+// nothing is updated, a new contact is created, and Durand is told so he can
+// merge by hand. Names are compared exactly (normalized); no nickname guessing,
+// because over-matching is the expensive direction here.
+function raffleNorm_(v) {
+  return String(v || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function raffleFubGet_(url, apiKey) {
+  var resp = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { Authorization: 'Basic ' + Utilities.base64Encode(apiKey + ':') },
+    muteHttpExceptions: true
+  });
+  if (resp.getResponseCode() < 200 || resp.getResponseCode() >= 300) return null;
+  try { return JSON.parse(resp.getContentText()); } catch (err) { return null; }
+}
+
+// Everything FUB knows that could be this person, by email or by phone.
+function raffleFindCandidates_(email, phoneDigits, apiKey) {
+  var byId = {};
+  [
+    'https://api.followupboss.com/v1/people?email=' + encodeURIComponent(email),
+    'https://api.followupboss.com/v1/people?phone=' + encodeURIComponent(phoneDigits)
+  ].forEach(function (url) {
+    var body = raffleFubGet_(url, apiKey);
+    ((body && body.people) || []).forEach(function (p) {
+      if (p && (p.id || p.id === 0)) byId[p.id] = p;
+    });
+  });
+  return Object.keys(byId).map(function (k) { return byId[k]; });
+}
+
+function raffleScoreCandidate_(p, first, last, email, phoneDigits) {
+  var emails = (p.emails || []).map(function (e) { return raffleNorm_(e && e.value); });
+  var phones = (p.phones || []).map(function (x) { return rafflePhoneKey_(x && x.value); });
+  var m = {
+    email: emails.indexOf(raffleNorm_(email)) !== -1,
+    phone: phones.indexOf(rafflePhoneKey_(phoneDigits)) !== -1,
+    first: !!raffleNorm_(first) && raffleNorm_(p.firstName) === raffleNorm_(first),
+    last:  !!raffleNorm_(last)  && raffleNorm_(p.lastName)  === raffleNorm_(last)
+  };
+  m.confident = (m.email && (m.last || m.first || m.phone)) ||
+                (m.phone && m.first && m.last);
+  m.why = Object.keys(m).filter(function (k) { return k !== 'confident' && k !== 'why' && m[k]; }).join('+');
+  return m;
+}
+
+// Union of two {value:...} lists, keyed by a normalizer, first list winning.
+function raffleMergeValues_(existing, incoming, keyFn) {
+  var out = (existing || []).slice();
+  var seen = {};
+  out.forEach(function (e) { seen[keyFn(e && e.value)] = true; });
+  (incoming || []).forEach(function (e) {
+    var k = keyFn(e && e.value);
+    if (k && !seen[k]) { out.push(e); seen[k] = true; }
+  });
+  return out;
+}
+
 function rafflePushToFub_(name, email, phone, test) {
   try {
     var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
     if (!apiKey) return { ok: false, error: 'FUB_API_KEY script property is not set.' };
 
-    var parts = splitName(name);
+    var parts  = splitName(name);
+    var first  = parts.first, last = parts.last;
+    var digits = String(phone || '').replace(/\D/g, '');
+    var tags   = test ? RAFFLE_TAGS.concat([QA_TEST_TAG]) : RAFFLE_TAGS.slice();
+
+    // ---- 1. Try to recognise them ----
+    var confident = [];
+    try {
+      raffleFindCandidates_(email, digits, apiKey).forEach(function (p) {
+        var m = raffleScoreCandidate_(p, first, last, email, digits);
+        if (m.confident) confident.push({ person: p, why: m.why });
+      });
+    } catch (searchErr) {
+      Logger.log('Raffle FUB candidate search failed (falling back to create): ' + searchErr);
+    }
+
+    if (confident.length === 1) {
+      return raffleUpdateExistingFub_(confident[0], name, first, last, email, phone, digits, tags, apiKey, test);
+    }
+    if (confident.length > 1) {
+      // Ambiguous is not confident. Do not guess which record is the real one.
+      try {
+        sendErrorAlert('Raffle: ambiguous FUB match for ' + name,
+          'More than one FUB contact matched confidently, so NOTHING was updated and a new ' +
+          'contact was created instead. Merge by hand in FUB:\n\n' +
+          confident.map(function (c) {
+            return '  #' + c.person.id + '  ' + (c.person.firstName || '') + ' ' +
+                   (c.person.lastName || '') + '  (matched on ' + c.why + ')\n' +
+                   '  https://' + FUB_SUBDOMAIN + '.followupboss.com/2/people/view/' + c.person.id;
+          }).join('\n\n'));
+      } catch (alertErr) { Logger.log('Ambiguous-match alert failed: ' + alertErr); }
+    }
+
+    // ---- 2. Nobody recognised: create, as before ----
     var payload = {
-      firstName: (test ? QA_TEST_PREFIX : '') + parts.first,
-      lastName: parts.last,
+      firstName: (test ? QA_TEST_PREFIX : '') + first,
+      lastName: last,
       source: RAFFLE_SOURCE,
-      tags: test ? RAFFLE_TAGS.concat([QA_TEST_TAG]) : RAFFLE_TAGS.slice(),
+      tags: tags,
       emails: [{ value: email }],
-      phones: [{ value: phone.replace(/\D/g, '') }],
+      phones: [{ value: digits }],
       background: (test ? (QA_TEST_BACKGROUND_LEAD_IN + '\n\n') : '') +
                   raffleBackground_(name, email, phone)
     };
-    // Same structured consent capture the open-house and intake forms use
-    // (FUB custom field id 23, "Consent — Captured Date"). Entry requires
-    // consent, so by the time this runs it is always a Yes.
     payload[CONSENT_CUSTOM_FIELD] = Utilities.formatDate(raffleNow_(), RAFFLE_TZ, 'yyyy-MM-dd');
 
     var resp = UrlFetchApp.fetch('https://api.followupboss.com/v1/people', {
@@ -622,33 +726,79 @@ function rafflePushToFub_(name, email, phone, test) {
     if (code < 200 || code >= 300) {
       return { ok: false, error: 'FUB /v1/people returned ' + code + ': ' + resp.getContentText().slice(0, 400) };
     }
-
     var personId = null;
     try { personId = JSON.parse(resp.getContentText()).id; } catch (parseErr) { /* non-fatal */ }
-
-    // The note is a separate call and a separate failure mode: a missing note
-    // is a much smaller problem than a missing contact, so a note failure does
-    // not fail the push.
     if (personId) {
       try { raffleAddNote_(personId, name, apiKey, test); }
       catch (noteErr) { Logger.log('Raffle note failed for person ' + personId + ': ' + noteErr); }
-
-      // FUB does NOT merge on email -- posting an address that already exists
-      // creates a SECOND person record. That is established by this project's
-      // own flagPossibleDuplicatesByEmail_, which the open-house and both intake
-      // paths already call after every create. The raffle has to do the same or
-      // a block-party entrant who is already a TSG contact quietly becomes a
-      // duplicate with nothing marking it. Best-effort by the same contract as
-      // the other callers: the entry already succeeded and must never be
-      // reported as failed because this secondary step broke.
-      try { flagPossibleDuplicatesByEmail_(email, personId, apiKey); }
-      catch (dupErr) { Logger.log('Raffle duplicate flagging failed: ' + dupErr); }
     }
-    return { ok: true, personId: personId };
+    return { ok: true, personId: personId, created: true };
 
   } catch (err) {
     return { ok: false, error: 'FUB fetch threw: ' + (err && err.message ? err.message : String(err)) };
   }
+}
+
+// Confident match: fold the new information into the record that already exists,
+// and keep the previous values as a note so nothing is silently overwritten.
+function raffleUpdateExistingFub_(match, name, first, last, email, phone, digits, tags, apiKey, test) {
+  var id = match.person.id;
+
+  // Re-read the full record: the search result is a summary, and tags/emails/
+  // phones have to be merged against what is actually there or the PUT wipes them.
+  var cur = raffleFubGet_('https://api.followupboss.com/v1/people/' + id, apiKey) || match.person;
+  var before = {
+    firstName: cur.firstName || '',
+    lastName:  cur.lastName || '',
+    emails: (cur.emails || []).map(function (e) { return e && e.value; }).filter(String),
+    phones: (cur.phones || []).map(function (p) { return p && p.value; }).filter(String),
+    tags:   (cur.tags || []).slice(),
+    source: cur.source || ''
+  };
+
+  var mergedTags = before.tags.slice();
+  tags.forEach(function (t) { if (mergedTags.indexOf(t) === -1) mergedTags.push(t); });
+
+  var payload = {
+    // Additive only. An existing address or number is never replaced -- the new
+    // one is appended, so a second email or a mobile we did not have is gained
+    // rather than the old one being destroyed.
+    emails: raffleMergeValues_(cur.emails, [{ value: email }], raffleNorm_),
+    phones: raffleMergeValues_(cur.phones, [{ value: digits }], rafflePhoneKey_),
+    tags: mergedTags
+  };
+  // Fill a blank name, never overwrite one that is already set: the CRM's version
+  // of someone's name is likelier to be right than what they thumbed in at a party.
+  if (!before.firstName && first) payload.firstName = (test ? QA_TEST_PREFIX : '') + first;
+  if (!before.lastName && last)   payload.lastName = last;
+  // Their original lead source is history and is deliberately left alone; the
+  // raffle tags are what record that they came through this event.
+  payload[CONSENT_CUSTOM_FIELD] = Utilities.formatDate(raffleNow_(), RAFFLE_TZ, 'yyyy-MM-dd');
+
+  var resp = UrlFetchApp.fetch('https://api.followupboss.com/v1/people/' + id, {
+    method: 'put',
+    contentType: 'application/json',
+    headers: { Authorization: 'Basic ' + Utilities.base64Encode(apiKey + ':') },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+  var code = resp.getResponseCode();
+  if (code < 200 || code >= 300) {
+    return { ok: false, error: 'FUB PUT /v1/people/' + id + ' returned ' + code + ': ' +
+                               resp.getContentText().slice(0, 400) };
+  }
+
+  var addedEmail = before.emails.map(raffleNorm_).indexOf(raffleNorm_(email)) === -1;
+  var addedPhone = before.phones.map(rafflePhoneKey_).indexOf(rafflePhoneKey_(digits)) === -1;
+  var addedTags  = mergedTags.filter(function (t) { return before.tags.indexOf(t) === -1; });
+
+  try { raffleAddNote_(id, name, apiKey, test, { before: before, match: match.why,
+        addedEmail: addedEmail ? email : null, addedPhone: addedPhone ? phone : null,
+        addedTags: addedTags }); }
+  catch (noteErr) { Logger.log('Raffle update note failed for person ' + id + ': ' + noteErr); }
+
+  Logger.log('Raffle: UPDATED existing FUB contact ' + id + ' (matched on ' + match.why + ').');
+  return { ok: true, personId: id, updated: true, matchedOn: match.why };
 }
 
 function raffleBackground_(name, email, phone) {
@@ -671,17 +821,48 @@ function raffleBackground_(name, email, phone) {
   ].join('\n');
 }
 
-function raffleAddNote_(personId, name, apiKey, test) {
+function raffleAddNote_(personId, name, apiKey, test, upd) {
+  var lines = [
+    'Met at the TSG Block Party, Sat 9/19/2026, 1342 N Hancock St. Entered the ' +
+    RAFFLE_PRIZE_SHORT + ' drawing and consented to follow-up.',
+    'Email address was verified at entry (a code was emailed and typed back).'
+  ];
+
+  if (upd) {
+    // The whole point of the update path: whatever this overwrote or added is
+    // written down here, so the record's previous state is never just lost.
+    lines.push('', 'RECOGNISED AN EXISTING CONTACT — matched on ' + upd.match + '.',
+                   'This entry UPDATED that contact rather than creating a second record.');
+    var changes = [];
+    if (upd.addedEmail) changes.push('  + email added: ' + upd.addedEmail);
+    if (upd.addedPhone) changes.push('  + phone added: ' + upd.addedPhone);
+    if (upd.addedTags && upd.addedTags.length) changes.push('  + tags added: ' + upd.addedTags.join(', '));
+    lines.push('', changes.length ? 'What this entry added:' : 'Nothing new to add — we already had all of it.');
+    if (changes.length) lines = lines.concat(changes);
+
+    var b = upd.before || {};
+    lines.push('', 'CONTACT AS IT WAS BEFORE THIS ENTRY (nothing here was removed):',
+      '  Name:   ' + [b.firstName, b.lastName].join(' ').trim(),
+      '  Emails: ' + ((b.emails || []).join(', ') || '(none)'),
+      '  Phones: ' + ((b.phones || []).join(', ') || '(none)'),
+      '  Tags:   ' + ((b.tags || []).join(', ') || '(none)'),
+      '  Source: ' + (b.source || '(none)') + '  [left unchanged — original lead source is history]',
+      '', 'Entered as: ' + name + ' / ' + (upd.addedEmail || '(existing email)') + ' / ' +
+          (upd.addedPhone || '(existing phone)'));
+  } else {
+    lines.push('', 'New contact — no existing FUB record matched confidently on name + email + phone.',
+                   'Warm event lead — worth a personal call, not just a drip.');
+  }
+
   var resp = UrlFetchApp.fetch('https://api.followupboss.com/v1/notes', {
     method: 'post',
     contentType: 'application/json',
     headers: { Authorization: 'Basic ' + Utilities.base64Encode(apiKey + ':') },
     payload: JSON.stringify({
       personId: personId,
-      subject: (test ? QA_TEST_PREFIX : '') + 'Block Party 2026 — raffle entry',
-      body: 'Met at the TSG Block Party, Sat 9/19/2026, 1342 N Hancock St. Entered the ' +
-            RAFFLE_PRIZE_SHORT + ' drawing and consented to follow-up. ' +
-            'Warm event lead — worth a personal call, not just a drip.',
+      subject: (test ? QA_TEST_PREFIX : '') + 'Block Party 2026 — raffle entry' +
+               (upd ? ' (updated existing contact)' : ''),
+      body: lines.join('\n'),
       isHtml: false
     }),
     muteHttpExceptions: true

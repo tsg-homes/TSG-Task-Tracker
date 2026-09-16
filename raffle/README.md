@@ -158,42 +158,45 @@ alerted to you by email, and re-pushed later with `raffleRetryFubFailures()`.
 
 ## What happens if the entrant is already in FUB
 
-**FUB does not merge on email.** Posting an address that already exists creates a
-**second person record** — that is this project's own established finding, and it
-is why `flagPossibleDuplicatesByEmail_` exists in `Code.gs`.
+**It updates the existing contact. It does not create a duplicate.**
 
-So when a block-party entrant is already a TSG contact, the raffle creates a new
-FUB person and then tags **both** that new record and every pre-existing record
-sharing the address with **`Possible Duplicate`**, exactly as the Open House
-Sign-In and both Intake forms already do. Merging them is a human decision in
-FUB; the tag is what makes them findable.
+FUB does not merge on email — a plain create always makes a second record, which
+would put the raffle tags on a brand-new empty record while the real contact,
+with all its history, got nothing. So the raffle looks the person up first.
 
-Best-effort by the same contract as the other callers: the entry has already
-succeeded by that point and is never reported as failed because the flagging
-step broke.
+### How a match is decided
 
-## How entrants are identified
+Candidates are pulled by email **and** by phone, then scored. A match counts as
+confident only when:
 
-Two different identities, for two different jobs — worth keeping straight:
+- **email matches AND** (last name **or** first name **or** phone also matches), or
+- **phone matches AND both** first and last name match
 
-| | Used for | Keyed on |
-|---|---|---|
-| **Raffle entry** | one-entry-per-person, and the draw | the **sheet row**: normalized email **or** phone |
-| **FUB contact** | CRM record | FUB's own person id |
+**Email alone is not enough. Phone alone is not enough.** A couple sharing one
+address or one mobile is the common case and they are two different people —
+merging them would corrupt real CRM data, which is the expensive direction to get
+wrong. Names are compared exactly (case and punctuation normalized); there is no
+nickname guessing, for the same reason.
 
-The drawing never consults FUB. One-entry-per-person is enforced on the sheet,
-matching on normalized email **or** normalized phone — country code stripped and
-punctuation removed, so `+1 215.555.8123` and `(215) 555-8123` are the same
-person. Matching on *either* is deliberate: someone entering twice usually varies
-one and not the other (a nickname, a work vs personal address, the phone typed
-differently).
+| Situation | What happens |
+|---|---|
+| Exactly one confident match | **Update** that contact |
+| No confident match | Create a new contact |
+| Two or more confident matches | Update **nothing**, create a new contact, and email Durand both record links to merge by hand |
 
-A consequence worth knowing: **a couple sharing one phone or one email counts as
-one entrant.** For a household prize that is arguably right, but it is a choice,
-not an accident — say so if you want it changed to email-only.
+### What an update does
 
-The winner is identified by the sheet row, and the result email carries name,
-phone and email so you can find them at the party without opening FUB.
+- **Additive only.** A new email or phone is *appended*; an existing one is never
+  replaced. You gain the second mobile rather than losing the first.
+- **Tags are merged**, not overwritten — existing tags survive and the raffle tags
+  join them, on the record that actually has the history.
+- **An existing name is never overwritten.** A blank one gets filled in. The CRM's
+  version of someone's name beats what they thumbed in at a party.
+- **The original lead source is left alone.** That is history; the raffle tags are
+  what record that they came through this event.
+- **The previous state is written to a note** — prior name, emails, phones, tags
+  and source, plus exactly what this entry added and what it matched on. Nothing
+  is silently overwritten.
 
 ## Verification
 

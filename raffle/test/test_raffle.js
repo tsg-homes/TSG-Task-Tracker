@@ -29,7 +29,7 @@ function makeSandbox(opts) {
   const sent = [];
   const fetches = [];
   const cache = {};
-  const dupFlagCalls = [];
+  const alerts = [];
 
   // Multi-tab fake: the whole point of the test/live split is that they are
   // different sheets, so the fake has to model that rather than share one array.
@@ -90,11 +90,31 @@ function makeSandbox(opts) {
       }),
       base64Encode: () => 'b64'
     },
+    // Route-aware FUB fake. opts.fubPeople seeds records that already exist, so
+    // the match-and-update path can be exercised for real rather than assumed.
     UrlFetchApp: {
       fetch: (url, o) => {
         fetches.push({ url, o });
         const code = opts.fubStatus || 200;
-        return { getResponseCode: () => code, getContentText: () => JSON.stringify({ id: 999 }) };
+        const people = opts.fubPeople || [];
+        const json = b => ({ getResponseCode: () => code, getContentText: () => JSON.stringify(b) });
+        const norm = v => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const dig  = v => { let d = String(v || '').replace(/\D/g, ''); if (d.length === 11 && d[0] === '1') d = d.slice(1); return d; };
+
+        if (/\/v1\/people\?email=/.test(url)) {
+          const q = norm(decodeURIComponent(url.split('email=')[1]));
+          return json({ people: people.filter(p => (p.emails || []).some(e => norm(e.value) === q)) });
+        }
+        if (/\/v1\/people\?phone=/.test(url)) {
+          const q = dig(decodeURIComponent(url.split('phone=')[1]));
+          return json({ people: people.filter(p => (p.phones || []).some(x => dig(x.value) === q)) });
+        }
+        const m = url.match(/\/v1\/people\/(\d+)$/);
+        if (m && (!o || (o.method || 'get') === 'get')) {
+          return json(people.find(p => String(p.id) === m[1]) || {});
+        }
+        if (m && o && o.method === 'put') return json({ id: Number(m[1]) });
+        return json({ id: 999 });
       }
     },
     HtmlService: { createHtmlOutput: h => h, createTemplateFromFile: () => ({ evaluate: () => ({ setTitle: () => ({ addMetaTag: () => 'page' }) }) }) },
@@ -107,7 +127,7 @@ function makeSandbox(opts) {
     validatePhoneField: p => { const d = String(p || '').replace(/\D/g, ''); if (p && (d.length < 10 || d.length > 15)) { const x = new Error('bad phone'); x.isValidation = true; throw x; } },
     splitName: n => { const p = String(n).trim().split(/\s+/); const f = p.shift(); return { first: f, last: p.join(' ') }; },
     jsonOut: o => o,
-    sendErrorAlert: () => {},
+    sendErrorAlert: (context, detail) => { alerts.push({ context, detail }); },
     getSubmitToken: () => 'tok',
     safeJsonForScript_: v => JSON.stringify(v),
     CONSENT_CUSTOM_FIELD: 'customConsentCapturedDate',
@@ -118,8 +138,7 @@ function makeSandbox(opts) {
     QA_TEST_NOTIFY_EMAIL: 'durand@thestawaszgroup.com',
     QA_TEST_BACKGROUND_LEAD_IN: '[QA TEST] Created by a TSG QA test submission.',
     isQaTestMode_: () => !!opts.qaMode,
-    // Real helper lives in Code.gs; record that the raffle actually calls it.
-    flagPossibleDuplicatesByEmail_: (email, id, key) => { dupFlagCalls.push({ email, id, key }); },
+    FUB_SUBDOMAIN: 'homes571',
     issueQaTestToken_: () => (opts.qaMode ? 'tok-uuid' : ''),
     qaTestRecipients_: list => (opts.qaMode ? ['durand@thestawaszgroup.com']
                                             : (Array.isArray(list) ? list : [list])),
@@ -128,7 +147,7 @@ function makeSandbox(opts) {
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../RaffleCode.gs'), 'utf8'), sandbox);
   sandbox.__sent = sent; sandbox.__fetches = fetches;
-  sandbox.__props = props; sandbox.__tabs = tabs; sandbox.__dupFlags = dupFlagCalls;
+  sandbox.__props = props; sandbox.__tabs = tabs; sandbox.__alerts = alerts;
   // Data rows only -- the header is row 1 and is never an entry.
   sandbox.__data = name => (tabs[name || 'Entries'] ? tabs[name || 'Entries'].rows.slice(1) : []);
   return sandbox;
@@ -246,7 +265,9 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
 {
   const s = makeSandbox();
   enterFull(s, entry(), DURING);
-  const people = s.__fetches.filter(f => /\/v1\/people/.test(f.url));
+  // The people endpoint is now also hit for candidate searches, so count only
+  // the actual create.
+  const people = s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post');
   const notes  = s.__fetches.filter(f => /\/v1\/notes/.test(f.url));
   eq('one person created in FUB', people.length, 1);
   eq('one note written in FUB', notes.length, 1);
@@ -362,7 +383,7 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
     enterFull(s, entry(), BEFORE).already === true);
 
   // 4. FUB records are marked so nobody mistakes them for leads.
-  const people = s.__fetches.filter(f => /\/v1\/people/.test(f.url));
+  const people = s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post');
   const body = JSON.parse(people[0].o.payload);
   check('test mode: FUB first name is prefixed', /^\[QA TEST\] /.test(body.firstName));
   check('test mode: FUB record carries the QA tag',
@@ -475,10 +496,12 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
   eq('now one row exists', s.__data().length, 1);
   check('the row records the email as verified',
     /Yes/.test(String(s.__data()[0][10])));
+  const created = JSON.parse(s.__fetches.find(
+    f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post').o.payload);
   check('FUB background states the email was verified',
-    /EMAIL VERIFIED/.test(JSON.parse(s.__fetches[0].o.payload).background));
+    /EMAIL VERIFIED/.test(created.background));
   check('FUB background is honest that the phone was NOT ownership-verified',
-    /NOT ownership-verified/.test(JSON.parse(s.__fetches[0].o.payload).background));
+    /NOT ownership-verified/.test(created.background));
 
   // The id is single-use.
   const replay = at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code }));
@@ -557,16 +580,102 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
 }
 
 
-// ---- Already-in-FUB entrants ----------------------------------------------
-// FUB does not merge on email: posting an address that already exists creates a
-// SECOND person record. Every other write path in this project flags that; the
-// raffle must too.
+
+// ---- ALREADY-IN-FUB: confident match -> update, never a duplicate -----------
+const fubPerson = o => Object.assign({
+  id: 501, firstName: 'Dana', lastName: 'Reid',
+  emails: [{ value: 'dana@mail-test.co' }], phones: [{ value: '2155558123' }],
+  tags: ['Sphere', 'Past Client'], source: 'Zillow 2023'
+}, o);
+
+const puts    = s => s.__fetches.filter(f => /\/v1\/people\/\d+$/.test(f.url) && f.o && f.o.method === 'put');
+const creates = s => s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post');
+const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.url)).pop().o.payload).body;
+
+// email + last name + phone all agree -> update, and NOT a second record.
 {
-  const s = makeSandbox();
+  const s = makeSandbox({ fubPeople: [fubPerson()] });
   enterFull(s, entry(), DURING);
-  eq('raffle flags possible duplicates after a create', s.__dupFlags.length, 1);
-  eq('flagged on the entrant email', s.__dupFlags[0].email, 'dana@mail-test.co');
-  check('flagged against the new person id', s.__dupFlags[0].id === 999);
+  eq('confident match updates the existing contact', puts(s).length, 1);
+  eq('confident match creates NO duplicate', creates(s).length, 0);
+  check('updated the right person', /\/v1\/people\/501$/.test(puts(s)[0].url));
+
+  const body = JSON.parse(puts(s)[0].o.payload);
+  check('existing tags are kept', body.tags.indexOf('Sphere') !== -1 && body.tags.indexOf('Past Client') !== -1);
+  check('raffle tags are added to the EXISTING contact',
+    body.tags.indexOf('Block Party Raffle Entrant') !== -1 && body.tags.indexOf('Block Party 2026') !== -1);
+  check('original lead source is left alone', body.source === undefined);
+  check('an already-correct name is not overwritten',
+    body.firstName === undefined && body.lastName === undefined);
+  eq('no duplicate email added', body.emails.length, 1);
+  eq('no duplicate phone added', body.phones.length, 1);
+  check('consent date is refreshed on the existing contact', !!body[ 'customConsentCapturedDate' ]);
+
+  const n = noteBody(s);
+  check('note says it updated rather than created', /UPDATED that contact/.test(n));
+  check('note records what the contact looked like before', /AS IT WAS BEFORE THIS ENTRY/.test(n));
+  check('note preserves the prior tags', /Sphere/.test(n) && /Past Client/.test(n));
+  check('note preserves the prior source', /Zillow 2023/.test(n));
+  check('note states what it matched on', /matched on/.test(n));
+}
+
+// New information is ADDED, never swapped in over the old.
+{
+  const s = makeSandbox({ fubPeople: [fubPerson({ phones: [{ value: '2679990000' }] })] });
+  enterFull(s, entry(), DURING);   // same email + same surname, a new mobile
+  const body = JSON.parse(puts(s)[0].o.payload);
+  eq('both phones now on the record', body.phones.length, 2);
+  check('the old number survives', body.phones.some(p => p.value === '2679990000'));
+  check('the new number is added', body.phones.some(p => /2155558123/.test(String(p.value).replace(/\D/g,''))));
+  check('note reports the added phone', /phone added/.test(noteBody(s)));
+}
+
+// A blank name gets filled in; a populated one does not.
+{
+  const s = makeSandbox({ fubPeople: [fubPerson({ firstName: '', lastName: '' , emails:[{value:'dana@mail-test.co'}], phones:[{value:'2155558123'}]})] });
+  enterFull(s, entry(), DURING);
+  const body = JSON.parse(puts(s)[0].o.payload);
+  eq('blank first name filled from the entry', body.firstName, 'Dana');
+  eq('blank last name filled from the entry', body.lastName, 'Reid');
+}
+
+// ---- NOT confident: these must NOT merge two different people --------------
+{
+  // Shared household email, different surname and different phone.
+  const s = makeSandbox({ fubPeople: [fubPerson({
+    firstName: 'Chris', lastName: 'Alvarez', phones: [{ value: '2679990000' }] })] });
+  enterFull(s, entry(), DURING);
+  eq('email alone does NOT merge two people', puts(s).length, 0);
+  eq('a new contact is created instead', creates(s).length, 1);
+  check('note says no confident match', /no existing FUB record matched confidently/.test(noteBody(s)));
+}
+{
+  // Shared household phone, different name and different email.
+  const s = makeSandbox({ fubPeople: [fubPerson({
+    firstName: 'Chris', lastName: 'Alvarez', emails: [{ value: 'chris@mail-test.co' }] })] });
+  enterFull(s, entry(), DURING);
+  eq('phone alone does NOT merge two people', puts(s).length, 0);
+  eq('a new contact is created instead', creates(s).length, 1);
+}
+{
+  // Phone + first name only (a father and son sharing a landline).
+  const s = makeSandbox({ fubPeople: [fubPerson({
+    lastName: 'Alvarez', emails: [{ value: 'other@mail-test.co' }] })] });
+  enterFull(s, entry(), DURING);
+  eq('phone + first name alone is not enough', puts(s).length, 0);
+}
+
+// Ambiguous: two records clear the bar -> update nothing, tell Durand.
+{
+  const s = makeSandbox({ fubPeople: [fubPerson({ id: 501 }), fubPerson({ id: 502 })] });
+  enterFull(s, entry(), DURING);
+  eq('ambiguity updates nothing', puts(s).length, 0);
+  eq('ambiguity still captures the lead', creates(s).length, 1);
+  const alerts = s.__alerts || [];
+  check('ambiguity is reported for a human to merge',
+    alerts.some(a => /ambiguous FUB match/i.test(a.context)));
+  check('the alert names both candidate records',
+    alerts.some(a => /#501/.test(a.detail) && /#502/.test(a.detail)));
 }
 
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
