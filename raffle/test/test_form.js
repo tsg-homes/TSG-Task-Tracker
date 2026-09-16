@@ -36,18 +36,24 @@ function page(opts) {
     closeAtMs: String(opts.closeAt),
     serverNowMs: String(opts.now)
   }, opts.vals || {});
-  // Two tag shapes in the template: safeJsonForScript_(x) inside <script>, which
-  // Apps Script emits as a JSON literal, and a bare <?= x ?> in HTML text, which
-  // it emits as escaped text. Mirror both, so a renamed var fails loudly here.
-  let out = raw.replace(/<\?=\s*safeJsonForScript_\((\w+)\)\s*\?>/g, (m, name) => {
+  // Model Apps Script's templating faithfully, including its escaping, because
+  // getting that wrong is exactly how the countdown broke live: <?= ?> ESCAPES
+  // its output and <?!= ?> does not. JSON bound for a <script> block must use
+  // <?!= ?>, or the quotes arrive as &quot; and Number() yields NaN. The old
+  // harness substituted both shapes raw and so could never have caught it.
+  const htmlEscape = v => String(v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const need = name => {
     if (!(name in vals)) throw new Error('template asks for unknown var: ' + name);
-    return JSON.stringify(vals[name]);
-  });
-  out = out.replace(/<\?=\s*(\w+)\s*\?>/g, (m, name) => {
-    if (!(name in vals)) throw new Error('template asks for unknown var: ' + name);
-    return String(vals[name]);
-  });
-  if (/<\?=/.test(out)) throw new Error('unsubstituted template tag remains');
+    return vals[name];
+  };
+  let out = raw
+    .replace(/<\?!=\s*safeJsonForScript_\((\w+)\)\s*\?>/g, (m, n) => JSON.stringify(need(n)))
+    .replace(/<\?=\s*safeJsonForScript_\((\w+)\)\s*\?>/g, (m, n) => htmlEscape(JSON.stringify(need(n))))
+    .replace(/<\?!=\s*(\w+)\s*\?>/g, (m, n) => String(need(n)))
+    .replace(/<\?=\s*(\w+)\s*\?>/g, (m, n) => htmlEscape(need(n)));
+  if (/<\?/.test(out)) throw new Error('unsubstituted template tag remains');
   const f = path.join(OUT, 'p' + Math.random().toString(36).slice(2) + '.html');
   fs.writeFileSync(f, out);
   return 'file://' + f;
@@ -336,6 +342,23 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   await p.waitForTimeout(300);
   check('closed panel names the date',
     /Saturday, September 19/.test(await p.locator('#closedPanel').textContent()));
+
+  // ---- 15. No escaping template tag may sit inside a <script> block ----
+  // This is the bug that shipped: <?= ?> escapes, so JSON arrived as &quot;...&quot;
+  // and every Number() was NaN, which made phase() fall through to 'open' and
+  // showed the entry form regardless of the date.
+  {
+    const src = fs.readFileSync(path.join(__dirname, '../RaffleForm.html'), 'utf8');
+    const scripts = src.match(/<script[\s\S]*?<\/script>/g) || [];
+    const offenders = [];
+    scripts.forEach(block => {
+      (block.match(/<\?=[^>]*\?>/g) || []).forEach(t => offenders.push(t.trim()));
+    });
+    check('no escaping <?= ?> tag inside a <script> block (must be <?!= ?>)',
+      offenders.length === 0);
+    if (offenders.length) console.log('      offenders:', offenders.join(', '));
+    check('the script block does use force-print tags', /<\?!=/.test(scripts.join('')));
+  }
 
   await b.close();
   fs.rmSync(OUT, { recursive: true, force: true });

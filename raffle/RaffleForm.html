@@ -348,14 +348,14 @@ body.qa-test{padding-top:62px;}
 
 <script>
 (function(){
-  var API        = <?= safeJsonForScript_(baseUrl) ?>;
-  var TOKEN      = <?= safeJsonForScript_(submitToken) ?>;
-  var KIOSK      = <?= safeJsonForScript_(kiosk) ?> === '1';
-  var QA_TOKEN   = <?= safeJsonForScript_(qaTestToken) ?>;   // '' on a normal load
-  var IS_TEST    = <?= safeJsonForScript_(isTest) ?> === '1';
-  var OPEN_MS    = Number(<?= safeJsonForScript_(openAtMs) ?>);
-  var CLOSE_MS   = Number(<?= safeJsonForScript_(closeAtMs) ?>);
-  var SERVER_MS  = Number(<?= safeJsonForScript_(serverNowMs) ?>);
+  var API        = <?!= safeJsonForScript_(baseUrl) ?>;
+  var TOKEN      = <?!= safeJsonForScript_(submitToken) ?>;
+  var KIOSK      = <?!= safeJsonForScript_(kiosk) ?> === '1';
+  var QA_TOKEN   = <?!= safeJsonForScript_(qaTestToken) ?>;   // '' on a normal load
+  var IS_TEST    = <?!= safeJsonForScript_(isTest) ?> === '1';
+  var OPEN_MS    = Number(<?!= safeJsonForScript_(openAtMs) ?>);
+  var CLOSE_MS   = Number(<?!= safeJsonForScript_(closeAtMs) ?>);
+  var SERVER_MS  = Number(<?!= safeJsonForScript_(serverNowMs) ?>);
 
   // The page must go dead at 6:15 even if it has been sitting open on someone's
   // phone since 3pm. The client clock can be wrong by minutes, so everything is
