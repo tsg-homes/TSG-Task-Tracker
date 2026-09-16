@@ -285,33 +285,65 @@ function setupRaffle() {
   return msg;
 }
 
-// Prints the admin URLs. Run from the editor and copy the output; these carry
-// the admin key, so treat them like a password (do not put them in a doc).
+// Prints every URL you need, COMPLETE -- no placeholders to fill in by hand.
+// Run it from the editor and copy the output. The status/draw links carry the
+// admin key and the test link carries the QA secret, so treat the output like a
+// password: do not paste it into a doc or a chat.
 function raffleAdminLinks() {
-  var key = PropertiesService.getScriptProperties().getProperty(RAFFLE_ADMIN_PROP);
+  var props = PropertiesService.getScriptProperties();
+  var key = props.getProperty(RAFFLE_ADMIN_PROP);
   if (!key) throw new Error('Run setupRaffle() first.');
   var base = ScriptApp.getService().getUrl();
-  var msg =
-    'ENTRY FORM (this is the QR-code / public link — no key, safe to share):\n' +
-    base + '?form=raffle\n\n' +
-    'KIOSK MODE (iPad at the table; auto-resets for the next person):\n' +
-    base + '?form=raffle&kiosk=1\n\n' +
-    'LIVE ENTRY COUNT (private):\n' +
-    base + '?form=raffle&action=status&key=' + key + '\n\n' +
-    'MANUAL DRAW — backup if the 6:15 trigger misfires (private):\n' +
-    base + '?form=raffle&action=draw&key=' + key + '\n\n' +
-    '--- TEST MODE (needs the QA_TEST_SECRET script property) ---\n' +
-    'TEST FORM — accepts entries any time, writes to the "' + RAFFLE_TEST_SHEET_NAME + '" tab:\n' +
-    base + '?form=raffle&qatest=<QA_TEST_SECRET>\n\n' +
-    'TEST ENTRY COUNT:\n' +
-    base + '?form=raffle&action=status&key=' + key + '&test=1\n\n' +
-    'TEST DRAW — rehearses the whole draw, emails only ' + QA_TEST_NOTIFY_EMAIL + ':\n' +
-    base + '?form=raffle&action=draw&key=' + key + '&test=1\n\n' +
-    'Run raffleResetTest() in the editor to wipe test data and rehearse again.';
+  var sheetId = props.getProperty(RAFFLE_SHEET_PROP);
+
+  var out = [
+    'PUBLIC — this is the QR / the link you share. No key, safe to print:',
+    '  ' + base + '?form=raffle',
+    '',
+    'KIOSK — for the iPad at the table, auto-resets after each entry:',
+    '  ' + base + '?form=raffle&kiosk=1',
+    '',
+    'LIVE ENTRY COUNT (private):',
+    '  ' + base + '?form=raffle&action=status&key=' + key,
+    '',
+    'MANUAL DRAW — backup if the 6:15 trigger misfires (private):',
+    '  ' + base + '?form=raffle&action=draw&key=' + key,
+    ''
+  ];
+
+  // The QA secret is a separate property, shared with the other two forms. If it
+  // is missing the test URLs cannot work, so say that outright rather than
+  // printing a link with a placeholder in it that looks like it should work.
+  var qa = props.getProperty(QA_TEST_SECRET_PROPERTY);
+  out.push('--- TEST MODE ---');
+  if (qa) {
+    out.push('TEST FORM — works any day, writes to the "' + RAFFLE_TEST_SHEET_NAME + '" tab:',
+             '  ' + base + '?form=raffle&qatest=' + qa,
+             '',
+             'TEST ENTRY COUNT:',
+             '  ' + base + '?form=raffle&action=status&key=' + key + '&test=1',
+             '',
+             'TEST DRAW — rehearses the real thing, emails ' + QA_TEST_NOTIFY_EMAIL + ' only:',
+             '  ' + base + '?form=raffle&action=draw&key=' + key + '&test=1',
+             '',
+             'Run raffleResetTest() to wipe test data and rehearse again.');
+  } else {
+    out.push('NOT AVAILABLE: the "' + QA_TEST_SECRET_PROPERTY + '" script property is not set,',
+             'so ?qatest= does nothing and every test URL would just serve the live page.',
+             'Set it in Project Settings > Script Properties (any hard-to-guess string),',
+             'then re-run raffleAdminLinks(). The other two public forms use this same',
+             'property, so if they have test mode working it is already set.');
+  }
+
+  if (sheetId) {
+    out.push('', 'ENTRIES SHEET:',
+             '  https://docs.google.com/spreadsheets/d/' + sheetId + '/edit');
+  }
+
+  var msg = out.join('\n');
   Logger.log(msg);
   return msg;
 }
-
 
 // ---------- doGet branch (reached from Code.gs's one-line hook) ----------
 function raffleServeForm_(e, baseUrl) {

@@ -140,6 +140,7 @@ function makeSandbox(opts) {
     QA_TEST_PREFIX: '[QA TEST] ',
     QA_TEST_TAG: 'QA Test — Safe to Delete',
     QA_TEST_NOTIFY_EMAIL: 'durand@thestawaszgroup.com',
+    QA_TEST_SECRET_PROPERTY: 'QA_TEST_SECRET',
     QA_TEST_BACKGROUND_LEAD_IN: '[QA TEST] Created by a TSG QA test submission.',
     isQaTestMode_: () => !!opts.qaMode,
     FUB_SUBDOMAIN: 'homes571',
@@ -705,6 +706,38 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
     s.__shared.indexOf('durand@thestawaszgroup.com') !== -1);
   check('run as info@, info@ is not re-added',
     s.__shared.indexOf('info@tsg.homes') === -1);
+}
+
+
+// ---- raffleAdminLinks prints COMPLETE urls, never placeholders -------------
+{
+  const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'ADMINKEY', QA_TEST_SECRET: 'QASECRET' } });
+  const out = s.raffleAdminLinks();
+  check('no angle-bracket placeholder survives', !/<[A-Z_]+>/.test(out));
+  check('admin key is substituted', out.indexOf('key=ADMINKEY') !== -1);
+  check('QA secret is substituted', out.indexOf('qatest=QASECRET') !== -1);
+  check('public entry link present', /\?form=raffle\n/.test(out + '\n'));
+  check('kiosk link present', out.indexOf('kiosk=1') !== -1);
+  check('test draw link present', out.indexOf('action=draw&key=ADMINKEY&test=1') !== -1);
+  check('entries sheet link present', out.indexOf('docs.google.com/spreadsheets') !== -1);
+}
+{
+  // No QA secret: must say so plainly rather than print a link that cannot work.
+  const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'ADMINKEY' } });
+  const out = s.raffleAdminLinks();
+  check('missing QA secret is called out', /NOT AVAILABLE/.test(out));
+  // The explanatory text may mention ?qatest= while telling you it does nothing;
+  // what must not appear is an actual clickable URL carrying it.
+  check('no qatest LINK is offered when it would not work',
+    !/https?:\/\/\S*qatest=/.test(out));
+  check('admin links still work without the QA secret', out.indexOf('key=ADMINKEY') !== -1);
+}
+{
+  // Before setup there is no key at all.
+  const s = makeSandbox();
+  let threw = false;
+  try { s.raffleAdminLinks(); } catch (e) { threw = /setupRaffle/.test(e.message); }
+  check('tells you to run setupRaffle first', threw);
 }
 
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
