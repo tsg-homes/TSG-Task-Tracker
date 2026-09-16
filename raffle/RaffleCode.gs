@@ -41,16 +41,6 @@ var RAFFLE_RESULT_EMAIL = 'durand@thestawaszgroup.com,ryan@thestawaszgroup.com,r
 var RAFFLE_SOURCE = 'TSG Block Party 2026 - Raffle';
 var RAFFLE_TAGS   = ['Block Party 2026', 'Block Party Raffle Entrant', 'Event Lead'];
 
-// TSG's own brand marks, read from Drive at render time and cached. Kept as
-// Drive files rather than baked into the HTML so Marj can swap a brand asset by
-// replacing the file, with no code change and no redeploy. Both are the
-// white-on-dark variants, which is what the dark green footer band needs.
-// The two THIRD-PARTY marks are NOT handled this way -- they are pinned and
-// size-optimized in the page itself (see tools/build-form.js), because a logo we
-// do not own should not be silently swappable.
-var RAFFLE_LOGO_TSG_ID = '19lv9PdwM-Fn_9hM39a3lbbPcJuqoKeid';  // TSG_Logo_Inverted.png
-var RAFFLE_LOGO_KW_ID  = '1BmI9S_glrvXnXydGWFkzAL4LUi36uxvy';  // KW Empower Logo_white.png
-
 var RAFFLE_SHEET_PROP   = 'RAFFLE_SHEET_ID';
 var RAFFLE_WINNER_PROP  = 'RAFFLE_WINNER_JSON';
 var RAFFLE_ADMIN_PROP   = 'RAFFLE_ADMIN_KEY';
@@ -163,29 +153,6 @@ function raffleAdminLinks() {
 }
 
 
-// Reads a Drive image and returns it as a data: URI so the page carries no
-// external image requests (block-party cell signal is not something to bet the
-// form on). Cached for 6h; CacheService caps a value at 100KB, so anything
-// larger is skipped rather than half-cached. Any failure returns '' and the
-// <img> simply renders empty -- a missing logo must never break entry.
-function raffleLogoDataUri_(fileId) {
-  var cacheKey = 'raffle_logo_' + fileId;
-  try {
-    var cache = CacheService.getScriptCache();
-    var hit = cache.get(cacheKey);
-    if (hit) return hit;
-
-    var blob = DriveApp.getFileById(fileId).getBlob();
-    var uri = 'data:' + blob.getContentType() + ';base64,' +
-              Utilities.base64Encode(blob.getBytes());
-    if (uri.length < 100000) cache.put(cacheKey, uri, 21600);
-    return uri;
-  } catch (err) {
-    Logger.log('raffleLogoDataUri_ failed for ' + fileId + ': ' + err);
-    return '';
-  }
-}
-
 // ---------- doGet branch (reached from Code.gs's one-line hook) ----------
 function raffleServeForm_(e, baseUrl) {
   var action = (e.parameter.action || '').toString().toLowerCase();
@@ -207,13 +174,13 @@ function raffleServeForm_(e, baseUrl) {
   tmpl.kiosk         = (e.parameter.kiosk || '') ? '1' : '';
   tmpl.prizeShort    = RAFFLE_PRIZE_SHORT;
   tmpl.announceAt    = RAFFLE_ANNOUNCE_AT;
-  tmpl.entryState    = raffleEntryState_();
-  // The page flips itself to "entries closed" at 6:15 without a reload, and it
-  // measures that against the SERVER clock, not the visitor's -- hence both.
+  // The page runs its own clock: it counts down to 3:00, opens itself, and goes
+  // dead at 6:15 -- all without a reload. It measures against the SERVER clock,
+  // not the visitor's, so a phone with a wrong clock still opens and closes on
+  // time. The server re-checks the window on every submit regardless.
+  tmpl.openAtMs      = String(new Date(RAFFLE_OPEN_AT).getTime());
   tmpl.closeAtMs     = String(new Date(RAFFLE_CLOSE_AT).getTime());
   tmpl.serverNowMs   = String(Date.now());
-  tmpl.tsgLogo       = raffleLogoDataUri_(RAFFLE_LOGO_TSG_ID);
-  tmpl.kwLogo        = raffleLogoDataUri_(RAFFLE_LOGO_KW_ID);
   return tmpl.evaluate()
     .setTitle('Enter to Win | ' + RAFFLE_EVENT_NAME)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');

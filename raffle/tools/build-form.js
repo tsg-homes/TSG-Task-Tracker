@@ -4,13 +4,17 @@
  * Script project) from RaffleForm.template.html plus the pinned third-party
  * marks in assets/.
  *
- * Why the Ticketmaster and Eagles marks are inlined here rather than read from
- * Drive the way the TSG and KW marks are: they are not ours. Pinning them in the
- * built file means the exact bytes that were reviewed are the exact bytes that
- * ship, and nobody can swap a third-party trademark into the page by dropping a
- * file in Drive. It also makes the page fully self-contained, which matters a
- * lot more than usual when 125 people are loading it over one saturated cell
- * site in Fishtown.
+ * All four marks -- Eagles, Ticketmaster, TSG and KW Empower -- are pinned here
+ * rather than fetched at runtime. The bytes that were reviewed are the bytes
+ * that ship, nobody can swap a trademark into the page by dropping a file in
+ * Drive, the script needs no Drive OAuth scope at all, and the page is fully
+ * self-contained -- which matters a lot more than usual when 125 people are
+ * loading it over one saturated cell site in Fishtown.
+ *
+ * Sources, all from TSG's own Drive, trimmed and quantized (see git history):
+ *   eagles.png  philadelphia-eagles-logo-transparent.png   263 KB -> 12.6 KB
+ *   tsg.png     TSG_2024_LOGO-01.png, wordmark panel        3.2 MB -> 4.1 KB
+ *   kw.png      KW Empower Logo_color.jpg                   676 KB -> 4.6 KB
  *
  *   node tools/build-form.js
  */
@@ -20,7 +24,10 @@ const path = require('path');
 const dir  = path.join(__dirname, '..');
 const tpl  = fs.readFileSync(path.join(dir, 'RaffleForm.template.html'), 'utf8');
 
-const eaglesB64 = fs.readFileSync(path.join(dir, 'assets/eagles.b64'), 'utf8').trim();
+const b64 = f => fs.readFileSync(path.join(dir, 'assets/' + f), 'utf8').trim();
+const eaglesB64 = b64('eagles.b64');
+const tsgB64    = b64('tsg.b64');
+const kwB64     = b64('kw.b64');
 let   tmSvg     = fs.readFileSync(path.join(dir, 'assets/ticketmaster.svg'), 'utf8').trim();
 
 // The SVG is inlined as markup, not as a data: URI, so it stays crisp at any
@@ -32,9 +39,12 @@ tmSvg = tmSvg
   .replace(/\bst0\b/g, 'tm-fill')
   .replace('<svg ', '<svg role="img" aria-label="Ticketmaster" ');
 
+const png = b => 'data:image/png;base64,' + b;
 const out = tpl
-  .replace('{{EAGLES_DATA_URI}}', 'data:image/png;base64,' + eaglesB64)
-  .replace('{{TICKETMASTER_SVG}}', tmSvg);
+  .replace('{{EAGLES_DATA_URI}}', png(eaglesB64))
+  .replace('{{TICKETMASTER_SVG}}', tmSvg)
+  .replace('{{TSG_LOGO}}', png(tsgB64))
+  .replace('{{KW_LOGO}}', png(kwB64));
 
 for (const token of ['{{EAGLES_DATA_URI}}', '{{TICKETMASTER_SVG}}', '{{TSG_LOGO}}', '{{KW_LOGO}}']) {
   if (out.includes(token)) {

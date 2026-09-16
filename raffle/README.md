@@ -27,9 +27,10 @@ untouched — nothing public goes anywhere near its Anthropic key or script toke
 | `RaffleForm.html` | **Built** page. Paste into the project as `RaffleForm`. Do not hand-edit. |
 | `RaffleForm.template.html` | Source for the above. Edit this. |
 | `tools/build-form.js` | `node tools/build-form.js` → regenerates `RaffleForm.html`. |
-| `assets/` | The two pinned third-party marks. |
+| `assets/` | All four pinned marks (Eagles, Ticketmaster, TSG, KW) + their base64. |
 | `PATCH-Code.gs.md` | The two one-line edits to the existing `Code.gs`. |
 | `test/test_raffle.js` | 72 unit tests for `RaffleCode.gs`. |
+| `test/test_form.js` | 47 browser tests for the built page (countdown, open/close flips, payload). |
 
 ## Setup (about 15 minutes, all on your machine)
 
@@ -40,8 +41,9 @@ untouched — nothing public goes anywhere near its Anthropic key or script toke
 3. **Run `setupRaffle()`** once from the editor. It creates the entries
    spreadsheet, generates `RAFFLE_ADMIN_KEY`, and arms the 6:15 PM draw trigger.
    Re-running is safe — it reuses the sheet and never arms two draws.
-4. **Re-authorize.** The raffle adds Spreadsheet, Mail, Drive and Trigger scopes,
-   so Google will prompt. This is unavoidable and it is why step 6 matters.
+4. **Re-authorize.** The raffle adds Spreadsheet, Mail and Trigger scopes, so
+   Google will prompt. This is unavoidable and it is why step 6 matters. (It
+   does *not* add a Drive scope — all four logos are baked into the page.)
 5. **Deploy** a new version of the existing deployment (same exec URL).
 6. **Re-test the Open House form** (`?form=openhouse` or the bare URL) and the
    intake form (`?form=buyer-seller`) before you walk away. Re-authorization
@@ -62,8 +64,11 @@ and a missing key both return an identical "Not found", so neither can be probed
 
 ## How the day runs
 
-- **Before 3:00 PM** — the page shows "Not open yet". Entries are refused
-  server-side, so a link shared early can't be used.
+- **Before 3:00 PM** — the page shows a live **"Goes live in" countdown**
+  (days / hours / mins / secs) ticking down to 3:00. Entries are refused
+  server-side too, so a link shared early can't be used.
+- **3:00:00 PM** — the countdown runs out and the page **turns itself into the
+  live form**, no reload. Same server-clock basis as the close.
 - **3:00 PM – 6:15 PM** — form is live. One entry per person, matched on **both**
   email and phone (country code and formatting normalized, so `+1 215.555.0123`
   and `(215) 555-0123` are the same person). A repeat entrant is told they're
@@ -115,10 +120,23 @@ alerted to you by email, and re-pushed later with `raffleRetryFubFailures()`.
    are the real TSG Center City details. Per your instruction no licence number
    is printed; the brokerage is still identified as Keller Williams Empower.
 
+## Branding
+
+All four marks are **baked into the built page**, not fetched at runtime: the
+bytes that were reviewed are the bytes that ship, nobody can swap a trademark in
+by dropping a file in Drive, and the page needs no Drive scope and no external
+image requests. Sourced from TSG's own Drive and optimized — Eagles 263 KB →
+12.6 KB, TSG wordmark (cropped from `TSG_2024_LOGO-01.png`) 3.2 MB → 4.1 KB,
+KW Empower 676 KB → 4.6 KB, Ticketmaster inlined as vector. Whole page: 55 KB.
+
+To change a logo: replace the file in `assets/`, run `node tools/build-form.js`,
+re-paste `RaffleForm.html`.
+
 ## Tests
 
 ```
 node test/test_raffle.js     # 72 server-side tests
+node test/test_form.js       # 47 browser tests (needs: npm install playwright)
 ```
 
 Covers identity normalization, the entry window, required fields and consent,
@@ -127,5 +145,8 @@ behaviour, the FUB payload shape, draw fairness and **non-repeatability** (a
 double-fired trigger cannot re-roll a winner or send a second email), manual
 disqualification, and admin-endpoint key gating.
 
-The form's own behaviour — the 6:15 live flip, validation, phone formatting, the
-posted payload — was verified in a real browser against the built page.
+The browser suite covers the countdown maths, the 3:00 open flip and the 6:15
+close flip (both verified to happen with no reload), validation, phone
+formatting, consent gating the POST, the exact payload shape, that all four
+logos actually load, that the contact block is right, and that the word
+"raffle" never appears anywhere on the page.

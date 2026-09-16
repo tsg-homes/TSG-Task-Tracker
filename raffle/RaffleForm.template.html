@@ -77,15 +77,21 @@ button:disabled{opacity:.5;cursor:not-allowed;}
 .hidden{display:none !important;}
 
 /* ---- Footer ---- */
-footer{background:var(--tsg-green);color:#fff;padding:26px 20px 30px;text-align:center;}
-footer .logos{display:flex;align-items:center;justify-content:center;gap:20px;flex-wrap:wrap;margin-bottom:16px;}
-footer .logos img{height:40px;width:auto;display:block;}
-footer .logos .rule{width:1px;height:32px;background:rgba(255,255,255,.28);}
-footer .name{font-family:'Playfair Display',serif;font-weight:700;font-size:16px;}
-footer .brokerage{font-size:10.5px;letter-spacing:2px;text-transform:uppercase;opacity:.7;margin-top:4px;}
-footer .contact{font-size:12.5px;line-height:1.75;margin-top:14px;opacity:.92;}
-footer .contact a{color:#fff;text-decoration:none;border-bottom:1px solid rgba(255,255,255,.35);}
-footer .fine{font-size:10.5px;opacity:.6;margin-top:16px;line-height:1.5;}
+footer{background:var(--tsg-white);border-top:1px solid var(--tsg-gray-border);padding:28px 20px 32px;text-align:center;}
+footer .logos{display:flex;align-items:center;justify-content:center;gap:22px;flex-wrap:wrap;margin-bottom:6px;}
+footer .logos img.tsg{height:56px;width:auto;display:block;}
+footer .logos img.kw{height:38px;width:auto;display:block;}
+footer .logos .rule{width:1px;height:40px;background:var(--tsg-gray-border);}
+footer .contact{font-size:13px;line-height:1.75;color:#4a5252;margin-top:14px;}
+footer .contact a{color:var(--tsg-green);text-decoration:none;font-weight:700;}
+footer .fine{font-size:10.5px;color:#9aa3a3;margin-top:16px;line-height:1.5;}
+
+/* Countdown to doors-open */
+#beforePanel .count{display:flex;justify-content:center;gap:10px;margin:18px 0 6px;}
+#beforePanel .unit{background:var(--tsg-green);color:#fff;border-radius:8px;padding:10px 0;min-width:66px;}
+#beforePanel .unit .n{font-family:'Playfair Display',serif;font-weight:700;font-size:28px;line-height:1;}
+#beforePanel .unit .l{font-size:9.5px;letter-spacing:1.5px;text-transform:uppercase;opacity:.75;margin-top:4px;}
+#beforePanel .soon{font-family:'Playfair Display',serif;font-size:30px;color:var(--eagles-green);font-weight:700;margin:16px 0 4px;}
 </style>
 </head>
 <body>
@@ -113,8 +119,15 @@ footer .fine{font-size:10.5px;opacity:.6;margin-top:16px;line-height:1.5;}
 
   <!-- Entries not open yet -->
   <div class="panel" id="beforePanel">
-    <h2>Not open yet</h2>
-    <p>Entries open when the party starts at <b>3:00 PM on Saturday, September 19</b>.</p>
+    <h2>Goes live in</h2>
+    <div class="count" id="countBoxes">
+      <div class="unit"><div class="n" id="cD">0</div><div class="l">Days</div></div>
+      <div class="unit"><div class="n" id="cH">0</div><div class="l">Hours</div></div>
+      <div class="unit"><div class="n" id="cM">0</div><div class="l">Mins</div></div>
+      <div class="unit"><div class="n" id="cS">0</div><div class="l">Secs</div></div>
+    </div>
+    <div class="soon" id="countSoon" style="display:none">Opening now&hellip;</div>
+    <p>Entries open when the party starts &mdash; <b>3:00 PM, Saturday 19 September</b>.</p>
     <p>Come find us at the TSG table!</p>
   </div>
 
@@ -271,15 +284,13 @@ footer .fine{font-size:10.5px;opacity:.6;margin-top:16px;line-height:1.5;}
 
 <footer>
   <div class="logos">
-    <img src="<?= tsgLogo ?>" alt="The Stawasz Group">
+    <img class="tsg" src="{{TSG_LOGO}}" alt="The Stawasz Group">
     <span class="rule"></span>
-    <img src="<?= kwLogo ?>" alt="Keller Williams Empower">
+    <img class="kw" src="{{KW_LOGO}}" alt="Keller Williams Empower">
   </div>
-  <div class="name">The Stawasz Group</div>
-  <div class="brokerage">Keller Williams Empower</div>
   <div class="contact">
     728 S Broad St, Philadelphia, PA 19146<br>
-    <a href="tel:+16108287000">610-828-7000</a> &middot;
+    <a href="tel:+12157606291">(215) 760-6291</a> &middot;
     <a href="mailto:info@tsg.homes">info@tsg.homes</a><br>
     <a href="https://tsg.homes">tsg.homes</a>
   </div>
@@ -293,7 +304,7 @@ footer .fine{font-size:10.5px;opacity:.6;margin-top:16px;line-height:1.5;}
   var API        = <?= safeJsonForScript_(baseUrl) ?>;
   var TOKEN      = <?= safeJsonForScript_(submitToken) ?>;
   var KIOSK      = <?= safeJsonForScript_(kiosk) ?> === '1';
-  var STATE      = <?= safeJsonForScript_(entryState) ?>;
+  var OPEN_MS    = Number(<?= safeJsonForScript_(openAtMs) ?>);
   var CLOSE_MS   = Number(<?= safeJsonForScript_(closeAtMs) ?>);
   var SERVER_MS  = Number(<?= safeJsonForScript_(serverNowMs) ?>);
 
@@ -312,30 +323,71 @@ footer .fine{font-size:10.5px;opacity:.6;margin-top:16px;line-height:1.5;}
   var form         = document.getElementById('raffleForm');
   var btn          = document.getElementById('submitBtn');
 
+  var panels = [beforePanel, closedPanel, successPanel];
+  // Once someone has entered, their confirmation stays put. The ticker below
+  // must not yank it away mid-read just because the clock moved on.
+  var holdingSuccess = false;
+
   function show(el){
     formWrap.classList.add('hidden');
-    [beforePanel, closedPanel, successPanel].forEach(function(p){ p.style.display='none'; });
-    if (el) el.style.display='block';
+    panels.forEach(function(p){ p.style.display = 'none'; });
+    if (el) el.style.display = 'block';
   }
   function showForm(){
     formWrap.classList.remove('hidden');
-    [beforePanel, closedPanel, successPanel].forEach(function(p){ p.style.display='none'; });
+    panels.forEach(function(p){ p.style.display = 'none'; });
   }
 
-  function applyState(){
-    if (serverNow() >= CLOSE_MS) { show(closedPanel); return true; }
-    if (STATE === 'before') { show(beforePanel); return true; }
-    return false;
+  function phase(){
+    var t = serverNow();
+    if (t < OPEN_MS)  return 'before';
+    if (t >= CLOSE_MS) return 'closed';
+    return 'open';
   }
-  if (!applyState()) showForm();
 
-  // Flip the page to "entries closed" the moment the window ends, without a
-  // reload. Checked every second so 6:15:00 is 6:15:00.
-  setInterval(function(){
-    if (serverNow() >= CLOSE_MS && closedPanel.style.display !== 'block') {
-      show(closedPanel);
+  var cD = document.getElementById('cD'), cH = document.getElementById('cH'),
+      cM = document.getElementById('cM'), cS = document.getElementById('cS'),
+      countBoxes = document.getElementById('countBoxes'),
+      countSoon  = document.getElementById('countSoon');
+
+  function tickCountdown(){
+    var left = OPEN_MS - serverNow();
+    if (left <= 0) {
+      // The flip to the live form is handled by render(); this is just so the
+      // last second doesn't sit on screen reading "0".
+      countBoxes.style.display = 'none';
+      countSoon.style.display  = 'block';
+      return;
     }
-  }, 1000);
+    countBoxes.style.display = 'flex';
+    countSoon.style.display  = 'none';
+    var s = Math.floor(left / 1000);
+    cD.textContent = Math.floor(s / 86400);
+    cH.textContent = Math.floor(s % 86400 / 3600);
+    cM.textContent = Math.floor(s % 3600 / 60);
+    cS.textContent = s % 60;
+  }
+
+  var lastPhase = null;
+  function render(){
+    var p = phase();
+    if (p === 'before') tickCountdown();
+    // A held confirmation is only ever replaced by the 6:15 close, never by a
+    // phase change the entrant does not care about.
+    if (holdingSuccess && p !== 'closed') { lastPhase = p; return; }
+    if (p !== lastPhase || holdingSuccess) {
+      holdingSuccess = false;
+      if (p === 'before')      show(beforePanel);
+      else if (p === 'closed') show(closedPanel);
+      else                     showForm();
+      lastPhase = p;
+    }
+  }
+
+  render();
+  // One second, so 3:00:00 opens and 6:15:00 closes on the second, with no
+  // reload either way.
+  setInterval(render, 1000);
 
   // Live US phone formatting — this is a party, on a phone, one-handed.
   var phoneEl = document.getElementById('phone');
@@ -381,7 +433,7 @@ footer .fine{font-size:10.5px;opacity:.6;margin-top:16px;line-height:1.5;}
     };
     if (!validate(payload)) return;
 
-    if (serverNow() >= CLOSE_MS) { show(closedPanel); return; }
+    if (phase() !== 'open') { lastPhase = null; render(); return; }
 
     btn.disabled = true;
     btn.textContent = 'Entering…';
@@ -402,10 +454,11 @@ footer .fine{font-size:10.5px;opacity:.6;margin-top:16px;line-height:1.5;}
           res.already ? 'You’re already in!' : 'You’re entered!';
         document.getElementById('successMsg').textContent =
           res.already ? 'We already have your entry — one per person.' : 'Good luck.';
+        holdingSuccess = true;
         show(successPanel);
         form.reset();
         // Kiosk mode: hand the iPad back to the table ready for the next person.
-        if (KIOSK) setTimeout(function(){ if (!applyState()) showForm(); }, 6000);
+        if (KIOSK) setTimeout(function(){ holdingSuccess = false; lastPhase = null; render(); }, 6000);
       } else {
         document.getElementById('submitErr').textContent =
           (res && res.error) || 'Something went wrong. Grab someone from TSG.';
