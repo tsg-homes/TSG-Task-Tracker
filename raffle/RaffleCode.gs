@@ -1117,3 +1117,204 @@ function raffleResetTest() {
   Logger.log(msg);
   return msg;
 }
+
+// ---------- Live QA suite ----------
+// Run raffleRunQaSuite() from the editor. It drives the REAL code paths end to
+// end -- the same raffleHandleSubmission_ the web form calls, real sheet writes,
+// real FUB writes, a real draw -- and prints a pass/fail report.
+//
+// Everything it does happens in TEST MODE, so: entries land on the "Test
+// Entries" tab and can never be drawn as the real winner, FUB records are
+// prefixed and tagged, and the draw writes the TEST winner property. The live
+// Entries tab and the real 6:15 draw are asserted untouched at the end.
+//
+// Test mode is entered through the project's own sanctioned path -- mint a
+// token into the cache, then let setQaTestModeFromPayload_ flip the flag -- not
+// by assigning QA_TEST_MODE_ACTIVE_ directly, which Code.gs reserves to itself.
+//
+// Verification codes are read back out of the script cache rather than from the
+// inbox, because a self-test cannot open email. The emails are still genuinely
+// sent, to plus-addressed variants of Durand's address, so they are deliverable
+// and land somewhere real rather than bouncing off an invented domain.
+var RAFFLE_QA_ADDRESS_BASE = 'durand+raffleqa';
+var RAFFLE_QA_DOMAIN = '@thestawaszgroup.com';
+
+function raffleRunQaSuite() {
+  return raffleQaRun_(true);
+}
+
+// Same suite, but leaves the test data in place so you can look at the sheet and
+// the FUB records afterwards. Run raffleResetTest() when you are done.
+function raffleRunQaSuiteAndKeepData() {
+  return raffleQaRun_(false);
+}
+
+function raffleQaRun_(cleanUp) {
+  var log = [];
+  var pass = 0, fail = 0;
+  function check(name, cond, detail) {
+    if (cond) { pass++; log.push('PASS  ' + name); }
+    else { fail++; log.push('FAIL  ' + name + (detail ? '  -- ' + detail : '')); }
+    return cond;
+  }
+  function section(t) { log.push('', '--- ' + t + ' ---'); }
+
+  var props = PropertiesService.getScriptProperties();
+  if (!props.getProperty(RAFFLE_SHEET_PROP)) {
+    throw new Error('Run setupRaffle() first — there is no entries sheet yet.');
+  }
+
+  log.push('RAFFLE QA SUITE — ' + raffleFmt_(raffleNow_()) + ' ET');
+  log.push('Everything below runs in TEST MODE against the real code paths.');
+  log.push('Real FUB records ARE created; they are prefixed "' + QA_TEST_PREFIX.trim() +
+           '" and tagged "' + QA_TEST_TAG + '".');
+
+  // Enter test mode through the project's own mechanism.
+  var token = Utilities.getUuid();
+  CacheService.getScriptCache().put(QA_TEST_CACHE_PREFIX + token, '1', QA_TEST_TOKEN_TTL_SECONDS);
+  setQaTestModeFromPayload_({ qaTestToken: token });
+  if (!check('test mode is active', isQaTestMode_(),
+      'without this every assertion below would be writing to LIVE data — aborting')) {
+    return log.join('\n');
+  }
+
+  // Start from clean test state so counts are meaningful.
+  try { raffleResetTest(); } catch (e) { log.push('(note: could not pre-clear test data: ' + e + ')'); }
+
+  var liveBefore = raffleReadEntries_(false).length;
+  log.push('Live entries before: ' + liveBefore + ' (this number must not change)');
+
+  var stamp = String(Date.now()).slice(-6);
+  function person(n, phone) {
+    return {
+      fullName: 'QA Tester' + n + ' Blockparty',
+      email: RAFFLE_QA_ADDRESS_BASE + stamp + '-' + n + RAFFLE_QA_DOMAIN,
+      phone: phone,
+      consent: 'Yes'
+    };
+  }
+  function request(d) { return raffleHandleSubmission_(Object.assign({ step: 'request' }, d)); }
+  function codeFor(vid) {
+    var raw = CacheService.getScriptCache().get(RAFFLE_PENDING_PREFIX + vid);
+    return raw ? JSON.parse(raw).code : null;
+  }
+  function enterFully(d) {
+    var r1 = request(d);
+    if (!r1.ok || !r1.needsCode) return r1;
+    return raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: codeFor(r1.vid) });
+  }
+
+  // ---- 1. Junk rejection -------------------------------------------------
+  section('1. Junk rejection (nothing should be written or emailed)');
+  [
+    ['disposable email',        { email: 'x@mailinator.com' }],
+    ['example.com',             { email: 'x@example.com' }],
+    ['role address test@',      { email: 'test' + RAFFLE_QA_DOMAIN }],
+    ['empty email',             { email: '' }],
+    ['all-same digits',         { phone: '5555555555' }],
+    ['1234567890',              { phone: '1234567890' }],
+    ['N11 area code',           { phone: '9112345678' }],
+    ['exchange starting 1',     { phone: '2151234567' }],
+    ['reserved 555-01xx',       { phone: '(215) 555-0123' }],
+    ['empty phone',             { phone: '' }],
+    ['single-word name',        { fullName: 'Cher' }],
+    ['consent not given',       { consent: 'No' }]
+  ].forEach(function (c) {
+    var res = request(Object.assign(person(9, '(215) 555-8901'), c[1]));
+    check('rejects ' + c[0], res.ok === false, 'got: ' + JSON.stringify(res));
+  });
+  check('no junk entry reached the test sheet', raffleReadEntries_(true).length === 0);
+
+  // ---- 2. Two-step verification ------------------------------------------
+  section('2. Two-step verification');
+  var a = person(1, '(215) 555-8101');
+  var r1 = request(a);
+  check('step 1 asks for a code', r1.ok === true && r1.needsCode === true, JSON.stringify(r1));
+  check('step 1 wrote NOTHING yet', raffleReadEntries_(true).length === 0);
+  var code = codeFor(r1.vid);
+  check('a 6-digit code was issued', /^\d{6}$/.test(String(code)));
+  var bad = raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: '000000' });
+  check('a wrong code is refused', bad.ok === false, JSON.stringify(bad));
+  check('a wrong code still wrote nothing', raffleReadEntries_(true).length === 0);
+  var good = raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code });
+  check('the right code enters them', good.ok === true, JSON.stringify(good));
+  check('one entry now on the TEST tab', raffleReadEntries_(true).length === 1);
+  var replay = raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code });
+  check('the code cannot be replayed', replay.ok === false);
+  check('replay added no second row', raffleReadEntries_(true).length === 1);
+
+  // ---- 3. One entry per person -------------------------------------------
+  section('3. One entry per person');
+  var dupEmail = request(Object.assign({}, a, { phone: '(267) 555-8999' }));
+  check('same email is recognised as already entered', dupEmail.already === true, JSON.stringify(dupEmail));
+  var dupPhone = request(Object.assign({}, a, { email: RAFFLE_QA_ADDRESS_BASE + stamp + '-1b' + RAFFLE_QA_DOMAIN }));
+  check('same phone is recognised as already entered', dupPhone.already === true, JSON.stringify(dupPhone));
+  var dupFmt = request(Object.assign({}, a, {
+    email: RAFFLE_QA_ADDRESS_BASE + stamp + '-1c' + RAFFLE_QA_DOMAIN, phone: '+1 215.555.8101' }));
+  check('same phone in a different format is still caught', dupFmt.already === true, JSON.stringify(dupFmt));
+  check('still exactly one entry after 3 duplicate attempts', raffleReadEntries_(true).length === 1);
+
+  // ---- 4. More entrants + counts -----------------------------------------
+  section('4. Additional entrants and counts');
+  [['2','(215) 555-8102'], ['3','(215) 555-8103'], ['4','(267) 555-8104']].forEach(function (p) {
+    var res = enterFully(person(p[0], p[1]));
+    check('entrant ' + p[0] + ' accepted', res.ok === true && !res.already, JSON.stringify(res));
+  });
+  var n = raffleReadEntries_(true).length;
+  check('four entrants on the test tab', n === 4, 'got ' + n);
+  var statusHtml = String(raffleStatusPage_(true).getContent ? raffleStatusPage_(true).getContent() : raffleStatusPage_(true));
+  check('status page reports 4', statusHtml.indexOf('>4<') !== -1 || /\b4\b/.test(statusHtml), 'count page did not show 4');
+  check('status page is labelled as test data', /TEST DATA/.test(statusHtml));
+
+  // ---- 5. The draw --------------------------------------------------------
+  section('5. Test draw');
+  var draw = raffleDrawWinner_(true);
+  check('draw succeeds', draw.ok === true, JSON.stringify(draw));
+  if (draw.ok) {
+    check('result is flagged as a test', draw.result.test === true);
+    check('drew from all four', draw.result.totalEligible === 4, 'got ' + draw.result.totalEligible);
+    check('winner is one of the entrants', /QA Tester/.test(draw.result.winner.name), draw.result.winner.name);
+    check('two backups named', draw.result.backups.length === 2);
+    var names = [draw.result.winner.name].concat(draw.result.backups.map(function (b) { return b.name; }));
+    var uniq = names.filter(function (v, i) { return names.indexOf(v) === i; });
+    check('winner and backups are distinct people', uniq.length === 3, names.join(', '));
+    log.push('      winner drawn: ' + draw.result.winner.name + '  (' + draw.result.winner.phone + ')');
+    var again = raffleDrawWinner_(true);
+    check('a second draw is NOT a re-roll', again.alreadyDrawn === true);
+    check('the same winner comes back', again.result.winner.name === draw.result.winner.name);
+  }
+
+  // ---- 6. The live raffle must be untouched -------------------------------
+  section('6. The LIVE raffle is untouched');
+  check('live entries unchanged', raffleReadEntries_(false).length === liveBefore,
+        'was ' + liveBefore + ', now ' + raffleReadEntries_(false).length);
+  check('live winner property still unset', !props.getProperty(RAFFLE_WINNER_PROP),
+        'A LIVE WINNER EXISTS — this is serious, tell Claude');
+  check('the 6:15 trigger is still armed',
+        ScriptApp.getProjectTriggers().filter(function (t) {
+          return t.getHandlerFunction() === 'raffleScheduledDraw'; }).length === 1);
+
+  // ---- 7. Cleanup ---------------------------------------------------------
+  section('7. Cleanup');
+  if (cleanUp) {
+    raffleResetTest();
+    check('test entries cleared', raffleReadEntries_(true).length === 0);
+    check('test winner cleared', !props.getProperty(RAFFLE_TEST_WINNER_PROP));
+    check('live entries STILL unchanged', raffleReadEntries_(false).length === liveBefore);
+  } else {
+    log.push('SKIPPED — test data left in place for inspection.');
+    log.push('Run raffleResetTest() when you are done.');
+  }
+
+  log.push('', '================================',
+           pass + ' passed, ' + fail + ' failed',
+           '================================');
+  log.push('', 'FUB CLEANUP: this run created real FUB contacts. Filter FUB on the tag',
+           '"' + QA_TEST_TAG + '" and delete them.');
+  log.push('Verification-code emails were sent to ' + RAFFLE_QA_ADDRESS_BASE + stamp +
+           '-N' + RAFFLE_QA_DOMAIN + ' — they deliver to Durand.');
+
+  var msg = log.join('\n');
+  Logger.log(msg);
+  return msg;
+}

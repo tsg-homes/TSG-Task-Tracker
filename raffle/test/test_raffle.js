@@ -30,6 +30,8 @@ function makeSandbox(opts) {
   const fetches = [];
   const cache = {};
   const alerts = [];
+  const qa = { active: !!opts.qaMode };
+  const triggers = [];
 
   // Multi-tab fake: the whole point of the test/live split is that they are
   // different sheets, so the fake has to model that rather than share one array.
@@ -82,7 +84,13 @@ function makeSandbox(opts) {
     MailApp: { sendEmail: m => sent.push(m) },
     Session: { getEffectiveUser: () => ({ getEmail: () => opts.runAs || 'info@tsg.homes' }) },
     DriveApp: { getFileById: () => ({ getBlob: () => ({ getContentType: () => 'image/png', getBytes: () => [1, 2, 3] }) }) },
-    ScriptApp: { getService: () => ({ getUrl: () => 'https://x/exec' }), getProjectTriggers: () => [], newTrigger: () => ({ timeBased: () => ({ at: () => ({ create: () => {} }) }) }), deleteTrigger: () => {} },
+    ScriptApp: {
+      getService: () => ({ getUrl: () => 'https://x/exec' }),
+      getProjectTriggers: () => triggers.slice(),
+      newTrigger: fn => ({ timeBased: () => ({ at: () => ({ create: () => {
+        triggers.push({ getHandlerFunction: () => fn }); } }) }) }),
+      deleteTrigger: t => { const i = triggers.indexOf(t); if (i >= 0) triggers.splice(i, 1); }
+    },
     Utilities: {
       formatDate: d => new Date(d).toISOString().slice(0, 19).replace('T', ' '),
       // Real Utilities.getUuid() returns a 36-char RFC-4122 UUID, and the code
@@ -142,7 +150,13 @@ function makeSandbox(opts) {
     QA_TEST_NOTIFY_EMAIL: 'durand@thestawaszgroup.com',
     QA_TEST_SECRET_PROPERTY: 'QA_TEST_SECRET',
     QA_TEST_BACKGROUND_LEAD_IN: '[QA TEST] Created by a TSG QA test submission.',
-    isQaTestMode_: () => !!opts.qaMode,
+    isQaTestMode_: () => qa.active,
+    setQaTestModeFromPayload_: d => {
+      qa.active = !!(d && d.qaTestToken && cache['qa_test_' + d.qaTestToken] === '1');
+      return qa.active;
+    },
+    QA_TEST_CACHE_PREFIX: 'qa_test_',
+    QA_TEST_TOKEN_TTL_SECONDS: 1800,
     FUB_SUBDOMAIN: 'homes571',
     issueQaTestToken_: () => (opts.qaMode ? 'tok-uuid' : ''),
     qaTestRecipients_: list => (opts.qaMode ? ['durand@thestawaszgroup.com']
@@ -738,6 +752,31 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   let threw = false;
   try { s.raffleAdminLinks(); } catch (e) { threw = /setupRaffle/.test(e.message); }
   check('tells you to run setupRaffle first', threw);
+}
+
+
+// ---- The QA suite itself ---------------------------------------------------
+// It drives real writes against live FUB when Durand runs it, so it had better
+// work. Run it here first and require a clean sweep.
+{
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'k' } });
+  at(DURING, () => s.setupRaffle());          // arms the trigger the suite checks for
+  const report = at(DURING, () => s.raffleRunQaSuite());
+
+  const failLines = report.split('\n').filter(l => l.indexOf('FAIL') === 0);
+  check('the QA suite reports no failures of its own', failLines.length === 0,
+        failLines.join(' | '));
+  const m = report.match(/(\d+) passed, (\d+) failed/);
+  check('the QA suite summary parses', !!m);
+  if (m) {
+    check('suite ran a meaningful number of checks', Number(m[1]) > 30, m[1] + ' checks');
+    eq('suite reports zero failures', Number(m[2]), 0);
+  }
+  check('suite asserts the live raffle is untouched', /LIVE raffle is untouched/.test(report));
+  check('suite tells you how to clean up FUB', /FUB CLEANUP/.test(report));
+  check('suite cleaned up after itself', s.__data('Test Entries').length === 0);
+  eq('suite left the live tab empty', s.__data('Entries').length, 0);
+  check('suite left no live winner', s.__props.RAFFLE_WINNER_JSON === undefined);
 }
 
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
