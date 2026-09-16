@@ -34,40 +34,57 @@ untouched — nothing public goes anywhere near its Anthropic key or script toke
 
 ## Deployment status
 
-**Pushed and deployed on 2026-09-16.** All six project files are live and were
-verified byte-identical after the push (the two untouched files, `OpenHouseForm`
-and `ClientIntake`, included). The two `Code.gs` hooks are in at lines 740 and
-2177. Deployed as **version @30** to the *existing* deployment, so the public URL
-and any printed QR code are unchanged.
+**Live as version @31, deployed 2026-09-16 by `info@tsg.homes`.**
+
+All six project files pushed and then verified byte-for-byte by re-pulling the
+live project — including `OpenHouseForm.html` and `ClientIntake.html`, which this
+work must not disturb. Deployed to the *existing* deployment, so the public URL
+and any printed QR are unchanged.
+
+Deployed **as info@ deliberately**. The web app is `executeAs: USER_DEPLOYING`,
+so the deploying account is the one the script runs as — and therefore the one
+`MailApp` sends from. Gmail shows the identity had drifted to durand@ between
+2 and 8 September (an earlier redeploy); @31 puts all three forms back on info@.
+**If you ever redeploy this project, do it as info@ or the sending identity
+silently moves again.**
 
 ### One step left, and only you can do it
 
-`setupRaffle()` still has to be run **once from the Apps Script editor**. It
-could not be run remotely — `clasp run` needs the project linked to a standard
-GCP project, which it is not (`Error code NOT_FOUND`). Running it from the
-editor is also what triggers the one-time scope consent.
+`setupRaffle()` must be run once **from the editor while signed in as info@** —
+not as durand@. It could not be run remotely (`clasp run` needs the project
+linked to a standard GCP project; it is not).
 
-1. Open the project → select `setupRaffle` in the function dropdown → **Run**.
-2. Approve the prompt. The only genuinely *new* scope is trigger creation
-   (`script.scriptapp`) — Mail and Spreadsheet were already granted, because
-   `sendErrorAlert` and `logConsentRecord` already use them.
-3. Check the log: it should report the entries sheet, the generated
-   `RAFFLE_ADMIN_KEY`, and `Draw trigger armed for 2026-09-19 18:15:00 ET`.
-4. Run `raffleAdminLinks()` and keep the output (status + manual-draw URLs).
+Signed in as info@ matters for a concrete reason: the entries Sheet and the 6:15
+trigger are owned by whoever creates them. Created under durand@ while the web
+app runs as info@, `SpreadsheetApp.openById` would fail and **every entry on
+Saturday would be refused**.
 
-**This must happen before 3:00 PM Saturday.** Until it does, the form renders
-fine but an entry cannot be saved, and the 6:15 draw is not armed. Entries are
-refused before Saturday 3:00 PM anyway — and that window check runs *before*
-anything touches the sheet — so nothing is broken in the meantime.
+1. Open the project as info@ → select `setupRaffle` → **Run** → approve.
+   The only new scope is trigger creation; Mail and Spreadsheet were already
+   granted by `sendErrorAlert` and `logConsentRecord`.
+2. Expect: the entries sheet, a generated `RAFFLE_ADMIN_KEY`, and
+   `Draw trigger armed for 2026-09-19 18:15:00 ET`.
+3. Run `raffleAdminLinks()` and keep the output.
 
-### Then verify (I could not — this session's proxy blocks `script.google.com`)
+**Must happen before 3:00 PM Saturday.** Until then the form renders but cannot
+save an entry and the draw is not armed. Harmless in the meantime: the
+entry-window check runs before anything touches the sheet.
 
-- `<exec>?form=raffle` → the countdown page.
-- The bare `<exec>` URL → Open House Sign-In, unchanged.
-- `<exec>?form=buyer-seller` → the intake form, unchanged.
+### Then verify by hand (this session's proxy blocks `script.google.com`)
 
-The last two matter: version @30 republished the whole project, not just the
-raffle.
+- `<exec>?form=raffle` → countdown page
+- `<exec>?form=raffle&qatest=<QA_TEST_SECRET>` → test mode, red banner, usable now
+- bare `<exec>` → Open House Sign-In, unchanged
+- `<exec>?form=buyer-seller` → intake form, unchanged
+
+The last two matter: @31 republished the whole project, not just the raffle.
+
+### Entry is open to anyone
+
+`"access": "ANYONE_ANONYMOUS"` — no Google account or sign-in of any kind. Any
+phone, any browser, any email domain. The email field is free text and is not
+verified against a Google identity. (The domain-restricted Deal Forms live on a
+different deployment and are unaffected.)
 
 ## The four URLs
 
