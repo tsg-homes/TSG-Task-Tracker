@@ -560,6 +560,53 @@ setTimeout(async () => {
     if (!t.history.some(h => h.field === 'review')) throw new Error('no release history');
   });
 
+  // Pinned tasks (2026-09-16): always first in every list, own section on top of Board and Cards
+  w.setView('board');
+  w.findTask(1).tags = w.findTask(1).tags.filter(x => x !== 'Triage');
+  tryCall('togglePin pins a task and logs it', () => {
+    w.togglePin(3);
+    const t = w.findTask(3);
+    if (t.pinned !== true) throw new Error('not pinned');
+    if (!t.history.some(h => h.field === 'pinned' && h.to === true)) throw new Error('no history');
+  });
+  tryCall('board view renders the Pinned section before every group and drops the task from its group', () => {
+    const html = doc.getElementById('board').innerHTML;
+    const pin = html.indexOf('data-group="__pinned__"');
+    const firstGroup = html.search(/data-group="(?!__pinned__)/);
+    if (pin === -1) throw new Error('no pinned section');
+    if (firstGroup !== -1 && firstGroup < pin) throw new Error('pinned section is not first');
+    const rows = Array.from(doc.querySelectorAll('tr.task-row[data-id="3"]'));
+    if (rows.length !== 1) throw new Error('expected task 3 once, got ' + rows.length);
+    if (!rows[0].closest('.pinned-group')) throw new Error('task 3 row is not inside the pinned section');
+    if (!rows[0].querySelector('.pin-btn.on')) throw new Error('row pin button not lit');
+  });
+  tryCall('sortTasks puts pinned tasks first whatever the sort', () => {
+    doc.getElementById('sortBy1').value = 'title';
+    const arr = w.eval('TASKS').slice();
+    w.sortTasks(arr);
+    if (arr[0].id !== 3) throw new Error('first is #' + arr[0].id);
+    doc.getElementById('sortBy1').value = '';
+    const arr2 = w.eval('TASKS').slice();
+    w.sortTasks(arr2);
+    if (arr2[0].id !== 3) throw new Error('unsorted first is #' + arr2[0].id);
+  });
+  tryCall('cards view has the pinned section first', () => {
+    w.setView('card');
+    const html = doc.getElementById('board').innerHTML;
+    const i = html.indexOf('card-group pinned-group');
+    if (i === -1) throw new Error('no pinned card group');
+    if (html.indexOf('class="card-group"') !== -1 && html.indexOf('class="card-group"') < i) throw new Error('not first');
+  });
+  tryCall('modal shows the pin state and unpinning drops the section', () => {
+    w.openTaskCard(3);
+    if (!doc.getElementById('pinBtn').classList.contains('toggle-active')) throw new Error('modal pin not lit');
+    w.togglePin(3);
+    if (w.findTask(3).pinned) throw new Error('still pinned');
+    w.setView('board');
+    if (doc.getElementById('board').innerHTML.includes('__pinned__')) throw new Error('pinned section still rendered');
+    w.closeTaskCard();
+  });
+
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

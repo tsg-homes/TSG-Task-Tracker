@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-16.7';
+const TSG_CODE_VERSION = '2026-09-16.8';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -2671,7 +2671,7 @@ function backupTrackerFile_(key, payload) {
 // edits (replace_all) or 'unknown' if a caller genuinely didn't say. tags is diffed as
 // one whole-array entry rather than per-tag; every other field here is a plain scalar.
 var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
   'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done', 'location', 'travelMode', 'travelMethod'];
 

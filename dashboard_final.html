@@ -554,6 +554,12 @@
   .icon-btn svg { display: block; }
   :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
   .icon-btn:hover { background: var(--surface-2); color: var(--text-primary); }
+  .pin-btn { font-size: 12px; opacity: 0.35; margin-right: 4px; vertical-align: middle; }
+  .pin-btn.on { opacity: 1; }
+  .pin-btn:hover { opacity: 1; }
+  .group-section.pinned-group { border-color: var(--brand); }
+  .group-section.pinned-group .group-head { cursor: default; }
+  .card-group.pinned-group .card-group-title { color: var(--brand); }
   .icon-btn.danger:hover { color: var(--status-critical); }
 
   .sub-row td { padding: 0 10px 10px 34px; border-bottom: 1px solid var(--gridline); background: var(--surface-2); }
@@ -1413,6 +1419,7 @@
       <h2 id="modalTitle"></h2>
       <div class="modal-header-actions">
         <span class="modal-nav-pos" id="modalNavPos"></span>
+        <button class="btn small" id="pinBtn" onclick="togglePin(currentModalTaskId)" title="Pin to the top of every list">&#128204; Pin</button>
         <button class="btn small" id="tidyBtn" onclick="tidyTask(currentModalTaskId)" title="Queue a full Claude re-run: polished title and notes, every field re-judged (applied automatically)">&#10024; Re-run Claude</button>
         <button class="icon-btn danger" onclick="deleteCurrentModalTask()" title="Delete task"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>
         <button class="icon-btn" onclick="closeTaskCard()" title="Close">&#10005;</button>
@@ -1511,7 +1518,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-16.7';
+  const UI_VERSION = '2026-09-16.8';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2615,11 +2622,17 @@
   // Cascading sort — primary field, then a tiebreaker. Applied once to the filtered list
   // before it's handed to any view, so Board/Kanban/Cards all inherit the same order
   // (each view's own per-group/per-column split preserves relative order from a stable sort).
+  // Pinned tasks (2026-09-16, per Durand: "pin these two tasks to the top always, they are
+  // required for my bonus") outrank every sort field in every list; sort is stable, so with no
+  // sort chosen the rest keep their order.
+  function isPinned_(t) { return !!(t && t.pinned); }
   function sortTasks(arr) {
     const f1 = document.getElementById('sortBy1').value;
     const f2 = document.getElementById('sortBy2').value;
-    if (!f1 && !f2) return;
     arr.sort(function(a, b) {
+      const pa = isPinned_(a) ? 0 : 1, pb = isPinned_(b) ? 0 : 1;
+      if (pa !== pb) return pa - pb;
+      if (!f1 && !f2) return 0;
       if (f1) {
         const va = sortValue(a, f1), vb = sortValue(b, f1);
         if (va < vb) return -1;
@@ -2632,6 +2645,18 @@
       }
       return 0;
     });
+  }
+  function pinBtnHtml_(t) {
+    const on = isPinned_(t);
+    return `<button type="button" class="icon-btn pin-btn ${on ? 'on' : ''}" onclick="event.stopPropagation(); togglePin(${t.id})" title="${on ? 'Unpin (drops back into its group)' : 'Pin to the top of every list'}" aria-label="${on ? 'Unpin' : 'Pin'}">&#128204;</button>`;
+  }
+  function togglePin(id) {
+    const t = findTask(id);
+    if (!t) return;
+    const before = isPinned_(t);
+    if (before) delete t.pinned; else t.pinned = true;
+    logHistory(t, 'pinned', before, !before);
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
   let triageOnly = false;
   function toggleTriageFilter() {
@@ -2778,8 +2803,9 @@
     // (see renderCompletedGroupHtml_ below). Uses the rolled-up status, same as everywhere
     // else a card/row's displayed status comes from its subitems rather than a possibly-
     // stale t.status.
+    const pinnedTasks = filtered.filter(t => isPinned_(t) && rollupStatus(t) !== 'Done');
     const openSections = groups.map(g => {
-      const groupTasks = filtered.filter(t => t.group === g && rollupStatus(t) !== 'Done');
+      const groupTasks = filtered.filter(t => t.group === g && !isPinned_(t) && rollupStatus(t) !== 'Done');
       if (!groupTasks.length) return '';
       // The header's battery/%-done reads against the WHOLE group (Done tasks included,
       // even though they've been moved out to the Completed section below) — otherwise
@@ -2826,7 +2852,34 @@
       </div>`;
     }).join('');
     const doneTasks = filtered.filter(t => rollupStatus(t) === 'Done');
-    return openSections + (doneTasks.length ? renderCompletedGroupHtml_(doneTasks) : '');
+    return (pinnedTasks.length ? renderPinnedGroupHtml_(pinnedTasks) : '') + openSections + (doneTasks.length ? renderCompletedGroupHtml_(doneTasks) : '');
+  }
+  // Pinned section: every open pinned task, whatever its group, at the very top of the board.
+  // Same markup as a normal group; no add/delete controls (it is not a group).
+  function renderPinnedGroupHtml_(pinnedTasks) {
+    const rows = pinnedTasks.map(t => taskRowHtml(t)).join('');
+    return `
+      <div class="group-section pinned-group" data-group="__pinned__">
+        <div class="group-head">
+          <span class="caret">&#128204;</span>
+          <span class="gname">Pinned</span>
+          <span class="gcount">${pinnedTasks.length}</span>
+          ${groupBatteryHtml(pinnedTasks)}
+        </div>
+        <div class="group-body">
+          <table>
+            <thead><tr>
+              <th style="width:26px;"></th>
+              <th>Title</th>
+              <th>Owner / Status / Priority</th>
+              <th>Tags / Due / Progress</th>
+              <th>Notes</th>
+              <th></th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
   }
   // Single collapsed group for every Done parent task, board-wide (not per-group) — Durand:
   // "board should have a done group of parent items that's collapsed." Reuses the same
@@ -2925,12 +2978,13 @@
   function toggleDense(g) { if (denseOff.has(g)) denseOff.delete(g); else denseOff.add(g); renderAll(); }
   function renderCardsView(filtered) {
     const groups = [...new Set([...GROUP_ORDER, ...TASKS.map(t => t.group)])].filter(g =>
-      filtered.some(t => t.group === g && rollupStatus(t) !== 'Done')
+      filtered.some(t => t.group === g && !isPinned_(t) && rollupStatus(t) !== 'Done')
     );
+    const pinnedTasks = filtered.filter(t => isPinned_(t) && rollupStatus(t) !== 'Done');
     // Same Board treatment (2026-09-03, per Durand): Done cards move out of their normal
     // group into one collapsed "Completed" group at the end.
     const openSections = groups.map(g => {
-      const groupTasks = filtered.filter(t => t.group === g && rollupStatus(t) !== 'Done');
+      const groupTasks = filtered.filter(t => t.group === g && !isPinned_(t) && rollupStatus(t) !== 'Done');
       if (!groupTasks.length) return '';
       // See the matching comment in renderTableView — %-done must read against the whole
       // group (Done tasks included), not just the open subset shown as cards here, or it
@@ -2949,7 +3003,12 @@
       </div>`;
     }).join('');
     const doneTasks = filtered.filter(t => rollupStatus(t) === 'Done');
-    return openSections + (doneTasks.length ? renderCompletedCardsGroupHtml_(doneTasks) : '');
+    const pinnedSection = pinnedTasks.length ? `
+      <div class="card-group pinned-group">
+        <div class="card-group-title">&#128204; Pinned <span class="gcount">${pinnedTasks.length}</span> ${groupBatteryHtml(pinnedTasks)}</div>
+        <div class="card-grid">${pinnedTasks.map(t => taskCardHtml(t)).join('')}</div>
+      </div>` : '';
+    return pinnedSection + openSections + (doneTasks.length ? renderCompletedCardsGroupHtml_(doneTasks) : '');
   }
   function renderCompletedCardsGroupHtml_(doneTasks) {
     const collapsed = !completedGroupExpanded.card;
@@ -2976,7 +3035,7 @@
     const delegateLine = hasSubs ? `<div class="tc-row tc-delegates" title="Delegated to">→ ${escapeHtml(delegateSummaryText(t))}</div>` : '';
     return `
       <div class="task-card" data-id="${t.id}" onclick="closeDayView(); onRowClick(event, ${t.id})">
-        <div class="tc-title"><span>${escapeHtml(t.title)}${subBadge}${commentBadgeHtml_(t.id)}</span>${docLinkHtml(t)}${savedPill}<button class="icon-btn danger tc-delete" title="Delete task" onclick="event.stopPropagation(); deleteTask(${t.id})">${TRASH_ICON_SVG}</button></div>
+        <div class="tc-title"><span>${pinBtnHtml_(t)}${escapeHtml(t.title)}${subBadge}${commentBadgeHtml_(t.id)}</span>${docLinkHtml(t)}${savedPill}<button class="icon-btn danger tc-delete" title="Delete task" onclick="event.stopPropagation(); deleteTask(${t.id})">${TRASH_ICON_SVG}</button></div>
         <div class="tc-row">${avatarHtml(t.owner)}<span class="pill ${statusClass(rollupStatus(t))}" style="pointer-events:none;">${escapeHtml(rollupStatus(t))}</span><span class="pill ${priorityClass(rollupPriority(t))}" style="pointer-events:none;">${escapeHtml(rollupPriority(t))}</span>${typeHtml}</div>
         ${delegateLine}
         <div class="tc-row">${tagsHtml}${estHtml}${locHtml}<span class="tc-due ${isOverdue(t) ? 'overdue' : ''}">${t.timelineEnd ? formatDate(t.timelineEnd) : 'No due date'}</span></div>
@@ -4639,7 +4698,7 @@
     let html = `
       <tr class="task-row" data-id="${t.id}" onclick="onRowClick(event, ${t.id})">
         <td>${hasSubs ? `<button class="icon-btn" onclick="toggleSub(${t.id})">${subOpen ? '▾' : '▸'}</button>` : ''}</td>
-        <td class="title-cell"><span class="ttl-edit" contenteditable="true" onblur="onTitleEdit(${t.id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>${commentBadgeHtml_(t.id)}${hasSubs ? `<span class="sub-count-badge" title="${t.subitems.filter(s=>s.done).length} of ${t.subitems.length} subtasks done">${t.subitems.filter(s=>s.done).length}/${t.subitems.length}</span>` : ''}${docLinkHtml(t)}</td>
+        <td class="title-cell">${pinBtnHtml_(t)}<span class="ttl-edit" contenteditable="true" onblur="onTitleEdit(${t.id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>${commentBadgeHtml_(t.id)}${hasSubs ? `<span class="sub-count-badge" title="${t.subitems.filter(s=>s.done).length} of ${t.subitems.length} subtasks done">${t.subitems.filter(s=>s.done).length}/${t.subitems.length}</span>` : ''}${docLinkHtml(t)}</td>
         <td class="cell-group">
           <div class="cell-group-stack">
             <div class="cell-group-row owner-cell" title="Owner — accountable for this task">${avatarHtml(t.owner)}${ownerSelect(t.id, t.owner)}</div>
@@ -5548,6 +5607,8 @@
     const t = findTask(id);
     if (!t) return;
     currentModalTaskId = id;
+    const pinBtn = document.getElementById('pinBtn');
+    if (pinBtn) { pinBtn.classList.toggle('toggle-active', isPinned_(t)); pinBtn.innerHTML = isPinned_(t) ? '&#128204; Pinned' : '&#128204; Pin'; pinBtn.title = isPinned_(t) ? 'Unpin (drops back into its group)' : 'Pin to the top of every list'; }
     setTimeout(function() { const ov = document.getElementById('taskModal'); if (ov && ov.classList.contains('open') && !ov.contains(document.activeElement)) ov.focus(); }, 0);
     document.getElementById('modalTitle').innerHTML =
       `<span class="modal-edit" contenteditable="true" spellcheck="true" onblur="modalTitleEdit(${id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>`;

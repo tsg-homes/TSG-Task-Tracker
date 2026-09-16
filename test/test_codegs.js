@@ -1341,6 +1341,19 @@ section('Task type Claude delegates to Claude (2026-09-15)');
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 
+section('Pinned tasks (2026-09-16)');
+{
+  const d = freshDoc();
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { pinned: true }, source: 'Durand', ts: '2026-09-16T12:00:00Z' });
+  check('pinned is a logged task field', d.tasks[0].pinned === true && d.tasks[0].history.some(h => h.field === 'pinned' && h.to === true && h.source === 'Durand'));
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Bonus umbrella', owner: 'Durand', priority: 'Critical', group: 'Ops', estHours: 1, taskType: 'Actionable Task', tags: ['Bonus'], pinned: true, notes: '' }, source: 'Claude', skipDedup: true, skipEnrich: true });
+  const added = d.tasks[d.tasks.length - 1];
+  check('add_task keeps pinned on the new task', !!added && added.pinned === true);
+  const before = JSON.parse(JSON.stringify(d));
+  sandbox.applyDataPatch_(d, { op: 'replace_all', doc: { tasks: before.tasks.map(t => Object.assign({}, t, { notes: t.notes })) }, baseVersion: d.meta.docVersion, source: 'Durand' });
+  check('replace_all round-trips pinned', d.tasks.every(t => t.pinned === true));
+}
+
 section('No secrets in tracked files (repo is public)');
 {
   // A deployment id is the exec URL; the API token is a long hex string. Neither may
