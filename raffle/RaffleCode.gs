@@ -1193,7 +1193,19 @@ function raffleQaRun_(cleanUp) {
       consent: 'Yes'
     };
   }
-  function request(d) { return raffleHandleSubmission_(Object.assign({ step: 'request' }, d)); }
+  // raffleHandleSubmission_ answers with a ContentService TextOutput -- the same
+  // object doPost hands back to the browser. It carries NO payload properties,
+  // only getContent(), so anything inspecting the result has to parse it. Reading
+  // .ok straight off it silently yields undefined, which is exactly how the first
+  // run of this suite reported 29 false failures against working code.
+  function json(res) {
+    if (!res) return {};
+    if (typeof res.getContent === 'function') {
+      try { return JSON.parse(res.getContent()); } catch (err) { return {}; }
+    }
+    return res;
+  }
+  function request(d) { return json(raffleHandleSubmission_(Object.assign({ step: 'request' }, d))); }
   function codeFor(vid) {
     var raw = CacheService.getScriptCache().get(RAFFLE_PENDING_PREFIX + vid);
     return raw ? JSON.parse(raw).code : null;
@@ -1201,7 +1213,7 @@ function raffleQaRun_(cleanUp) {
   function enterFully(d) {
     var r1 = request(d);
     if (!r1.ok || !r1.needsCode) return r1;
-    return raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: codeFor(r1.vid) });
+    return json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: codeFor(r1.vid) }));
   }
 
   // ---- 1. Junk rejection -------------------------------------------------
@@ -1233,13 +1245,13 @@ function raffleQaRun_(cleanUp) {
   check('step 1 wrote NOTHING yet', raffleReadEntries_(true).length === 0);
   var code = codeFor(r1.vid);
   check('a 6-digit code was issued', /^\d{6}$/.test(String(code)));
-  var bad = raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: '000000' });
+  var bad = json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: '000000' }));
   check('a wrong code is refused', bad.ok === false, JSON.stringify(bad));
   check('a wrong code still wrote nothing', raffleReadEntries_(true).length === 0);
-  var good = raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code });
+  var good = json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code }));
   check('the right code enters them', good.ok === true, JSON.stringify(good));
   check('one entry now on the TEST tab', raffleReadEntries_(true).length === 1);
-  var replay = raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code });
+  var replay = json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code }));
   check('the code cannot be replayed', replay.ok === false);
   check('replay added no second row', raffleReadEntries_(true).length === 1);
 
@@ -1262,7 +1274,8 @@ function raffleQaRun_(cleanUp) {
   });
   var n = raffleReadEntries_(true).length;
   check('four entrants on the test tab', n === 4, 'got ' + n);
-  var statusHtml = String(raffleStatusPage_(true).getContent ? raffleStatusPage_(true).getContent() : raffleStatusPage_(true));
+  var statusOut = raffleStatusPage_(true);
+  var statusHtml = String(typeof statusOut.getContent === 'function' ? statusOut.getContent() : statusOut);
   check('status page reports 4', statusHtml.indexOf('>4<') !== -1 || /\b4\b/.test(statusHtml), 'count page did not show 4');
   check('status page is labelled as test data', /TEST DATA/.test(statusHtml));
 

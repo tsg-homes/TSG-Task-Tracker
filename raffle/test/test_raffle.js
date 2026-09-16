@@ -138,7 +138,12 @@ function makeSandbox(opts) {
     validateEmailField: e => { if (e && !/^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(e)) { const x = new Error('bad email'); x.isValidation = true; throw x; } },
     validatePhoneField: p => { const d = String(p || '').replace(/\D/g, ''); if (p && (d.length < 10 || d.length > 15)) { const x = new Error('bad phone'); x.isValidation = true; throw x; } },
     splitName: n => { const p = String(n).trim().split(/\s+/); const f = p.shift(); return { first: f, last: p.join(' ') }; },
-    jsonOut: o => o,
+    jsonOut: o => {
+      // Faithful to ContentService: a TextOutput carries no payload properties,
+      // only getContent(). Anything that wants the data must parse it.
+      const body = JSON.stringify(o);
+      return { getContent: () => body, setMimeType() { return this; } };
+    },
     sendErrorAlert: (context, detail) => { alerts.push({ context, detail }); },
     getSubmitToken: () => 'tok',
     safeJsonForScript_: v => JSON.stringify(v),
@@ -188,15 +193,18 @@ const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@mail-test
 // details, read the 6-digit code out of the email the fake MailApp captured,
 // type it back. Returns the FIRST step's result when that step did not ask for a
 // code -- i.e. a validation failure or an already-entered short-circuit.
+// Unwrap a ContentService TextOutput the way real calling code must.
+const J = r => (r && typeof r.getContent === 'function') ? JSON.parse(r.getContent()) : r;
+
 function enterFull(s, d, when) {
-  const r1 = at(when, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, d)));
+  const r1 = J(at(when, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, d))));
   if (!r1 || !r1.ok || !r1.needsCode) return r1;
   const mail = s.__sent[s.__sent.length - 1];      // the code email just sent
   if (!mail) throw new Error('needsCode but no email sent; result=' + JSON.stringify(r1));
   const m = String(mail.subject).match(/(\d{6})/);
   if (!m) throw new Error('no 6-digit code in subject: ' + mail.subject);
   const code = m[1];
-  return at(when, () => s.raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code }));
+  return J(at(when, () => s.raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code })));
 }
 // Draw-result emails only -- the inbox also holds verification codes now.
 const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
@@ -493,7 +501,7 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
 // ---- EMAIL VERIFICATION ---------------------------------------------------
 {
   const s = makeSandbox();
-  const req = at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry())));
+  const req = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));
   check('step 1 asks for a code', req.ok === true && req.needsCode === true);
   check('step 1 returns a verification id', /^[0-9a-f-]{36}$/.test(req.vid));
   eq('step 1 writes NOTHING to the sheet', s.__data().length, 0);
@@ -506,12 +514,12 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
   check('the code email says it expires', /expires/i.test(s.__sent[0].body));
 
   // Wrong code does not enter anyone.
-  const bad = at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: '000000' }));
+  const bad = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: '000000' })));
   check('a wrong code is rejected', bad.ok === false);
   eq('a wrong code writes nothing', s.__data().length, 0);
 
   // Right code enters them.
-  const good = at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code }));
+  const good = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code })));
   check('the right code enters them', good.ok === true && good.verified === true);
   eq('now one row exists', s.__data().length, 1);
   check('the row records the email as verified',
@@ -524,7 +532,7 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
     /NOT ownership-verified/.test(created.background));
 
   // The id is single-use.
-  const replay = at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code }));
+  const replay = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code })));
   check('the same code cannot be replayed', replay.ok === false);
   eq('replay adds no second row', s.__data().length, 1);
 }
@@ -532,13 +540,13 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
 // You cannot verify one address and enter a different one.
 {
   const s = makeSandbox();
-  const req = at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry())));
+  const req = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));
   const code = String(s.__sent[0].subject).match(/(\d{6})/)[1];
   // Step 2 smuggles different details alongside the valid code.
-  at(DURING, () => s.raffleHandleSubmission_({
+  J(at(DURING, () => s.raffleHandleSubmission_({
     step: 'verify', vid: req.vid, code: code,
     fullName: 'Someone Else', email: 'attacker@mail-test.co', phone: '(267) 555-8777'
-  }));
+  })));
   eq('entry written from the VERIFIED values, not the second request', s.__data()[0][2], 'dana@mail-test.co');
   eq('smuggled name ignored', s.__data()[0][1], 'Dana Reid');
   check('smuggled phone ignored', String(s.__data()[0][3]).indexOf('8777') === -1);
@@ -547,14 +555,14 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
 // Attempt cap, then the pending entry is destroyed.
 {
   const s = makeSandbox();
-  const req = at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry())));
+  const req = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));
   let last;
   for (let i = 0; i < 5; i++) {
-    last = at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: '000000' }));
+    last = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: '000000' })));
   }
   check('repeated wrong codes are eventually cut off', /Too many wrong codes/.test(last.error));
   const code = String(s.__sent[0].subject).match(/(\d{6})/)[1];
-  const after = at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code }));
+  const after = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code })));
   check('even the correct code fails after the cap', after.ok === false);
   eq('nothing was ever written', s.__data().length, 0);
 }
@@ -563,9 +571,9 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
 {
   const s = makeSandbox();
   check('unknown id refused',
-    at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', code: '123456' })).ok === false);
+    J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', code: '123456' }))).ok === false);
   check('malformed id refused',
-    at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: 'nope', code: '123456' })).ok === false);
+    J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: 'nope', code: '123456' }))).ok === false);
   eq('neither wrote anything', s.__data().length, 0);
 }
 
@@ -573,7 +581,7 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
 {
   const s = makeSandbox();
   const reject = (label, d) => {
-    const r = at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry(d))));
+    const r = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry(d)))));
     check('rejects ' + label, r.ok === false);
   };
   reject('a disposable address',      { email: 'x@mailinator.com' });
@@ -594,8 +602,8 @@ const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
   eq('no junk entry sent an email', s.__sent.length, 0);
 
   // A real-looking pair still gets through.
-  const okRes = at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' },
-    entry({ email: 'jane.oh@inbox-two.co', phone: '(267) 234-5678' }))));
+  const okRes = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' },
+    entry({ email: 'jane.oh@inbox-two.co', phone: '(267) 234-5678' })))));
   check('a plausible real entrant is accepted', okRes.ok === true && okRes.needsCode === true);
 }
 
