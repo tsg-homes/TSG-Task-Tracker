@@ -280,6 +280,42 @@ Decided with Durand one by one on 2026-09-16; all built, item 13 was already in 
   `meta.comments` from the data file; reply with an `add_comment` inbox patch carrying
   `author: 'Claude'` and `replyTo: <id>`, resolve with `update_comment`.
 
+## Claude-call efficiency pass (2026-09-16, backend 2026-09-16.3)
+
+Per Durand ("is there a more efficient way to implement all of the claude calls?" ->
+"implement then deploy everything"). All plumbing is in `tsgClaudeBody_` / `tsgClaude_` /
+`tsgClaudeSettle_` / `tsgClaudeMany_`; tests in the "Claude call plumbing" section.
+- One call per new task: `tsgDriveCandidates_` and `tsgCalendarCandidates_` only GATHER
+  candidates; the judgment rides in the estimator call as NEEDED_FIELDS `driveMatch` /
+  `meetingMatch` (`tsgMatchFromParsed_`, `tsgDocFromCandidates_`, `tsgMeetingFromCandidates_`).
+  Calendar candidates are offered whenever the type is Meeting or still unknown; the link is
+  applied only once the resolved type is Meeting. `tsgSearchDriveForTask_`,
+  `tsgSearchCalendarForTask_`, `tsgMatchCandidate_` and the two match system prompts are gone
+  (their rules moved into `TSG_ESTIMATE_SYSTEM`). A failed merged call loses every field for
+  that task, handled exactly as an unreachable Claude was (needs-estimate, no links).
+- Effort: `output_config.effort = 'low'` whenever a call asks only for classification fields
+  (`TSG_ESTIMATE_LOW_EFFORT_FIELDS`: progress, driveMatch, meetingMatch) and for every
+  progress-many read. The full estimator, Tidy and `?target=claude` keep the model default.
+- Structured outputs: `output_config.format = {type:'json_schema', schema}` on the estimator
+  (`tsgEstimateSchema_`, built from the requested fields), Tidy (`TSG_TIDY_SCHEMA`) and
+  progress-many (`TSG_PROGRESS_MANY_SCHEMA`). `tsgExtractJson_` still parses the text. An HTTP
+  400 on a schema request is retried once without it and schemas are paused 6 h (script cache
+  key `claudeNoSchema`) so an unsupported schema keyword can never take the pipeline down.
+- Prompt caching: the system prompt is always a `cache_control` block; the estimator sends
+  the board context (`tsgBoardContext_`: EXISTING_GROUPS / OPEN_TASK_TITLES / EXISTING_TAGS)
+  as the FIRST user block with its own marker, byte-identical across a bulk push (the bulk
+  handler computes it once as `__batchContext`; siblings go in BATCH_SIBLING_TITLES in the
+  volatile part). Below 512 tokens (Opus 5 minimum) a marker is a silent no-op.
+- Parallel: `tsgClaudeMany_(reqs)` = one `UrlFetchApp.fetchAll`, every request charged to
+  `perRunCap`, the overflow returned null unsent. Used by `tsgReestimate` and by
+  `tsgProgressFromNotesMany_` when a save changes notes on more than 20 items.
+- Progress on a dashboard save (`tsgApplyProgressFromNotesOnSave_`) is ONE call for every
+  changed item (`tsgProgressWanted_` decides, `tsgSetProgressFromNotes_` applies), 20 items per
+  request. Single-item writes (update_task / update_subitem) still make one call each.
+- Response parsing: the first `text` block is the answer (a thinking block may precede it);
+  `stop_reason: 'refusal'` is no answer. `tsgEstimatePrompt_` / `tsgEstimateParse_` split
+  the estimator so callers can build many prompts and send them together.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs

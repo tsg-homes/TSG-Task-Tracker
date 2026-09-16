@@ -15,6 +15,19 @@ let projectDashboardHtml = '';   // what HtmlService.createHtmlOutputFromFile('d
 let cacheStore = {};             // CacheService stub backing store
 let uuidCounter = 0;
 let personPageHtml = '<html>PERSON PAGE for __TSG_PERSON__ (as=__TSG_AS__)</html>';
+let claudeRequests = [];         // every request body sent to the Claude endpoint (parsed)
+let claudeHttp = null;           // when set: (payload) => {code, body} overrides the canned 200 answer
+function claudeTextOf(x) { return Array.isArray(x) ? x.map(b => (b && b.text) || '').join('\n\n') : String(x || ''); }
+function fakeClaudeFetch(opts) {
+  const payload = JSON.parse(opts.payload);
+  claudeRequests.push(payload);
+  if (claudeHttp) { const r = claudeHttp(payload); return { getResponseCode: () => r.code, getContentText: () => (typeof r.body === 'string' ? r.body : JSON.stringify(r.body)) }; }
+  const answer = claudeResponder(claudeTextOf(payload.system), claudeTextOf(payload.messages[0].content));
+  return {
+    getResponseCode: () => 200,
+    getContentText: () => JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(answer) }] })
+  };
+}
 
 const sandbox = {
   console,
@@ -32,15 +45,8 @@ const sandbox = {
     getScriptTimeZone: () => 'America/New_York'
   },
   UrlFetchApp: {
-    fetch: (url, opts) => {
-      const payload = JSON.parse(opts.payload);
-      const userMsg = payload.messages[0].content;
-      const answer = claudeResponder(payload.system, userMsg);
-      return {
-        getResponseCode: () => 200,
-        getContentText: () => JSON.stringify({ content: [{ text: JSON.stringify(answer) }] })
-      };
-    }
+    fetch: (url, opts) => fakeClaudeFetch(opts),
+    fetchAll: (reqs) => reqs.map(r => fakeClaudeFetch(r))
   },
   DriveApp: {
     getFolderById: () => ({ createFile: () => {}, getFilesByName: () => ({ hasNext: () => false }) }),
@@ -291,9 +297,11 @@ let driveMatchResponse = null; // {index, confident, rationale} | null — what 
 let lastDriveMatchUser = '';   // captures the actual prompt sent, so tests can confirm content excerpts made it in
 {
   claudeResponder = (system, user) => {
-    if (system.indexOf('Google Drive') !== -1) { lastDriveMatchUser = user; return driveMatchResponse; } // the tsgSearchDriveForTask_ judgment call
     const need = JSON.parse((user.match(/NEEDED_FIELDS: (\[.*\])/) || [])[1] || '[]');
     const out = { rationale: 'test' };
+    // Since 2026-09-16 the Drive judgment rides in the same estimator call as every other field.
+    if (need.includes('driveMatch')) { lastDriveMatchUser = user; out.driveMatch = driveMatchResponse; }
+    else if (typeof driveMatchResponse === 'string') { /* zero candidates: the field must not even be requested */ }
     need.forEach(f => {
       if (f === 'estHours') out.estHours = 1;
       else if (f === 'taskType') out.taskType = 'Actionable Task';
@@ -345,10 +353,12 @@ let lastDriveMatchUser = '';   // captures the actual prompt sent, so tests can 
   driveFilesFixture = [];
   driveMatchResponse = 'SHOULD_NOT_BE_USED — zero candidates must never reach Claude';
   const doc3 = { meta: { next_id: 702 }, tasks: [] };
+  claudeRequests = [];
   sandbox.applyDataPatch_(doc3, { op: 'add_task', ts: '2026-09-10T15:10:00Z', source: 'Claude',
     task: { title: 'Reconcile September Vendor Invoices' } });
   const t3 = doc3.tasks[0];
   check('no candidates -> no doc attached, no Triage just for that', !(t3.docs || []).length && !(t3.tags || []).includes('Triage'));
+  check('no candidates -> driveMatch is not even requested, and the add cost ONE Claude call', claudeRequests.length === 1 && !/DRIVE_CANDIDATES/.test(claudeTextOf(claudeRequests[0].messages[0].content)));
 
   // Content excerpt matters (Durand: "are you matching against file content too?"): a
   // vaguely-named Google Doc whose actual TEXT clearly matches the task should still be
@@ -386,9 +396,9 @@ section('Calendar meeting auto-search-and-link (Claude-judged match)');
 {
   let meetingMatchResponse = null;
   claudeResponder = (system, user) => {
-    if (system.indexOf('Google Calendar') !== -1) return meetingMatchResponse; // tsgSearchCalendarForTask_'s judgment call
     const need = JSON.parse((user.match(/NEEDED_FIELDS: (\[.*\])/) || [])[1] || '[]');
     const out = { rationale: 'test' };
+    if (need.includes('meetingMatch')) out.meetingMatch = meetingMatchResponse; // merged into the estimator call (2026-09-16)
     need.forEach(f => {
       if (f === 'estHours') out.estHours = 0.5;
       else if (f === 'subitems') out.subitems = [];
@@ -457,6 +467,105 @@ section('Calendar meeting auto-search-and-link (Claude-judged match)');
     task: { title: 'Call The Vendor About Pricing', taskType: 'Call' } });
   const t3 = doc3.tasks[0];
   check('non-Meeting taskType never gets a meeting auto-linked', !t3.meetingDate);
+
+  // Type not supplied: the calendar candidates ride along in the ONE estimator call and the
+  // link is applied only if the type Claude determines is Meeting.
+  calendarEventsFixture = [ { id: 'ev-typed', title: 'Vendor Sync Meeting', start: inTwoDays, end: inTwoDaysEnd, allDay: false } ];
+  meetingMatchResponse = { index: 1, confident: true, rationale: 'Same meeting' };
+  claudeRequests = [];
+  const savedResponder = claudeResponder;
+  claudeResponder = (system, user) => { const out = savedResponder(system, user); out.taskType = 'Meeting'; return out; };
+  const doc4 = { meta: { next_id: 804 }, tasks: [] };
+  sandbox.applyDataPatch_(doc4, { op: 'add_task', ts: '2026-09-10T16:12:00Z', source: 'Claude', task: { title: 'Vendor Sync Meeting' } });
+  check('untyped task: estimate + meeting match cost ONE call and the link lands once the type resolves to Meeting',
+    claudeRequests.length === 1 && /CALENDAR_CANDIDATES/.test(claudeTextOf(claudeRequests[0].messages[0].content)) && !!doc4.tasks[0].meetingDate);
+  claudeResponder = (system, user) => { const out = savedResponder(system, user); out.taskType = 'Call'; return out; };
+  const doc5 = { meta: { next_id: 805 }, tasks: [] };
+  sandbox.applyDataPatch_(doc5, { op: 'add_task', ts: '2026-09-10T16:13:00Z', source: 'Claude', task: { title: 'Vendor Sync Meeting' } });
+  check('untyped task resolved to a non-Meeting type: the returned match is ignored', !doc5.tasks[0].meetingDate);
+  claudeResponder = savedResponder;
+}
+
+section('Claude call plumbing (2026-09-16 efficiency pass)');
+{
+  const savedCalls = vm.runInContext('TSG_CLAUDE_RUN_CALLS', sandbox);
+  vm.runInContext('TSG_CLAUDE_RUN_CALLS = 0', sandbox);
+  cacheStore = {};
+  claudeRequests = [];
+  claudeResponder = (system, user) => ({ progress: 40, rationale: 'r' });
+  let est = sandbox.tsgEstimateTask_('Draft the newsletter', 'Two of three sections written', 'Medium', ['progress'], {});
+  let req = claudeRequests[0];
+  check('system prompt is sent as a cache_control block', Array.isArray(req.system) && req.system[0].cache_control && req.system[0].cache_control.type === 'ephemeral' && /sole determiner/.test(req.system[0].text));
+  check('a progress-only read runs at effort low with a JSON schema', req.output_config && req.output_config.effort === 'low' && req.output_config.format && req.output_config.format.type === 'json_schema' && req.output_config.format.schema.required.includes('progress') && est.progress === 40);
+  check('a progress-only read carries no board-context block', req.messages[0].content.length === 1);
+
+  claudeRequests = [];
+  claudeResponder = () => ({ estHours: 1, taskType: 'Actionable Task', subitems: [], priority: 'Medium', group: 'Ops', dependsOnTitle: null, tags: [], needsConfirmation: false, rationale: 'r' });
+  est = sandbox.tsgEstimateTask_('Plan the mailer', 'n', 'Medium', ['estHours', 'taskType', 'subitems', 'priority', 'group', 'dependsOnTitle', 'tags'], { groups: ['Ops'], openTitles: ['Other task'], existingTags: ['Mailers'], batchSiblings: ['Sibling task'] });
+  req = claudeRequests[0];
+  check('the full estimator keeps the default effort', !req.output_config.effort && req.output_config.format.schema.required.includes('needsConfirmation'));
+  check('board context is the FIRST user block with its own cache marker; task text follows', req.messages[0].content.length === 2 && req.messages[0].content[0].cache_control && /EXISTING_GROUPS/.test(req.messages[0].content[0].text) && /OPEN_TASK_TITLES/.test(req.messages[0].content[0].text) && !/EXISTING_GROUPS/.test(req.messages[0].content[1].text) && /BATCH_SIBLING_TITLES: \["Sibling task"\]/.test(req.messages[0].content[1].text));
+
+  // A bulk push: the board-context block is byte-identical across siblings (that is what makes it a cache hit).
+  claudeRequests = [];
+  claudeResponder = (system, user) => ({ estHours: 1, taskType: 'Actionable Task', subitems: [], priority: 'Medium', group: 'Ops', dependsOnTitle: null, tags: [], needsConfirmation: false, progress: 0, rationale: 'r' });
+  const bulkDoc = { meta: { next_id: 900 }, tasks: [ { id: 1, title: 'Existing open task', group: 'Ops', status: 'Not Started', tags: ['Mailers'], history: [] } ] };
+  sandbox.applyDataPatch_(bulkDoc, { op: 'bulk', ts: '2026-09-16T10:00:00Z', source: 'Claude', ops: [
+    { op: 'add_task', task: { title: 'Bulk task one alpha' }, skipDedup: true },
+    { op: 'add_task', task: { title: 'Bulk task two beta' }, skipDedup: true } ] });
+  const ctxBlocks = claudeRequests.map(r => r.messages[0].content[0].text);
+  check('bulk push: identical board-context block on every sibling call', claudeRequests.length === 2 && ctxBlocks[0] === ctxBlocks[1] && /Existing open task/.test(ctxBlocks[0]) && !/Bulk task one/.test(ctxBlocks[0]));
+
+  // Response parsing: a thinking block before the text, and a refusal.
+  claudeHttp = () => ({ code: 200, body: { stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: '...' }, { type: 'text', text: '{"progress": 55, "rationale": "r"}' }] } });
+  check('the first text block is the answer even when a thinking block precedes it', sandbox.tsgEstimateTask_('t', 'notes', '', ['progress'], {}).progress === 55);
+  claudeHttp = () => ({ code: 200, body: { stop_reason: 'refusal', content: [] } });
+  check('a refusal is treated as no answer', sandbox.tsgEstimateTask_('t', 'notes', '', ['progress'], {}).source === 'none');
+
+  // A 400 on a schema request: retried once without the schema, schemas paused via the cache.
+  claudeRequests = []; cacheStore = {};
+  claudeHttp = (payload) => (payload.output_config && payload.output_config.format)
+    ? { code: 400, body: { error: { message: 'unsupported schema' } } }
+    : { code: 200, body: { stop_reason: 'end_turn', content: [{ type: 'text', text: '{"progress": 30, "rationale": "r"}' }] } };
+  est = sandbox.tsgEstimateTask_('t', 'notes', '', ['progress'], {});
+  check('HTTP 400 with a schema retries once without it and still answers', est.progress === 30 && claudeRequests.length === 2 && !!claudeRequests[0].output_config.format && !claudeRequests[1].output_config.format);
+  check('...and pauses schemas through the script cache', cacheStore.claudeNoSchema === '1');
+  claudeRequests = [];
+  claudeHttp = null; claudeResponder = () => ({ progress: 10, rationale: 'r' });
+  sandbox.tsgEstimateTask_('t', 'notes', '', ['progress'], {});
+  check('while paused, no schema is sent (effort still is)', !claudeRequests[0].output_config.format && claudeRequests[0].output_config.effort === 'low');
+  cacheStore = {};
+
+  // tsgClaudeMany_: one fetchAll, perRunCap honoured.
+  claudeRequests = [];
+  claudeResponder = (system, user) => ({ echo: user });
+  vm.runInContext('TSG_CLAUDE_RUN_CALLS = TSG_CLAUDE.perRunCap - 2', sandbox);
+  const many = sandbox.tsgClaudeMany_([1, 2, 3].map(i => ({ system: 's', user: 'u' + i, maxTokens: 50, opts: { effort: 'low' } })));
+  check('tsgClaudeMany_ sends what the per-run cap allows in one fetchAll and nulls the rest', claudeRequests.length === 2 && JSON.parse(many[0]).echo === 'u1' && JSON.parse(many[1]).echo === 'u2' && many[2] === null);
+  check('tsgClaudeMany_ counts every sent request against the cap', vm.runInContext('TSG_CLAUDE_RUN_CALLS', sandbox) === vm.runInContext('TSG_CLAUDE.perRunCap', sandbox));
+
+  // Many progress reads in one request; 21 items fan out over fetchAll in chunks of 20.
+  vm.runInContext('TSG_CLAUDE_RUN_CALLS = 0', sandbox);
+  claudeRequests = [];
+  claudeResponder = (system, user) => { const n = (user.match(/^\d+\. Title:/gm) || []).length; return { items: Array.from({ length: n }, (_, i) => ({ index: i + 1, progress: 5 * (i + 1) })) }; };
+  const items = Array.from({ length: 21 }, (_, i) => ({ title: 'Item ' + i, notes: 'note ' + i }));
+  items.push({ title: 'Empty', notes: '   ' });
+  const pcts = sandbox.tsgProgressFromNotesMany_(items);
+  check('tsgProgressFromNotesMany_: 21 items -> two requests (20 + 1), empty notes are 0 with no call', claudeRequests.length === 2 && pcts[0] === 5 && pcts[19] === 100 && pcts[20] === 5 && pcts[21] === 0);
+  check('...every progress request runs at effort low with the items schema', claudeRequests.every(r => r.output_config.effort === 'low' && r.output_config.format.schema.required.includes('items')));
+
+  // Tidy sends its schema too.
+  claudeRequests = [];
+  claudeResponder = () => ({ title: 'T', notes: 'n', priority: 'Medium', taskType: 'Call', group: 'Ops', estHours: 1, tags: [], rationale: 'r' });
+  const origGetFile = sandbox.DriveApp.getFileById;
+  sandbox.DriveApp.getFileById = () => ({ getBlob: () => ({ getDataAsString: () => JSON.stringify({ meta: {}, tasks: [{ id: 7, title: 'Old', notes: '', group: 'Ops', tags: [], subitems: [] }] }) }) });
+  sandbox.tsgTidyProposal_(7);
+  sandbox.DriveApp.getFileById = origGetFile;
+  check('Tidy uses a structured-output schema and the default effort', claudeRequests.length === 1 && claudeRequests[0].output_config.format.schema.required.includes('notes') && !claudeRequests[0].output_config.effort);
+
+  vm.runInContext('TSG_CLAUDE_RUN_CALLS = ' + savedCalls, sandbox);
+  claudeHttp = null;
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 
 section('Version indicator (?api=version + footer stamp)');
@@ -894,7 +1003,7 @@ section('Progress follows the notes on every write path (2026-09-15)');
 {
   let calls = [];
   let answer = 60;
-  claudeResponder = (system, user) => { calls.push(user); const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('progress')) out.progress = answer; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Actionable Task'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; return out; };
+  claudeResponder = (system, user) => { calls.push(user); if (/^ITEMS:/.test(user)) { const n = (user.match(/^\d+\. Title:/gm) || []).length; return { items: Array.from({ length: n }, (_, i) => ({ index: i + 1, progress: answer })) }; } const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('progress')) out.progress = answer; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Actionable Task'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; return out; };
   function d0() { return { meta: { docVersion: 5, next_id: 10, status_values: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'] }, tasks: [
     { id: 1, title: 'Call the caterer', owner: 'Durand', status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '', notes: '', tags: [], history: [], subitems: [] },
     { id: 2, title: 'Parent with steps', owner: 'Durand', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'p', tags: [], history: [], subitems: [
@@ -926,7 +1035,7 @@ section('Progress follows the notes on every write path (2026-09-15)');
   next[1].subitems[0].notes = 'half done';                        // subitem notes changed -> re-read
   next[2].notes = 'reworded';                                     // Done -> skipped
   sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: 5, doc: { tasks: next } });
-  check('replace_all re-reads progress for the task and the subitem whose notes changed, not the Done one', calls.length === 2 && d.tasks[0].progress === 75 && d.tasks[1].subitems[0].progress === 75 && d.tasks[2].progress === 100);
+  check('replace_all re-reads progress for the task and the subitem whose notes changed, not the Done one — in ONE call', calls.length === 1 && /^ITEMS:/.test(calls[0]) && d.tasks[0].progress === 75 && d.tasks[1].subitems[0].progress === 75 && d.tasks[2].progress === 100);
   check('replace_all logs the derived progress as Durand', d.tasks[0].history.some(h => h.field === 'progress' && h.to === 75 && h.source === 'Durand'));
   d = d0(); calls = [];
   const next2 = JSON.parse(JSON.stringify(d.tasks));

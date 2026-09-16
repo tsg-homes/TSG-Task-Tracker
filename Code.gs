@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-16.2';
+const TSG_CODE_VERSION = '2026-09-16.3';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -310,12 +310,15 @@ function applyDataPatch_(doc, patch) {
     var batchTitles = (patch.ops || [])
       .filter(function(sub) { return sub && sub.op === 'add_task' && sub.task && sub.task.title; })
       .map(function(sub) { return tsgCleanTitle_(sub.task.title); });
+    // Board context computed ONCE per push so every sibling's estimator call carries the
+    // identical (prompt-cached) block — see tsgEstimatePrompt_.
+    var batchContext = tsgBoardContext_(doc);
     (patch.ops || []).forEach(function(sub) {
       // A bulk envelope's own top-level source (if any) applies to every sub-op unless
       // that sub-op sets its own — Object.assign's key ordering means `sub`'s own
       // `source`, if present, wins over the spread-in default.
       var subPatch = Object.assign({ ts: now, source: patch.source }, sub);
-      if (subPatch.op === 'add_task') subPatch.__batchSiblingTitles = batchTitles;
+      if (subPatch.op === 'add_task') { subPatch.__batchSiblingTitles = batchTitles; subPatch.__batchContext = batchContext; }
       applyDataPatch_(doc, subPatch);
     });
     // Knowing the right title isn't enough on its own when it belongs to a sibling added
@@ -478,20 +481,35 @@ function applyDataPatch_(doc, patch) {
       // notes has its bar read from them, whoever pushed it.
       if (String(task.notes || '').trim() && task.status !== 'Done' && !(typeof task.progress === 'number' && task.progress > 0)) need.push('progress');
 
+      // One merged call per new task (2026-09-16): the Drive and calendar candidates are
+      // gathered up front and judged in the SAME estimator request as the other fields
+      // (NEEDED_FIELDS 'driveMatch' / 'meetingMatch'), instead of two further round-trips.
+      // Calendar candidates are offered whenever the type is Meeting or still unknown; the
+      // link is applied below only once the resolved type is Meeting.
+      if (!Array.isArray(task.docs)) task.docs = [];
+      var driveCands = null, calCands = null;
+      if (!patch.skipEnrich) {
+        if (!task.doc && !task.docs.length) { driveCands = tsgDriveCandidates_(task.title); if (driveCands) need.push('driveMatch'); }
+        if (!task.meetingDate && (task.taskType === 'Meeting' || !task.taskType)) { calCands = tsgCalendarCandidates_(task.timelineEnd); if (calCands) need.push('meetingMatch'); }
+      }
+      var est = null;
       if (need.length && !patch.skipEnrich) {
-        // Batch siblings (see the 'bulk' handler above) are appended so a task listed
+        // Batch siblings (see the 'bulk' handler above) are listed so a task listed
         // before one it actually depends on can still detect that dependency — batch
         // order stops mattering. Own title excluded so a task can't "depend on itself".
         var batchSiblings = (patch.__batchSiblingTitles || []).filter(function(title) { return title !== task.title; });
-        var existingTagsCtx = Array.from(new Set(
-          (doc.tasks || []).reduce(function(acc, t) { return acc.concat(t.tags || []); }, [])
-        )).filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1; });
+        var board = patch.__batchContext || tsgBoardContext_(doc);
         const context = {
-          groups: Array.from(new Set((doc.tasks || []).map(function(t) { return t.group; }).filter(Boolean))),
-          openTitles: (doc.tasks || []).filter(function(t) { return t.status !== 'Done'; }).map(function(t) { return t.title; }).concat(batchSiblings),
-          existingTags: existingTagsCtx
+          groups: board.groups,
+          openTitles: board.openTitles,
+          existingTags: board.existingTags,
+          batchSiblings: batchSiblings,
+          driveCandidates: driveCands ? driveCands.listText : '',
+          driveCandidateCount: driveCands ? driveCands.files.length : 0,
+          calendarCandidates: calCands ? calCands.listText : '',
+          calendarCandidateCount: calCands ? calCands.events.length : 0
         };
-        const est = tsgEstimateTask_(task.title, task.notes, task.priority, need, context);
+        est = tsgEstimateTask_(task.title, task.notes, task.priority, need, context);
         const applied = [];
         if (need.indexOf('estHours') !== -1 && est.estHours != null) {
           task.estHours = est.estHours;
@@ -563,16 +581,15 @@ function applyDataPatch_(doc, patch) {
       }
 
       // Drive doc auto-search (2026-09-10, matching revised same day per Durand — see
-      // tsgMatchCandidate_'s comment) per Durand: "search the drive for any relevant docs."
-      // Read-only and owner-scoped — see tsgSearchDriveForTask_ for why (TSG's standing
+      // tsgMatchFromParsed_'s comment) per Durand: "search the drive for any relevant docs."
+      // Read-only and owner-scoped — see tsgDriveCandidates_ for why (TSG's standing
       // rule: Apps Script only ever touches files Durand owns, never a shared drive or a
       // file someone else owns). Only runs when nothing was already supplied, and only
       // auto-attaches a match Claude judged HIGH-confidence; a weaker candidate gets
       // surfaced via Triage + a note instead of guessed at, same "infer, don't silently
       // default" posture as priority/group below.
-      if (!Array.isArray(task.docs)) task.docs = [];
-      if (!task.doc && !task.docs.length && !patch.skipEnrich) {
-        var driveMatch = tsgSearchDriveForTask_(task.title, task.notes);
+      if (driveCands && est) {
+        var driveMatch = tsgDocFromCandidates_(driveCands, est.driveMatch);
         if (driveMatch) {
           if (driveMatch.confident) {
             task.docs.push({ url: driveMatch.url, label: driveMatch.label, type: 'doc' });
@@ -596,11 +613,11 @@ function applyDataPatch_(doc, patch) {
       // window discipline as the manual picker (tsgListUpcomingMeetings_). Only runs for
       // taskType "Meeting" (by now resolved, whether supplied or just set by the estimator
       // above), only when no meeting is linked yet, and only auto-links a match Claude
-      // judged HIGH-confidence — see tsgSearchCalendarForTask_ for how. A softer candidate
+      // judged HIGH-confidence — see tsgCalendarCandidates_ / tsgMeetingFromCandidates_ for how. A softer candidate
       // is Triage-flagged with a note rather than guessed at, since this writes with no
       // human review (unlike the manual picker, which always shows Durand the full list).
-      if (task.taskType === 'Meeting' && !task.meetingDate) {
-        var meetingMatch = tsgSearchCalendarForTask_(task.title, task.notes, task.timelineEnd);
+      if (calCands && est && task.taskType === 'Meeting' && !task.meetingDate) {
+        var meetingMatch = tsgMeetingFromCandidates_(calCands, est.meetingMatch);
         if (meetingMatch) {
           if (meetingMatch.confident) {
             task.meetingDate = meetingMatch.date;
@@ -1626,35 +1643,24 @@ function tsgListUpcomingMeetings_(startStr, endStr, titleHint, dueDate) {
 // Both matchers return null when Claude found no real candidate; otherwise
 // {..., confident, rationale} where confident:false means "plausible but not certain enough
 // to write unattended" — the caller Triage-flags that case instead of guessing.
-function tsgMatchCandidate_(system, userPrompt, candidateCount) {
-  var raw = tsgClaude_(system, userPrompt, 400);
-  var parsed = tsgExtractJson_(raw);
-  if (!parsed || parsed.index == null || parsed.index === '') return null;
+// Since the 2026-09-16 efficiency pass the judgment itself rides in the SAME estimator call
+// as the other fields (NEEDED_FIELDS 'driveMatch' / 'meetingMatch'): a new task costs one
+// round-trip, not three. These helpers only gather the candidate lists and validate the
+// model's pick. The matching rules live in TSG_ESTIMATE_SYSTEM.
+function tsgMatchFromParsed_(parsed, candidateCount) {
+  if (!parsed || typeof parsed !== 'object' || parsed.index == null || parsed.index === '') return null;
   var idx = Math.floor(Number(parsed.index)) - 1; // candidates are listed 1-based for the model
   if (isNaN(idx) || idx < 0 || idx >= candidateCount) return null;
   return { idx: idx, confident: !!parsed.confident, rationale: String(parsed.rationale || '').trim() };
 }
 
-var TSG_MEETING_MATCH_SYSTEM =
-  'You are matching a task on a residential real estate team\'s operations tracker — typed ' +
-  '"Meeting" — to events on the Director of Operations\' Google Calendar, to find the ONE ' +
-  'future event that is unambiguously THE meeting this task is about. A shared word is not ' +
-  'enough on its own ("Vendor Sync" and "Vendor Status Sync" are not the same meeting) — judge ' +
-  'whether this is genuinely the same real-world meeting, using the task\'s title, notes, and ' +
-  'due date against each candidate\'s title and date/time. If more than one candidate could ' +
-  'plausibly be it, or none clearly is, return null — linking the wrong meeting is worse than ' +
-  'linking none. Return ONLY JSON, no prose: {"index": <1-based number from the candidate list, ' +
-  'or null>, "confident": <boolean>, "rationale": "<one short sentence>"}. "confident" is true ' +
-  'only when you would stake real confidence this is the right meeting; if you picked an index ' +
-  'as a plausible best guess but are not sure, return that index with confident:false.';
-
 // Calendar meeting auto-search (2026-09-10) — backs the automatic half of "link a meeting":
-// the add_task path (applyDataPatch_) calls this for any new task typed "Meeting" so Durand
-// doesn't have to open the manual picker for the obvious cases. FUTURE EVENTS ONLY, same as
-// the manual picker (tsgListUpcomingMeetings_) — a meeting that already happened is never a
-// useful auto-link. The window is bounded (see start/end below) precisely so the whole
-// candidate list can go to Claude in one call instead of needing its own retrieval filter.
-function tsgSearchCalendarForTask_(title, notes, dueDate) {
+// the add_task path (applyDataPatch_) gathers these candidates for any new task that is (or
+// may turn out to be) typed "Meeting" so Durand doesn't have to open the manual picker for
+// the obvious cases. FUTURE EVENTS ONLY, same as the manual picker (tsgListUpcomingMeetings_)
+// — a meeting that already happened is never a useful auto-link. The window is bounded (see
+// start/end below) precisely so the whole candidate list can go to Claude in one call.
+function tsgCalendarCandidates_(dueDate) {
   try {
     var cal = CalendarApp.getDefaultCalendar();
     var tz = cal.getTimeZone();
@@ -1671,45 +1677,28 @@ function tsgSearchCalendarForTask_(title, notes, dueDate) {
         Utilities.formatDate(ev.getStartTime(), tz, 'yyyy-MM-dd') + ' ' +
         Utilities.formatDate(ev.getStartTime(), tz, 'HH:mm') + '-' + Utilities.formatDate(ev.getEndTime(), tz, 'HH:mm');
     }).join('\n');
-    var userPrompt = 'Task title: ' + String(title || '(untitled)') +
-      '\nTask notes: ' + (notes || '(none)') +
-      '\nTask due date: ' + (dueDate || '(none)') +
-      '\n\nCandidate future events:\n' + listText;
-    var match = tsgMatchCandidate_(TSG_MEETING_MATCH_SYSTEM, userPrompt, events.length);
-    if (!match) return null;
-    var ev = events[match.idx];
-    var tzStart = ev.getStartTime(), tzEnd = ev.getEndTime();
-    return {
-      date: Utilities.formatDate(tzStart, tz, 'yyyy-MM-dd'),
-      start: Utilities.formatDate(tzStart, tz, 'HH:mm'),
-      end: Utilities.formatDate(tzEnd, tz, 'HH:mm'),
-      htmlLink: tsgCalendarEventLink_(ev, cal),
-      label: ev.getTitle(),
-      confident: match.confident,
-      rationale: match.rationale
-    };
+    return { events: events, listText: listText, tz: tz, cal: cal };
   } catch (err) {
-    Logger.log('[calendarSearch] failed for "' + title + '": ' + err.message);
+    Logger.log('[calendarSearch] failed: ' + err.message);
     return null;
   }
 }
-
-var TSG_DRIVE_MATCH_SYSTEM =
-  'You are matching a task on a residential real estate team\'s operations tracker to files in ' +
-  'the Director of Operations\' own Google Drive, to find the ONE file that is unambiguously the ' +
-  'same real-world document the task concerns (the specific listing agreement, invoice, SOP, or ' +
-  'similar it references) — not merely a file that shares a word or two with the title. Judge ' +
-  'using the task\'s title and notes against each candidate\'s file name AND, where shown, a short ' +
-  'excerpt of that file\'s actual content — an excerpt that clearly matches is strong evidence ' +
-  'even if the file name is vague or generic, and a name that superficially matches but whose ' +
-  'excerpt is about something else should NOT be picked. No excerpt is shown just means that ' +
-  'file\'s content could not be read (e.g. a PDF or scanned image) — judge those on name alone. ' +
-  'If more than one candidate could plausibly be it, or none clearly is, return null — attaching ' +
-  'the wrong file is worse than attaching none. Return ONLY JSON, no prose: {"index": <1-based ' +
-  'number from the candidate list, or null>, "confident": <boolean>, "rationale": "<one short ' +
-  'sentence>"}. "confident" is true only when you would stake real confidence this is the right ' +
-  'file; if you picked an index as a plausible best guess but are not sure, return that index ' +
-  'with confident:false.';
+/** The estimator's meetingMatch pick resolved against the gathered candidates. Null = no link. */
+function tsgMeetingFromCandidates_(cands, match) {
+  if (!cands || !match) return null;
+  var ev = cands.events[match.idx];
+  if (!ev) return null;
+  var tz = cands.tz, tzStart = ev.getStartTime(), tzEnd = ev.getEndTime();
+  return {
+    date: Utilities.formatDate(tzStart, tz, 'yyyy-MM-dd'),
+    start: Utilities.formatDate(tzStart, tz, 'HH:mm'),
+    end: Utilities.formatDate(tzEnd, tz, 'HH:mm'),
+    htmlLink: tsgCalendarEventLink_(ev, cands.cal),
+    label: ev.getTitle(),
+    confident: match.confident,
+    rationale: match.rationale
+  };
+}
 
 // Drive doc auto-search (2026-09-10, extended same day per Durand to also read candidate
 // content, not just file names — see tsgGetFileSnippet_) — backs "search the drive for any
@@ -1721,7 +1710,7 @@ var TSG_DRIVE_MATCH_SYSTEM =
 // ever READ (name, URL, and — for the types tsgGetFileSnippet_ knows how to read — a short
 // text excerpt); nothing is opened for editing, moved, renamed, or modified in any way. Word
 // overlap here is ONLY a retrieval filter (Drive has no smaller way to search than
-// fullText/title terms) — see tsgMatchCandidate_'s comment for why the actual confidence
+// fullText/title terms) — see tsgMatchFromParsed_'s comment for why the actual confidence
 // judgment moved to Claude instead of a word count.
 var TSG_DRIVE_SEARCH_STOPWORDS_RE = /\b(the|a|an|and|or|for|to|of|with|on|in|at|re|about|get|send|review|update|check|confirm|follow|up)\b/gi;
 function tsgDriveSearchWords_(title) {
@@ -1798,7 +1787,7 @@ function tsgLabelForUrl_(url) {
   return { ok: true, label: host ? host[1].replace(/^www\./, '') : u, kind: 'web' };
 }
 
-function tsgSearchDriveForTask_(title, notes) {
+function tsgDriveCandidates_(title) {
   var words = tsgDriveSearchWords_(title);
   // Fewer than 2 significant words is too little signal to even retrieve candidates —
   // searching Drive for one common word would return noise, not a shortlist worth judging.
@@ -1816,17 +1805,18 @@ function tsgSearchDriveForTask_(title, notes) {
       var snippet = tsgGetFileSnippet_(f);
       return (i + 1) + '. ' + f.getName() + (snippet ? '\n   Content excerpt: "' + snippet + '"' : '');
     }).join('\n');
-    var userPrompt = 'Task title: ' + String(title || '(untitled)') +
-      '\nTask notes: ' + (notes || '(none)') +
-      '\n\nCandidate files (owned by the Director of Operations):\n' + listText;
-    var match = tsgMatchCandidate_(TSG_DRIVE_MATCH_SYSTEM, userPrompt, candidates.length);
-    if (!match) return null;
-    var f = candidates[match.idx];
-    return { url: f.getUrl(), label: f.getName(), confident: match.confident, rationale: match.rationale };
+    return { files: candidates, listText: listText };
   } catch (err) {
     Logger.log('[driveSearch] failed for "' + title + '": ' + err.message);
     return null;
   }
+}
+/** The estimator's driveMatch pick resolved against the gathered candidates. Null = no link. */
+function tsgDocFromCandidates_(cands, match) {
+  if (!cands || !match) return null;
+  var f = cands.files[match.idx];
+  if (!f) return null;
+  return { url: f.getUrl(), label: f.getName(), confident: match.confident, rationale: match.rationale };
 }
 
 // FUB team roster sync (2026-09-01) — backs the dashboard's Team Roster sync, so Owner/
@@ -2975,40 +2965,89 @@ function tsgRememberModel_(id) {
   PropertiesService.getScriptProperties().setProperty('ANTHROPIC_MODEL_RESOLVED_V2', JSON.stringify({ forModel: TSG_CLAUDE.model, id: id }));
 }
 
-/** Single Claude call. Returns the text, or null on any failure — never throws. */
+/**
+ * Claude call plumbing (2026-09-16 efficiency pass, per Durand: "is there a more efficient
+ * way to implement all of the claude calls?" -> "implement then deploy everything").
+ *  - opts.effort ('low' | 'medium' | 'high'): Opus 5 thinks by default on every call, so the
+ *    classification-shaped calls (progress-from-notes, candidate matching) run at 'low'. The
+ *    full estimator, Tidy and the free-form endpoint keep the model default.
+ *  - opts.schema (JSON schema): structured outputs (output_config.format) replace "return
+ *    ONLY JSON" + regex as the guarantee; tsgExtractJson_ still parses the text, so a schema
+ *    the API rejects (HTTP 400) is retried once without it and schemas are paused for 6 h
+ *    (script cache key 'claudeNoSchema') — the prompt text still asks for JSON.
+ *  - Prompt caching: the system prompt is always sent as a cache_control block, and a caller
+ *    may pass `user` as an array of content blocks carrying its own marker (the estimator
+ *    puts the board context first, so every task after the first in a bulk push reads it
+ *    from cache). Below the model's minimum cacheable prefix (512 tokens on Opus 5) the
+ *    marker is a silent no-op, never an error.
+ *  - tsgClaudeMany_ sends independent requests through UrlFetchApp.fetchAll (one round-trip
+ *    of wall time instead of N).
+ *  - The answer is the first 'text' content block (a thinking block may precede it) and a
+ *    stop_reason of 'refusal' counts as no answer.
+ */
 var TSG_CLAUDE_RUN_CALLS = 0;
-function tsgClaude_(system, user, maxTokens, _retried) {
+function tsgClaudeSchemaOff_() {
+  try { return CacheService.getScriptCache().get('claudeNoSchema') === '1'; } catch (err) { return false; }
+}
+function tsgClaudeBody_(system, user, maxTokens, opts) {
+  opts = opts || {};
+  var body = {
+    model: tsgResolveModel_(),
+    max_tokens: maxTokens || TSG_CLAUDE.maxTokens,
+    system: [{ type: 'text', text: String(system || ''), cache_control: { type: 'ephemeral' } }],
+    messages: [{ role: 'user', content: Array.isArray(user) ? user : [{ type: 'text', text: String(user || '') }] }]
+  };
+  var oc = {};
+  if (opts.effort) oc.effort = opts.effort;
+  if (opts.schema && !opts.noSchema && !tsgClaudeSchemaOff_()) oc.format = { type: 'json_schema', schema: opts.schema };
+  if (Object.keys(oc).length) body.output_config = oc;
+  return body;
+}
+function tsgClaudeFetchOptions_(key, body) {
+  return {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'x-api-key': key, 'anthropic-version': TSG_CLAUDE.version },
+    payload: JSON.stringify(body),
+    muteHttpExceptions: true
+  };
+}
+function tsgClaudeTextOf_(resp) {
+  var body;
+  try { body = JSON.parse(resp.getContentText()); } catch (err) { return null; }
+  if (body.stop_reason === 'refusal') { Logger.log('[claude] request refused by the model'); return null; }
+  var blocks = body.content || [];
+  for (var i = 0; i < blocks.length; i++) {
+    var b = blocks[i];
+    if (b && typeof b.text === 'string' && (!b.type || b.type === 'text')) return b.text;
+  }
+  return null;
+}
+/** Single Claude call. Returns the text, or null on any failure — never throws. */
+function tsgClaude_(system, user, maxTokens, _retried, opts) {
   var key = tsgApiKey_();
   if (!key) { Logger.log('[claude] no ANTHROPIC_API_KEY set'); return null; }
   if (!_retried) {
     if (TSG_CLAUDE_RUN_CALLS >= TSG_CLAUDE.perRunCap) { Logger.log('[claude] per-run cap reached; call skipped'); return null; }
     TSG_CLAUDE_RUN_CALLS++;
   }
-
+  opts = opts || {};
   var resp;
   try {
-    resp = UrlFetchApp.fetch(TSG_CLAUDE.endpoint, {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { 'x-api-key': key, 'anthropic-version': TSG_CLAUDE.version },
-      payload: JSON.stringify({
-        model: tsgResolveModel_(),
-        max_tokens: maxTokens || TSG_CLAUDE.maxTokens,
-        system: system,
-        messages: [{ role: 'user', content: user }]
-      }),
-      muteHttpExceptions: true
-    });
+    resp = UrlFetchApp.fetch(TSG_CLAUDE.endpoint, tsgClaudeFetchOptions_(key, tsgClaudeBody_(system, user, maxTokens, opts)));
   } catch (err) {
     Logger.log('[claude] fetch failed: ' + err.message);
     return null;
   }
-
+  return tsgClaudeSettle_(resp, system, user, maxTokens, _retried, opts);
+}
+/** Shared response handling for tsgClaude_ and tsgClaudeMany_: one retry per failure class. */
+function tsgClaudeSettle_(resp, system, user, maxTokens, _retried, opts) {
   var code = resp.getResponseCode();
   if ((code === 429 || code === 529 || code >= 500) && !_retried) {
     Logger.log('[claude] HTTP ' + code + '; retrying once after 2s');
     Utilities.sleep(2000);
-    return tsgClaude_(system, user, maxTokens, true);
+    return tsgClaude_(system, user, maxTokens, true, opts);
   }
   if (code === 404 && !_retried) {
     var ids = tsgListModels_();
@@ -3018,14 +3057,48 @@ function tsgClaude_(system, user, maxTokens, _retried) {
     if (pick) {
       Logger.log('[claude] model 404; switching to ' + pick);
       tsgRememberModel_(pick);
-      return tsgClaude_(system, user, maxTokens, true);
+      return tsgClaude_(system, user, maxTokens, true, opts);
     }
   }
+  if (code === 400 && opts.schema && !opts.noSchema && !_retried) {
+    Logger.log('[claude] HTTP 400 with a structured-output schema; retrying without it and pausing schemas for 6h: ' + resp.getContentText().slice(0, 300));
+    try { CacheService.getScriptCache().put('claudeNoSchema', '1', 21600); } catch (err) {}
+    return tsgClaude_(system, user, maxTokens, true, Object.assign({}, opts, { noSchema: true }));
+  }
   if (code !== 200) { Logger.log('[claude] HTTP ' + code + ': ' + resp.getContentText().slice(0, 400)); return null; }
-
-  var body;
-  try { body = JSON.parse(resp.getContentText()); } catch (err) { return null; }
-  return (body.content && body.content[0] && body.content[0].text) || null;
+  return tsgClaudeTextOf_(resp);
+}
+/**
+ * Several independent calls at once via UrlFetchApp.fetchAll. reqs: [{system, user,
+ * maxTokens, opts}]. Returns one text-or-null per request, in order. Every request counts
+ * against perRunCap; the ones past the cap come back null without being sent.
+ */
+function tsgClaudeMany_(reqs) {
+  var out = (reqs || []).map(function() { return null; });
+  if (!out.length) return out;
+  var key = tsgApiKey_();
+  if (!key) { Logger.log('[claude] no ANTHROPIC_API_KEY set'); return out; }
+  var room = Math.max(0, TSG_CLAUDE.perRunCap - TSG_CLAUDE_RUN_CALLS);
+  var take = Math.min(room, reqs.length);
+  if (take < reqs.length) Logger.log('[claude] per-run cap: ' + (reqs.length - take) + ' of ' + reqs.length + ' batched calls skipped');
+  if (!take) return out;
+  TSG_CLAUDE_RUN_CALLS += take;
+  var slice = reqs.slice(0, take);
+  var responses;
+  try {
+    responses = UrlFetchApp.fetchAll(slice.map(function(r) {
+      var o = tsgClaudeFetchOptions_(key, tsgClaudeBody_(r.system, r.user, r.maxTokens, r.opts));
+      o.url = TSG_CLAUDE.endpoint;
+      return o;
+    }));
+  } catch (err) {
+    Logger.log('[claude] fetchAll failed: ' + err.message);
+    return out;
+  }
+  slice.forEach(function(r, i) {
+    out[i] = responses[i] ? tsgClaudeSettle_(responses[i], r.system, r.user, r.maxTokens, false, r.opts || {}) : null;
+  });
+  return out;
 }
 
 /** Pull the first JSON object out of a model response, tolerating prose or fences. */
@@ -3035,6 +3108,16 @@ function tsgExtractJson_(text) {
   if (!m) return null;
   try { return JSON.parse(m[0]); } catch (err) { return null; }
 }
+
+// Shared by the estimator (single item) and tsgProgressFromNotesMany_ (one call for a whole
+// save): the rule is written once so both read progress the same way.
+var TSG_PROGRESS_RULE =
+  'progress — an integer 0-100: how much of this task\'s hands-on work the NOTES say is already ' +
+  'done, measured against what the title and notes say the whole job is. Count only evidence of ' +
+  'completed steps (past tense, "done", "sent", "received", "confirmed", checked-off items, dated ' +
+  'completed actions). 0 when the notes are empty or describe only what is still to be done. 100 ' +
+  'only when the notes state the work is finished. Never infer progress from elapsed time, tone, ' +
+  'or how long the notes are. Prefer round numbers (0, 10, 25, 50, 75, 90, 100).';
 
 var TSG_ESTIMATE_SYSTEM =
   'You are the sole determiner of judgment fields for tasks on the Director of Operations\' ' +
@@ -3078,7 +3161,8 @@ var TSG_ESTIMATE_SYSTEM =
   'group — the single best-fitting existing group name from EXISTING_GROUPS, chosen by topic. ' +
   'Only propose a new group name (a short, plain, TSG-style name) if the task genuinely does not ' +
   'fit any existing group — this should be rare.\n\n' +
-  'dependsOnTitle — the EXACT title of one existing OPEN task from OPEN_TASK_TITLES that this new ' +
+  'dependsOnTitle — the EXACT title of one existing OPEN task from OPEN_TASK_TITLES (or from ' +
+  'BATCH_SIBLING_TITLES, tasks arriving in the same push) that this new ' +
   'task cannot start until it is done — a genuine blocking prerequisite only (e.g. "wait for the ' +
   'signed form before filing it"). Do not infer a dependency from loose thematic relatedness or ' +
   'from tasks merely being in the same group. Return null if there is no real blocking dependency, ' +
@@ -3091,12 +3175,29 @@ var TSG_ESTIMATE_SYSTEM =
   'return any of: Triage, Aging, Scheduling Stuck, Dependency Issue, needs-estimate, Claude — those ' +
   'are set by the system itself and mean something specific; returning one yourself would be wrong. ' +
   'Empty array is a completely normal answer — most tasks do not need a topical tag at all.\n\n' +
-  'progress — an integer 0-100: how much of this task\'s hands-on work the NOTES say is already ' +
-  'done, measured against what the title and notes say the whole job is. Count only evidence of ' +
-  'completed steps (past tense, "done", "sent", "received", "confirmed", checked-off items, dated ' +
-  'completed actions). 0 when the notes are empty or describe only what is still to be done. 100 ' +
-  'only when the notes state the work is finished. Never infer progress from elapsed time, tone, ' +
-  'or how long the notes are. Prefer round numbers (0, 10, 25, 50, 75, 90, 100).\n\n' +
+  TSG_PROGRESS_RULE + '\n\n' +
+  'driveMatch — ONLY when DRIVE_CANDIDATES is given: the ONE file in the Director of Operations\' ' +
+  'own Google Drive that is unambiguously the same real-world document the task concerns (the ' +
+  'specific listing agreement, invoice, SOP, or similar it references) — not merely a file that ' +
+  'shares a word or two with the title. Judge using the task\'s title and notes against each ' +
+  'candidate\'s file name AND, where shown, a short excerpt of that file\'s actual content — an ' +
+  'excerpt that clearly matches is strong evidence even if the file name is vague or generic, and ' +
+  'a name that superficially matches but whose excerpt is about something else should NOT be ' +
+  'picked. No excerpt shown just means that file\'s content could not be read (e.g. a PDF or ' +
+  'scanned image) — judge those on name alone. If more than one candidate could plausibly be it, ' +
+  'or none clearly is, return null — attaching the wrong file is worse than attaching none. Shape: ' +
+  '{"index": <1-based number from DRIVE_CANDIDATES, or null>, "confident": <boolean>, "rationale": ' +
+  '"<one short sentence>"}, or null. "confident" is true only when you would stake real confidence ' +
+  'this is the right file; a plausible best guess you are not sure of is that index with ' +
+  'confident:false.\n\n' +
+  'meetingMatch — ONLY when CALENDAR_CANDIDATES is given AND the task is typed "Meeting" (supplied, ' +
+  'or the taskType you are determining in this same answer); otherwise null. The ONE future event ' +
+  'on the Director of Operations\' Google Calendar that is unambiguously THE meeting this task is ' +
+  'about. A shared word is not enough on its own ("Vendor Sync" and "Vendor Status Sync" are not ' +
+  'the same meeting) — judge whether this is genuinely the same real-world meeting, using the ' +
+  'task\'s title, notes, and due date against each candidate\'s title and date/time. If more than ' +
+  'one candidate could plausibly be it, or none clearly is, return null — linking the wrong meeting ' +
+  'is worse than linking none. Same shape and confidence rule as driveMatch.\n\n' +
   'needsConfirmation — ONLY relevant when estHours is one of the requested fields; ignore this ' +
   'field otherwise. true if a human should sanity-check the estHours you gave before it\'s trusted, ' +
   'false if you\'re genuinely confident in it. Say true when: the notes are too thin to really pin ' +
@@ -3114,6 +3215,8 @@ var TSG_ESTIMATE_SYSTEM =
   '{"estHours": <number>, "taskType": "...", "subitems": ["step 1", "step 2"], ' +
   '"priority": "...", "group": "...", "dependsOnTitle": "<exact title>"|null, ' +
   '"tags": ["..."], "progress": <integer 0-100>, ' +
+  '"driveMatch": {"index": <1-based or null>, "confident": <boolean>, "rationale": "..."}|null, ' +
+  '"meetingMatch": {"index": <1-based or null>, "confident": <boolean>, "rationale": "..."}|null, ' +
   '"needsConfirmation": <boolean>, ' +
   '"rationale": "<one short sentence covering whatever you determined>"}';
 
@@ -3141,6 +3244,16 @@ function tsgTaskNeedsDelegateReview_(task) {
   if (tsgIsDelegatePerson_(task.owner) || tsgIsDelegatePerson_(tsgTaskDelegate_(task))) return true;
   return (task.subitems || []).some(function(s) { return s && tsgIsDelegatePerson_(s.delegate); });
 }
+/** The board-wide context the estimator reads group/dependency/tag answers from. */
+function tsgBoardContext_(doc) {
+  var tasks = (doc && doc.tasks) || [];
+  return {
+    groups: Array.from(new Set(tasks.map(function(t) { return t.group; }).filter(Boolean))),
+    openTitles: tasks.filter(function(t) { return t.status !== 'Done'; }).map(function(t) { return t.title; }),
+    existingTags: Array.from(new Set(tasks.reduce(function(acc, t) { return acc.concat(t.tags || []); }, [])))
+      .filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1; })
+  };
+}
 function tsgIsHeldForReview_(item) { return !!item && (item.tags || []).indexOf(TSG_REVIEW_TAG) !== -1; }
 function tsgHoldForReview_(item, historyArr, now, why) {
   if (!item || tsgIsHeldForReview_(item)) return false;
@@ -3163,34 +3276,84 @@ function tsgHoldForReview_(item, historyArr, now, why) {
  * @param {{groups:string[], openTitles:string[], existingTags:string[]}} [context]  board state for group/dependency/tag inference
  * Returns {estHours, taskType, subitems, priority, group, dependsOnTitle, tags, source, rationale}.
  */
-function tsgEstimateTask_(title, notes, priority, need, context) {
+var TSG_TASK_TYPE_VALUES = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Actionable Task'];
+var TSG_PRIORITY_VALUES = ['Critical', 'High', 'Medium', 'Low'];
+// Fields that are pure classification: a call asking for nothing else runs at effort 'low'.
+var TSG_ESTIMATE_LOW_EFFORT_FIELDS = ['progress', 'driveMatch', 'meetingMatch'];
+
+/** JSON schema for one estimator answer, built from the fields actually requested. */
+function tsgEstimateSchema_(need) {
+  function nullable(s) { return { anyOf: [s, { type: 'null' }] }; }
+  var match = nullable({ type: 'object', additionalProperties: false, required: ['index', 'confident', 'rationale'],
+    properties: { index: nullable({ type: 'integer' }), confident: { type: 'boolean' }, rationale: { type: 'string' } } });
+  var all = {
+    estHours: { type: 'number' },
+    taskType: { type: 'string', enum: TSG_TASK_TYPE_VALUES },
+    subitems: { type: 'array', items: { type: 'string' } },
+    priority: nullable({ type: 'string', enum: TSG_PRIORITY_VALUES }),
+    group: nullable({ type: 'string' }),
+    dependsOnTitle: nullable({ type: 'string' }),
+    tags: { type: 'array', items: { type: 'string' } },
+    progress: { type: 'integer' },
+    driveMatch: match,
+    meetingMatch: match
+  };
+  var props = {}, req = [];
+  need.forEach(function(f) { if (all[f]) { props[f] = all[f]; req.push(f); } });
+  if (need.indexOf('estHours') !== -1) { props.needsConfirmation = { type: 'boolean' }; req.push('needsConfirmation'); }
+  props.rationale = { type: 'string' }; req.push('rationale');
+  return { type: 'object', additionalProperties: false, required: req, properties: props };
+}
+
+/**
+ * Builds one estimator request without sending it, so tsgEstimateTask_ (one call) and
+ * tsgReestimate (many in parallel through tsgClaudeMany_) share the exact same prompt.
+ * Returns {system, user, maxTokens, opts, need}.
+ */
+function tsgEstimatePrompt_(title, notes, priority, need, context) {
   need = (need && need.length) ? need : ['estHours', 'taskType', 'subitems'];
   context = context || {};
-  var groups = context.groups || [];
-  var openTitles = context.openTitles || [];
-  var existingTags = context.existingTags || [];
-
   var clean = String(notes || '')
     .replace(/\n*Source: [\s\S]*$/, '')   // strip a legacy Google Tasks footer, if present
     .trim();
 
+  var blocks = [];
+  // The board context goes FIRST, as its own cached block: it is identical for every task in
+  // a bulk push (the bulk handler computes it once), so from the second task on it is a
+  // prompt-cache read instead of a full-price re-send. Task-specific text follows it.
+  var wantsBoard = ['group', 'dependsOnTitle', 'tags'].some(function(f) { return need.indexOf(f) !== -1; });
+  if (wantsBoard) {
+    blocks.push({ type: 'text', cache_control: { type: 'ephemeral' }, text:
+      'BOARD CONTEXT (shared by every task in this push)\n\n' +
+      'EXISTING_GROUPS: ' + JSON.stringify(context.groups || []) + '\n\n' +
+      'OPEN_TASK_TITLES: ' + JSON.stringify((context.openTitles || []).slice(0, 200)) + '\n\n' +
+      'EXISTING_TAGS: ' + JSON.stringify(context.existingTags || []) });
+  }
   var userParts = [
     'Task title: ' + String(title || '(untitled)'),
     'Notes:\n' + (clean || '(none)'),
     'Known priority (if already set): ' + (priority || '(not set)'),
     'NEEDED_FIELDS: ' + JSON.stringify(need)
   ];
-  if (need.indexOf('group') !== -1) {
-    userParts.push('EXISTING_GROUPS: ' + JSON.stringify(groups));
+  if (need.indexOf('dependsOnTitle') !== -1 && context.batchSiblings && context.batchSiblings.length) {
+    userParts.push('BATCH_SIBLING_TITLES: ' + JSON.stringify(context.batchSiblings));
   }
-  if (need.indexOf('dependsOnTitle') !== -1) {
-    userParts.push('OPEN_TASK_TITLES: ' + JSON.stringify(openTitles.slice(0, 200)));
+  if (need.indexOf('driveMatch') !== -1) {
+    userParts.push('DRIVE_CANDIDATES (files owned by the Director of Operations):\n' + (context.driveCandidates || '(none)'));
   }
-  if (need.indexOf('tags') !== -1) {
-    userParts.push('EXISTING_TAGS: ' + JSON.stringify(existingTags));
+  if (need.indexOf('meetingMatch') !== -1) {
+    userParts.push('CALENDAR_CANDIDATES (future events only):\n' + (context.calendarCandidates || '(none)'));
   }
+  blocks.push({ type: 'text', text: userParts.join('\n\n') });
 
-  var raw = tsgClaude_(TSG_ESTIMATE_SYSTEM, userParts.join('\n\n'), 700);
+  var opts = { schema: tsgEstimateSchema_(need) };
+  if (need.every(function(f) { return TSG_ESTIMATE_LOW_EFFORT_FIELDS.indexOf(f) !== -1; })) opts.effort = 'low';
+  return { system: TSG_ESTIMATE_SYSTEM, user: blocks, maxTokens: 900, opts: opts, need: need };
+}
+
+/** Parses one estimator answer into the normalized result shape. */
+function tsgEstimateParse_(raw, need, title, context) {
+  context = context || {};
   var parsed = tsgExtractJson_(raw);
 
   if (!parsed) {
@@ -3198,6 +3361,7 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
     return {
       estHours: null, taskType: null, subitems: [],
       priority: null, group: null, dependsOnTitle: null, progress: null,
+      driveMatch: null, meetingMatch: null,
       tags: ['needs-estimate'], source: 'none', rationale: null, needsConfirmation: false
     };
   }
@@ -3205,6 +3369,7 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
   var out = {
     estHours: null, taskType: null, subitems: [],
     priority: null, group: null, dependsOnTitle: null, progress: null,
+    driveMatch: null, meetingMatch: null,
     tags: [], source: 'claude', rationale: parsed.rationale || null,
     // Only meaningful when estHours was actually requested/returned this call — see the
     // "Triage" tag repurpose (2026-08-26): a self-assessed low-confidence estimate gets
@@ -3245,9 +3410,21 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
       .filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1; })
       .slice(0, 3);
   }
+  if (need.indexOf('driveMatch') !== -1) {
+    out.driveMatch = tsgMatchFromParsed_(parsed.driveMatch, context.driveCandidateCount || 0);
+  }
+  if (need.indexOf('meetingMatch') !== -1) {
+    out.meetingMatch = tsgMatchFromParsed_(parsed.meetingMatch, context.calendarCandidateCount || 0);
+  }
 
   Logger.log('[estimate] "' + title + '" -> ' + JSON.stringify(out) + ' (claude): ' + (parsed.rationale || ''));
   return out;
+}
+
+function tsgEstimateTask_(title, notes, priority, need, context) {
+  var p = tsgEstimatePrompt_(title, notes, priority, need, context);
+  var raw = tsgClaude_(p.system, p.user, p.maxTokens, false, p.opts);
+  return tsgEstimateParse_(raw, p.need, title, context);
 }
 
 /**
@@ -3273,34 +3450,95 @@ function tsgProgressFromNotes_(title, notes, priority) {
  * the stored value alone. The first sign of progress moves a Not Started item to In
  * Progress. Returns true when progress was set.
  */
-function tsgApplyProgressFromNotes_(item, prevNotes, progressExplicit) {
+function tsgProgressWanted_(item, prevNotes, progressExplicit) {
   if (!item || progressExplicit) return false;
   if (item.subitems && item.subitems.length) return false;
   var status = item.done ? 'Done' : (item.status || 'Not Started');
   if (status === 'Done') return false;
   var nextNotes = String(item.notes || '').trim();
-  if (nextNotes === String(prevNotes || '').trim()) return false;
-  var pct = tsgProgressFromNotes_(item.title, nextNotes, item.priority);
-  if (pct == null) return false;
+  return nextNotes !== String(prevNotes || '').trim();
+}
+function tsgSetProgressFromNotes_(item, pct) {
+  var status = item.done ? 'Done' : (item.status || 'Not Started');
   item.progress = pct;
   if (pct > 0 && status === 'Not Started') item.status = 'In Progress';
+}
+function tsgApplyProgressFromNotes_(item, prevNotes, progressExplicit) {
+  if (!tsgProgressWanted_(item, prevNotes, progressExplicit)) return false;
+  var pct = tsgProgressFromNotes_(item.title, String(item.notes || '').trim(), item.priority);
+  if (pct == null) return false;
+  tsgSetProgressFromNotes_(item, pct);
   return true;
 }
-/** replace_all variant: pairs tasks by id and subitems by index, like the history stamping does. */
+
+// Many items in one call (2026-09-16): a dashboard save that changed the notes on several
+// items used to cost one estimator call each; now every item whose notes changed goes to
+// Claude in a single request (20 per request; more than that fans out through fetchAll).
+var TSG_PROGRESS_MANY_SYSTEM =
+  'You read progress from task notes on the Director of Operations\' tracker for a residential ' +
+  'real estate team. For EACH numbered item in ITEMS determine ' + TSG_PROGRESS_RULE + '\n\n' +
+  'Judge every item on its own notes only. Return ONLY JSON, no prose, no fences: ' +
+  '{"items": [{"index": <the item\'s 1-based number>, "progress": <integer 0-100>}, ...]} with one entry per item.';
+var TSG_PROGRESS_MANY_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['items'],
+  properties: { items: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['index', 'progress'],
+    properties: { index: { type: 'integer' }, progress: { type: 'integer' } } } } }
+};
+/** items: [{title, notes, priority}]. Returns one integer-or-null per item (0 for empty notes, no call). */
+function tsgProgressFromNotesMany_(items) {
+  var out = (items || []).map(function() { return null; });
+  var idxs = [];
+  (items || []).forEach(function(it, i) { if (String(it && it.notes || '').trim()) idxs.push(i); else out[i] = 0; });
+  if (!idxs.length) return out;
+  if (idxs.length === 1) {
+    var one = items[idxs[0]];
+    out[idxs[0]] = tsgProgressFromNotes_(one.title, one.notes, one.priority);
+    return out;
+  }
+  var CHUNK = 20, chunks = [], reqs = [];
+  for (var s = 0; s < idxs.length; s += CHUNK) {
+    var chunk = idxs.slice(s, s + CHUNK);
+    chunks.push(chunk);
+    var text = chunk.map(function(i, k) {
+      var it = items[i];
+      return (k + 1) + '. Title: ' + String(it.title || '(untitled)') + '\n   Notes: ' + String(it.notes).trim().replace(/\n/g, '\n   ');
+    }).join('\n\n');
+    reqs.push({ system: TSG_PROGRESS_MANY_SYSTEM, user: 'ITEMS:\n\n' + text, maxTokens: 600, opts: { effort: 'low', schema: TSG_PROGRESS_MANY_SCHEMA } });
+  }
+  var raws = reqs.length === 1
+    ? [tsgClaude_(reqs[0].system, reqs[0].user, reqs[0].maxTokens, false, reqs[0].opts)]
+    : tsgClaudeMany_(reqs);
+  chunks.forEach(function(chunk, c) {
+    var parsed = tsgExtractJson_(raws[c]);
+    var rows = (parsed && Array.isArray(parsed.items)) ? parsed.items : [];
+    rows.forEach(function(r) {
+      var k = Math.floor(Number(r && r.index)) - 1;
+      if (k >= 0 && k < chunk.length && r && typeof r.progress === 'number' && isFinite(r.progress)) {
+        out[chunk[k]] = Math.max(0, Math.min(100, Math.round(r.progress)));
+      }
+    });
+  });
+  return out;
+}
+/** replace_all variant: pairs tasks by id and subitems by index, like the history stamping does; one call for the lot. */
 function tsgApplyProgressFromNotesOnSave_(prevTasks, nextTasks) {
   var prevById = {};
   (prevTasks || []).forEach(function(t) { if (t) prevById[t.id] = t; });
+  var wanted = [];
   (nextTasks || []).forEach(function(t) {
     if (!t) return;
     var p = prevById[t.id];
-    tsgApplyProgressFromNotes_(t, p ? p.notes : '', !!p && !tsgValuesEqual_(p.progress, t.progress));
+    if (tsgProgressWanted_(t, p ? p.notes : '', !!p && !tsgValuesEqual_(p.progress, t.progress))) wanted.push(t);
     var ps = (p && Array.isArray(p.subitems)) ? p.subitems : [];
     (t.subitems || []).forEach(function(s, i) {
       if (!s) return;
       var q = ps[i];
-      tsgApplyProgressFromNotes_(s, q ? q.notes : '', !!q && !tsgValuesEqual_(q.progress, s.progress));
+      if (tsgProgressWanted_(s, q ? q.notes : '', !!q && !tsgValuesEqual_(q.progress, s.progress))) wanted.push(s);
     });
   });
+  if (!wanted.length) return;
+  var pcts = tsgProgressFromNotesMany_(wanted.map(function(it) { return { title: it.title, notes: String(it.notes || '').trim(), priority: it.priority }; }));
+  wanted.forEach(function(it, i) { if (pcts[i] != null) tsgSetProgressFromNotes_(it, pcts[i]); });
 }
 
 /* ------------------------------------------------------------------ *
@@ -3321,8 +3559,12 @@ function tsgReestimate(apply, includeEstimated) {
   if (!open.length) { Logger.log('[reestimate] nothing to do'); return []; }
 
   var ops = [];
-  open.forEach(function (t) {
-    var est = tsgEstimateTask_(t.title, t.notes, t.priority || 'Medium');
+  // One fetchAll round instead of a serial loop; anything past perRunCap comes back null
+  // and is skipped exactly as an unreachable Claude would be.
+  var prompts = open.map(function (t) { return tsgEstimatePrompt_(t.title, t.notes, t.priority || 'Medium'); });
+  var raws = tsgClaudeMany_(prompts);
+  open.forEach(function (t, i) {
+    var est = tsgEstimateParse_(raws[i], prompts[i].need, t.title, {});
     if (est.source === 'none') {
       Logger.log('  #' + t.id + '  SKIPPED — Claude unavailable, leaving as-is: ' + t.title);
       return;
@@ -3368,6 +3610,15 @@ var TSG_TIDY_SYSTEM =
   '- rationale: one sentence on what you changed and why.\n' +
   'Return ONLY the JSON object {"title","notes","priority","taskType","group","estHours","tags","rationale"}, no prose, no fences.';
 
+var TSG_TIDY_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['title', 'notes', 'priority', 'taskType', 'group', 'estHours', 'tags', 'rationale'],
+  properties: {
+    title: { type: 'string' }, notes: { type: 'string' },
+    priority: { type: 'string' }, taskType: { type: 'string' }, group: { type: 'string' },
+    estHours: { type: 'number' }, tags: { type: 'array', items: { type: 'string' } }, rationale: { type: 'string' }
+  }
+};
 /** Proposal for the dashboard's Tidy button: current fields plus Claude's cleaned-up version, validated. */
 function tsgTidyProposal_(taskId) {
   if (!taskId) return { ok: false, error: 'taskId required' };
@@ -3380,7 +3631,7 @@ function tsgTidyProposal_(taskId) {
   var before = { title: t.title || '', notes: t.notes || '', priority: t.priority || 'Medium', taskType: t.taskType || 'Actionable Task', group: t.group || '', estHours: (typeof t.estHours === 'number') ? t.estHours : null, tags: (t.tags || []).slice() };
   var user = 'CURRENT TASK: ' + JSON.stringify(Object.assign({ id: t.id, status: t.status, due: t.timelineEnd || '', subitems: (t.subitems || []).map(function(s) { return s.title; }) }, before), null, 1) +
     '\n\nEXISTING_GROUPS: ' + JSON.stringify(groups) + '\nEXISTING_TAGS: ' + JSON.stringify(tags);
-  var raw = tsgClaude_(TSG_TIDY_SYSTEM, user, 2000);
+  var raw = tsgClaude_(TSG_TIDY_SYSTEM, user, 2000, false, { schema: TSG_TIDY_SCHEMA });
   var p = raw ? tsgExtractJson_(raw) : null;
   if (!p) return { ok: false, error: 'Claude did not return a proposal.' };
   var prios = (doc.meta && doc.meta.priority_values) || ['Critical', 'High', 'Medium', 'Low'];
