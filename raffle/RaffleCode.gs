@@ -61,6 +61,83 @@ var RAFFLE_TAGS   = ['Block Party 2026', 'Block Party Raffle Entrant', 'Event Le
 // the entire point. Every other check still runs unchanged: form token, rate
 // limit, honeypot, required fields, consent, and one-entry-per-person. The
 // relaxation is logged loudly every time it happens.
+// ---------- Email verification ----------
+// Entry is two-step: details -> emailed 6-digit code -> entered. Nothing is
+// written to the sheet or to FUB until the code is confirmed, so a typo'd or
+// invented address never becomes a contact record.
+//
+// WHY EMAIL AND NOT SMS. The phone is the field TCPA actually cares about, so an
+// SMS code would be the stronger check. It is not reachable for this event:
+// Follow Up Boss's /v1/textMessages endpoint only LOGS an externally-sent text,
+// it cannot send one, and a real SMS provider needs US A2P 10DLC registration,
+// which is currently running 10-15 days for campaign review. The party is in
+// three days. The phone is therefore hard-validated (below) rather than
+// ownership-proven, and that limitation is stated plainly in the README.
+var RAFFLE_CODE_TTL_SECONDS = 900;      // 15 minutes to type a 6-digit code
+var RAFFLE_CODE_MAX_ATTEMPTS = 5;
+var RAFFLE_PENDING_PREFIX = 'raffle_pending_';
+
+// Junk rejection, applied to BOTH steps. This is not politeness -- FUB already
+// carries "test@me.com / 1234567899" and "asdf@asdf.caf" from earlier form
+// testing, and a raffle at a party is exactly where that gets typed on purpose.
+var RAFFLE_DISPOSABLE_EMAIL_RE = new RegExp('@(?:' + [
+  'mailinator\\.com', 'guerrillamail\\.[a-z]+', '10minutemail\\.[a-z]+',
+  'tempmail\\.[a-z]+', 'temp-mail\\.[a-z]+', 'throwaway\\.[a-z]+',
+  'yopmail\\.[a-z]+', 'trashmail\\.[a-z]+', 'sharklasers\\.com',
+  'getnada\\.com', 'dispostable\\.com', 'maildrop\\.cc',
+  'fakeinbox\\.com', 'mailnesia\\.com', 'example\\.(?:com|org|net)',
+  'test\\.(?:com|org|net)'
+].join('|') + ')$', 'i');
+var RAFFLE_ROLE_LOCALPART_RE =
+  /^(?:test|tester|testing|asdf|qwerty|admin|administrator|root|postmaster|abuse|noreply|no-reply|donotreply|nobody|none|null|na|n\/a|fake|foo|bar|baz|xxx|aaa|sample|example)[0-9]*$/i;
+
+// Rejects a phone that cannot be a real North American number, plus the
+// keyboard-mash patterns people actually type.
+function raffleRejectJunkPhone_(phone) {
+  var d = String(phone || '').replace(/\D/g, '');
+  if (!d) throw makeValidationError('Enter your phone number.');
+  if (d.length === 11 && d.charAt(0) === '1') d = d.slice(1);
+  if (d.length !== 10) {
+    throw makeValidationError('Enter a 10-digit US phone number.');
+  }
+  if (/^(\d)\1{9}$/.test(d)) {
+    throw makeValidationError('That phone number does not look real. Please check it.');
+  }
+  if (d === '1234567890' || d === '0123456789' || d === '9876543210') {
+    throw makeValidationError('That phone number does not look real. Please check it.');
+  }
+  var area = d.slice(0, 3), exch = d.slice(3, 6);
+  // NANP: area and exchange codes never start 0 or 1, and N11 codes are service
+  // codes (411, 911...), never subscriber numbers.
+  if (area.charAt(0) === '0' || area.charAt(0) === '1' ||
+      exch.charAt(0) === '0' || exch.charAt(0) === '1' ||
+      /^\d11$/.test(area)) {
+    throw makeValidationError('That is not a valid US phone number. Please check it.');
+  }
+  // 555-01xx is the reserved fictional range.
+  if (exch === '555' && d.slice(6, 8) === '01') {
+    throw makeValidationError('That phone number does not look real. Please check it.');
+  }
+  return d;
+}
+
+function raffleRejectJunkEmail_(email) {
+  var e = String(email || '').trim().toLowerCase();
+  // Code.gs's validateEmailField returns early on an empty value (it is used
+  // where email is optional), so emptiness has to be caught here or a blank
+  // address would sail through and we would "send a code" to nobody.
+  if (!e) throw makeValidationError('Enter your email address.');
+  validateEmailField(e);                       // shared shape check from Code.gs
+  if (RAFFLE_DISPOSABLE_EMAIL_RE.test(e)) {
+    throw makeValidationError('Please use a real email address you can check right now — we send your entry code to it.');
+  }
+  var local = e.split('@')[0];
+  if (RAFFLE_ROLE_LOCALPART_RE.test(local)) {
+    throw makeValidationError('Please use your own email address.');
+  }
+  return e;
+}
+
 var RAFFLE_LIVE_SHEET_NAME  = 'Entries';
 var RAFFLE_TEST_SHEET_NAME  = 'Test Entries';
 var RAFFLE_TEST_WINNER_PROP = 'RAFFLE_TEST_WINNER_JSON';
@@ -73,12 +150,12 @@ var RAFFLE_BACKUP_COUNT = 2;
 // Consent language version stamped onto every row. Bump this string if the
 // consent copy in RaffleForm.html changes, so the audit trail stays honest
 // about which wording a given entrant actually saw.
-var RAFFLE_CONSENT_VERSION = 'raffle-v1 (2026-09-16)';
+var RAFFLE_CONSENT_VERSION = 'raffle-v2 (2026-09-16, email-verified entry)';
 
 var RAFFLE_SHEET_HEADERS = [
   'Timestamp (ET)', 'Full Name', 'Email', 'Phone',
   'Consent', 'Consent Version', 'Entry Source',
-  'FUB Status', 'FUB Person ID', 'Eligible'
+  'FUB Status', 'FUB Person ID', 'Eligible', 'Email Verified'
 ];
 
 // ---------- Small helpers ----------
@@ -316,98 +393,9 @@ function raffleHandleSubmission_(d) {
   // reached. Read once here so every branch below agrees on which mode it is.
   var test = isQaTestMode_();
   try {
-    var name  = collapseSpaces(d.fullName);
-    var email = String(d.email || '').trim().toLowerCase();
-    var phone = String(d.phone || '').trim();
-
-    // All three fields and the consent box are required, per Durand
-    // (2026-09-16). Enforced server-side, not just by the page's `required`
-    // attributes, because doPost can be hit directly.
-    if (!name)  throw makeValidationError('Enter your full name.');
-    if (!email) throw makeValidationError('Enter your email address.');
-    if (!phone) throw makeValidationError('Enter your phone number.');
-    validateEmailField(email);
-    validatePhoneField(phone);
-    if (name.indexOf(' ') === -1) {
-      throw makeValidationError('Enter your first and last name.');
-    }
-    if (d.consent !== 'Yes') {
-      throw makeValidationError('You must accept the Official Rules to enter.');
-    }
-
-    // Entry window. Re-checked here so a link saved from the event can't be
-    // used to enter after the draw, and so nobody can enter before it opens.
-    // THE one check test mode relaxes -- see the RAFFLE_TEST_* block at the top
-    // of this file for why, and note it is the only one.
-    var state = raffleEntryState_();
-    if (test) {
-      Logger.log('RAFFLE TEST MODE: entry-window check BYPASSED (real state was "' + state +
-        '"). This is the only check test mode relaxes; the entry is being written to the "' +
-        RAFFLE_TEST_SHEET_NAME + '" tab and cannot be drawn as the real winner.');
-    } else {
-      if (state === 'before') {
-        throw makeValidationError('Entries are not open yet. Come find us at the party!');
-      }
-      if (state === 'closed') {
-        throw makeValidationError('Entries are closed — the winner is announced at ' +
-          RAFFLE_ANNOUNCE_AT + '. Thanks for coming out!');
-      }
-    }
-
-    var emailKey = raffleEmailKey_(email);
-    var phoneKey = rafflePhoneKey_(phone);
-
-    // One entry per person. The duplicate check and the append have to be a
-    // single atomic step, or two people hitting submit at the same instant
-    // both read "not yet entered" and both get written.
-    var lock = LockService.getScriptLock();
-    if (!lock.tryLock(10000)) {
-      throw makeValidationError('We are busy for a moment — tap Enter again.');
-    }
-    var appended;
-    try {
-      var existing = raffleReadEntries_(test);
-      for (var i = 0; i < existing.length; i++) {
-        if ((emailKey && existing[i].emailKey === emailKey) ||
-            (phoneKey && existing[i].phoneKey === phoneKey)) {
-          // Not an error the entrant did anything wrong about — tell them
-          // they're in, rather than showing a failure for a working entry.
-          return jsonOut({
-            ok: true,
-            already: true,
-            message: 'You are already entered! Winner announced at ' + RAFFLE_ANNOUNCE_AT + '.'
-          });
-        }
-      }
-      appended = raffleAppendEntry_(name, email, phone, test);
-    } finally {
-      try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
-    }
-
-    // The entry is now safely recorded. Everything past this point is
-    // best-effort and must never turn a saved entry into a visible failure.
-    var fub = rafflePushToFub_(name, email, phone, test);
-    try {
-      raffleRecordFubOutcome_(appended.row, fub, test);
-    } catch (recErr) {
-      Logger.log('raffleRecordFubOutcome_ failed: ' + recErr);
-    }
-    if (!fub.ok) {
-      // Durand finds out now, not on Monday when he wonders why 40 leads
-      // never showed up in FUB.
-      try {
-        sendErrorAlert('Raffle: FUB write failed for ' + name,
-          'Entry IS saved in the raffle sheet (row ' + appended.row + ') and is eligible ' +
-          'for the draw. Only the FUB push failed; raffleRetryFubFailures() can re-push it.\n\n' +
-          fub.error);
-      } catch (alertErr) { Logger.log('Raffle FUB alert failed: ' + alertErr); }
-    }
-
-    return jsonOut({
-      ok: true,
-      message: 'You are entered! Winner announced at ' + RAFFLE_ANNOUNCE_AT + '.'
-    });
-
+    var step = String((d && d.step) || 'request').toLowerCase();
+    if (step === 'verify') return raffleVerifyCode_(d, test);
+    return raffleRequestCode_(d, test);
   } catch (err) {
     if (err && err.isValidation) return jsonOut({ ok: false, error: err.message });
     Logger.log('raffleHandleSubmission_ error: ' + (err && err.stack ? err.stack : err));
@@ -418,13 +406,147 @@ function raffleHandleSubmission_(d) {
   }
 }
 
+// ---------- Step 1: validate, then email a code ----------
+// Writes NOTHING durable. The entry only exists in the script cache, keyed by a
+// server-generated id, until the code comes back.
+function raffleRequestCode_(d, test) {
+  // Window check FIRST. If entries are shut, say so -- do not make someone fix a
+  // typo in a field only to then be told they were too late anyway.
+  // This is the one check test mode relaxes; see the RAFFLE_TEST_* block.
+  var state = raffleEntryState_();
+  if (test) {
+    Logger.log('RAFFLE TEST MODE: entry-window check BYPASSED (real state was "' + state +
+      '"). This is the only check test mode relaxes; the entry is being written to the "' +
+      RAFFLE_TEST_SHEET_NAME + '" tab and cannot be drawn as the real winner.');
+  } else {
+    if (state === 'before') {
+      throw makeValidationError('Entries are not open yet. Come find us at the party!');
+    }
+    if (state === 'closed') {
+      throw makeValidationError('Entries are closed — the winner is announced at ' +
+        RAFFLE_ANNOUNCE_AT + '. Thanks for coming out!');
+    }
+  }
+
+  var name  = collapseSpaces(d.fullName);
+  if (!name) throw makeValidationError('Enter your full name.');
+  if (name.indexOf(' ') === -1) throw makeValidationError('Enter your first and last name.');
+  var email  = raffleRejectJunkEmail_(d.email);
+  var digits = raffleRejectJunkPhone_(d.phone);
+  var phone  = String(d.phone || '').trim();
+  if (d.consent !== 'Yes') throw makeValidationError('You must accept the Official Rules to enter.');
+
+  // Tell them they are already in BEFORE making them wait for a code.
+  var emailKey = raffleEmailKey_(email), phoneKey = rafflePhoneKey_(digits);
+  var existing = raffleReadEntries_(test);
+  for (var i = 0; i < existing.length; i++) {
+    if ((emailKey && existing[i].emailKey === emailKey) ||
+        (phoneKey && existing[i].phoneKey === phoneKey)) {
+      return jsonOut({ ok: true, already: true,
+        message: 'You are already entered! Winner announced at ' + RAFFLE_ANNOUNCE_AT + '.' });
+    }
+  }
+
+  var code = String(Math.floor(100000 + Math.random() * 900000));
+  var vid  = Utilities.getUuid();
+  CacheService.getScriptCache().put(RAFFLE_PENDING_PREFIX + vid, JSON.stringify({
+    name: name, email: email, phone: phone, code: code, attempts: 0, test: !!test
+  }), RAFFLE_CODE_TTL_SECONDS);
+
+  MailApp.sendEmail({
+    to: email,
+    subject: (test ? QA_TEST_PREFIX : '') + 'Your TSG Block Party entry code: ' + code,
+    body: [
+      'Your entry code is ' + code,
+      '',
+      'Type it back on the entry page to finish entering the drawing for',
+      RAFFLE_PRIZE_SHORT + ' at the TSG Block Party.',
+      '',
+      'This code expires in 15 minutes. If you did not request it, ignore this email —',
+      'nothing has been entered and we will not contact you.',
+      '',
+      'The Stawasz Group · Keller Williams Empower',
+      '728 S Broad St, Philadelphia, PA 19146 · (215) 760-6291'
+    ].join('\n')
+  });
+
+  Logger.log('Raffle: verification code emailed (vid ' + vid + ', test=' + !!test + ').');
+  return jsonOut({ ok: true, needsCode: true, vid: vid,
+    message: 'We emailed a 6-digit code to ' + email + '.' });
+}
+
+// ---------- Step 2: confirm the code, then actually enter them ----------
+function raffleVerifyCode_(d, test) {
+  var cache = CacheService.getScriptCache();
+  var vid = String(d.vid || '');
+  if (!/^[0-9a-fA-F-]{36}$/.test(vid)) {
+    throw makeValidationError('That entry expired. Start again.');
+  }
+  var key = RAFFLE_PENDING_PREFIX + vid;
+  var raw = cache.get(key);
+  if (!raw) throw makeValidationError('That code expired. Start again and we will send a new one.');
+
+  var pending = JSON.parse(raw);
+  var supplied = String(d.code || '').replace(/\D/g, '');
+
+  if (supplied !== pending.code) {
+    pending.attempts = (pending.attempts || 0) + 1;
+    if (pending.attempts >= RAFFLE_CODE_MAX_ATTEMPTS) {
+      cache.remove(key);
+      throw makeValidationError('Too many wrong codes. Start again and we will send a new one.');
+    }
+    cache.put(key, JSON.stringify(pending), RAFFLE_CODE_TTL_SECONDS);
+    throw makeValidationError('That code is not right. Check your email and try again.');
+  }
+
+  // Verified. The entry is written from the CACHED values, never from anything
+  // the client sent with this second request -- otherwise someone could verify
+  // one address and enter a different one.
+  cache.remove(key);
+  var name = pending.name, email = pending.email, phone = pending.phone;
+  var isTest = !!pending.test;
+
+  var emailKey = raffleEmailKey_(email), phoneKey = rafflePhoneKey_(phone);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) throw makeValidationError('We are busy for a moment — tap Enter again.');
+  var appended;
+  try {
+    var existing = raffleReadEntries_(isTest);
+    for (var i = 0; i < existing.length; i++) {
+      if ((emailKey && existing[i].emailKey === emailKey) ||
+          (phoneKey && existing[i].phoneKey === phoneKey)) {
+        return jsonOut({ ok: true, already: true,
+          message: 'You are already entered! Winner announced at ' + RAFFLE_ANNOUNCE_AT + '.' });
+      }
+    }
+    appended = raffleAppendEntry_(name, email, phone, isTest);
+  } finally {
+    try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
+  }
+
+  var fub = rafflePushToFub_(name, email, phone, isTest);
+  try { raffleRecordFubOutcome_(appended.row, fub, isTest); }
+  catch (recErr) { Logger.log('raffleRecordFubOutcome_ failed: ' + recErr); }
+  if (!fub.ok) {
+    try {
+      sendErrorAlert('Raffle: FUB write failed for ' + name,
+        'Entry IS saved in the raffle sheet (row ' + appended.row + ') and is eligible ' +
+        'for the draw. Only the FUB push failed; raffleRetryFubFailures() can re-push it.\n\n' +
+        fub.error);
+    } catch (alertErr) { Logger.log('Raffle FUB alert failed: ' + alertErr); }
+  }
+
+  return jsonOut({ ok: true, verified: true,
+    message: 'You are entered! Winner announced at ' + RAFFLE_ANNOUNCE_AT + '.' });
+}
+
 function raffleAppendEntry_(name, email, phone, test) {
   var sh = raffleSheet_(test);
   sh.appendRow([
     raffleFmt_(raffleNow_()), name, email, phone,
     'Yes', RAFFLE_CONSENT_VERSION,
     test ? (QA_TEST_PREFIX + RAFFLE_EVENT_NAME) : RAFFLE_EVENT_NAME,
-    'pending', '', 'Yes'
+    'pending', '', 'Yes', 'Yes (code confirmed)'
   ]);
   return { row: sh.getLastRow() };
 }
@@ -522,6 +644,10 @@ function raffleBackground_(name, email, phone) {
     'Name: ' + name,
     'Email: ' + email,
     'Phone: ' + phone,
+    '',
+    'EMAIL VERIFIED: this address was confirmed at entry -- a 6-digit code was',
+    'emailed to it and typed back before the entry was accepted. The phone number',
+    'was format- and plausibility-checked but NOT ownership-verified (no SMS).',
     '',
     'CONSENT: accepted the Official Rules and gave express written consent to be',
     'contacted by call, text and email (including autodialed/prerecorded messages)',

@@ -86,6 +86,17 @@ footer .contact{font-size:13px;line-height:1.75;color:#4a5252;margin-top:14px;}
 footer .contact a{color:var(--tsg-green);text-decoration:none;font-weight:700;}
 footer .fine{font-size:10.5px;color:#9aa3a3;margin-top:16px;line-height:1.5;}
 
+/* Code-entry step */
+#codePanel .sent{font-size:14px;color:#4a5252;margin:0 0 4px;}
+#codePanel .addr{font-weight:700;color:var(--tsg-green);word-break:break-all;}
+#codeInput{width:100%;max-width:260px;margin:18px auto 4px;display:block;text-align:center;
+  font-size:30px;letter-spacing:10px;font-weight:700;padding:14px 10px;border-radius:8px;
+  border:1px solid var(--tsg-gray-border);font-family:'Lato',Arial,sans-serif;}
+#codePanel .hint{font-size:12px;color:#8a9494;margin-top:10px;}
+#codePanel .linkish{background:none;border:none;color:var(--tsg-green);text-decoration:underline;
+  font-size:13px;cursor:pointer;padding:8px;width:auto;font-weight:700;margin-top:6px;}
+#codeErr{font-size:13px;color:var(--tsg-red);min-height:18px;margin-top:8px;}
+
 /* QA TEST MODE banner. Same treatment as the Open House Sign-In page: loud,
    fixed, deliberately outside the TSG palette so it cannot be mistaken for part
    of the real form. Present in the markup on every load but display:none unless
@@ -153,6 +164,18 @@ body.qa-test{padding-top:62px;}
     <p style="margin-top:14px">Thanks for coming out &mdash; see you next year.</p>
   </div>
 
+  <!-- Step 2: confirm the emailed code -->
+  <div class="panel" id="codePanel">
+    <h2>Check your email</h2>
+    <p class="sent">We sent a 6-digit code to<br><span class="addr" id="codeAddr"></span></p>
+    <input type="text" id="codeInput" inputmode="numeric" autocomplete="one-time-code"
+           maxlength="6" placeholder="------" aria-label="6-digit code">
+    <div id="codeErr" role="alert"></div>
+    <button type="button" id="codeBtn">Confirm &amp; Enter</button>
+    <div class="hint">It can take a few seconds. Check spam if you don't see it.</div>
+    <button type="button" class="linkish" id="startOverBtn">Wrong email? Start over</button>
+  </div>
+
   <!-- Success -->
   <div class="panel" id="successPanel">
     <h2 id="successTitle">You&rsquo;re entered!</h2>
@@ -174,12 +197,12 @@ body.qa-test{padding-top:62px;}
         </div>
         <div class="field">
           <label for="phone">Phone <span class="req">*</span></label>
-          <input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="(215) 555-0123">
+          <input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="(215) 555-8123">
           <div class="errmsg" id="phoneErr"></div>
         </div>
         <div class="field">
           <label for="email">Email <span class="req">*</span></label>
-          <input type="email" id="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@example.com">
+          <input type="email" id="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@email.com">
           <div class="errmsg" id="emailErr"></div>
         </div>
       </fieldset>
@@ -339,7 +362,11 @@ body.qa-test{padding-top:62px;}
   var form         = document.getElementById('raffleForm');
   var btn          = document.getElementById('submitBtn');
 
-  var panels = [beforePanel, closedPanel, successPanel];
+  var codePanel = document.getElementById('codePanel');
+  var panels = [beforePanel, closedPanel, successPanel, codePanel];
+  // Server-issued id for this pending entry. Nothing is written until the
+  // emailed code comes back against it.
+  var pendingVid = null;
   // Once someone has entered, their confirmation stays put. The ticker below
   // must not yank it away mid-read just because the clock moved on.
   var holdingSuccess = false;
@@ -397,11 +424,13 @@ body.qa-test{padding-top:62px;}
   function render(){
     var p = phase();
     if (p === 'before') tickCountdown();
-    // A held confirmation is only ever replaced by the 6:15 close, never by a
-    // phase change the entrant does not care about.
-    if (holdingSuccess && p !== 'closed') { lastPhase = p; return; }
+    // A held confirmation -- or a half-finished code step -- is only ever
+    // replaced by the 6:15 close, never by a phase change the entrant does not
+    // care about.
+    if ((holdingSuccess || pendingVid) && p !== 'closed') { lastPhase = p; return; }
     if (p !== lastPhase || holdingSuccess) {
       holdingSuccess = false;
+      pendingVid = null;
       if (p === 'before')      show(beforePanel);
       else if (p === 'closed') show(closedPanel);
       else                     showForm();
@@ -443,6 +472,36 @@ body.qa-test{padding-top:62px;}
     return ok;
   }
 
+  var codeInput = document.getElementById('codeInput');
+  var codeBtn   = document.getElementById('codeBtn');
+  var codeAddr  = document.getElementById('codeAddr');
+  var codeErr   = document.getElementById('codeErr');
+
+  function post(payload){
+    return fetch(API, {
+      method: 'POST',
+      // text/plain keeps this a CORS "simple request" — Apps Script web apps
+      // do not answer preflight OPTIONS, so application/json would fail here.
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    }).then(function(r){ return r.json(); });
+  }
+
+  function enteredOk(res){
+    document.getElementById('successTitle').textContent =
+      res.already ? 'You’re already in!' : 'You’re entered!';
+    document.getElementById('successMsg').textContent =
+      res.already ? 'We already have your entry — one per person.' : 'Good luck.';
+    holdingSuccess = true;
+    pendingVid = null;
+    show(successPanel);
+    form.reset();
+    if (KIOSK) setTimeout(function(){
+      holdingSuccess = false; lastPhase = null; render();
+    }, 6000);
+  }
+
+  // ---- Step 1: details -> emailed code ----
   form.addEventListener('submit', function(ev){
     ev.preventDefault();
     document.getElementById('submitErr').textContent = '';
@@ -451,6 +510,7 @@ body.qa-test{padding-top:62px;}
       formType: 'raffle',
       formToken: TOKEN,
       qaTestToken: QA_TOKEN,
+      step: 'request',
       website:  document.getElementById('website').value,
       fullName: document.getElementById('fullName').value.replace(/\s+/g,' ').trim(),
       phone:    phoneEl.value.trim(),
@@ -458,45 +518,70 @@ body.qa-test{padding-top:62px;}
       consent:  document.getElementById('consent').checked ? 'Yes' : 'No'
     };
     if (!validate(payload)) return;
-
     if (phase() !== 'open') { lastPhase = null; render(); return; }
 
     btn.disabled = true;
-    btn.textContent = 'Entering…';
+    btn.textContent = 'Sending code…';
 
-    fetch(API, {
-      method: 'POST',
-      // text/plain keeps this a CORS "simple request" — Apps Script web apps
-      // do not answer preflight OPTIONS, so application/json would fail here.
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    })
-    .then(function(r){ return r.json(); })
-    .then(function(res){
+    post(payload).then(function(res){
       btn.disabled = false;
       btn.textContent = 'Enter the Drawing';
-      if (res && res.ok) {
-        document.getElementById('successTitle').textContent =
-          res.already ? 'You’re already in!' : 'You’re entered!';
-        document.getElementById('successMsg').textContent =
-          res.already ? 'We already have your entry — one per person.' : 'Good luck.';
-        holdingSuccess = true;
-        show(successPanel);
-        form.reset();
-        // Kiosk mode: hand the iPad back to the table ready for the next person.
-        if (KIOSK) setTimeout(function(){ holdingSuccess = false; lastPhase = null; render(); }, 6000);
+      if (res && res.ok && res.needsCode) {
+        pendingVid = res.vid;
+        codeAddr.textContent = payload.email;
+        codeErr.textContent = '';
+        codeInput.value = '';
+        show(codePanel);
+        try { codeInput.focus(); } catch (e) {}
+      } else if (res && res.ok) {
+        enteredOk(res);                       // already entered
       } else {
         document.getElementById('submitErr').textContent =
           (res && res.error) || 'Something went wrong. Grab someone from TSG.';
       }
-    })
-    .catch(function(){
+    }).catch(function(){
       btn.disabled = false;
       btn.textContent = 'Enter the Drawing';
       document.getElementById('submitErr').textContent =
         'Could not reach us — check your signal and try again, or find someone from TSG.';
     });
   });
+
+  // ---- Step 2: confirm the code ----
+  codeInput.addEventListener('input', function(){
+    codeInput.value = codeInput.value.replace(/\D/g,'').slice(0,6);
+    codeErr.textContent = '';
+  });
+
+  function submitCode(){
+    var code = codeInput.value.replace(/\D/g,'');
+    if (code.length !== 6) { codeErr.textContent = 'Enter the 6-digit code from your email.'; return; }
+    codeBtn.disabled = true;
+    codeBtn.textContent = 'Checking…';
+    post({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'verify', vid: pendingVid, code: code
+    }).then(function(res){
+      codeBtn.disabled = false;
+      codeBtn.textContent = 'Confirm & Enter';
+      if (res && res.ok) enteredOk(res);
+      else codeErr.textContent = (res && res.error) || 'That did not work. Try again.';
+    }).catch(function(){
+      codeBtn.disabled = false;
+      codeBtn.textContent = 'Confirm & Enter';
+      codeErr.textContent = 'Could not reach us — check your signal and try again.';
+    });
+  }
+
+  codeBtn.addEventListener('click', submitCode);
+  codeInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') submitCode(); });
+
+  document.getElementById('startOverBtn').addEventListener('click', function(){
+    pendingVid = null;
+    lastPhase = null;
+    render();
+  });
+
 })();
 </script>
 </body>

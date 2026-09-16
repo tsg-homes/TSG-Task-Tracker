@@ -156,6 +156,48 @@ alerted to you by email, and re-pushed later with `raffleRetryFubFailures()`.
    are the real TSG Center City details. Per your instruction no licence number
    is printed; the brokerage is still identified as Keller Williams Empower.
 
+## Verification
+
+Entry is **two-step**: details → a 6-digit code emailed instantly → type it back.
+Nothing is written to the sheet or to FUB until the code is confirmed, so a
+typo'd or invented address never becomes a contact record. The entry is written
+from the **server-cached** values, not from whatever the second request carries,
+so you cannot verify one address and enter a different one.
+
+Codes expire in 15 minutes, are single-use, and are cut off after 5 wrong
+attempts (which destroys the pending entry).
+
+### The phone is NOT ownership-verified, and you should know why
+
+The phone is the field TCPA actually cares about, so an SMS code would be the
+stronger check. It is not reachable for this event:
+
+- **Follow Up Boss cannot send it.** Its `/v1/textMessages` endpoint *logs* an
+  externally-sent text; it does not deliver one. There is no send-SMS API.
+- **A real SMS provider cannot be stood up in time.** US A2P 10DLC campaign
+  review is currently running 10–15 days, with full carrier approval 3–6 weeks.
+  The party is in three days.
+
+So the phone gets hard validation instead of proof of ownership, and the FUB
+background note says so explicitly rather than implying more than was checked.
+If you want SMS verification for a future event, start the A2P registration
+weeks ahead.
+
+### Junk rejection (both fields, server-side)
+
+Rejected outright: disposable/temp mail domains (mailinator, 10minutemail,
+yopmail, …), `example.*` and `test.*`, role and mash local-parts (`test@`,
+`asdf@`, `admin@`, `noreply@`), empty values, all-same digits (5555555555),
+`1234567890`, area or exchange codes starting 0 or 1, N11 area codes (911, 411),
+and the reserved 555-01xx fictional range.
+
+That last one is worth knowing: **`(215) 555-0123` is now rejected**, because it
+is the reserved fictional range and cannot be a real number. The form's
+placeholder was changed accordingly.
+
+This directly targets what is already in your FUB from earlier form testing —
+`test@me.com` / `1234567899` / `asdf@asdf.caf`.
+
 ## Test mode vs live
 
 You cannot test the live form before Saturday — the entry window refuses

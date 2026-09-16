@@ -117,14 +117,14 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
     /first and last/.test(await p.locator('#nameErr').textContent()));
 
   await p.fill('#phone', '');
-  await p.type('#phone', '2155550123');
-  check('phone: live-formats to (215) 555-0123', (await p.inputValue('#phone')) === '(215) 555-0123');
+  await p.type('#phone', '2155558123');
+  check('phone: live-formats to (215) 555-8123', (await p.inputValue('#phone')) === '(215) 555-8123');
 
   // ---- 7. Consent gates the POST ----
   let posted = false, body = null;
   await p.route('**/exec', r => { posted = true; body = JSON.parse(r.request().postData()); r.fulfill({ status: 200, body: '{"ok":true}' }); });
   await p.fill('#fullName', '  Dana   Reid  ');
-  await p.fill('#email', '  Dana@Example.COM ');
+  await p.fill('#email', '  Dana@Mail-Test.CO ');
   await p.click('#submitBtn');
   await p.waitForTimeout(400);
   check('consent: unchecked blocks the POST entirely', posted === false);
@@ -138,7 +138,7 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   // ---- 8. Payload shape ----
   check('payload: routes to the raffle branch', body && body.formType === 'raffle');
   check('payload: name whitespace collapsed',   body && body.fullName === 'Dana Reid');
-  check('payload: email lowercased/trimmed',    body && body.email === 'dana@example.com');
+  check('payload: email lowercased/trimmed',    body && body.email === 'dana@mail-test.co');
   check('payload: consent sent as literal "Yes"', body && body.consent === 'Yes');
   check('payload: carries the form token',      body && body.formToken === 'tok');
   check('payload: honeypot present and empty',  body && body.website === '');
@@ -207,8 +207,8 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   let tbody = null;
   await p.route('**/exec', r => { tbody = JSON.parse(r.request().postData()); r.fulfill({ status: 200, body: '{"ok":true}' }); });
   await p.fill('#fullName', 'Rehearsal Tester');
-  await p.fill('#phone', '2155550123');
-  await p.fill('#email', 'rehearsal@example.com');
+  await p.fill('#phone', '2155558123');
+  await p.fill('#email', 'rehearsal@mail-test.co');
   await p.check('#consent');
   await p.click('#submitBtn');
   await p.waitForTimeout(600);
@@ -222,12 +222,77 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   let lbody = null;
   await p.route('**/exec', r => { lbody = JSON.parse(r.request().postData()); r.fulfill({ status: 200, body: '{"ok":true}' }); });
   await p.fill('#fullName', 'Real Person');
-  await p.fill('#phone', '2155550188');
-  await p.fill('#email', 'real@example.com');
+  await p.fill('#phone', '2155558188');
+  await p.fill('#email', 'real@mail-test.co');
   await p.check('#consent');
   await p.click('#submitBtn');
   await p.waitForTimeout(600);
   check('live: qaTestToken sent empty', lbody && lbody.qaTestToken === '');
+
+  // ---- 13. Two-step verification ----
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000 }));
+  await p.waitForTimeout(250);
+
+  let step1 = null, step2 = null;
+  await p.route('**/exec', r => {
+    const b = JSON.parse(r.request().postData());
+    if (b.step === 'request') { step1 = b; return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, needsCode: true, vid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }) }); }
+    step2 = b;
+    if (b.code === '654321') return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, verified: true }) });
+    return r.fulfill({ status: 200, body: JSON.stringify({ ok: false, error: 'That code is not right. Check your email and try again.' }) });
+  });
+
+  await p.fill('#fullName', 'Dana Reid');
+  await p.fill('#phone', '2155558123');
+  await p.fill('#email', 'dana@mail-test.co');
+  await p.check('#consent');
+  await p.click('#submitBtn');
+  await p.waitForTimeout(600);
+
+  check('verify: step 1 is a "request"', step1 && step1.step === 'request');
+  check('verify: code panel shown after step 1', await p.locator('#codePanel').isVisible());
+  check('verify: entry form hidden during code step',
+    await p.locator('#formWrap').evaluate(e => e.classList.contains('hidden')));
+  check('verify: success NOT shown before the code is confirmed',
+    !(await p.locator('#successPanel').isVisible()));
+  check('verify: the email address is echoed back',
+    (await p.locator('#codeAddr').textContent()).trim() === 'dana@mail-test.co');
+
+  // Wrong code must not enter them.
+  await p.fill('#codeInput', '111111');
+  await p.click('#codeBtn');
+  await p.waitForTimeout(500);
+  check('verify: wrong code shows an error', (await p.locator('#codeErr').textContent()).length > 0);
+  check('verify: wrong code does NOT enter them', !(await p.locator('#successPanel').isVisible()));
+  check('verify: still on the code panel', await p.locator('#codePanel').isVisible());
+
+  // Non-digits are stripped and it caps at 6.
+  await p.fill('#codeInput', '');
+  await p.type('#codeInput', '6a5b4c3d2e1f0');
+  check('verify: code input strips non-digits and caps at 6',
+    (await p.inputValue('#codeInput')) === '654321');
+
+  await p.click('#codeBtn');
+  await p.waitForTimeout(600);
+  check('verify: step 2 carries the server-issued vid',
+    step2 && step2.vid === 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+  check('verify: step 2 is a "verify"', step2 && step2.step === 'verify');
+  check('verify: correct code enters them', await p.locator('#successPanel').isVisible());
+
+  // "Wrong email? Start over" returns to a clean form.
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000 }));
+  await p.waitForTimeout(250);
+  await p.route('**/exec', r => r.fulfill({ status: 200, body: JSON.stringify({ ok: true, needsCode: true, vid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }) }));
+  await p.fill('#fullName', 'Dana Reid');
+  await p.fill('#phone', '2155558123');
+  await p.fill('#email', 'dana@mail-test.co');
+  await p.check('#consent');
+  await p.click('#submitBtn');
+  await p.waitForTimeout(600);
+  await p.click('#startOverBtn');
+  await p.waitForTimeout(400);
+  check('verify: start over returns to the form', await p.locator('#raffleForm').isVisible());
+  check('verify: start over leaves the code panel', !(await p.locator('#codePanel').isVisible()));
 
   await b.close();
   fs.rmSync(OUT, { recursive: true, force: true });
