@@ -169,6 +169,57 @@ setTimeout(async () => {
   });
   w.findTask(2).delegate = undefined; w.findTask(3).delegate = undefined;
 
+  // #250 backlog batch 1 (2026-09-16): Durand first, group dropdown, tag autocomplete, dependencies in the modal, dense cards
+  tryCall('people lists put Durand first, then A to Z', () => {
+    if (w.sortPeople_(['Ryan', 'Alex', 'Durand', 'Marj']).join() !== 'Durand,Alex,Marj,Ryan') throw new Error('sortPeople_ wrong');
+    if (w.rosterNames()[0] !== 'Durand') throw new Error('rosterNames not Durand-first');
+  });
+  tryCall('task modal: Group is a dropdown with the current group selected and a + New group entry', () => {
+    w.openTaskCard(2);
+    const sel = doc.querySelector('.modal-group-select');
+    if (!sel || sel.value !== 'Marketing') throw new Error('group select missing or wrong: ' + (sel && sel.value));
+    if (!Array.from(sel.options).some(o => o.value === '__new__')) throw new Error('no + New group entry');
+    sel.value = 'Ops'; sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+    if (w.findTask(2).group !== 'Ops' || !w.findTask(2).history.some(h => h.field === 'group' && h.to === 'Ops')) throw new Error('group change not applied/logged');
+    w.findTask(2).group = 'Marketing';
+  });
+  tryCall('task modal: dependencies can be added and removed with history', () => {
+    w.openTaskCard(2);
+    const sel = doc.querySelector('.modal-depends-select');
+    if (!sel) throw new Error('no depends select');
+    sel.value = '3'; sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+    if (w.findTask(2).depends !== '3') throw new Error('depends not set: ' + w.findTask(2).depends);
+    if (!doc.querySelector('.depends-chip')) throw new Error('no depends chip rendered');
+    w.modalRemoveDepends(2, 3);
+    if (w.findTask(2).depends !== '') throw new Error('depends not removed: ' + JSON.stringify(w.findTask(2).depends));
+    if (w.findTask(2).history.filter(h => h.field === 'depends').length !== 2) throw new Error('depends history not logged twice');
+  });
+  tryCall('task modal: tag input autocompletes from the board and adds on Enter', () => {
+    w.openTaskCard(2);
+    const dl = doc.getElementById('tagOptions');
+    if (!dl || !Array.from(dl.options).some(o => o.value === 'Triage')) throw new Error('tag datalist not populated');
+    const inp = doc.querySelector('.tag-input');
+    if (!inp || inp.getAttribute('list') !== 'tagOptions') throw new Error('tag input missing datalist');
+    inp.value = 'Flyers';
+    inp.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    if (w.findTask(2).tags.indexOf('Flyers') === -1) throw new Error('tag not added');
+    w.findTask(2).tags = w.findTask(2).tags.filter(x => x !== 'Flyers');
+    if (!doc.querySelector('#taskModal .modal-notes[spellcheck="true"]')) throw new Error('notes not spellchecked');
+    w.closeTaskCard();
+  });
+  tryCall('cards view: a group past the threshold renders dense cards with a toggle back to full', () => {
+    const extra = [];
+    for (let i = 0; i < 14; i++) extra.push({ id: 900 + i, title: 'Bulk ' + i, owner: 'Durand', status: 'Not Started', priority: 'Low', group: 'Bulk', tags: [], timelineEnd: '', progress: 0, depends: '', doc: '', docs: [], notes: '', history: [], subitems: [] });
+    extra.forEach(t => w.eval('TASKS').push(t));
+    w.setView('card');
+    if (!doc.querySelector('.card-grid.dense')) throw new Error('no dense grid');
+    doc.querySelector('.dense-toggle').click();
+    if (doc.querySelector('.card-grid.dense')) throw new Error('toggle did not switch to full cards');
+    doc.querySelector('.dense-toggle').click();
+    const T = w.eval('TASKS'); for (let i = T.length - 1; i >= 0; i--) if (T[i].id >= 900) T.splice(i, 1);
+    w.setView('board');
+  });
+
   // "+ Task" on pop-up lists (task #269): the button carries the list's context into the New Task modal
   tryCall('a pop-up list carries a + Task button that pre-fills the New Task modal', () => {
     w.openMultiTaskModal('Overdue', [1, 3], { due: '2026-09-15', status: 'In Progress' });

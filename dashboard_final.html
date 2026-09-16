@@ -990,6 +990,16 @@
   .task-card .tc-due { font-size: 11px; color: var(--text-muted); margin-left: auto; }
   .task-card .tc-due.overdue { color: var(--status-critical); font-weight: 700; }
   .tc-delegates { font-size: 11px; color: var(--text-secondary); }
+  /* Dense card mode: title, status/priority, due; the rest folds away until "Full cards". */
+  .card-grid.dense { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 7px; }
+  .card-grid.dense .task-card { padding: 7px 9px; gap: 4px; }
+  .card-grid.dense .task-card .tc-title { font-size: 12px; }
+  .card-grid.dense .tc-delegates, .card-grid.dense .bonus-countdown-wrap, .card-grid.dense .progress-wrap, .card-grid.dense .tc-empty-field, .card-grid.dense .tc-est, .card-grid.dense .type-badge { display: none; }
+  .card-grid.dense .pill { font-size: 10px; padding: 2px 7px; }
+  .dense-toggle { margin-left: 8px; }
+  .depends-chip { background: var(--status-warn-bg); color: var(--status-warn); }
+  .tag-input { width: 110px; padding: 2px 6px; font-size: 11.5px; }
+  .modal-group-select, .modal-depends-select { max-width: 320px; }
 
   /* Zoom bar (Timeline + Workload) */
   .zoom-bar { display: flex; gap: 4px; margin-bottom: 12px; }
@@ -1344,6 +1354,7 @@
     <button class="view-tab" data-view="workload" onclick="setView('workload')">Workload</button>
   </div>
 
+  <datalist id="tagOptions"></datalist>
   <div id="board"></div>
   <div class="empty-state" id="emptyState" style="display:none;">
     <p>No tasks match the current filters.</p>
@@ -1443,7 +1454,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-15.8';
+  const UI_VERSION = '2026-09-16.1';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1673,9 +1684,19 @@
       return { name: entry.name, role: entry.role || 'Agent', title: entry.title || '', email: entry.email || '', source: entry.source || '', fubId: entry.fubId != null ? entry.fubId : null };
     }).filter(function(e) { return e.name; });
   }
+  // Durand first, everywhere people are listed or sorted (2026-09-16, #250 backlog:
+  // "always make me top in lists"); everyone else keeps roster order / A to Z.
+  function sortPeople_(names) {
+    return names.slice().sort(function(a, b) {
+      if (a === 'Durand') return -1;
+      if (b === 'Durand') return 1;
+      return String(a).localeCompare(String(b));
+    });
+  }
   function rosterNames(role) {
     const list = role ? TEAM_ROSTER.filter(function(p) { return p.role === role; }) : TEAM_ROSTER;
-    return list.map(function(p) { return p.name; });
+    const names = list.map(function(p) { return p.name; });
+    return names.filter(function(n) { return n === 'Durand'; }).concat(names.filter(function(n) { return n !== 'Durand'; }));
   }
   function tagClass(tag) { return TAG_COLORS[tag] || ''; }
   function tagChipHtml(tag) { return `<span class="tag-chip ${tagClass(tag)}">${escapeHtml(tag)}</span>`; }
@@ -2141,8 +2162,10 @@
   // so a newly-added group/tag/owner shows up without a page reload.
   function populateDynamicFilters() {
     const groups = [...new Set([...GROUP_ORDER, ...TASKS.map(t => t.group)])].filter(g => TASKS.some(t => t.group === g));
-    const owners = [...new Set(TASKS.map(t => t.owner).filter(Boolean))].sort();
+    const owners = sortPeople_([...new Set(TASKS.map(t => t.owner).filter(Boolean))]);
     const tags = [...new Set(TASKS.flatMap(t => t.tags || []))].sort();
+    const tagDl = document.getElementById('tagOptions');
+    if (tagDl) tagDl.innerHTML = tags.map(tg => `<option value="${escapeHtml(tg)}"></option>`).join('');
     function rebuild(id, values, allLabel) {
       const sel = document.getElementById(id);
       const current = sel.value;
@@ -2161,7 +2184,7 @@
       case 'status': { const r = STATUS_RANK[rollupStatus(t)]; return r != null ? r : 99; }
       case 'due': return t.timelineEnd || '9999-99-99';
       case 'title': return (t.title || '').toLowerCase();
-      case 'owner': return (t.owner || '￿').toLowerCase();
+      case 'owner': return t.owner === 'Durand' ? '' : (t.owner || '￿').toLowerCase();
       case 'group': return (t.group || '￿').toLowerCase();
       case 'estHours': return t.estHours != null ? -t.estHours : Infinity;
       case 'progress': return -taskProgress(t);
@@ -2476,6 +2499,9 @@
   }
 
   // ---- Cards view ----
+  const DENSE_CARD_THRESHOLD = 12;
+  const denseOff = new Set();
+  function toggleDense(g) { if (denseOff.has(g)) denseOff.delete(g); else denseOff.add(g); renderAll(); }
   function renderCardsView(filtered) {
     const groups = [...new Set([...GROUP_ORDER, ...TASKS.map(t => t.group)])].filter(g =>
       filtered.some(t => t.group === g && rollupStatus(t) !== 'Done')
@@ -2489,10 +2515,16 @@
       // group (Done tasks included), not just the open subset shown as cards here, or it
       // can never show anything but 0%.
       const allGroupTasks = filtered.filter(t => t.group === g);
+      // Dense card mode (2026-09-16, #250: "card view to list view when large", per Durand
+      // as a compact card rather than a switch to the table): past DENSE_CARD_THRESHOLD open
+      // cards a group renders compact one-glance cards, with a per-group toggle back to full.
+      const large = groupTasks.length > DENSE_CARD_THRESHOLD;
+      const dense = large && !denseOff.has(g);
+      const denseBtn = large ? `<button type="button" class="btn small dense-toggle" onclick="event.stopPropagation(); toggleDense('${jsAttr(g)}')" title="${dense ? 'Show full cards' : 'Show compact cards'}">${dense ? 'Full cards' : 'Compact'}</button>` : '';
       return `
       <div class="card-group">
-        <div class="card-group-title">${escapeHtml(g)} <span class="gcount">${groupTasks.length}</span> ${groupBatteryHtml(allGroupTasks)}</div>
-        <div class="card-grid">${groupTasks.map(t => taskCardHtml(t)).join('')}</div>
+        <div class="card-group-title">${escapeHtml(g)} <span class="gcount">${groupTasks.length}</span> ${groupBatteryHtml(allGroupTasks)}${denseBtn}</div>
+        <div class="card-grid ${dense ? 'dense' : ''}">${groupTasks.map(t => taskCardHtml(t)).join('')}</div>
       </div>`;
     }).join('');
     const doneTasks = filtered.filter(t => rollupStatus(t) === 'Done');
@@ -3203,7 +3235,7 @@
   function openDayView(datesCsv) {
     const dates = datesCsv.split(',');
     const byAssignee = computeDailyHours(TASKS.filter(matchesFilters), dates);
-    const names = Object.keys(byAssignee).sort();
+    const names = sortPeople_(Object.keys(byAssignee));
     const title = dates.length === 1 ? formatDateLong(dates[0]) : (formatDateLong(dates[0]) + ' – ' + formatDateLong(dates[dates.length - 1]));
     const body = names.map(name => {
       const rec = byAssignee[name];
@@ -3246,7 +3278,7 @@
     const buckets = workloadBuckets(workloadZoom);
     const allDates = buckets.reduce(function(acc, b) { return acc.concat(b.days); }, []);
     const byAssignee = computeDailyHours(filtered, allDates);
-    const names = Object.keys(byAssignee).sort();
+    const names = sortPeople_(Object.keys(byAssignee));
     if (!names.length) return zoomBar + '<div class="history-empty">No open tasks match the current filters.</div>';
 
     const headerCells = buckets.map(b =>
@@ -4791,6 +4823,78 @@
       renderAll(); openTaskCard(id); scheduleSave();
     }
   }
+  // Tag input with autocomplete (2026-09-16, #250: "autocomplete and spell check in fields").
+  // The datalist #tagOptions is refilled from every tag on the board by populateDynamicFilters.
+  function modalAddTagFrom(id, el) {
+    const tag = (el.value || '').trim();
+    if (!tag) return;
+    const t = findTask(id);
+    if (!t) return;
+    el.value = '';
+    if ((t.tags || []).indexOf(tag) !== -1) return;
+    t.tags = [...(t.tags || []), tag];
+    logHistory(t, 'tag', null, tag);
+    renderAll(); openTaskCard(id); scheduleSave();
+  }
+  // Group as a dropdown (2026-09-16, #250: "group dropdown"): existing groups plus "+ New group…".
+  function groupSelectOptions_(current) {
+    const groups = currentGroupOptions_().slice();
+    if (current && groups.indexOf(current) === -1) groups.unshift(current);
+    return groups.map(g => `<option value="${escapeHtml(g)}" ${g === current ? 'selected' : ''}>${escapeHtml(g)}</option>`).join('') +
+      `<option value="__new__">+ New group…</option>`;
+  }
+  function modalGroupChange(id, el) {
+    const t = findTask(id);
+    if (!t) return;
+    let val = el.value;
+    if (val === '__new__') {
+      const custom = prompt('New group name:', '');
+      if (!custom || !custom.trim()) { el.value = t.group || ''; return; }
+      val = custom.trim();
+    }
+    const before = t.group;
+    t.group = val;
+    if (before !== val) logHistory(t, 'group', before, val);
+    renderAll(); openTaskCard(id); scheduleSave();
+  }
+  // Task-level dependencies, editable and removable in the modal (2026-09-16, #250).
+  // t.depends stays the comma-separated id list every other line of this file expects;
+  // the Timeline drag-to-link path writes the same field.
+  function dependsChipsHtml_(t) {
+    return dependsList(t).map(depId => {
+      const d = findTask(depId);
+      const label = d ? ('#' + depId + ' ' + d.title) : ('#' + depId + ' (missing)');
+      return `<span class="tag-chip depends-chip" title="${escapeHtml(label)}">${escapeHtml(label.length > 42 ? label.slice(0, 40) + '…' : label)}<span class="rm" onclick="modalRemoveDepends(${t.id}, ${depId})" title="Remove dependency">&#10005;</span></span>`;
+    }).join('');
+  }
+  function dependsOptionsHtml_(t) {
+    const have = dependsList(t);
+    return TASKS.filter(x => x.id !== t.id && rollupStatus(x) !== 'Done' && have.indexOf(x.id) === -1)
+      .sort((a, b) => a.title.localeCompare(b.title))
+      .map(x => `<option value="${x.id}">#${x.id} ${escapeHtml(x.title.length > 60 ? x.title.slice(0, 58) + '…' : x.title)}</option>`).join('');
+  }
+  function modalAddDepends(id, el) {
+    const depId = Number(el.value);
+    el.value = '';
+    const t = findTask(id);
+    if (!t || !depId || depId === id || !findTask(depId)) return;
+    const list = dependsList(t);
+    if (list.includes(depId)) return;
+    list.push(depId);
+    const before = t.depends;
+    t.depends = list.join(',');
+    logHistory(t, 'depends', before || '—', t.depends);
+    cascadeDependents(depId);
+    renderAll(); openTaskCard(id); scheduleSave();
+  }
+  function modalRemoveDepends(id, depId) {
+    const t = findTask(id);
+    if (!t) return;
+    const before = t.depends;
+    t.depends = dependsList(t).filter(x => x !== depId).join(',');
+    if (before !== t.depends) logHistory(t, 'depends', before || '—', t.depends || '—');
+    renderAll(); openTaskCard(id); scheduleSave();
+  }
   function modalRemoveTag(id, idx) {
     const t = findTask(id);
     const removed = t.tags[idx];
@@ -4868,13 +4972,14 @@
     currentModalTaskId = id;
     setTimeout(function() { const ov = document.getElementById('taskModal'); if (ov && ov.classList.contains('open') && !ov.contains(document.activeElement)) ov.focus(); }, 0);
     document.getElementById('modalTitle').innerHTML =
-      `<span class="modal-edit" contenteditable="true" onblur="modalTitleEdit(${id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>`;
+      `<span class="modal-edit" contenteditable="true" spellcheck="true" onblur="modalTitleEdit(${id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>`;
     const pct = taskProgress(t);
     const tagsChips = (t.tags || []).map(function(tag, i) {
       return `<span class="tag-chip modal-tag-chip ${tagClass(tag)}">${escapeHtml(tag)}<span class="rm" onclick="modalRemoveTag(${id}, ${i})" title="Remove tag">&#10005;</span></span>`;
     }).join('');
     document.getElementById('modalMeta').innerHTML = [
-      `<div class="modal-row"><b>Group</b><span class="modal-edit" contenteditable="true" onblur="modalFieldEdit(${id}, 'group', this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.group)}</span></div>`,
+      `<div class="modal-row"><b>Group</b><select class="due-input modal-group-select" onchange="modalGroupChange(${id}, this)">${groupSelectOptions_(t.group)}</select></div>`,
+      `<div class="modal-row"><b>Depends on</b><span class="modal-tags">${dependsChipsHtml_(t)}<select class="due-input modal-depends-select" onchange="modalAddDepends(${id}, this)"><option value="">+ add a task this waits on…</option>${dependsOptionsHtml_(t)}</select></span></div>`,
       `<div class="modal-row"><b>Owner</b><span class="modal-owner-wrap" title="Accountable for this task — confirming delegated subtasks are actually done is the owner's job">${avatarHtml(t.owner, 'lg')}${ownerSelect(id, t.owner)}</span></div>`,
       `<div class="modal-row"><b>Delegate</b><span class="modal-owner-wrap" title="Who is doing this task. It appears on their own page (subtasks can also be delegated one by one below).">${avatarHtml(taskDelegate(t), 'lg')}${taskDelegateSelect(id, taskDelegate(t))}</span></div>`,
       `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}</div>`,
@@ -4884,7 +4989,7 @@
       (t.timelineEnd ? `<div class="modal-row"><b>Countdown</b>${bonusCountdownHtml_(t)}</div>` : ''),
       `<div class="modal-row"><b>Estimate</b><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs</div>`,
       `<div class="modal-row"><b>Progress</b><span>${pct}%</span></div>`,
-      `<div class="modal-row"><b>Tags</b><span class="modal-tags">${tagsChips}<button type="button" class="icon-btn" onclick="modalAddTag(${id})" title="Add tag">+</button></span></div>`,
+      `<div class="modal-row"><b>Tags</b><span class="modal-tags">${tagsChips}<input type="text" class="text-input tag-input" list="tagOptions" placeholder="+ tag" spellcheck="true" onkeydown="if(event.key==='Enter'){event.preventDefault();modalAddTagFrom(${id}, this);}" onchange="modalAddTagFrom(${id}, this)"></span></div>`,
       `<div class="modal-row"><b>Source</b><span class="modal-source">${t.doc ? `<a href="${escapeHtml(safeUrl(t.doc))}" target="_blank" rel="noopener" class="doc-link-text">${escapeHtml(t.doc)}</a>` : '<span class="modal-empty">Not linked — add the email or meeting doc this came from</span>'}<button type="button" class="icon-btn" onclick="modalEditDoc(${id})" title="${t.doc ? 'Edit source link' : 'Add source link'}">${t.doc ? '&#9998;' : '+ link'}</button></span></div>`,
       `<div class="modal-row"><b>Links</b><span class="modal-source">${docsListHtml(t.docs, id, null)}<button type="button" class="icon-btn" onclick="addManualDoc(${id}, null)" title="Add a link or file">+ link</button></span></div>`,
       (t.taskType === 'Meeting' ? `<div class="modal-row"><b>Meeting</b><span class="modal-source"><button type="button" class="icon-btn" onclick="openMeetingPicker(${id}, null)" title="Link a calendar meeting">${(t.docs || []).some(d => d.type === 'meeting') ? '&#128197; Change linked meeting' : '+ Link a meeting'}</button></span></div>` : ''),
@@ -4915,7 +5020,7 @@
         }
         return nameRow + `<div class="modal-row"><b>Phone</b><span class="modal-edit" contenteditable="true" data-placeholder="Add a number to text" onblur="modalFieldEdit(${id}, 'contactPhone', this)">${escapeHtml(t.contactPhone || '')}</span>${t.contactPhone ? `<a class="icon-btn" href="sms:${escapeHtml(t.contactPhone.replace(/[^0-9+]/g, ''))}" title="Text ${escapeHtml(t.contactPhone)}">&#128172; Text</a>` : ''}</div>`;
       })() : ''),
-      `<div class="modal-row modal-row-notes"><b>Notes</b><span class="modal-edit modal-notes" contenteditable="true" onblur="modalFieldEdit(${id}, 'notes', this)">${escapeHtml(t.notes || '')}</span></div>`,
+      `<div class="modal-row modal-row-notes"><b>Notes</b><span class="modal-edit modal-notes" contenteditable="true" spellcheck="true" onblur="modalFieldEdit(${id}, 'notes', this)">${escapeHtml(t.notes || '')}</span></div>`,
       // Disabled 2026-09-03 per Durand — no Anthropic API key is provisioned for the
       // ?target=claude endpoint this calls, so every click just failed. Re-enable by
       // restoring the onclick (and dropping `disabled`) once that's set up.
@@ -5054,8 +5159,7 @@
       <div class="meeting-form">
         ${p.context ? `<div class="nt-context">Pre-filled from <b>${escapeHtml(p.context)}</b></div>` : ''}
         <label>Title<input type="text" class="text-input" id="ntTitle" placeholder="What needs to happen?" value="${escapeHtml(p.title || '')}"></label>
-        <label>Group<input type="text" class="text-input" id="ntGroup" list="ntGroupList" placeholder="Choose an existing group or type a new one" value="${escapeHtml(p.group || '')}"></label>
-        <datalist id="ntGroupList">${groupOptionsHtml}</datalist>
+        <label>Group<select class="due-input" id="ntGroup" onchange="ntGroupChange(this)"><option value="" ${p.group ? '' : 'selected'}>Choose a group…</option>${groupSelectOptions_(p.group || '')}</select></label>
         <div class="meeting-form-row">
           <label>Status<select class="due-input" id="ntStatus">${STATUSES.map(s => `<option ${s === (p.status || 'Not Started') ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
           <label>Priority<select class="due-input" id="ntPriority">${PRIORITIES.map(pr => `<option ${pr === (p.priority || 'Medium') ? 'selected' : ''}>${pr}</option>`).join('')}</select></label>
@@ -5063,7 +5167,7 @@
         </div>
         <div class="meeting-form-row">
           <label>Delegate<select class="due-input" id="ntDelegate" title="Who is doing it; it appears on their page">${personOptions(p.delegate || '', true)}</select></label>
-          <label>Tags<input type="text" class="text-input" id="ntTags" placeholder="comma-separated" value="${escapeHtml((p.tags || []).join(', '))}"></label>
+          <label>Tags<input type="text" class="text-input" id="ntTags" list="tagOptions" placeholder="comma-separated" value="${escapeHtml((p.tags || []).join(', '))}"></label>
         </div>
         <label>Notes<textarea class="text-input" id="ntNotes" rows="3" placeholder="Optional">${escapeHtml(p.notes || '')}</textarea></label>
         <div class="meeting-modal-footer">
@@ -5072,6 +5176,15 @@
         </div>
       </div>
     `;
+  }
+  function ntGroupChange(el) {
+    if (el.value !== '__new__') return;
+    const custom = prompt('New group name:', '');
+    if (!custom || !custom.trim()) { el.value = ''; return; }
+    const opt = document.createElement('option');
+    opt.value = custom.trim(); opt.textContent = custom.trim();
+    el.insertBefore(opt, el.lastElementChild);
+    el.value = custom.trim();
   }
   function openNewTaskModal(prefill) {
     renderNewTaskModalBody(prefill);
