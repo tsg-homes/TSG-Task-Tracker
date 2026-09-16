@@ -349,31 +349,35 @@ setTimeout(async () => {
     w.setView('board');
     for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 910) T.splice(i, 1);
   });
-  // Lockout while an add is saving (2026-09-16)
+  // Lockout while an add is saving (2026-09-16). The harness exits synchronously at the end of
+  // this callback, so the post-answer half waits one timer tick for the add's continuation.
+  let addSettled = null, origFetch = w.fetch;
   tryCall('the New Task modal is inert and cannot be closed while its add is in flight', () => {
     w.openNewTaskModal({ group: 'Ops' });
     doc.getElementById('ntTitle').value = 'Lockout check task';
     doc.getElementById('ntGroup').value = 'Ops';
     doc.getElementById('ntLocation').value = '12 Elm St';
-    let release;
-    const origFetch = w.fetch;
-    w.fetch = (url, opts) => new Promise(res => { release = () => res({ ok: true, status: 200, json: async () => ({ ok: true, docVersion: 9, addResult: { verdict: 'added', taskId: 911 } }) }); });
+    w.eval("window.__release = null; window.fetch = (url, opts) => new Promise(res => { window.__release = () => res({ ok: true, status: 200, json: async () => ({ ok: true, docVersion: 9, addResult: { verdict: 'added', taskId: 911 } }) }); });");
     const p = w.confirmNewTask(doc.getElementById('ntConfirmBtn'));
     const modal = doc.getElementById('newTaskModal');
     if (!modal.classList.contains('busy')) throw new Error('modal not marked busy during the add');
     w.closeNewTaskModal();
     if (!modal.classList.contains('open')) throw new Error('modal closed while busy');
     if (!w.eval('NT_BUSY')) throw new Error('NT_BUSY not set');
-    release();
-    p.then(() => {
-      w.fetch = origFetch;
-      if (modal.classList.contains('busy')) throw new Error('busy not cleared after the add');
-      if (modal.classList.contains('open')) throw new Error('modal should close after a successful add');
-      const added = w.findTask(911);
-      if (!added || added.location !== '12 Elm St') throw new Error('location not sent with the new task');
-      const T = w.eval('TASKS'); for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 911) T.splice(i, 1);
-      console.log('OK   - after the add answers, the modal unlocks, closes, and the location was sent');
-    }).catch(e => { w.fetch = origFetch; console.log('FAIL - after the add answers ->', e.message); FAILS++; });
+    p.then(() => { addSettled = 'ok'; }, e => { addSettled = e; });
+    w.__release();
+  });
+  await new Promise(r => setTimeout(r, 30));
+  w.fetch = origFetch;
+  tryCall('after the add answers, the modal unlocks, closes, and the location was sent', () => {
+    if (addSettled !== 'ok') throw new Error('add did not settle cleanly: ' + String(addSettled));
+    const modal = doc.getElementById('newTaskModal');
+    if (modal.classList.contains('busy')) throw new Error('busy not cleared after the add');
+    if (modal.classList.contains('open')) throw new Error('modal should close after a successful add');
+    if (w.eval('NT_BUSY')) throw new Error('NT_BUSY still set');
+    const added = w.findTask(911);
+    if (!added || added.location !== '12 Elm St') throw new Error('location not sent with the new task');
+    const T = w.eval('TASKS'); for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 911) T.splice(i, 1);
   });
   tryCall('the task modal shows a Location row with the round trip and Settings has a Home base field', () => {
     const t = w.findTask(3); t.location = 'Courthouse, Media PA'; t.travelMin = 40;

@@ -96,6 +96,12 @@ identifiers and environment facts that are otherwise only known from chat.
 - replace_all requires a numeric `baseVersion` (else rejected as `missing_baseVersion`);
   update_task cannot set `id`/`history`; set_meta cannot set `next_id`/`docVersion`/
   `rejectedSaves`/`addResults`; replace_all advances `next_id` past client-minted ids.
+- NO ANTHROPIC API KEY IS PROVISIONED in the script (Durand 2026-09-16: "i dont have a claude
+  api"; the dashboard's Ask-Claude button was disabled 2026-09-03 for the same reason). Until
+  `ANTHROPIC_API_KEY` is set in Script Properties, every `tsgClaude_` call returns null before
+  any HTTP: the estimator, Drive/calendar matching, progress-from-notes and Tidy are all
+  no-ops, and a pushed task falls to needs-estimate + Triage. Estimates for Claude-session
+  pushes come from the session itself (tsg-task-tracker-protocol skill), not the script.
 - Claude calls: model `claude-opus-5` (raw HTTP via UrlFetchApp, no SDK in Apps Script);
   one retry on 429/529/5xx; `perRunCap` 12 estimator/matcher calls per execution; the
   remembered 404-fallback id is keyed to the configured model
