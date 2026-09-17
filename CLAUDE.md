@@ -476,11 +476,18 @@ times when both are free before the deadline, duration from the estimate in Goog
 - Link picker: "Search your email" (`api=mailSearch&q=` -> `tsgMailSearch_`, 10 threads).
   `addDocToTarget_(url, label, type)`; `linkTypeFor_` / `docIcon_` (meeting, email, claude, web,
   link). `tsgLabelForUrl_` labels claude.ai (chat / Code session) and Gmail links.
-- Claude: task modal row (Claude-typed task or any task with a claude.ai link):
-  "Open in Claude with this task" opens `https://claude.ai/new?q=<prompt>` (`claudePromptFor_`:
-  id, title, fields, notes capped at 4000 chars, steps, links, write-back instruction naming the
-  tsg-task-tracker-protocol skill). An existing thread cannot take a prompt by URL, so with a
-  claude.ai link the button opens that link and copies the prompt. "Copy prompt" always.
+- Claude: task modal row (Claude-typed task or any task with a claude.ai link). Per Durand
+  ("always use cowork or code, the sessions should be linked to the computer and be able to be
+  run from the cloud"), NEVER a plain chat link. Buttons (`claudeLinksFor_`, docs-verified deep
+  links): "Cowork" -> `claude://cowork/new?q=<prompt>` (desktop app, this computer); "Code" ->
+  `claude://code/new?q=<prompt>&repo=<meta.claudeRepo>` (desktop app); "Code (cloud)" ->
+  `https://claude.ai/code?prompt=<prompt>&repositories=<repo>` (claude.ai/code, pull down with
+  `claude --teleport`); "Open linked session" when the task links a claude.ai session (opens it,
+  prompt copied, since an existing session cannot take a prompt by URL); "Copy prompt".
+  `claudePromptFor_`: id, title, fields, notes capped at 4000 chars (desktop q limit ~14k), steps,
+  links, write-back instruction naming the tsg-task-tracker-protocol skill. claude:// links are
+  opened by same-tab navigation. Settings > Team "Claude Code repo" -> `set_meta {claudeRepo}`
+  (`CLAUDE_REPO`), optional owner/repo.
 - Directions: Location row gets "Directions" (Maps directions URL, home base -> location, in the
   task's travel method, `directionsUrl_`) and "Send to phone" (POST `target=sendDirections` ->
   `tsgSendDirections_`: MailApp.sendEmail to OWNER_EMAIL with the link; no third party).
@@ -489,7 +496,10 @@ times when both are free before the deadline, duration from the estimate in Goog
   ignored) plus the guest's via `CalendarApp.getCalendarById` (must be shared, SOP 09; else
   `guestCalendar:false` and Durand-only slots), 2 per day, 10 max, window capped at 42 days.
   `tsgDurationBucket_` / dashboard `meetingBucket_`: 15/30/45/60/90/120 from estHours (30 when
-  none). The picker's "+ New meeting" form lists "Suggested times" up to the item's due date
+  none). Preferred window Mon-Thu 09:00-14:00 (`TSG_MEETING_WINDOW_PREFERRED`), the wider
+  Mon-Fri 07:30-16:00 only when the preferred one has nothing (`window: 'fallback'`, the form
+  says so) — per Durand "default the meeting time search to 9-2 mon-thur, show outside that
+  only if there are no matches" (backend 2026-09-17.2, dashboard UI 2026-09-17.5). The picker's "+ New meeting" form lists "Suggested times" up to the item's due date
   (`loadMeetingSlots_`, `useMeetingSlot_` fills date/start/duration; guest email change reloads).
 - Scopes: GmailApp (read) and MailApp were already in use (verifyEmail, write-failure mail), so no
   new authorization was needed.

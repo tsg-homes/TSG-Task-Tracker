@@ -1543,7 +1543,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-17.4';
+  const UI_VERSION = '2026-09-17.5';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2777,25 +2777,55 @@
     lines.push('', 'Work this task. When you make progress or finish, update task #' + t.id + ' in the TSG Task Tracker through the tsg-task-tracker-protocol skill (an _Inbox patch: update_task / update_subitem, source "Claude"), and log what changed in its notes. Never write to the Data file directly.');
     return lines.join('\n');
   }
-  function claudeUrlFor_(t) { return 'https://claude.ai/new?q=' + encodeURIComponent(claudePromptFor_(t)); }
+  // Deep links per the Claude docs (2026-09-17, per Durand: "always use cowork or code, the
+  // sessions should be linked to the computer and be able to be run from the cloud"):
+  //   claude://cowork/new?q=          Cowork session in the desktop app (this computer)
+  //   claude://code/new?q=&repo=      Claude Code session in the desktop app (this computer)
+  //   https://claude.ai/code?prompt=&repositories=   Claude Code in the cloud (claude.ai/code)
+  // Each opens the composer with the prompt filled; the user still presses Enter. The desktop
+  // app truncates q at ~14k characters, so the prompt caps its notes at 4000.
+  let CLAUDE_REPO = '';
+  function claudeLinksFor_(t) {
+    const q = encodeURIComponent(claudePromptFor_(t));
+    const repo = (CLAUDE_REPO || '').trim();
+    return {
+      cowork: 'claude://cowork/new?q=' + q,
+      code: 'claude://code/new?q=' + q + (repo ? '&repo=' + encodeURIComponent(repo) : ''),
+      cloud: 'https://claude.ai/code?prompt=' + q + (repo ? '&repositories=' + encodeURIComponent(repo) : '')
+    };
+  }
+  function claudeUrlFor_(t) { return claudeLinksFor_(t).cloud; }
   async function copyClaudePrompt(id, btn) {
     const t = findTask(id);
     if (!t) return;
     try { await navigator.clipboard.writeText(claudePromptFor_(t)); if (btn) { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy prompt'; }, 1500); } }
     catch (err) { prompt('Copy this prompt:', claudePromptFor_(t)); }
   }
-  async function openInClaude(id, btn) {
+  async function openInClaude(id, btn, where) {
     const t = findTask(id);
     if (!t) return;
-    const existing = claudeLinkOf_(t);
-    if (existing) { await copyClaudePrompt(id, btn); window.open(safeUrl(existing), '_blank', 'noopener'); return; }
-    window.open(claudeUrlFor_(t), '_blank', 'noopener');
+    if (where === 'linked') {
+      const existing = claudeLinkOf_(t);
+      if (!existing) return;
+      await copyClaudePrompt(id, btn);
+      window.open(safeUrl(existing), '_blank', 'noopener');
+      return;
+    }
+    const links = claudeLinksFor_(t);
+    const url = links[where] || links.cowork;
+    // claude:// links are handled by the desktop app; a same-tab navigation is what triggers
+    // the OS handler reliably (window.open of a custom scheme is blocked by some browsers).
+    if (url.indexOf('claude://') === 0) { window.location.href = url; return; }
+    window.open(url, '_blank', 'noopener');
   }
   function claudeRowHtml_(t) {
     if (t.taskType !== 'Claude' && !hasClaudeLink_(t)) return '';
     const existing = claudeLinkOf_(t);
-    return `<div class="modal-row"><b>Claude</b><span class="modal-source">
-      <button type="button" class="btn small" onclick="openInClaude(${t.id}, this)" title="${existing ? 'Opens the linked Claude thread; the task prompt is copied so you can paste it there' : 'Opens a new Claude chat with this task as the prompt'}">&#10022; ${existing ? 'Open linked thread (prompt copied)' : 'Open in Claude with this task'}</button>
+    return `<div class="modal-row"><b>Claude</b><span class="modal-source claude-links">
+      ${existing ? `<button type="button" class="btn small primary" onclick="openInClaude(${t.id}, this, 'linked')" title="Opens the linked session (in the desktop app when it is installed); the task prompt is copied so you can paste it there">&#10022; Open linked session</button>` : ''}
+      <button type="button" class="btn small" onclick="openInClaude(${t.id}, this, 'cowork')" title="New Cowork session in the Claude desktop app on this computer, with this task as the prompt">Cowork</button>
+      <button type="button" class="btn small" onclick="openInClaude(${t.id}, this, 'code')" title="New Claude Code session in the desktop app on this computer${CLAUDE_REPO ? ' on ' + escapeHtml(CLAUDE_REPO) : ''}">Code</button>
+      <button type="button" class="btn small" onclick="openInClaude(${t.id}, this, 'cloud')" title="New Claude Code session in the cloud (claude.ai/code)${CLAUDE_REPO ? ' on ' + escapeHtml(CLAUDE_REPO) : ''}; pull it to this computer with claude --teleport">Code (cloud)</button>
       <button type="button" class="btn small" onclick="copyClaudePrompt(${t.id}, this)" title="Copy the task prompt">Copy prompt</button>
     </span></div>`;
   }
@@ -6504,6 +6534,7 @@
     nextId = (doc.meta && doc.meta.next_id) || (TASKS.length ? Math.max(...TASKS.map(t => t.id)) + 1 : 1);
     ERRANDS = (doc.meta && doc.meta.errands) || {};
     HOME_BASE = (doc.meta && doc.meta.homeBase) || '';
+    CLAUDE_REPO = (doc.meta && doc.meta.claudeRepo) || '';
     STANDING_ITEMS = (doc.meta && doc.meta.standingItems) || [];
     dataLoaded = true;
     document.getElementById('updatedStamp').textContent = 'Last updated ' + formatDate(META.lastUpdated);
@@ -6736,6 +6767,9 @@
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Home base</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">The address every task location's round-trip travel time is driven from (the office, or home). Saved on its own; task travel times refresh on the next write.</div>
+        <div class="ruleset-block-head" style="margin-top:12px;"><h3>Claude Code repo</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Optional owner/repo the "Code" and "Code (cloud)" buttons on a Claude task open on (e.g. tsg-homes/task-tracker). Cowork sessions never need one.</div>
+        <input type="text" class="text-input" id="claudeRepoInput" placeholder="owner/repo" value="${escapeHtml(CLAUDE_REPO)}" onblur="setClaudeRepo(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
         <input type="text" class="text-input" id="homeBaseInput" placeholder="Street address, city, state" value="${escapeHtml(HOME_BASE)}" onblur="setHomeBase(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
       </div>
       <div class="modal-section">
@@ -6749,6 +6783,23 @@
           <button class="btn small primary" onclick="addRosterMember()">+ Add delegate</button>
         </div>
       </div>`;
+  }
+  async function setClaudeRepo(value) {
+    const val = (value || '').trim();
+    if (val === CLAUDE_REPO) return;
+    if (val && !/^[\w.-]+\/[\w.-]+$/.test(val)) { alert('Use the owner/repo form, e.g. tsg-homes/task-tracker'); return; }
+    CLAUDE_REPO = val;
+    RAW_META.claudeRepo = val;
+    setSyncStatus('saving');
+    try {
+      const res = await apiFetch('', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ op: 'set_meta', fields: { claudeRepo: val } }) });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const resp = await res.json();
+      if (resp && resp.ok === false && resp.error !== 'busy') throw new Error(resp.error || 'Save rejected');
+      if (resp && typeof resp.docVersion === 'number') RAW_META.docVersion = resp.docVersion;
+      setSyncStatus('saved');
+    } catch (err) { setSyncStatus('error', 'Could not save the Claude repo: ' + (err.message || err)); }
   }
   async function setHomeBase(value) {
     const val = (value || '').trim();
