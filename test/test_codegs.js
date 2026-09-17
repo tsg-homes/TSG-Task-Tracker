@@ -9,6 +9,8 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8');
 let claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 let driveFilesFixture = [];      // [{ name, getUrl }] consumed by DriveApp.searchFiles stub
 let calendarEventsFixture = [];
+let attachFolder = null, createdFolders = [], uploadedFiles = [];
+function driveFileStub(blob) { const f = { blob, getUrl: () => 'https://drive.google.com/file/d/UP' + (uploadedFiles.length + 1) + '/view', getId: () => 'UP' + (uploadedFiles.length + 1), getName: () => (blob && blob.getName ? blob.getName() : 'x') }; uploadedFiles.push(f); return f; }
 let gmailThreadsFixture = [];    // [{ id, subject, from, body, date }] consumed by GmailApp.search stub
 let sentMail = [];               // MailApp.sendEmail captures
 let guestCalendarEvents = null;  // null = guest calendar unreadable; [] or events = readable  // [{ id, title, start: Date, end: Date, allDay, location }] consumed by CalendarApp stub
@@ -57,7 +59,7 @@ const sandbox = {
     fetchAll: (reqs) => reqs.map(r => fakeClaudeFetch(r))
   },
   DriveApp: {
-    getFolderById: () => ({ createFile: () => {}, getFilesByName: () => ({ hasNext: () => false }) }),
+    getFolderById: () => ({ createFile: (blob) => driveFileStub(blob), getFilesByName: () => ({ hasNext: () => false }), getFoldersByName: () => ({ hasNext: () => !!attachFolder, next: () => attachFolder }), createFolder: (n) => { attachFolder = { name: n, createFile: (blob) => driveFileStub(blob) }; createdFolders.push(n); return attachFolder; } }),
     getFileById: () => ({}),
     searchFiles: (q) => {
       const items = driveFilesFixture.slice();
@@ -90,10 +92,13 @@ const sandbox = {
       const pad = (n) => String(n).padStart(2, '0');
       if (fmt === 'yyyy-MM-dd') return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
       if (fmt === 'HH:mm') return pad(date.getHours()) + ':' + pad(date.getMinutes());
+      if (fmt === 'yyyy-MM-dd-HHmmss') return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + '-' + pad(date.getHours()) + pad(date.getMinutes()) + pad(date.getSeconds());
       return date.toISOString();
     },
     base64EncodeWebSafe: (s) => Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
     base64Encode: (s) => Buffer.from(s).toString('base64'),
+    base64Decode: (s) => Array.from(Buffer.from(s, 'base64')),
+    newBlob: (bytes, mime, name) => ({ getBytes: () => bytes, getContentType: () => mime, getName: () => name }),
     sleep: () => {},
     getUuid: () => 'uuid-' + (++uuidCounter)
   },
@@ -1613,6 +1618,36 @@ section('Subtasks ride in the parent\'s call (2026-09-17)');
   check('a deferred steps answer lands on the right step by title after the list moved', q.tasks[0].subitems[1].title === 'Book the band' && q.tasks[0].subitems[1].progress === 60 && q.tasks[0].subitems[0].title === 'inserted first' && q.tasks[0].subitems[0].progress === 0);
   sandbox.PropertiesService.getScriptProperties = origProps4; apiKeyPresent = true;
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+}
+
+section('Attachments and the one docs list (2026-09-17)');
+{
+  attachFolder = null; createdFolders = []; uploadedFiles = [];
+  const png = Buffer.from('fakepngbytes').toString('base64');
+  const up = sandbox.tsgUploadAttachment_({ name: 'screen shot.png', mime: 'image/png', base64: 'data:image/png;base64,' + png });
+  check('an upload lands in TRACKER_FOLDER_ID/Attachments (created on demand) and comes back typed image with a Drive url', up.ok && createdFolders[0] === 'Attachments' && uploadedFiles.length === 1 && up.type === 'image' && /drive\.google\.com/.test(up.url) && up.name === 'screen shot.png' && up.bytes === 12);
+  const up2 = sandbox.tsgUploadAttachment_({ mime: 'image/jpeg', base64: png });
+  check('a pasted image with no name gets a dated name with the right extension; the folder is reused', up2.ok && /^pasted-\d{4}-\d{2}-\d{2}-\d{6}\.jpg$/.test(up2.name) && createdFolders.length === 1);
+  const up3 = sandbox.tsgUploadAttachment_({ name: 'quote.pdf', mime: 'application/pdf', base64: png });
+  check('a non-image is typed file', up3.ok && up3.type === 'file');
+  check('empty content and oversize are refused', sandbox.tsgUploadAttachment_({ name: 'x', mime: 'text/plain', base64: '' }).ok === false && sandbox.tsgUploadAttachment_({ name: 'big', mime: 'application/octet-stream', base64: Buffer.alloc(11 * 1024 * 1024).toString('base64') }).ok === false);
+  check('a file name is sanitised', sandbox.tsgSafeFileName_('  ../evil:name?.png  ') === '.. evil name .png');
+  // doPost routing
+  const origProps5 = sandbox.PropertiesService.getScriptProperties;
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (k === 'SCRIPT_TOKEN' ? 'tok' : null), setProperty: () => {} });
+  const resp = JSON.parse(sandbox.doPost({ parameter: { target: 'upload', token: 'tok' }, postData: { contents: JSON.stringify({ name: 'a.txt', mime: 'text/plain', base64: png }) } }).text);
+  check('doPost target=upload routes to the uploader', resp.ok === true && resp.type === 'file');
+  sandbox.PropertiesService.getScriptProperties = origProps5;
+  // legacy doc folds into docs on every write
+  const d = freshDoc();
+  d.tasks[0].doc = 'https://docs.google.com/document/d/LEGACY/edit';
+  d.tasks[0].docs = [{ url: 'https://example.com/other', label: 'other', type: 'web' }];
+  d.tasks[0].subitems = [{ title: 'step', done: false, status: 'Not Started', doc: 'https://vendor.com/quote', docs: [] }];
+  sandbox.tsgAutoScheduleDoc_(d);
+  check('a legacy doc on a task or step moves to the front of its docs list and the old field is dropped', d.tasks[0].doc === undefined && d.tasks[0].docs[0].url === 'https://docs.google.com/document/d/LEGACY/edit' && d.tasks[0].docs[0].migrated === true && d.tasks[0].docs.length === 2 && d.tasks[0].subitems[0].doc === undefined && d.tasks[0].subitems[0].docs[0].label === 'vendor.com');
+  sandbox.tsgAutoScheduleDoc_(d);
+  check('the migration is idempotent', d.tasks[0].docs.length === 2);
+  attachFolder = null; createdFolders = []; uploadedFiles = [];
 }
 
 section('No secrets in tracked files (repo is public)');

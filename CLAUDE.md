@@ -597,3 +597,27 @@ notes of their own, wait for that before enriching them on their own so there's 
   still have no hours (titles with hours already are never sent), used for backfills.
 - Backfill still pending: queue `request_steps` for the 12 parents holding the 33 unestimated
   steps once the Routine has its Drive connector.
+
+## One links field, uploads, image paste (2026-09-17, backend 2026-09-17.6, dashboard UI 2026-09-17.9)
+
+Per Durand: "one field for all types of links, don't need to separate drive, email, web, Claude or
+uploaded files/pasted images (add the ability to add local files and paste images too)".
+- `docs[]` is the one list on tasks and subtasks; the legacy single `doc` is folded in by
+  `tsgMigrateDocToDocs_` (runs inside `tsgAutoScheduleDoc_`, i.e. on every write) and no code
+  writes `doc` any more. Entry types: `link` (Drive/any URL), `meeting`, `email`, `claude`, `web`,
+  `image`, `file`; `docIcon_` / `linkTypeFor_` on the dashboard.
+- Link picker (`addManualDoc` -> `#linkModal`): ONE search box (`#linkSearch`, `runLinkSearch_`)
+  that queries Drive (`api=driveSearch`), Gmail (`api=mailSearch`) and the loaded upcoming
+  meetings together into `LINK_HITS` (each row typed; `addLinkHit_`), one file input
+  (`#linkFile`, `onLinkFilesChosen_`), a pasted URL, and drag/drop onto the task or New Task
+  modal (`onLinkDrop_`). The separate mail search box and `runLinkMailSearch_` are gone.
+- Uploads: dashboard `attachFiles_(files, target)` -> `shrinkImage_` (images downscaled to
+  1600 px JPEG client-side) -> POST `target=upload` `{name, mime, base64}` ->
+  `tsgUploadAttachment_` writes the file into an `Attachments` folder under
+  `TRACKER_FOLDER_ID` (`tsgAttachmentsFolder_`, created once), 10 MB cap, `tsgSafeFileName_`;
+  a pasted image with no name is dated `pasted-YYYY-MM-DD-HHmmss.<ext>` (script time zone).
+  The answer `{url, name, mime, type}` lands as a typed docs entry on the target (a pending
+  New Task keeps it in the form until save). Ctrl/Cmd-V of an image on an open task card
+  attaches to that card (`pastedFiles_`, document paste listener).
+- Tests: backend "Attachments and the one docs list"; dashboard unified-picker / upload / paste
+  tests. The test `Utilities.formatDate` stub handles `yyyy-MM-dd`, `HH:mm`, `yyyy-MM-dd-HHmmss`.

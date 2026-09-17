@@ -63,6 +63,7 @@ const dom = new JSDOM(html, {
       const u = String(url);
       if (opts && opts.method === 'POST') {
         window.__posts = window.__posts || []; window.__posts.push({ url: u, body: opts.body });
+        if (u.includes('target=upload')) { const body = JSON.parse(opts.body); return { ok: true, status: 200, json: async () => ({ ok: true, url: 'https://drive.google.com/file/d/UPLOADED/view', id: 'UPLOADED', name: body.name || 'pasted-2026-09-17-120000.png', mime: body.mime, type: /^image\//.test(body.mime) ? 'image' : 'file' }) }; }
         if (u.includes('target=sendDirections')) return { ok: true, status: 200, json: async () => ({ ok: true, url: 'https://www.google.com/maps/dir/?api=1', sentTo: 'durand@thestawaszgroup.com' }) };
         if (u.includes('target=tidy')) return { ok: true, status: 200, json: async () => ({ ok: true, taskId: 2, before: { title: 'Text Marj About The Flyer Proof', notes: '', priority: 'Medium', taskType: 'Text/Chat', group: 'Marketing', estHours: 0.25, tags: [] }, proposal: { title: 'Text Marj: confirm the flyer proof is approved', notes: 'Current state: waiting on Marj.', priority: 'Medium', taskType: 'Text/Chat', group: 'Marketing', estHours: 0.25, tags: ['Flyers'], rationale: 'Sharpened the ask.' } }) };
         return { ok: true, status: 200, json: async () => ({ ok: true, serverVersion: 1 }) };
@@ -692,19 +693,10 @@ setTimeout(async () => {
   });
 
   // Links every update (2026-09-17): mail search in the picker, Claude prompt, directions, meeting slots
-  tryCall('link picker searches email and a picked thread becomes an email link', () => {
+  tryCall('the separate mail search box is gone (email rides in the one picker search, tested below)', () => {
     w.openNewTaskModal({});
     w.addManualDoc('__new__');
-    if (!doc.getElementById('linkMailSearch')) throw new Error('no mail search box');
-    doc.getElementById('linkMailSearch').value = 'flyer proof';
-  });
-  await w.runLinkMailSearch_();
-  tryCall('mail results render and pick as type email', () => {
-    if (!doc.getElementById('linkMailResults').textContent.includes('Flyer proof thread')) throw new Error('no thread row');
-    w.addLinkMailResult_(0);
-    const fields = w.newTaskFieldsFromModal_();
-    if (!fields.docs || fields.docs[0].type !== 'email') throw new Error('not typed email: ' + JSON.stringify(fields.docs));
-    if (!doc.getElementById('ntDocs').innerHTML.includes('&#9993;') && !doc.getElementById('ntDocs').innerHTML.includes('✉')) throw new Error('no email icon');
+    if (doc.getElementById('linkMailSearch') || doc.getElementById('linkMailResults')) throw new Error('separate mail search still rendered');
     w.closeNewTaskModal();
   });
   tryCall('the Claude prompt carries the task, its steps, links and the write-back instruction', () => {
@@ -933,6 +925,65 @@ setTimeout(async () => {
     w.resolveReviewFlag(1, 'priority', false);
     if (t.priority !== 'Low' || t.reviewFlags || t.tags.includes('Review')) throw new Error('keep mine misbehaved');
     if (!t.history.some(h => h.field === 'review' && /kept Low/.test(h.to))) throw new Error('no decision line');
+    w.closeTaskCard();
+  });
+
+  // One links field: one search across Drive, email and calendar; upload; paste an image (2026-09-17)
+  tryCall('the link picker has one search box and one file input; a search lists Drive, email and meeting hits together', () => {
+    w.__pickerEvents = [{ id: 'ev9', title: 'Flyer proof review', htmlLink: 'https://calendar.google.com/event?eid=ev9', start: '2026-09-22T14:00:00Z', end: '2026-09-22T14:30:00Z', dateLabel: 'Tue 9/22', timeLabel: '10:00' }];
+    w.openNewTaskModal({});
+    w.addManualDoc('__new__');
+    if (doc.getElementById('linkMailSearch')) throw new Error('separate mail search still present');
+    if (!doc.getElementById('linkSearch') || !doc.getElementById('linkFile')) throw new Error('search or file input missing');
+    doc.getElementById('linkSearch').value = 'flyer proof';
+  });
+  await new Promise(r => setTimeout(r, 30)); // let the picker's meeting load settle before searching
+  await w.runLinkSearch_();
+  tryCall('...one list, three sources, each picked into the one docs list with its type', () => {
+    const html = doc.getElementById('linkResults').innerHTML;
+    if (!html.includes('Fall Flyer Draft') || !html.includes('Flyer proof thread') || !html.includes('Flyer proof review')) throw new Error('missing a source: ' + html.slice(0, 300));
+    const hits = w.eval('LINK_HITS');
+    if (hits.length !== 3 || hits.map(h => h.type).sort().join() !== 'email,link,meeting') throw new Error('hit types ' + hits.map(h => h.type));
+    w.addLinkHit_(hits.findIndex(h => h.type === 'email'));
+    w.addManualDoc('__new__');
+    w.eval("LINK_HITS = " + JSON.stringify(hits));
+    w.addLinkHit_(hits.findIndex(h => h.type === 'link'));
+    const fields = w.newTaskFieldsFromModal_();
+    if (!fields.docs || fields.docs.length !== 2 || !fields.docs.some(x => x.type === 'email') || !fields.docs.some(x => x.type === 'link')) throw new Error('docs ' + JSON.stringify(fields.docs));
+  });
+  tryCall('a chosen file uploads through target=upload and lands as a typed attachment on the pending task', () => {
+    const f = new w.File([new w.Blob(['hello'], { type: 'text/plain' })], 'quote.txt', { type: 'text/plain' });
+    w.__posts = [];
+    w.attachFiles_([f], { pending: true });
+  });
+  await new Promise(r => setTimeout(r, 60));
+  tryCall('...posted base64 with the name and mime; chip shows the file icon', () => {
+    const p = (w.__posts || []).find(x => x.url.includes('target=upload'));
+    if (!p) throw new Error('no upload post');
+    const body = JSON.parse(p.body);
+    if (body.name !== 'quote.txt' || body.mime !== 'text/plain' || body.base64 !== Buffer.from('hello').toString('base64')) throw new Error('bad body ' + p.body.slice(0, 120));
+    const fields = w.newTaskFieldsFromModal_();
+    if (!fields.docs.some(x => x.type === 'file' && x.url.includes('UPLOADED') && x.label === 'quote.txt')) throw new Error('attachment missing: ' + JSON.stringify(fields.docs));
+    if (!doc.getElementById('ntDocs').innerHTML.includes('&#128206;') && !doc.getElementById('ntDocs').innerHTML.includes('📎')) throw new Error('no file icon');
+    w.closeNewTaskModal();
+  });
+  tryCall('pasting an image on an open task card attaches it to that task', () => {
+    w.openTaskCard(2);
+    w.__posts = [];
+    const img = new w.File([new w.Blob(['\x89PNG fake'], { type: 'image/png' })], 'image.png', { type: 'image/png' });
+    const ev = new w.Event('paste', { bubbles: true, cancelable: true });
+    ev.clipboardData = { items: [{ kind: 'file', getAsFile: () => img }], files: [img] };
+    doc.dispatchEvent(ev);
+  });
+  await new Promise(r => setTimeout(r, 60));
+  tryCall('...uploaded without a generic name (server dates it) and typed image on task 2', () => {
+    const p = (w.__posts || []).find(x => x.url.includes('target=upload'));
+    if (!p) throw new Error('no upload post');
+    if (JSON.parse(p.body).name !== '') throw new Error('generic clipboard name should be dropped: ' + JSON.parse(p.body).name);
+    const t2 = w.findTask(2);
+    if (!(t2.docs || []).some(x => x.type === 'image' && x.url.includes('UPLOADED'))) throw new Error('image not attached: ' + JSON.stringify(t2.docs));
+    if (!t2.history.some(h => h.field === 'doc' && h.source === 'Durand')) throw new Error('no history');
+    t2.docs = t2.docs.filter(x => !x.url.includes('UPLOADED'));
     w.closeTaskCard();
   });
 

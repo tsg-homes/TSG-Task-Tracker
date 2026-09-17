@@ -573,6 +573,8 @@
   .sub-time { width: 84px; margin-left: 4px; }
   .due-time-chip { margin-left: 4px; }
   .mf-blocks { margin-left: 10px; font-weight: normal; cursor: pointer; }
+  .dropping { outline: 2px dashed var(--brand); outline-offset: -6px; }
+  #linkPickerForm.dropping { background: var(--surface-2); }
   #tsgToasts { position: fixed; right: 16px; bottom: 16px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; max-width: 360px; }
   .tsg-toast { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--brand); border-left-width: 4px; border-radius: 8px; padding: 10px 32px 10px 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.25); position: relative; cursor: pointer; font-size: 13px; }
   .tsg-toast .icon-btn { position: absolute; top: 6px; right: 6px; }
@@ -1555,7 +1557,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-17.8';
+  const UI_VERSION = '2026-09-17.9';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2101,7 +2103,7 @@
   }
   function docIcon_(d) {
     const type = d.type === 'link' ? linkTypeFor_(d.url) : (d.type || linkTypeFor_(d.url));
-    return type === 'meeting' ? '&#128197;' : type === 'email' ? '&#9993;' : type === 'claude' ? '&#10022;' : type === 'web' ? '&#127760;' : '&#128279;';
+    return type === 'meeting' ? '&#128197;' : type === 'email' ? '&#9993;' : type === 'claude' ? '&#10022;' : type === 'web' ? '&#127760;' : type === 'image' ? '&#128444;' : type === 'file' ? '&#128206;' : '&#128279;';
   }
   function docsListHtml(docs, taskId, subIdx) {
     const list = Array.isArray(docs) ? docs : [];
@@ -2125,11 +2127,10 @@
   function addManualDoc(taskId, subIdx) {
     LINK_TARGET = taskId === '__new__' ? { pending: true } : { taskId: taskId, subIdx: (subIdx == null ? null : subIdx) };
     document.getElementById('linkModalBody').innerHTML = `
-      <div class="meeting-form">
-        <label>Search your Drive<input type="text" class="text-input" id="linkSearch" placeholder="Type a few words from the file name or contents" oninput="onLinkSearchInput_()"></label>
-        <div class="meeting-list" id="linkResults"><div class="history-empty">Results appear here.</div></div>
-        <label>Search your email<input type="text" class="text-input" id="linkMailSearch" placeholder="Words from the subject or the message" oninput="onLinkMailSearchInput_()"></label>
-        <div class="meeting-list" id="linkMailResults"><div class="history-empty">Threads appear here.</div></div>
+      <div class="meeting-form" id="linkPickerForm" ondragover="event.preventDefault(); this.classList.add('dropping')" ondragleave="this.classList.remove('dropping')" ondrop="this.classList.remove('dropping'); onLinkDrop_(event)">
+        <label>Search Drive, email and calendar<input type="text" class="text-input" id="linkSearch" placeholder="A few words: a file name, an email subject, a meeting" oninput="onLinkSearchInput_()"></label>
+        <div class="meeting-list" id="linkResults"><div class="history-empty">Results from your Drive, Gmail and calendar appear here.</div></div>
+        <label>Upload a file or paste an image<span class="link-paste-row"><input type="file" class="text-input" id="linkFile" multiple onchange="onLinkFilesChosen_(this.files)"><span class="hist-time">or press Ctrl/Cmd+V here with an image on the clipboard, or drop files anywhere on this form</span></span></label>
         <label>Or paste a link<span class="link-paste-row"><input type="text" class="text-input" id="linkPaste" placeholder="https://…" onkeydown="if(event.key==='Enter'){event.preventDefault();addPastedLink_();}"><button type="button" class="btn small primary" onclick="addPastedLink_()">Add</button></span></label>
         <div class="sched-detail-note">Upcoming meetings</div>
         <div class="meeting-list" id="linkMeetings"><div class="history-empty">Loading…</div></div>
@@ -2138,55 +2139,132 @@
     const inp = document.getElementById('linkSearch'); if (inp) inp.focus();
     loadLinkMeetings_();
   }
+  // Drag a file onto an open task card or the New Task form to attach it.
+  ['taskModal', 'newTaskModal'].forEach(function(mid) {
+    document.addEventListener('DOMContentLoaded', function() {
+      const el = document.getElementById(mid); if (!el) return;
+      el.addEventListener('dragover', function(ev) { if (ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes('Files')) { ev.preventDefault(); el.classList.add('dropping'); } });
+      el.addEventListener('dragleave', function() { el.classList.remove('dropping'); });
+      el.addEventListener('drop', function(ev) {
+        el.classList.remove('dropping');
+        if (!ev.dataTransfer || !ev.dataTransfer.files || !ev.dataTransfer.files.length) return;
+        ev.preventDefault();
+        attachFiles_(ev.dataTransfer.files, mid === 'newTaskModal' ? { pending: true } : (currentModalTaskId != null ? { taskId: currentModalTaskId, subIdx: null } : null));
+      });
+    });
+  });
   function closeLinkPicker() { document.getElementById('linkModal').classList.remove('open'); LINK_TARGET = null; }
   function onLinkSearchInput_() {
     clearTimeout(linkSearchDebounce);
     linkSearchDebounce = setTimeout(runLinkSearch_, 300);
   }
+  // One search (2026-09-17, per Durand: "one field for all types of links"): Drive files,
+  // Gmail threads and upcoming meetings answer the same words, in one list with a source icon.
+  let LINK_HITS = [];
   async function runLinkSearch_() {
-    const q = (document.getElementById('linkSearch') || {}).value || '';
+    const q = ((document.getElementById('linkSearch') || {}).value || '').trim();
     const host = document.getElementById('linkResults');
     if (!host) return;
-    if (q.trim().length < 2) { host.innerHTML = '<div class="history-empty">Results appear here.</div>'; return; }
+    if (q.length < 2) { host.innerHTML = '<div class="history-empty">Results from your Drive, Gmail and calendar appear here.</div>'; return; }
     host.innerHTML = '<div class="history-empty">Searching…</div>';
-    try {
-      const res = await apiFetch('api=driveSearch&q=' + encodeURIComponent(q.trim()));
-      const data = await res.json();
-      const files = (data && data.files) || [];
-      LINK_RESULTS = files;
-      host.innerHTML = files.length
-        ? files.map((f, i) => `<div class="meeting-row" onclick="addLinkResult_(${i})"><div class="meeting-row-main"><b>${escapeHtml(f.name)}</b></div><div class="meeting-row-sub">${escapeHtml(linkKindLabel_(f.mime))}${f.modified ? ' · ' + escapeHtml(f.modified) : ''}</div></div>`).join('')
-        : '<div class="history-empty">Nothing in your Drive matches that.</div>';
-    } catch (err) {
-      host.innerHTML = '<div class="history-empty">Search failed: ' + escapeHtml(err.message || String(err)) + '</div>';
-    }
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const settle = p => p.then(v => v, () => null);
+    const [drive, mail] = await Promise.all([
+      settle(apiFetch('api=driveSearch&q=' + encodeURIComponent(q)).then(r => r.json())),
+      settle(apiFetch('api=mailSearch&q=' + encodeURIComponent(q)).then(r => r.json()))
+    ]);
+    const hits = [];
+    ((drive && drive.files) || []).forEach(f => hits.push({ type: 'link', url: f.url, label: f.name, sub: linkKindLabel_(f.mime) + (f.modified ? ' · ' + f.modified : '') }));
+    ((mail && mail.threads) || []).forEach(m => hits.push({ type: 'email', url: m.url, label: m.label, sub: (m.from || '') + (m.date ? ' · ' + m.date : '') + (m.count > 1 ? ' · ' + m.count + ' messages' : '') }));
+    (LINK_MEETINGS || []).filter(ev => words.every(w => String(ev.title || '').toLowerCase().includes(w))).forEach(ev => hits.push({ type: 'meeting', ev: ev, url: ev.htmlLink, label: ev.title, sub: (ev.dateLabel || '') + (ev.timeLabel ? ' · ' + ev.timeLabel : '') }));
+    LINK_HITS = hits;
+    LINK_RESULTS = ((drive && drive.files) || []);
+    host.innerHTML = hits.length
+      ? hits.map((h, i) => `<div class="meeting-row" onclick="addLinkHit_(${i})"><div class="meeting-row-main">${docIcon_(h)} <b>${escapeHtml(h.label)}</b></div><div class="meeting-row-sub">${escapeHtml(h.sub || '')}</div></div>`).join('')
+      : '<div class="history-empty">Nothing in your Drive, Gmail or calendar matches that.</div>';
   }
+  function addLinkHit_(i) {
+    const h = LINK_HITS[i];
+    if (!h) return;
+    if (h.type === 'meeting' && h.ev) { const idx = LINK_MEETINGS.indexOf(h.ev); if (idx !== -1) { addLinkMeeting_(idx); return; } }
+    addDocToTarget_(h.url, h.label, h.type);
+  }
+  // Files and pasted images (2026-09-17): read locally, images over 1600 px or 2 MB are
+  // downscaled on a canvas when one is available, then POSTed as base64 to target=upload.
+  const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+  function readFileAsDataUrl_(file) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result || '')); r.onerror = () => rej(new Error('Could not read ' + file.name)); r.readAsDataURL(file); }); }
+  async function shrinkImage_(file, dataUrl) {
+    if (!/^image\//.test(file.type) || (file.size <= 2 * 1024 * 1024)) return { dataUrl, mime: file.type };
+    try {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext && canvas.getContext('2d');
+      if (!ctx) return { dataUrl, mime: file.type };
+      const img = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('bad image')); im.src = dataUrl; });
+      const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+      if (scale >= 1) return { dataUrl, mime: file.type };
+      canvas.width = Math.round(img.width * scale); canvas.height = Math.round(img.height * scale);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return { dataUrl: canvas.toDataURL('image/jpeg', 0.85), mime: 'image/jpeg' };
+    } catch (e) { return { dataUrl, mime: file.type }; }
+  }
+  async function uploadAttachment_(file, targetOverride) {
+    if (!file) return null;
+    if (file.size > UPLOAD_MAX_BYTES) { alert(file.name + ' is larger than 10 MB.'); return null; }
+    const raw = await readFileAsDataUrl_(file);
+    const shrunk = await shrinkImage_(file, raw);
+    const base64 = shrunk.dataUrl.replace(/^data:[^;]*;base64,/, '');
+    const name = file.name && !/^image\.(png|jpe?g|gif|webp)$/i.test(file.name) ? file.name : '';
+    const res = await apiFetch('target=upload', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ name: name, mime: shrunk.mime || file.type || 'application/octet-stream', base64: base64 }) });
+    const data = await res.json();
+    if (!data || data.ok === false) throw new Error((data && data.error) || 'Upload failed');
+    return data;
+  }
+  async function attachFiles_(files, target) {
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return 0;
+    if (target) LINK_TARGET = target;
+    if (!LINK_TARGET) return 0;
+    const keep = LINK_TARGET;
+    setSyncStatus('saving');
+    let n = 0;
+    for (const f of list) {
+      try {
+        const up = await uploadAttachment_(f);
+        if (!up) continue;
+        LINK_TARGET = keep;
+        addDocToTarget_(up.url, up.name, up.type || (/^image\//.test(up.mime || '') ? 'image' : 'file'));
+        n++;
+      } catch (err) { alert('Could not attach ' + (f.name || 'file') + ': ' + (err.message || err)); }
+    }
+    return n;
+  }
+  function onLinkFilesChosen_(files) { attachFiles_(files); }
+  function onLinkDrop_(ev) { ev.preventDefault(); if (ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files.length) attachFiles_(ev.dataTransfer.files); }
+  function pastedFiles_(ev) {
+    const cd = ev && ev.clipboardData; if (!cd) return [];
+    const out = [];
+    Array.from(cd.items || []).forEach(it => { if (it.kind === 'file') { const f = it.getAsFile && it.getAsFile(); if (f) out.push(f); } });
+    if (!out.length) Array.from(cd.files || []).forEach(f => out.push(f));
+    return out;
+  }
+  // Paste an image on the task card, the New Task form or the link picker and it attaches to
+  // that item; a text paste is left to the field being edited.
+  document.addEventListener('paste', function(ev) {
+    const files = pastedFiles_(ev);
+    if (!files.length) return;
+    const inPicker = document.getElementById('linkModal') && document.getElementById('linkModal').classList.contains('open');
+    const inNew = document.getElementById('newTaskModal') && document.getElementById('newTaskModal').classList.contains('open');
+    const inTask = document.getElementById('taskModal') && document.getElementById('taskModal').classList.contains('open');
+    let target = null;
+    if (inPicker && LINK_TARGET) target = LINK_TARGET;
+    else if (inNew) target = { pending: true };
+    else if (inTask && currentModalTaskId != null) target = { taskId: currentModalTaskId, subIdx: null };
+    if (!target) return;
+    ev.preventDefault();
+    attachFiles_(files, target);
+  });
   let LINK_RESULTS = [];
-  let LINK_MAIL_RESULTS = [];
-  let linkMailDebounce = null;
-  function onLinkMailSearchInput_() { clearTimeout(linkMailDebounce); linkMailDebounce = setTimeout(runLinkMailSearch_, 300); }
-  async function runLinkMailSearch_() {
-    const q = (document.getElementById('linkMailSearch') || {}).value || '';
-    const host = document.getElementById('linkMailResults');
-    if (!host) return;
-    if (q.trim().length < 2) { host.innerHTML = '<div class="history-empty">Threads appear here.</div>'; return; }
-    host.innerHTML = '<div class="history-empty">Searching…</div>';
-    try {
-      const res = await apiFetch('api=mailSearch&q=' + encodeURIComponent(q.trim()));
-      const data = await res.json();
-      LINK_MAIL_RESULTS = (data && data.threads) || [];
-      host.innerHTML = LINK_MAIL_RESULTS.length
-        ? LINK_MAIL_RESULTS.map((m, i) => `<div class="meeting-row" onclick="addLinkMailResult_(${i})"><div class="meeting-row-main"><b>${escapeHtml(m.label)}</b></div><div class="meeting-row-sub">${escapeHtml(m.from || '')}${m.date ? ' · ' + escapeHtml(m.date) : ''}${m.count > 1 ? ' · ' + m.count + ' messages' : ''}</div></div>`).join('')
-        : '<div class="history-empty">No threads match that.</div>';
-    } catch (err) {
-      host.innerHTML = '<div class="history-empty">Search failed: ' + escapeHtml(err.message || String(err)) + '</div>';
-    }
-  }
-  function addLinkMailResult_(i) {
-    const m = LINK_MAIL_RESULTS[i];
-    if (!m) return;
-    addDocToTarget_(m.url, m.label, 'email');
-  }
   function linkKindLabel_(mime) {
     const m = String(mime || '');
     if (m.indexOf('document') !== -1) return 'Google Doc';
@@ -6152,7 +6230,7 @@
       reviewFlagsRowHtml_(t),
       `<div class="modal-row"><b>Tags</b><span class="modal-tags">${tagsChips}<input type="text" class="text-input tag-input" list="tagOptions" placeholder="+ tag" spellcheck="true" onkeydown="if(event.key==='Enter'){event.preventDefault();modalAddTagFrom(${id}, this);}" onchange="modalAddTagFrom(${id}, this)"></span></div>`,
       `<div class="modal-row"><b>Source</b><span class="modal-source">${t.doc ? `<a href="${escapeHtml(safeUrl(t.doc))}" target="_blank" rel="noopener" class="doc-link-text">${escapeHtml(t.doc)}</a>` : '<span class="modal-empty">Not linked — add the email or meeting doc this came from</span>'}<button type="button" class="icon-btn" onclick="modalEditDoc(${id})" title="${t.doc ? 'Edit source link' : 'Add source link'}">${t.doc ? '&#9998;' : '+ link'}</button></span></div>`,
-      `<div class="modal-row"><b>Links</b><span class="modal-source">${docsListHtml(t.docs, id, null)}<button type="button" class="icon-btn" onclick="addManualDoc(${id}, null)" title="Add a link or file">+ link</button></span></div>`,
+      `<div class="modal-row"><b>Links</b><span class="modal-source">${docsListHtml(t.docs, id, null)}<button type="button" class="icon-btn" onclick="addManualDoc(${id}, null)" title="Search Drive, email and calendar, paste a link, upload a file or paste an image">+ link</button><label class="icon-btn" title="Attach files from this computer">&#128206;<input type="file" multiple style="display:none" onchange="attachFiles_(this.files, { taskId: ${id}, subIdx: null }); this.value = ''"></label></span></div>`,
       claudeRowHtml_(t),
       (t.taskType === 'Meeting' ? `<div class="modal-row"><b>Meeting</b><span class="modal-source"><button type="button" class="icon-btn" onclick="openMeetingPicker(${id}, null)" title="Link a calendar meeting">${(t.docs || []).some(d => d.type === 'meeting') ? '&#128197; Change linked meeting' : '+ Link a meeting'}</button></span></div>` : ''),
       // Call/Email type-specific fields (2026-09-03, per Durand: "call tasks should get a
@@ -6332,7 +6410,7 @@
           <label>Tags<input type="text" class="text-input" id="ntTags" list="tagOptions" placeholder="comma-separated" value="${escapeHtml((p.tags || []).join(', '))}"></label>
           <label>Type<select class="due-input" id="ntType" title="Leave blank and Claude decides from the note"><option value="" ${p.taskType ? '' : 'selected'}>Let Claude decide</option>${TASK_TYPES.map(o => `<option value="${escapeHtml(o)}" ${o === p.taskType ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select></label>
         </div>
-        <label>Links<span class="link-paste-row nt-docs-row"><span id="ntDocs" class="modal-tags"></span><button type="button" class="btn small" onclick="addManualDoc('__new__')" title="Search your Drive, pick a meeting, or paste a link">+ link</button></span></label>
+        <label>Links<span class="link-paste-row nt-docs-row"><span id="ntDocs" class="modal-tags"></span><button type="button" class="btn small" onclick="addManualDoc('__new__')" title="Search Drive, email and calendar, paste a link, upload a file or paste an image">+ link</button><label class="btn small" title="Attach files from this computer">&#128206; File<input type="file" multiple style="display:none" onchange="attachFiles_(this.files, { pending: true }); this.value = ''"></label></span></label>
         <label>Location<span class="link-paste-row"><input type="text" class="text-input" id="ntLocation" placeholder="Address or place — travel time is added to the task" value="${escapeHtml(p.location || '')}"><button type="button" class="btn small" onclick="ntPickLocation()" title="Search an address">Search</button></span></label>
         <label>Notes<textarea class="text-input" id="ntNotes" rows="4" placeholder="Just write what's on your mind. Claude derives the title, estimate, type, priority, group, tags, steps, place and deadline from it, and polishes the note.">${escapeHtml(p.notes || '')}</textarea></label>
         <div class="meeting-modal-footer">

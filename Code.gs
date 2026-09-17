@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-17.5';
+const TSG_CODE_VERSION = '2026-09-17.6';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -2520,6 +2520,46 @@ var TSG_DAY_BLOCKS = [[10 * 60, 10 * 60 + 30], [12 * 60, 13 * 60], [14 * 60, 14 
 // directions"): a Google Maps directions link from the home base to the task's location,
 // emailed to the owner's own address so it lands on the phone in Gmail. Nothing goes to any
 // third party; the link itself is also returned so the dashboard can show / copy it.
+var TSG_ATTACHMENTS_FOLDER = 'Attachments';
+var TSG_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+function tsgAttachmentsFolder_() {
+  var parent = DriveApp.getFolderById(TRACKER_FOLDER_ID);
+  var it = parent.getFoldersByName(TSG_ATTACHMENTS_FOLDER);
+  return it.hasNext() ? it.next() : parent.createFolder(TSG_ATTACHMENTS_FOLDER);
+}
+function tsgSafeFileName_(name) {
+  var n = String(name || '').replace(/[\/\\:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return (n || 'attachment').slice(0, 120);
+}
+function tsgUploadAttachment_(fields) {
+  var b64 = String(fields && fields.base64 || '').replace(/^data:[^;]+;base64,/, '');
+  if (!b64) return { ok: false, error: 'No file content' };
+  var mime = String(fields.mime || 'application/octet-stream');
+  var name = tsgSafeFileName_(fields.name || ('pasted-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd-HHmmss') + (mime.indexOf('image/') === 0 ? '.' + (mime.split('/')[1] || 'png').replace('jpeg', 'jpg') : '')));
+  var bytes = Utilities.base64Decode(b64);
+  if (bytes.length > TSG_UPLOAD_MAX_BYTES) return { ok: false, error: 'File is larger than 10 MB' };
+  var blob = Utilities.newBlob(bytes, mime, name);
+  var file = tsgAttachmentsFolder_().createFile(blob);
+  var isImage = mime.indexOf('image/') === 0;
+  return { ok: true, url: file.getUrl(), id: file.getId(), name: file.getName(), mime: mime, type: isImage ? 'image' : 'file', bytes: bytes.length };
+}
+// Legacy single `doc` folded into the one docs[] list on every write (2026-09-17: "one field
+// for all types of links"). The scheduler/enricher still read both while old data exists.
+function tsgMigrateDocToDocs_(doc) {
+  (doc.tasks || []).forEach(function(t) {
+    if (!t) return;
+    [t].concat(t.subitems || []).forEach(function(it) {
+      if (!it || !it.doc) return;
+      if (!Array.isArray(it.docs)) it.docs = [];
+      var url = String(it.doc).trim();
+      if (url && !it.docs.some(function(d) { return d && d.url === url; })) {
+        var host = /^https?:\/\/([^\/?#]+)/i.exec(url);
+        it.docs.unshift({ url: url, label: host ? host[1].replace(/^www\./, '') : url, type: 'link', migrated: true });
+      }
+      delete it.doc;
+    });
+  });
+}
 function tsgDirectionsUrl_(homeBase, location, method) {
   var mode = { walk: 'walking', transit: 'transit', drive: 'driving' }[String(method || 'drive')] || 'driving';
   return 'https://www.google.com/maps/dir/?api=1' + (homeBase ? '&origin=' + encodeURIComponent(homeBase) : '') +
@@ -2834,6 +2874,17 @@ function doPost(e) {
     catch (createErr) { createResult = { ok: false, error: 'Could not create meeting: ' + createErr.message }; }
     return ContentService.createTextOutput(JSON.stringify(createResult)).setMimeType(ContentService.MimeType.JSON);
   }
+  // Attachments (2026-09-17, per Durand: "add the ability to add local files and paste images
+  // too"): a file or pasted image lands in TRACKER_FOLDER_ID/Attachments and comes back as a
+  // link for the task's one docs[] list. Owner-only through tsgRpc; 10 MB decoded cap.
+  if (requested === 'upload') {
+    var upFields;
+    try { upFields = JSON.parse(body || '{}'); } catch (err) { upFields = {}; }
+    var upResult;
+    try { upResult = tsgUploadAttachment_(upFields); }
+    catch (upErr) { upResult = { ok: false, error: 'Upload failed: ' + upErr.message }; }
+    return ContentService.createTextOutput(JSON.stringify(upResult)).setMimeType(ContentService.MimeType.JSON);
+  }
   if (requested === 'sendDirections') {
     var dirFields;
     try { dirFields = JSON.parse(body || '{}'); } catch (err) { dirFields = {}; }
@@ -2868,7 +2919,7 @@ function doPost(e) {
   }
   if (['data', 'rulesets'].indexOf(requested) === -1) {
     return ContentService.createTextOutput(JSON.stringify({
-      ok: false, error: 'Unknown target: ' + requested + '. Expected data, rulesets, claude, tidy, createMeeting, linkMeeting or sendDirections.'
+      ok: false, error: 'Unknown target: ' + requested + '. Expected data, rulesets, claude, tidy, createMeeting, linkMeeting, sendDirections or upload.'
     })).setMimeType(ContentService.MimeType.JSON);
   }
 
@@ -5333,6 +5384,7 @@ function tsgAutoScheduleDoc_(doc) {
 
   tsgPurgeBogusRollupTagHistory_(doc);
   tsgMigrateAssigneeToDelegate_(doc);
+  tsgMigrateDocToDocs_(doc);
   tsgRollupSubitemHours_(doc, new Date().toISOString());
   tsgApplyTravelTimes_(doc);
   tsgFlagAgingTasks_(doc, tsgTodayIso_());
