@@ -561,8 +561,31 @@ const stage = (s, who, ref, when) => {
     { parameter: { t: a.staged.token } })));
   check('the consent page does not carry the raw payload',
     page.indexOf(payload) === -1, 'raw payload found on the consent page');
-  check('the consent page emits no injected tag',
-    !/<(script|img|svg|iframe|object|embed)\b/i.test(page));
+
+  // Differential check. The page has its own <script> and <style> blocks, so a
+  // flat "no script tags" assertion would either be vacuous or fail on the page's
+  // own chrome. Render the SAME page for a benign name and compare tag counts:
+  // any difference could only have come from the entrant.
+  const benign = makeSandbox();
+  const b2 = stage(benign, { fullName: 'Plain Entrant' },
+                           { referralName: 'Plain Referral' }, DURING);
+  const clean = String(at(DURING, () => benign.raffleConsentPage_(
+    { parameter: { t: b2.staged.token } })));
+  const tags = h => (h.match(/<[a-z][a-z0-9]*\b/gi) || []).length;
+  check('a hostile name adds no extra tags to the consent page',
+    tags(page) === tags(clean), tags(page) + ' vs ' + tags(clean));
+
+  // Counting `on...=` attributes is the wrong test here and says so: the payload
+  // lands inside value="..." as &lt;img src=x onerror=...&gt;, so the literal
+  // text "onerror=" IS present and is completely inert -- raffleEsc_ escapes both
+  // < and ", so it cannot open a tag or close the attribute. What matters is that
+  // the payload exists ONLY in escaped form.
+  check('the payload survives only as escaped text',
+    page.indexOf('&lt;img src=x onerror=') !== -1, 'escaped copy not found');
+  check('no unescaped image/script/svg tag anywhere on the page',
+    !/<\s*(img|svg|iframe|object|embed)\b/i.test(page));
+  check('every < the entrant supplied was escaped',
+    (page.match(/&lt;/g) || []).length > (clean.match(/&lt;/g) || []).length);
 
   // And the sheet cells written from the consent page are formula-safe too.
   J(at(DURING, () => s.raffleHandleSubmission_({

@@ -119,8 +119,10 @@ function makeSandbox(opts) {
     ScriptApp: {
       getService: () => ({ getUrl: () => 'https://x/exec' }),
       getProjectTriggers: () => triggers.slice(),
-      newTrigger: fn => ({ timeBased: () => ({ at: () => ({ create: () => {
-        triggers.push({ getHandlerFunction: () => fn }); } }) }) }),
+      newTrigger: fn => ({ timeBased: () => ({
+        at: () => ({ create: () => { triggers.push({ getHandlerFunction: () => fn }); } }),
+        everyHours: () => ({ create: () => { triggers.push({ getHandlerFunction: () => fn }); } })
+      }) }),
       deleteTrigger: t => { const i = triggers.indexOf(t); if (i >= 0) triggers.splice(i, 1); }
     },
     Utilities: {
@@ -170,7 +172,34 @@ function makeSandbox(opts) {
         const t = {
           __file: name,
           evaluate: () => {
-            const out = String(t.bodyHtml === undefined ? 'page' : t.bodyHtml);
+            // Render the REAL template file, not a stand-in. The static markup is
+            // half of what these pages are -- radio inputs, links, the consent
+            // checkbox -- and a fake that only echoed the assigned properties
+            // would let all of it regress unnoticed.
+            let src;
+            try {
+              src = fs.readFileSync(path.join(__dirname, '..', name + '.html'), 'utf8');
+            } catch (err) {
+              src = String(t.bodyHtml === undefined ? 'page' : t.bodyHtml);
+              templates.push({ file: name, props: Object.assign({}, t), rendered: src });
+              return { setTitle: () => ({ addMetaTag: () => src }) };
+            }
+            const esc = v => String(v)
+              .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            // Apps Script's two print forms, modelled exactly: <?!= ?> prints raw,
+            // <?= ?> HTML-escapes. Getting that backwards is what broke the
+            // countdown live on 2026-09-16.
+            let out = src
+              .replace(/<\?!=\s*([A-Za-z_$][\w$]*)\s*\?>/g,
+                (m, k) => (k in t ? String(t[k]) : ''))
+              .replace(/<\?=\s*([A-Za-z_$][\w$]*)\s*\?>/g,
+                (m, k) => (k in t ? esc(t[k]) : ''));
+            // Control scriptlets: keep the body of a truthy `if`, drop a falsy one.
+            out = out.replace(
+              /<\?\s*if\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{\s*\?>([\s\S]*?)<\?\s*\}\s*\?>/g,
+              (m, k, body) => (t[k] ? body : ''));
+            out = out.replace(/<\?[\s\S]*?\?>/g, '');   // anything left over
             templates.push({ file: name, props: Object.assign({}, t), rendered: out });
             return { setTitle: () => ({ addMetaTag: () => out }) };
           }

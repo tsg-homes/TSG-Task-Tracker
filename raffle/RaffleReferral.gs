@@ -49,6 +49,16 @@ var RAFFLE_REFERRAL_TAGS = ['Block Party 2026', 'Referred Lead', 'Event Lead'];
 // buildSellerPersonPayload both start from tags: ['Buyer'] / ['Seller']).
 var RAFFLE_ROLES = ['Buyer', 'Seller'];
 
+// The role is stored as a NOUN ("Buyer") because that is what FUB tags it as, but
+// prose needs the verb: "looking to sell", not "looking to seller". Every place
+// that drops the role into a sentence goes through here.
+function raffleRoleVerb_(role) {
+  var r = String(role || '').toLowerCase();
+  if (r.indexOf('sell') === 0) return 'sell';
+  if (r.indexOf('buy') === 0) return 'buy';
+  return r;
+}
+
 // Durand: "the same timeframe dropdown live linked to fub as the other forms,
 // defaulted to the 1 year bucket". The list comes from getFubTimeframes() in
 // Code.gs (live GET /v1/timeframes, cached 30 min) so there is no second
@@ -758,7 +768,7 @@ function raffleInviteHtml_(entrant, entry, url, test) {
     '<p style="margin:0 0 14px;">Hi ' + e(refFirst) + ',</p>',
     '<p style="margin:0 0 14px;"><strong>' + e(entrant.name) + '</strong> mentioned you ',
     'at our Block Party and thought we might be able to help you ',
-    e(String(entry.referralRole || '').toLowerCase()) + ' in the next year.</p>',
+    e(raffleRoleVerb_(entry.referralRole)) + ' in the next year.</p>',
     '<p style="margin:0 0 18px;">Here is what they gave us. If it is right, confirm below. ',
     'If something is wrong, you can fix it on the same page.</p>',
     '<div style="background:#f4f6f6;border-radius:8px;padding:16px;margin:0 0 20px;font-size:15px;">',
@@ -796,7 +806,7 @@ function raffleInvitePlain_(entrant, entry, url) {
     entrant.name + ' referred you to The Stawasz Group.',
     '',
     'They mentioned you at our Block Party and thought we might be able to help you ' +
-      String(entry.referralRole || '').toLowerCase() + ' in the next year.',
+      raffleRoleVerb_(entry.referralRole) + ' in the next year.',
     '',
     'Here is what they gave us:',
     '  Name:       ' + entry.referralName,
@@ -1008,6 +1018,8 @@ function raffleConsentSubmit_(d) {
     raffleUpdateReferralInFub_(entry, { name: name, email: email, phone: phone,
                                         role: role, timeframe: timeframe }, found.test);
     raffleNotifyEntrantEntered_(entry, name, found.test, closed);
+    // A row only just became a real entry, so this is the moment the count moved.
+    if (!closed) raffleMaybeNotifyMilestone_(found.test);
 
     return jsonOut({ ok: true, confirmed: true, closed: closed,
       message: closed
@@ -1166,7 +1178,7 @@ function raffleWinnerEmailedProp_(test) {
 function raffleNotifyWinner() { return raffleSendWinnerEmail_(false).message; }
 function raffleNotifyWinnerTEST() { return raffleSendWinnerEmail_(true).message; }
 
-function raffleSendWinnerEmail_(test) {
+function raffleSendWinnerEmail_(test, pickIndex, reason) {
   var props = PropertiesService.getScriptProperties();
   var stored = raffleStoredWinner_(test);
   if (!stored) {
@@ -1181,7 +1193,24 @@ function raffleSendWinnerEmail_(test) {
                raffleWinnerEmailedProp_(test) + '" script property first.' };
   }
 
-  var w = stored.winner;
+  // Which of the three. 0 is the drawn winner and is the only one that sends
+  // without a reason; see the console header for why the others are awkward.
+  var picks = rafflePicks_(stored);
+  var idx = Math.max(0, Math.min(picks.length - 1, Number(pickIndex) || 0));
+  var w = picks[idx];
+  if (idx > 0) {
+    props.setProperty(rafflePickReasonProp_(test),
+      'Sent to pick ' + (idx + 1) + ' (' + (w && w.name) + ') instead of the drawn winner (' +
+      stored.winner.name + '). Reason given: ' + (reason || '(none)'));
+    Logger.log('RAFFLE: winner email sent to ALTERNATE pick ' + (idx + 1) + '. Reason: ' + reason);
+    raffleAppendDrawAudit_(test, [
+      raffleFmt_(raffleNow_()),
+      'ALTERNATE PICK',
+      'Prize awarded to pick ' + (idx + 1) + ': ' + (w && w.name) + ' (' + (w && w.email) + ')',
+      'Drawn winner was ' + stored.winner.name + ' (' + stored.winner.email + ')',
+      reason || '(none)'
+    ]);
+  }
   if (!w || !w.email) {
     return { ok: false, message: 'The stored winner has no email address on it. ' +
       'Something is wrong with the draw record — tell Claude before doing anything else.' };
@@ -1190,7 +1219,8 @@ function raffleSendWinnerEmail_(test) {
   MailApp.sendEmail({
     to: w.email,
     cc: RAFFLE_RESULT_EMAIL,
-    replyTo: 'info@tsg.homes',
+    // Ryan fields winner replies, so that is where a reply lands.
+    replyTo: RAFFLE_WINNER_REPLY_TO,
     name: 'The Stawasz Group',
     subject: (test ? QA_TEST_PREFIX : '🎉 ') + 'You won! ' + RAFFLE_PRIZE_SHORT +
              ' — TSG Block Party',
@@ -1201,9 +1231,11 @@ function raffleSendWinnerEmail_(test) {
   var when = raffleFmt_(raffleNow_());
   props.setProperty(raffleWinnerEmailedProp_(test), when);
   Logger.log('Raffle: winner email sent to ' + w.email + ' at ' + when + ' (test=' + !!test + ').');
-  return { ok: true, when: when,
+  return { ok: true, when: when, pick: idx,
     message: 'Sent to ' + w.name + ' <' + w.email + '> at ' + when + ' ET, copied to ' +
-             RAFFLE_RESULT_EMAIL + '.' };
+             RAFFLE_RESULT_EMAIL + '.' +
+             (idx > 0 ? ' NOTE: this was alternate pick ' + (idx + 1) +
+                        ', not the drawn winner. Your reason is recorded.' : '') };
 }
 
 // Same construction rules as the referral invite: inline styles only (Gmail strips
@@ -1240,9 +1272,9 @@ function raffleWinnerHtml_(w, result, test) {
 
     // Body
     '<div style="background:#fff;border-radius:0 0 10px 10px;padding:24px;">',
-    '<p style="margin:0 0 14px;">Your name came out of the hat at 6:15 PM and we announced it ',
-    'at the party at 6:30. Congratulations &mdash; and thank you for the referral, which is ',
-    'what put you in the drawing in the first place.</p>',
+    '<p style="margin:0 0 14px;">Your name was drawn at random at 6:15 PM and announced at ',
+    'the party at 6:30. Congratulations &mdash; and thank you for the referral, which is what ',
+    'put you in the drawing in the first place.</p>',
 
     '<div style="background:#f4f6f6;border-radius:8px;padding:16px;margin:0 0 20px;font-size:15px;">',
     '<div style="font-weight:700;margin-bottom:8px;">How to claim it</div>',
@@ -1280,7 +1312,7 @@ function raffleWinnerPlain_(w, result) {
     '',
     'Your prize: ' + RAFFLE_PRIZE_SHORT + '.',
     '',
-    'Your name came out of the hat at 6:15 PM and we announced it at the party at 6:30.',
+    'Your name was drawn at random at 6:15 PM and announced at the party at 6:30.',
     'Congratulations - and thank you for the referral, which is what put you in the',
     'drawing in the first place.',
     '',
@@ -1298,4 +1330,431 @@ function raffleWinnerPlain_(w, result) {
     'The Stawasz Group - Keller Williams Empower',
     '728 S Broad St, Philadelphia, PA 19146 - (215) 760-6291 - info@tsg.homes'
   ].join('\n');
+}
+
+// ============================================================================
+// THE DRAW CONSOLE — where Durand and Ryan actually work the result
+// ============================================================================
+// Durand asked for the 6:15 email to carry all three picks, links into FUB, a
+// way to choose, a preview, a confirmation and only then a send button, plus an
+// emergency redraw.
+//
+// THE INTERACTIVE HALF CANNOT LIVE IN AN EMAIL. Every mail client strips
+// JavaScript, so "select a pick, which enables a button, which shows a preview,
+// which you then confirm" is not something an inbox can do. The email therefore
+// carries the three picks, the FUB links and a single prominent link to THIS
+// page, which is where the choosing happens. Key-gated, same key as the other
+// admin endpoints.
+//
+// WHY PICKING IS DELIBERATELY AWKWARD. The Official Rules published on the entry
+// form say the winner is drawn at random. If the console let you pick freely
+// among three names, that would stop being true -- and for a promotion with
+// published rules that is an integrity problem, not a UX preference. So pick #1
+// sends with one confirmation, and picks #2 and #3 require a written reason that
+// is recorded on the draw tab and repeated in the email trail. The alternates are
+// a fallback for an ineligible or unreachable winner, not a menu.
+
+var RAFFLE_PICK_REASON_PROP = 'RAFFLE_PICK_REASON';
+var RAFFLE_TEST_PICK_REASON_PROP = 'RAFFLE_TEST_PICK_REASON';
+
+function rafflePickReasonProp_(test) {
+  return test ? RAFFLE_TEST_PICK_REASON_PROP : RAFFLE_PICK_REASON_PROP;
+}
+
+// Ryan fields the replies to a winner, so that is where a reply should land --
+// not info@, which five people share and nobody owns.
+// NOTE: Ryan has two addresses in play (ryan@thestawaszgroup.com on the calendar,
+// ryan@tsg.homes in this project's agent roster). The business domain is used
+// here to match info@tsg.homes; both are still copied on the email itself.
+var RAFFLE_WINNER_REPLY_TO = 'ryan@tsg.homes';
+
+function raffleFubLink_(personId) {
+  if (!personId) return '';
+  return 'https://' + FUB_SUBDOMAIN + '.followupboss.com/2/people/view/' + personId;
+}
+
+// All three picks as one list, so the email and the console never disagree about
+// what "pick 2" means.
+function rafflePicks_(result) {
+  var picks = [result.winner].concat(result.backups || []);
+  return picks.filter(function (p) { return !!p; });
+}
+
+// ---------- The 6:15 email, in HTML ----------
+function raffleResultHtml_(result, test, consoleUrl) {
+  var e = raffleEsc_;
+  var picks = rafflePicks_(result);
+  var rows = picks.map(function (p, i) {
+    var isWinner = i === 0;
+    var fub = raffleFubLink_(p.fubId);
+    var refFub = raffleFubLink_(p.referralFubId);
+    return [
+      '<div style="border:1px solid ' + (isWinner ? '#15464A' : '#dfe6e6') + ';',
+      'border-radius:8px;padding:16px;margin:0 0 12px;',
+      (isWinner ? 'background:#f2f7f7;' : 'background:#fff;') + '">',
+      '<div style="font-size:11px;letter-spacing:1.5px;color:' +
+        (isWinner ? '#15464A' : '#7d8f90') + ';font-weight:700;">',
+      isWinner ? 'PICK 1 &mdash; WINNER' : ('PICK ' + (i + 1) + ' &mdash; ALTERNATE'),
+      '</div>',
+      '<div style="font-size:19px;font-weight:700;margin:4px 0 2px;">' + e(p.name) + '</div>',
+      '<div style="font-size:14px;color:#55696a;">',
+      '<a href="tel:' + e(String(p.phone).replace(/[^0-9+]/g, '')) + '" ',
+      'style="color:#15464A;font-weight:600;text-decoration:none;">' + e(p.phone) + '</a>',
+      ' &middot; <a href="mailto:' + e(p.email) + '" style="color:#15464A;">' + e(p.email) + '</a>',
+      '</div>',
+      fub ? '<div style="margin-top:8px;"><a href="' + e(fub) + '" ' +
+            'style="color:#15464A;font-weight:600;font-size:14px;">Open in Follow Up Boss &rarr;</a></div>' : '',
+      '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e7eded;font-size:14px;">',
+      '<span style="color:#7d8f90;">Referred</span> <b>' + e(p.referralName || '(unknown)') + '</b>',
+      p.referralRole ? ' <span style="color:#7d8f90;">&mdash; looking to ' +
+        e(raffleRoleVerb_(p.referralRole)) + '</span>' : '',
+      p.referralTimeframe ? ' <span style="color:#7d8f90;">(' + e(p.referralTimeframe) + ')</span>' : '',
+      refFub ? '<br><a href="' + e(refFub) + '" style="color:#15464A;font-weight:600;">' +
+               'Open the referral in Follow Up Boss &rarr;</a>' : '',
+      '</div>',
+      '</div>'
+    ].join('');
+  }).join('');
+
+  return [
+    '<div style="margin:0;padding:0;background:#f4f6f6;">',
+    '<div style="max-width:600px;margin:0 auto;padding:24px 16px;',
+    'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;',
+    'color:#1d2b2c;line-height:1.5;">',
+
+    test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
+           'border-radius:6px;margin-bottom:14px;text-align:center;">TEST DRAW &mdash; the real ' +
+           '6:15 draw is untouched</div>' : '',
+
+    '<div style="background:#15464A;color:#fff;border-radius:10px 10px 0 0;padding:22px 24px;">',
+    '<div style="font-size:11px;letter-spacing:2.5px;opacity:.8;">TSG BLOCK PARTY 2026</div>',
+    '<div style="font-size:22px;font-weight:700;margin-top:6px;">Raffle result</div>',
+    '<div style="font-size:14px;opacity:.85;margin-top:6px;">Drawn ' + e(result.drawnAt) +
+      ' ET from ' + e(result.totalEligible) + ' eligible ' +
+      (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + '</div>',
+    '</div>',
+
+    '<div style="background:#fff;border-radius:0 0 10px 10px;padding:20px;">',
+    rows,
+
+    '<div style="background:#15464A;border-radius:8px;padding:18px;margin:18px 0 10px;text-align:center;">',
+    '<div style="color:#fff;font-size:15px;font-weight:600;margin-bottom:12px;">',
+    'Nothing has been sent to the winner yet.</div>',
+    '<a href="' + e(consoleUrl) + '" style="display:inline-block;background:#fff;color:#15464A;',
+    'text-decoration:none;font-weight:700;font-size:16px;padding:13px 26px;border-radius:8px;">',
+    'Open the draw console</a>',
+    '<div style="color:#cfe0e0;font-size:13px;margin-top:12px;line-height:1.45;">',
+    'Choose a pick, preview the email, confirm, then send. The console also has the ',
+    'emergency redraw. This link carries the admin key &mdash; do not forward it.</div>',
+    '</div>',
+
+    '<p style="font-size:13px;color:#7d8f90;margin:14px 0 0;">',
+    'The alternates are a fallback if pick 1 turns out ineligible or cannot be reached &mdash; ',
+    'not a choice between three names. The published rules say the winner is drawn at random, ',
+    'so the console asks for a written reason before it will send to pick 2 or 3, and records it.',
+    '</p>',
+    '<p style="font-size:13px;color:#7d8f90;margin:10px 0 0;">',
+    'This draw is recorded and is not repeatable &mdash; re-running it returns this same ',
+    'result by design.</p>',
+    '</div>',
+
+    '<div style="text-align:center;padding:16px 8px;font-size:12px;color:#7d8f90;">',
+    'The Stawasz Group &middot; Keller Williams Empower</div>',
+    '</div></div>'
+  ].join('');
+}
+
+// ---------- The console page ----------
+function raffleWinnerConsolePage_(test, key) {
+  var stored = raffleStoredWinner_(test);
+  if (!stored) {
+    return HtmlService.createHtmlOutput(
+      '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:560px">' +
+      '<h2>No draw yet</h2><p>Nothing has been drawn' + (test ? ' on the test tab' : '') +
+      ', so there is nobody to send to. The draw runs automatically at 6:15 PM.</p></div>');
+  }
+  var props = PropertiesService.getScriptProperties();
+  var sentAt = props.getProperty(raffleWinnerEmailedProp_(test));
+  var picks = rafflePicks_(stored);
+  var e = raffleEsc_;
+
+  var cards = picks.map(function (p, i) {
+    var fub = raffleFubLink_(p.fubId), refFub = raffleFubLink_(p.referralFubId);
+    return [
+      '<label class="pick" for="p' + i + '">',
+      '<input type="radio" name="pick" id="p' + i + '" value="' + i + '"' +
+        (i === 0 ? ' checked' : '') + '>',
+      '<div class="body">',
+      '<div class="rank">' + (i === 0 ? 'PICK 1 — WINNER' : 'PICK ' + (i + 1) + ' — ALTERNATE') + '</div>',
+      '<div class="nm">' + e(p.name) + '</div>',
+      '<div class="ct"><a href="tel:' + e(String(p.phone).replace(/[^0-9+]/g, '')) + '">' +
+        e(p.phone) + '</a> · <a href="mailto:' + e(p.email) + '">' + e(p.email) + '</a></div>',
+      fub ? '<div class="lk"><a href="' + e(fub) + '" target="_blank">Open in Follow Up Boss →</a></div>' : '',
+      '<div class="ref"><span>Referred</span> <b>' + e(p.referralName || '(unknown)') + '</b>' +
+        (p.referralRole ? ' — looking to ' + e(raffleRoleVerb_(p.referralRole)) : '') +
+        (p.referralTimeframe ? ' (' + e(p.referralTimeframe) + ')' : '') +
+        (refFub ? '<br><a href="' + e(refFub) + '" target="_blank">Open the referral in FUB →</a>' : '') +
+      '</div>',
+      '</div></label>'
+    ].join('');
+  }).join('');
+
+  var tmpl = HtmlService.createTemplateFromFile('RaffleConsole');
+  tmpl.cards      = cards;
+  tmpl.isTest     = test ? '1' : '';
+  tmpl.adminKey   = key || '';
+  tmpl.submitToken = getSubmitToken();
+  tmpl.drawnAt    = e(stored.drawnAt);
+  tmpl.totalEligible = String(stored.totalEligible);
+  tmpl.sentAt     = sentAt ? e(sentAt) : '';
+  tmpl.announceAt = RAFFLE_ANNOUNCE_AT;
+  return tmpl.evaluate()
+    .setTitle((test ? QA_TEST_PREFIX : '') + 'Draw console | TSG Block Party')
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+// Renders the winner email exactly as it would be sent, for the preview step.
+// Deliberately the SAME function that sends it -- a preview built by a second
+// code path is a preview of something that does not exist.
+function raffleWinnerPreview_(test, pickIndex) {
+  var stored = raffleStoredWinner_(test);
+  if (!stored) return { ok: false, error: 'Nothing has been drawn yet.' };
+  var picks = rafflePicks_(stored);
+  var i = Math.max(0, Math.min(picks.length - 1, Number(pickIndex) || 0));
+  return { ok: true, pick: i, name: picks[i].name, email: picks[i].email,
+           html: raffleWinnerHtml_(picks[i], stored, test) };
+}
+
+// ---------- The console's POST actions ----------
+function raffleConsoleAction_(d) {
+  var props = PropertiesService.getScriptProperties();
+  var key = props.getProperty(RAFFLE_ADMIN_PROP);
+  // Same gate as the GET. The page carries the key; a POST without it is refused
+  // with the same message as a wrong one, so it cannot be probed.
+  if (!key || String(d.key || '') !== key) {
+    throw makeValidationError('Not found.');
+  }
+  var test = String(d.test || '') === '1';
+  var action = String(d.consoleAction || '').toLowerCase();
+
+  if (action === 'preview') {
+    return jsonOut(raffleWinnerPreview_(test, d.pick));
+  }
+
+  if (action === 'send') {
+    var pick = Number(d.pick) || 0;
+    var reason = collapseSpaces(d.reason);
+    // Picks 2 and 3 need a written reason. See the header note: the published
+    // rules say "drawn at random", and going past pick 1 without recording why
+    // would quietly make that untrue.
+    if (pick > 0 && reason.length < 10) {
+      throw makeValidationError('Going past pick 1 needs a reason (at least a few words). ' +
+        'It is recorded on the draw tab, because the Official Rules say the winner is ' +
+        'drawn at random.');
+    }
+    var res = raffleSendWinnerEmail_(test, pick, reason);
+    if (!res.ok) throw makeValidationError(res.message);
+    return jsonOut({ ok: true, message: res.message });
+  }
+
+  if (action === 'redraw') {
+    var why = collapseSpaces(d.reason);
+    if (why.length < 10) {
+      throw makeValidationError('A redraw needs a reason (at least a few words). ' +
+        'It replaces a recorded result, so it has to leave a trail.');
+    }
+    var out = raffleRedraw_(test, why);
+    if (!out.ok) throw makeValidationError(out.message);
+    return jsonOut({ ok: true, message: out.message });
+  }
+
+  throw makeValidationError('Unknown console action.');
+}
+
+// Emergency redraw. Clears the recorded winner, notes WHY on the draw tab, and
+// draws again. Refuses once the winner has already been emailed -- at that point
+// a redraw is not a correction, it is taking a prize back off somebody, and that
+// is a conversation to have with a person rather than a button to press.
+function raffleRedraw_(test, reason) {
+  var props = PropertiesService.getScriptProperties();
+  var previous = raffleStoredWinner_(test);
+  if (!previous) return { ok: false, message: 'Nothing has been drawn yet, so there is nothing to redraw.' };
+  if (props.getProperty(raffleWinnerEmailedProp_(test))) {
+    return { ok: false, message: 'The winner has already been emailed (' +
+      props.getProperty(raffleWinnerEmailedProp_(test)) + '). A redraw now would be taking ' +
+      'the prize back off somebody who has been told they won — that needs a phone call, ' +
+      'not this button. Clear the "' + raffleWinnerEmailedProp_(test) +
+      '" script property by hand if you really mean to.' };
+  }
+
+  Logger.log('RAFFLE REDRAW (test=' + !!test + '). Previous winner: ' +
+    previous.winner.name + '. Reason: ' + reason);
+  // NOT via raffleWriteDrawTab_: that tab is a clear-and-rewrite snapshot of the
+  // CURRENT result, so writing the audit there would have it wiped by the very
+  // next draw -- which is the one moment it matters. The audit is its own
+  // append-only tab. (Caught by test_raffle.js, 2026-09-17.)
+  raffleAppendDrawAudit_(test, [
+    raffleFmt_(raffleNow_()),
+    'REDRAWN',
+    'Previous winner: ' + previous.winner.name + ' (' + previous.winner.email + ')',
+    'Drawn from ' + previous.totalEligible + ' eligible entries at ' + previous.drawnAt,
+    reason
+  ]);
+
+  props.deleteProperty(raffleWinnerProp_(test));
+  props.deleteProperty(rafflePickReasonProp_(test));
+  var fresh = raffleDrawWinner_(test, true);
+  if (!fresh.ok) {
+    return { ok: false, message: 'Redraw failed: ' + fresh.error };
+  }
+  return { ok: true, message: 'Redrawn. New winner: ' + fresh.result.winner.name +
+    '. The previous result and your reason are recorded on the draw tab.' };
+}
+
+// ============================================================================
+// ENTRY NOTIFICATIONS
+// ============================================================================
+// Durand, 2026-09-17: "until opening notify me via email every 10 valid entries,
+// then during the event notify me periodically throughout the day."
+//
+// Two regimes, because the useful signal changes at 3:00 PM on the day:
+//
+//   BEFORE THE PARTY  entries trickle in from the pre-event email over days, so a
+//                     time-based digest would mostly say "nothing happened". A
+//                     milestone every 10 VALID entries is the real news. "Valid"
+//                     means eligible -- a referral has consented. A pending row is
+//                     not an entry and is deliberately not counted, or the number
+//                     would flatter itself.
+//
+//   DURING THE PARTY  entries arrive in bursts and Durand is standing in a street,
+//                     so a milestone email every ten is noise. An hourly digest
+//                     with the current count is what is actually readable.
+//
+// Both go to Durand only (not Ryan): these are operational nudges, not results.
+var RAFFLE_MILESTONE_EVERY = 10;
+var RAFFLE_MILESTONE_PROP = 'RAFFLE_LAST_MILESTONE';
+var RAFFLE_TEST_MILESTONE_PROP = 'RAFFLE_TEST_LAST_MILESTONE';
+var RAFFLE_NOTIFY_EMAIL = 'durand@thestawaszgroup.com';
+
+function raffleMilestoneProp_(test) {
+  return test ? RAFFLE_TEST_MILESTONE_PROP : RAFFLE_MILESTONE_PROP;
+}
+
+// Called after a row becomes eligible (i.e. from the consent step). Best-effort
+// and completely silent on failure: a notification must never be the reason a
+// referral's consent fails to record.
+function raffleMaybeNotifyMilestone_(test) {
+  try {
+    // Once the party has started the hourly digest takes over; firing both would
+    // double-notify during exactly the window Durand is least able to read email.
+    if (Date.now() >= new Date(RAFFLE_EVENT_AT).getTime()) return;
+
+    var count = raffleReadEntries_(test).filter(function (r) {
+      return r.status === RAFFLE_STATUS_ELIGIBLE; }).length;
+    if (count < RAFFLE_MILESTONE_EVERY) return;
+
+    var milestone = Math.floor(count / RAFFLE_MILESTONE_EVERY) * RAFFLE_MILESTONE_EVERY;
+    var props = PropertiesService.getScriptProperties();
+    var last = Number(props.getProperty(raffleMilestoneProp_(test)) || 0);
+    if (milestone <= last) return;          // already reported this one
+    props.setProperty(raffleMilestoneProp_(test), String(milestone));
+
+    var daysLeft = Math.max(0, Math.ceil(
+      (new Date(RAFFLE_EVENT_AT).getTime() - Date.now()) / 86400000));
+    MailApp.sendEmail({
+      to: qaTestRecipients_([RAFFLE_NOTIFY_EMAIL]).join(','),
+      name: 'TSG Block Party Raffle',
+      subject: (test ? QA_TEST_PREFIX : '') + count + ' entries in the Block Party raffle',
+      body: [
+        count + ' valid entries so far.',
+        '',
+        'Valid means the referred person has confirmed their details and given consent.',
+        'Rows still waiting on a referral to reply are NOT counted here, and cannot be drawn.',
+        '',
+        'Still pending: ' + raffleReadEntries_(test).filter(function (r) {
+          return r.status === RAFFLE_STATUS_PENDING; }).length + ' waiting on a referral.',
+        '',
+        daysLeft > 0 ? daysLeft + ' day(s) until the party. Entries close at 6:15 PM Saturday.'
+                     : 'The party is today. Entries close at 6:15 PM.',
+        '',
+        'Next note at ' + (milestone + RAFFLE_MILESTONE_EVERY) + '.'
+      ].join('\n')
+    });
+    Logger.log('Raffle: milestone notification sent at ' + count + ' entries.');
+  } catch (err) {
+    Logger.log('raffleMaybeNotifyMilestone_ failed (non-fatal): ' + err);
+  }
+}
+
+// Hourly during the party, armed by setupRaffle. Silent outside the window, so a
+// trigger that survives the weekend does not mail anybody on Monday.
+function raffleEventDigest() {
+  try {
+    var now = Date.now();
+    var start = new Date(RAFFLE_EVENT_AT).getTime();
+    var end = new Date(RAFFLE_CLOSE_AT).getTime();
+    if (now < start || now > end + 3600000) return;
+
+    var rows = raffleReadEntries_(false);
+    var eligible = rows.filter(function (r) { return r.status === RAFFLE_STATUS_ELIGIBLE; });
+    var pending  = rows.filter(function (r) { return r.status === RAFFLE_STATUS_PENDING; });
+    var minsLeft = Math.max(0, Math.round((end - now) / 60000));
+
+    // Who came in since the last digest, so the email says what CHANGED rather
+    // than just restating a number.
+    var props = PropertiesService.getScriptProperties();
+    var lastCount = Number(props.getProperty('RAFFLE_LAST_DIGEST_COUNT') || 0);
+    props.setProperty('RAFFLE_LAST_DIGEST_COUNT', String(eligible.length));
+    var added = eligible.length - lastCount;
+
+    MailApp.sendEmail({
+      to: RAFFLE_NOTIFY_EMAIL,
+      name: 'TSG Block Party Raffle',
+      subject: eligible.length + ' entries · ' +
+        (minsLeft > 0 ? minsLeft + ' min to the draw' : 'entries closed'),
+      body: [
+        eligible.length + ' valid entries' + (added > 0 ? ' (+' + added + ' since the last note)' : ''),
+        pending.length + ' still waiting on a referral to confirm',
+        '',
+        minsLeft > 0
+          ? 'Entries close and the draw runs in ' + minsLeft + ' minutes (6:15 PM).'
+          : 'Entries are closed. The draw has run — check for the result email.',
+        '',
+        pending.length > 0 && minsLeft > 0 && minsLeft < 90
+          ? 'Worth a nudge: ' + pending.length + ' people have referred someone who has not ' +
+            'replied yet. Those entries will not count unless the referral confirms before 6:15.'
+          : '',
+        '',
+        'Most recent valid entries:',
+        eligible.slice(-5).map(function (r) {
+          return '  ' + r.name + ' — referred ' + (r.referralName || '(unknown)');
+        }).join('\n') || '  (none yet)'
+      ].join('\n')
+    });
+    Logger.log('Raffle: event digest sent (' + eligible.length + ' eligible).');
+  } catch (err) {
+    Logger.log('raffleEventDigest failed (non-fatal): ' + err);
+  }
+}
+
+
+// Append-only record of anything that overrode a draw: a redraw, or a winner
+// email sent to an alternate. Never cleared, never rewritten. If the fairness of
+// this drawing is ever questioned, this tab is the answer -- which is why it does
+// not share a sheet with anything that gets overwritten.
+function raffleAppendDrawAudit_(test, cells) {
+  try {
+    var ss = SpreadsheetApp.openById(
+      PropertiesService.getScriptProperties().getProperty(RAFFLE_SHEET_PROP));
+    var name = test ? 'Draw Audit (TEST)' : 'Draw Audit';
+    var sh = ss.getSheetByName(name);
+    if (!sh) {
+      sh = ss.insertSheet(name);
+      sh.appendRow(['Timestamp (ET)', 'Action', 'Detail', 'Context', 'Reason given']);
+      sh.setFrozenRows(1);
+    }
+    sh.appendRow(cells.map(raffleSafeCell_));
+  } catch (err) {
+    Logger.log('raffleAppendDrawAudit_ failed: ' + err);
+  }
 }

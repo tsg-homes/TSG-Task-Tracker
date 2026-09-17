@@ -230,7 +230,13 @@ const { makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J,
   eq('addressed to the winner', m.to, 'dana@mail-test.co');
   check('Durand and Ryan are copied', String(m.cc).indexOf('durand@thestawaszgroup.com') !== -1 &&
     String(m.cc).indexOf('ryan@') !== -1, String(m.cc));
-  check('replies go to info@', String(m.replyTo) === 'info@tsg.homes');
+  // Ryan fields winner replies, per Durand 2026-09-17 — not info@, which five
+  // people share and nobody owns.
+  check('replies go to Ryan', String(m.replyTo) === 'ryan@tsg.homes', String(m.replyTo));
+  // Durand: "there is no hat." Word-boundary matched, or this passes on "that".
+  check('the email does not claim there was a hat',
+    !/\bhats?\b/i.test(m.htmlBody + m.body));
+  check('it says the draw was at random', /drawn at random/i.test(m.htmlBody));
   check('the subject says they won', /You won/.test(m.subject));
   check('it is an HTML email', !!m.htmlBody && m.htmlBody.indexOf('<div') === 0);
   check('with a plain-text alternative for text-only clients', !!m.body && m.body.length > 100);
@@ -260,6 +266,184 @@ const { makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J,
     !!m && m.htmlBody.indexOf(payload) === -1, 'raw payload in the winner email');
   check('and emits no injected tag',
     !!m && !/<(script|img|svg|iframe|object|embed)\b/i.test(m.htmlBody));
+}
+
+// ---- The draw console --------------------------------------------------------
+{
+  const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'secret', RAFFLE_SHEET_ID: 'sheet1',
+                                   FUB_API_KEY: 'key' } });
+  ['a', 'b', 'c', 'd'].forEach((n, i) => enterFull(s, entry({
+    fullName: 'Person ' + n, email: n + '@mail-test.co', phone: '(215) 555-820' + i
+  }), DURING, {
+    referral: { referralName: 'Ref ' + n.toUpperCase() + ' Person',
+                referralEmail: 'cref' + n + '@mail-test.co',
+                referralPhone: '(215) 555-93' + (10 + i) }
+  }));
+  const drawn = at(AFTER, () => s.raffleDrawWinner_(false));
+  check('draw ran (setup)', drawn.ok === true, JSON.stringify(drawn));
+
+  // The draw record has to carry enough to build the FUB links and show the referral.
+  check('the draw record carries the referral for each pick',
+    !!drawn.result.winner.referralName, JSON.stringify(drawn.result.winner));
+  eq('and two alternates', drawn.result.backups.length, 2);
+
+  // The 6:15 email is HTML now, with all three picks and a console link.
+  const ops = drawMail(s).pop();
+  check('the result email is HTML', !!ops.htmlBody);
+  check('it keeps a plain-text alternative', !!ops.body && ops.body.length > 100);
+  check('it shows all three picks',
+    /PICK 1/.test(ops.htmlBody) && /PICK 2/.test(ops.htmlBody) && /PICK 3/.test(ops.htmlBody));
+  check('it links into FUB', /followupboss\.com\/2\/people\/view\//.test(ops.htmlBody));
+  check('it names who each pick referred', /Referred/.test(ops.htmlBody));
+  // "looking to seller" was the first render's copy bug. The role is a noun in
+  // FUB and a verb in prose.
+  check('the role reads as a verb, not a noun',
+    /looking to (buy|sell)\b/.test(ops.htmlBody) && !/looking to (buyer|seller)/.test(ops.htmlBody));
+  check('it links to the draw console', /action=console/.test(ops.htmlBody));
+  check('it says nothing has been sent to the winner yet',
+    /Nothing has been sent to the winner yet/.test(ops.htmlBody));
+
+  // The console page itself is key-gated exactly like the other admin endpoints.
+  const noKey = String(at(AFTER, () => s.raffleServeForm_({ parameter: { action: 'console' } }, 'u')));
+  const badKey = String(at(AFTER, () => s.raffleServeForm_({ parameter: { action: 'console', key: 'guess' } }, 'u')));
+  check('console refuses with no key', /Not found/.test(noKey));
+  check('console refuses with a wrong key', /Not found/.test(badKey));
+  check('and the two refusals are identical', noKey === badKey);
+
+  const page = String(at(AFTER, () => s.raffleServeForm_(
+    { parameter: { action: 'console', key: 'secret' } }, 'u')));
+  check('the console renders all three picks',
+    /PICK 1/.test(page) && /PICK 2/.test(page) && /PICK 3/.test(page), page.slice(0, 200));
+  check('with radio inputs to choose between them', /name="pick"/.test(page));
+  check('and FUB links for the referral too', /Open the referral in FUB/.test(page));
+
+  // A console POST is gated on the same key.
+  const forged = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'send', pick: 0, key: 'guess' })));
+  check('a console POST with a wrong key is refused', forged.ok === false);
+  check('and gives nothing away', /Not found/.test(String(forged.error)));
+
+  // Preview must come from the same function that sends.
+  const prev = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'preview', pick: 0, key: 'secret' })));
+  check('preview returns the real winner email HTML', prev.ok === true && /\$300/.test(prev.html));
+  eq('preview names the pick it is for', prev.pick, 0);
+
+  // Picks 2 and 3 need a written reason. This is the draw-integrity gate.
+  const noReason = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'send', pick: 1, key: 'secret', reason: 'nope' })));
+  check('sending to an alternate without a real reason is refused', noReason.ok === false);
+  check('and the refusal explains why', /drawn at random/.test(String(noReason.error)));
+  eq('nothing was emailed', s.__sent.filter(m => /You won/i.test(m.subject)).length, 0);
+
+  const withReason = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'send', pick: 1, key: 'secret',
+    reason: 'pick 1 is a TSG agent and is not eligible' })));
+  check('with a reason it sends', withReason.ok === true, JSON.stringify(withReason));
+  check('and the confirmation flags that it was not the drawn winner',
+    /not the drawn winner/.test(String(withReason.message)));
+  const won = s.__sent.filter(m => /You won/i.test(m.subject));
+  eq('exactly one winner email', won.length, 1);
+  check('addressed to the alternate, not the drawn winner',
+    won[0].to === drawn.result.backups[0].email, won[0].to);
+  check('the reason is recorded', /TSG agent/.test(String(s.__props.RAFFLE_PICK_REASON)));
+}
+
+// ---- Emergency redraw ---------------------------------------------------------
+{
+  const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'secret', RAFFLE_SHEET_ID: 'sheet1',
+                                   FUB_API_KEY: 'key' } });
+  ['a', 'b', 'c'].forEach((n, i) => enterFull(s, entry({
+    fullName: 'Redraw ' + n, email: 'rd' + n + '@mail-test.co', phone: '(215) 555-830' + i
+  }), DURING, {
+    referral: { referralName: 'RdRef ' + n, referralEmail: 'rdref' + n + '@mail-test.co',
+                referralPhone: '(215) 555-94' + (10 + i) }
+  }));
+  at(AFTER, () => s.raffleDrawWinner_(false));
+
+  const thin = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'redraw', key: 'secret', reason: 'oops' })));
+  check('a redraw without a real reason is refused', thin.ok === false);
+
+  const before = JSON.parse(s.__props.RAFFLE_WINNER_JSON).winner.name;
+  const re = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'redraw', key: 'secret',
+    reason: 'drawn winner turned out to be a TSG agent' })));
+  check('a redraw with a reason works', re.ok === true, JSON.stringify(re));
+  check('a fresh winner is recorded', !!s.__props.RAFFLE_WINNER_JSON);
+  check('the previous result is written to the draw tab as an audit row',
+    JSON.stringify(s.__tabs).indexOf('REDRAWN') !== -1);
+  check('and the audit row carries the reason given',
+    JSON.stringify(s.__tabs).indexOf('turned out to be a TSG agent') !== -1);
+
+  // Once the winner has been told, a redraw is a phone call, not a button.
+  at(AFTER, () => s.raffleSendWinnerEmail_(false));
+  const late = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'redraw', key: 'secret',
+    reason: 'changed my mind about the whole thing' })));
+  check('a redraw AFTER the winner was emailed is refused', late.ok === false);
+  check('and says why in human terms', /phone call/.test(String(late.error)));
+}
+
+// ---- Entry notifications -------------------------------------------------------
+{
+  // Before the party: one email every 10 VALID entries. Pending rows must not count.
+  const s = makeSandbox();
+  const note = () => s.__sent.filter(m => /entries in the Block Party raffle/.test(m.subject));
+  for (let i = 0; i < 9; i++) {
+    enterFull(s, entry({ fullName: 'Early ' + i, email: 'e' + i + '@mail-test.co',
+                         phone: '(215) 555-84' + (10 + i) }), BEFORE, {
+      referral: { referralName: 'ERef ' + i, referralEmail: 'eref' + i + '@mail-test.co',
+                  referralPhone: '(215) 555-95' + (10 + i) } });
+  }
+  eq('no milestone email at 9 entries', note().length, 0);
+
+  enterFull(s, entry({ fullName: 'Early 9', email: 'e9@mail-test.co',
+                       phone: '(215) 555-8499' }), BEFORE, {
+    referral: { referralName: 'ERef 9', referralEmail: 'eref9@mail-test.co',
+                referralPhone: '(215) 555-9599' } });
+  eq('one milestone email at 10', note().length, 1);
+  check('it reports the count', /10 entries/.test(note()[0].subject));
+  check('it explains what "valid" means', /confirmed their details/.test(note()[0].body));
+  check('it says when the next one comes', /Next note at 20/.test(note()[0].body));
+
+  // A pending entry (referral has not consented) must not move the counter.
+  enterFull(s, entry({ fullName: 'Pending Person', email: 'pend@mail-test.co',
+                       phone: '(215) 555-8600' }), BEFORE, {
+    skipConsent: true,
+    referral: { referralName: 'PRef Person', referralEmail: 'pref@mail-test.co',
+                referralPhone: '(215) 555-9600' } });
+  eq('a pending referral does not trigger a milestone', note().length, 1);
+
+  // And it does not re-fire on the same milestone.
+  eq('still only one milestone email', note().length, 1);
+}
+
+{
+  // During the party the hourly digest takes over and the milestone email goes quiet,
+  // so Durand is not double-notified while standing in a street.
+  const s = makeSandbox();
+  for (let i = 0; i < 10; i++) {
+    enterFull(s, entry({ fullName: 'Party ' + i, email: 'p' + i + '@mail-test.co',
+                         phone: '(267) 555-86' + (10 + i) }), DURING, {
+      referral: { referralName: 'PRef ' + i, referralEmail: 'pref' + i + '@mail-test.co',
+                  referralPhone: '(267) 555-96' + (10 + i) } });
+  }
+  eq('no milestone emails during the party', 
+    s.__sent.filter(m => /entries in the Block Party raffle/.test(m.subject)).length, 0);
+
+  at(DURING, () => s.raffleEventDigest());
+  const digest = s.__sent.filter(m => /min to the draw|entries closed/.test(m.subject));
+  eq('the hourly digest sends during the party', digest.length, 1);
+  check('it reports the valid count', /10 valid entries/.test(digest[0].body), digest[0].body.slice(0, 120));
+  check('it counts down to the draw', /minutes \(6:15 PM\)/.test(digest[0].body));
+  check('it goes to Durand only', digest[0].to === 'durand@thestawaszgroup.com');
+
+  // Outside the window it must stay silent, so a surviving trigger does not mail
+  // anybody on Monday.
+  const s2 = makeSandbox();
+  at(BEFORE, () => s2.raffleEventDigest());
+  eq('the digest is silent before the party', s2.__sent.length, 0);
 }
 
 // ---- Admin endpoints are key-gated -----------------------------------------

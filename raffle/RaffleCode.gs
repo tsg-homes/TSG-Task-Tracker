@@ -475,6 +475,18 @@ function setupRaffle() {
     out.push('WARNING: RAFFLE_DRAW_AT is in the past; no trigger armed. Draw manually.');
   }
 
+  // Hourly digest during the party (raffleEventDigest no-ops outside the window,
+  // so an hourly trigger is safe to leave armed and cheap to reason about -- an
+  // every-hour trigger that decides for itself beats six one-shot triggers that
+  // have to be individually cleaned up).
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'raffleEventDigest') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('raffleEventDigest').timeBased().everyHours(1).create();
+  out.push('Hourly entry digest armed (silent outside 3:00-6:15 PM on the day).');
+  out.push('Before the party you get an email every ' + RAFFLE_MILESTONE_EVERY +
+           ' valid entries instead.');
+
   var msg = out.join('\n');
   Logger.log(msg);
   return msg;
@@ -535,13 +547,20 @@ function raffleAdminLinks() {
              'property, so if they have test mode working it is already set.');
   }
 
-  out.push('EMAIL THE WINNER — press this AFTER you announce at ' + RAFFLE_ANNOUNCE_AT + ':',
+  out.push('DRAW CONSOLE — this is the one to use at the party:',
+           '  ' + base + '?form=raffle&action=console&key=' + key,
+           '',
+           '  All three picks with FUB links (theirs and their referral\'s), pick one,',
+           '  preview the exact email, confirm, send. Emergency redraw is on the same page.',
+           '  The 6:15 result email links straight here. Test version: &test=1.',
+           '',
+           'EMAIL THE WINNER DIRECTLY (skips the console; sends to pick 1):',
            '  ' + base + '?form=raffle&action=notifywinner&key=' + key,
            '',
            '  Deliberately not automatic. The draw runs at 6:15 and you announce at ' +
            RAFFLE_ANNOUNCE_AT + ', so an',
            '  automatic email would reach the winner before you say their name. It sends once;',
-           '  you and Ryan are copied. The test version is &test=1.',
+           '  you and Ryan are copied and replies go to ' + RAFFLE_WINNER_REPLY_TO + '.',
            '');
 
   if (sheetId) {
@@ -567,7 +586,12 @@ function raffleServeForm_(e, baseUrl) {
   // and it only ever unlocks that one person's own record.
   if (action === RAFFLE_CONSENT_ACTION) return raffleConsentPage_(e);
 
-  if (action === 'status' || action === 'draw') {
+  // Every admin action goes through ONE gate. Adding a branch inside this block
+  // without adding its name here is a silent dead end: the action falls through
+  // and serves the public entry form instead, which is exactly what happened to
+  // 'console' and 'notifywinner' until test_raffle.js caught it (2026-09-17).
+  var RAFFLE_ADMIN_ACTIONS = ['status', 'draw', 'console', 'notifywinner'];
+  if (RAFFLE_ADMIN_ACTIONS.indexOf(action) !== -1) {
     var key = PropertiesService.getScriptProperties().getProperty(RAFFLE_ADMIN_PROP);
     // Constant-ish comparison and an identical response for a wrong key as for
     // no key, so this can't be probed.
@@ -578,6 +602,9 @@ function raffleServeForm_(e, baseUrl) {
     // token, so a rehearsal draw can be fired straight from a bookmark.
     var adminTest = String(e.parameter.test || '') === '1';
     if (action === 'status') return raffleStatusPage_(adminTest);
+    if (action === 'console') {
+      return raffleWinnerConsolePage_(adminTest, e.parameter.key);
+    }
     if (action === 'notifywinner') {
       var sent = raffleSendWinnerEmail_(adminTest);
       return HtmlService.createHtmlOutput(
@@ -696,6 +723,10 @@ function raffleHandleSubmission_(d) {
     // The consent POST comes from the referred person, who has no session and no
     // test-mode token: which tab their row lives in is what decides test-ness.
     if (step === 'consent')  return raffleConsentSubmit_(d);
+    // The draw console's own POSTs. Key-gated inside raffleConsoleAction_ -- this
+    // is an admin surface reached through the same public doPost as everything
+    // else, so it carries its own gate rather than trusting the route.
+    if (step === 'console')  return raffleConsoleAction_(d);
     return raffleRequestCode_(d, test);
   } catch (err) {
     if (err && err.isValidation) return jsonOut({ ok: false, error: err.message });
@@ -956,6 +987,7 @@ function raffleReadEntries_(test) {
       emailKey: raffleEmailKey_(unmark(r[2])),
       phoneKey: rafflePhoneKey_(unmark(r[3])),
       fubStatus: String(r[7] || ''),
+      fubId: unmark(r[8]),
       // A row written before the referral change has an empty Entry Status.
       // Those rows were real entries under the old rules, so they read as
       // eligible rather than being silently dropped from the draw.
@@ -1332,7 +1364,19 @@ function raffleDrawWinner_(test, force) {
       var tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
     }
 
-    var slim = function (e) { return { name: e.name, email: e.email, phone: e.phone, row: e.row }; };
+    // Carries the FUB ids and the referral, not just a name: the ops email links
+    // straight through to both records, and the draw console shows who each pick
+    // actually referred. Reading it back off the sheet later would be too late --
+    // the stored draw record IS the audit trail.
+    var slim = function (e) {
+      return {
+        name: e.name, email: e.email, phone: e.phone, row: e.row,
+        fubId: e.fubId || '',
+        referralName: e.referralName || '', referralEmail: e.referralEmail || '',
+        referralPhone: e.referralPhone || '', referralRole: e.referralRole || '',
+        referralTimeframe: e.referralTimeframe || '', referralFubId: e.referralFubId || ''
+      };
+    };
     var result = {
       test: !!test,
       drawnAt: raffleFmt_(raffleNow_()),
@@ -1425,12 +1469,27 @@ function raffleEmailResult_(result, test) {
   lines.push('This draw is recorded and is not repeatable — re-running the draw');
   lines.push('returns this same winner by design.');
 
+  // HTML as of 2026-09-17, per Durand: all three picks, links into FUB for each
+  // pick AND for the person they referred, and a link to the draw console, which
+  // is where choosing/previewing/sending actually happens. The plain-text version
+  // above is kept and sent alongside -- it is what a watch or a text-only client
+  // shows, and it is the one legible on bad signal in a crowd.
+  //
   // In test mode this collapses to QA_TEST_NOTIFY_EMAIL only -- Ryan does not
   // get paged about a rehearsal.
+  var consoleUrl = '';
+  try {
+    var adminKey = PropertiesService.getScriptProperties().getProperty(RAFFLE_ADMIN_PROP);
+    consoleUrl = ScriptApp.getService().getUrl() + '?form=raffle&action=console&key=' +
+      encodeURIComponent(adminKey || '') + (test ? '&test=1' : '');
+  } catch (urlErr) { Logger.log('raffleEmailResult_: could not build the console URL: ' + urlErr); }
+
   MailApp.sendEmail({
     to: qaTestRecipients_(RAFFLE_RESULT_EMAIL.split(',')).join(','),
+    name: 'TSG Block Party Raffle',
     subject: (test ? QA_TEST_PREFIX : '🏈 ') + 'Block Party Raffle Winner: ' + w.name +
              ' (' + result.totalEligible + ' entries)',
+    htmlBody: raffleResultHtml_(result, test, consoleUrl),
     body: lines.join('\n')
   });
 }
