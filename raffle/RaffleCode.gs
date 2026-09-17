@@ -2064,6 +2064,73 @@ function raffleInspectFubEmailLogging() {
   return out.join('\n');
 }
 
+// Durand, 2026-09-17: "is it even possible to have the emails sent through FUB
+// so they come from the assigned agent?" The docs site is unreachable from the
+// build environment, so this asks the live API. Run it from the editor; it
+// creates one throwaway QA contact, POSTs an email record against it addressed
+// to a durand+raffleqa inbox, reports what FUB answered, and deletes the
+// contact. The deciding evidence is then in that inbox: a 200/201 AND an email
+// that arrived means FUB sends; a 200/201 and nothing in the inbox means the
+// endpoint only LOGS. Everything else it prints is context (users = agents,
+// action plans = the automation that does send from an agent's mailbox).
+function raffleProbeFubEmailSend() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+  function keysOf(r) {
+    if (!r.ok || !r.body) return '';
+    var arrKey = Object.keys(r.body).filter(function (k) {
+      return Object.prototype.toString.call(r.body[k]) === '[object Array]'; })[0];
+    var arr = arrKey ? r.body[arrKey] : [];
+    return arr.length ? '  record keys: ' + Object.keys(arr[0]).join(', ')
+                      : '  (no records to read keys from)';
+  }
+  var base = 'https://api.followupboss.com/v1/';
+  ['emails', 'emailTemplates', 'actionPlans', 'users'].forEach(function (path) {
+    var r = raffleFubCall_(base + path + '?limit=2', 'get', null, apiKey);
+    say('GET /v1/' + path + ' -> ' + r.code + (keysOf(r) ? '\n' + keysOf(r) : ''));
+    if (path === 'users' && r.ok && r.body && r.body.users) {
+      r.body.users.forEach(function (u) {
+        say('  user ' + u.id + ': ' + u.name + ' <' + u.email + '> role=' + u.role);
+      });
+    }
+  });
+
+  var stamp = String(Date.now()).slice(-6);
+  var qaEmail = RAFFLE_QA_ADDRESS_BASE + stamp + '-sendprobe' + RAFFLE_QA_DOMAIN;
+  var person = raffleFubCall_(base + 'people', 'post', {
+    firstName: QA_TEST_PREFIX + 'SendProbe', lastName: 'Blockparty',
+    emails: [{ value: qaEmail, type: 'work' }],
+    tags: [QA_TEST_TAG], source: RAFFLE_SOURCE
+  }, apiKey);
+  var personId = person.ok && person.body ? person.body.id : null;
+  say('');
+  say('Throwaway QA contact: ' + (personId ? 'id ' + personId : 'FAILED ' + person.code + ' ' +
+      String(person.text).slice(0, 200)));
+  if (!personId) return out.join('\n');
+
+  // The record FUB's own docs describe for POST /v1/emails is an email LOG:
+  // subject, body, to/from, isIncoming. If it also sends, this arrives.
+  var send = raffleFubCall_(base + 'emails', 'post', {
+    personId: personId,
+    subject: QA_TEST_PREFIX + 'FUB send probe ' + stamp,
+    body: 'If you are reading this in ' + qaEmail + ', FUB SENT it (POST /v1/emails ' +
+          'delivers mail). If it only appears on the FUB timeline, the endpoint logs.',
+    to: [{ email: qaEmail, name: 'QA SendProbe' }],
+    isIncoming: false
+  }, apiKey);
+  say('POST /v1/emails -> ' + send.code + '  ' + String(send.text).slice(0, 400));
+  say('');
+  say('VERDICT NEEDS THE INBOX: check ' + qaEmail);
+  say('  arrived there        -> FUB sends through the API; the raffle could route mail via FUB.');
+  say('  only on the FUB timeline (' + (send.ok ? 'it is logged, 2xx' : 'not even logged, ' +
+      send.code) + ') -> the API logs; sending from an agent needs an Action Plan or the FUB UI.');
+
+  var gone = raffleDeleteFubContactsById_([personId]);
+  say('Cleanup: ' + gone.summary);
+  return out.join('\n');
+}
+
 function raffleInspectFubRelationships(qaPersonId, qaRelatedId) {
   var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
   var out = [];
