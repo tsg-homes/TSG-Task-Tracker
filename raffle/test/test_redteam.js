@@ -564,12 +564,19 @@ const stage = (s, who, ref, when) => {
   check('the referred person got exactly one email', toReferral.length === 1,
     'got ' + toReferral.length);
 
-  // Durand, 2026-09-17: "put both the entrant and referral on the email."
+  // Durand, 2026-09-17: "put both the entrant and referral on the email." They
+  // still both get one -- as TWO messages, not one cc'd message, because a cc
+  // would hand the entrant the consent token. The entrant's copy is asserted in
+  // its own block below ("THE CONSENT LINK IS A BEARER CREDENTIAL").
   const invite = toReferral[0];
-  check('the entrant is copied on the invite',
-    String(invite.cc || '').indexOf('dana@mail-test.co') !== -1, String(invite.cc));
-  check('info@ is copied on the invite',
-    String(invite.cc || '').indexOf('info@tsg.homes') !== -1, String(invite.cc));
+  check('the invite copies nobody', !invite.cc, JSON.stringify(invite.cc));
+  const receipt = s.__sent.filter(m => String(m.to) === 'dana@mail-test.co' &&
+    /here is exactly what went out/.test(String(m.subject)));
+  check('the entrant gets their own copy instead', receipt.length === 1,
+    'got ' + receipt.length);
+  check('and info@ is copied on that one',
+    !!receipt.length && String(receipt[0].cc || '').indexOf('info@tsg.homes') !== -1,
+    receipt.length && String(receipt[0].cc));
   // Replies must reach BOTH the referrer and the shared inbox (Durand,
   // 2026-09-17): the referrer is who the recipient knows, info@ is what is always
   // watched, and either alone drops half the cases.
@@ -680,6 +687,186 @@ const stage = (s, who, ref, when) => {
                            phone: '(267) 555-8330' }, {}, DURING);
   check('a person who declined cannot be referred again',
     !(again.staged && again.staged.staged), JSON.stringify(again.staged));
+}
+
+// ---------------------------------------------------------------------------
+section('T12  EVERY email, not just the pages');
+// ---------------------------------------------------------------------------
+// The escaping tests grew up around the PAGES, because that is where the first
+// stored-XSS finding was. The emails were covered by exactly two assertions: the
+// invite body, and CR/LF in the draw subject. Meanwhile the system now sends
+// nine different emails, six of which interpolate a name somebody typed into a
+// public text box, and every one of them lands in a third party's inbox.
+//
+// So this does not test emails one at a time. It drives ONE hostile journey that
+// provokes every email the system can send, then applies the same invariants to
+// every captured message -- which means an email added later is covered the day
+// it is added, without anybody remembering to come back here.
+{
+  const XSS = '<img src=x onerror=alert(1)>';
+  const CRLF = '\r\nBcc: attacker@evil.example\r\n';
+  const hostile = n => XSS + ' Hostile' + CRLF + n + ' Person';
+
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key',
+                                   RAFFLE_ADMIN_KEY: 'secret' } });
+
+  // 1. code email, 2. invite, 3. entrant "5 more entries", 4. chain invite
+  const v = verifySession(s, entry({ fullName: hostile('Aaa'),
+    email: 'hostile-a@mail-test.co', phone: '(215) 555-8901' }), DURING);
+  check('a hostile name is accepted as text (setup)', !!(v && v.verified), JSON.stringify(v));
+  const staged = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: v.vid },
+    referral({ referralName: hostile('Bbb'), referralEmail: 'hostile-b@mail-test.co',
+               referralPhone: '(215) 555-9901' })))));
+  check('a hostile referral is staged (setup)', !!staged.staged, JSON.stringify(staged));
+  at(DURING, () => s.raffleHandleSubmission_({ step: 'invite', vid: v.vid, token: staged.token }));
+  at(DURING, () => s.raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
+    referralName: hostile('Ccc'), referralPhone: '(215) 555-9902',
+    referralRole: 'Buyer', referralTimeframe: '7-12 Months' }));
+
+  // 5. last-chance reminder, 6. referrer nudge -- needs somebody left waiting
+  const v2 = verifySession(s, entry({ fullName: hostile('Ddd'),
+    email: 'hostile-d@mail-test.co', phone: '(267) 555-8902' }), DURING);
+  const st2 = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: v2.vid },
+    referral({ referralName: hostile('Eee'), referralEmail: 'hostile-e@mail-test.co',
+               referralPhone: '(215) 555-9903' })))));
+  at(DURING, () => s.raffleHandleSubmission_({ step: 'invite', vid: v2.vid, token: st2.token }));
+  at(new Date('2026-09-19T17:00:00-04:00').getTime(),
+     () => s.raffleSendConsentReminders_(false));
+
+  // 7. milestone/digest, 8. draw result, 9. winner
+  at(new Date('2026-09-19T16:30:00-04:00').getTime(), () => s.raffleEventDigest());
+  at(AFTER_CLOSE, () => s.raffleDrawWinner_(false, true));
+  at(AFTER_CLOSE, () => s.raffleSendWinnerEmail_(false));
+
+  const mails = s.__sent;
+  check('the journey provoked a real spread of emails (guards a vacuous sweep)',
+    mails.length >= 7, 'only ' + mails.length + ' email(s) sent');
+
+  // ---- the invariants, applied to every single message --------------------
+  const HEADERS_OF = m => ['to', 'cc', 'bcc', 'replyTo', 'subject']
+    .map(k => String(m[k] === undefined ? '' : m[k])).join(' | ');
+
+  // WHAT COUNTS AS UNESCAPED, precisely. The first version of this test matched
+  // /onerror=alert\(1\)/ and "failed" on three emails whose bodies were in fact
+  // perfectly escaped: `&lt;img src=x onerror=alert(1)&gt;` contains that
+  // substring and renders as inert text. The executable thing is the unescaped
+  // `<`, so that is what to look for -- and the escaped form is counted
+  // separately, as proof the value arrived and was handled rather than dropped.
+  const RAW_TAG = '<img src=x';
+  const ESCAPED_TAG = '&lt;img src=x';
+  // Recipients are their own category. A subject or a body may legitimately
+  // contain the literal text somebody typed into a name box, however ugly; a
+  // RECIPIENT field carrying a line break or an address nobody asked for is a
+  // header injection, and that is the finding worth having.
+  const RECIPIENTS_OF = m => ['to', 'cc', 'bcc', 'replyTo']
+    .map(k => String(m[k] === undefined ? '' : m[k])).join(' | ');
+
+  let rawHtml = [], crlfHdr = [], leaked = [], escaped = 0;
+  mails.forEach(function (m, i) {
+    const label = '#' + i + ' to ' + String(m.to).slice(0, 40);
+    if (String(m.htmlBody || '').indexOf(RAW_TAG) !== -1) rawHtml.push(label);
+    if (/[\r\n]/.test(HEADERS_OF(m))) crlfHdr.push(label);
+    if (RECIPIENTS_OF(m).indexOf('attacker@evil.example') !== -1) leaked.push(label);
+    if (String(m.htmlBody || '').indexOf(ESCAPED_TAG) !== -1) escaped++;
+  });
+
+  check('no email body carries an unescaped tag', rawHtml.length === 0,
+    rawHtml.join(', '));
+  check('no email header or subject carries a line break', crlfHdr.length === 0,
+    crlfHdr.join(', '));
+  check('no recipient field names the smuggled address', leaked.length === 0,
+    leaked.join(', '));
+  // THE NON-VACUITY GUARD. Every check above passes trivially if the name never
+  // reached any email at all, which is exactly how an escaping test rots. At
+  // least some of these emails must show the payload present-and-escaped.
+  check('and the payload IS present, escaped, in the emails that carry a name',
+    escaped >= 3, 'only ' + escaped + ' email(s) showed an escaped payload');
+}
+
+{
+  // THE CONSENT LINK IS A BEARER CREDENTIAL, so it must reach exactly one inbox.
+  //
+  // The invite used to be one message addressed TO the referral and CC the
+  // entrant, which handed the token to the only person with a reason to abuse
+  // it: confirm on your friend's behalf and collect the bonus without them ever
+  // opening anything. Under the old gate rules that was worth one entry; once a
+  // confirmed referral became worth RAFFLE_BONUS_TICKETS_PER_REFERRAL it was
+  // worth six times as much. And the FUB record it leaves reads "CONSENT GIVEN
+  // BY THIS PERSON" for somebody who never saw the page, which is the single
+  // claim this design exists to be able to make honestly.
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  const ENTRANT = 'greedy@mail-test.co';
+  const v = verifySession(s, entry({ fullName: 'Greedy Entrant', email: ENTRANT,
+                                     phone: '(215) 555-8920' }), DURING);
+  const st = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: v.vid },
+    referral({ referralName: 'Unwitting Friend', referralEmail: 'unwitting@mail-test.co',
+               referralPhone: '(215) 555-9920' })))));
+  at(DURING, () => s.raffleHandleSubmission_({ step: 'invite', vid: v.vid, token: st.token }));
+
+  // Everything the entrant can actually see: addressed to them, or cc'd to them.
+  const theirs = s.__sent.filter(m =>
+    (String(m.to) + ',' + String(m.cc || '')).indexOf(ENTRANT) !== -1);
+  check('the entrant does get a copy of what went out (Durand asked for that)',
+    theirs.some(m => /here is exactly what went out/.test(String(m.subject))),
+    theirs.map(m => m.subject).join(' / '));
+  const carries = m => (String(m.htmlBody || '') + String(m.body || ''));
+  check('but no message the entrant receives carries the consent token',
+    theirs.every(m => carries(m).indexOf(st.token) === -1),
+    theirs.filter(m => carries(m).indexOf(st.token) !== -1)
+          .map(m => m.subject).join(' / '));
+  check('nor any consent link at all',
+    theirs.every(m => !/action=consent/.test(carries(m))),
+    theirs.filter(m => /action=consent/.test(carries(m))).map(m => m.subject).join(' / '));
+
+  // And the referral's own copy must still carry it, or nobody can ever confirm.
+  const refMail = s.__sent.filter(m => String(m.to).indexOf('unwitting@') !== -1);
+  check('the referral does receive the link (guards a vacuous test)',
+    refMail.length === 1 && carries(refMail[0]).indexOf(st.token) !== -1,
+    refMail.length + ' message(s) to the referral');
+  check('and the referral is not cc\'d to anybody',
+    !refMail[0].cc, JSON.stringify(refMail[0].cc));
+}
+
+{
+  // THE ADMIN KEY MUST NEVER LEAVE THE TWO OF US. The 6:15 result email embeds a
+  // console URL carrying the admin key, because its whole purpose is one tap
+  // into the console. That email goes to Durand and Ryan. The WINNER email is
+  // built from the same result object and goes to a member of the public -- and
+  // the winner is cc'd on nothing that should carry a key. Anyone holding it can
+  // send winner emails and force a redraw, so containment is worth asserting on
+  // every message rather than trusting the two templates to stay apart.
+  const KEY = 'ADMINKEY-do-not-leak-7f3a9c';
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key',
+                                   RAFFLE_ADMIN_KEY: KEY } });
+  enterFull(s, entry({ fullName: 'Keyleak Entrant', email: 'keyleak@mail-test.co',
+                       phone: '(215) 555-8910' }), DURING);
+  at(AFTER_CLOSE, () => s.raffleDrawWinner_(false, true));
+  at(AFTER_CLOSE, () => s.raffleSendWinnerEmail_(false));
+
+  const INSIDERS = ['durand@thestawaszgroup.com', 'ryan@thestawaszgroup.com', 'ryan@tsg.homes'];
+  const carries = m => (String(m.htmlBody || '') + String(m.body || '') +
+                        String(m.subject || '')).indexOf(KEY) !== -1;
+  const withKey = s.__sent.filter(carries);
+  check('the result email does carry the console key (guards a vacuous test)',
+    withKey.length >= 1, 'no email carried the key at all, so containment proves nothing');
+  // Every message carrying the key must be addressed ONLY to insiders.
+  const outsiders = withKey.filter(function (m) {
+    const all = ['to', 'cc', 'bcc'].map(k => String(m[k] || '')).join(',')
+      .split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+    return all.some(a => INSIDERS.indexOf(a) === -1);
+  });
+  check('no email carrying the admin key reaches anyone but Durand and Ryan',
+    outsiders.length === 0,
+    outsiders.map(m => String(m.subject).slice(0, 40) + ' -> ' + m.to + ' / ' + (m.cc || '')).join('; '));
+
+  const winner = s.__sent.filter(m => /You won/i.test(String(m.subject))).pop();
+  check('a winner email was produced (setup)', !!winner);
+  check('and the winner email carries no admin key at all',
+    !!winner && !carries(winner), 'THE WINNER WAS SENT THE ADMIN KEY');
 }
 
 // ---------------------------------------------------------------------------

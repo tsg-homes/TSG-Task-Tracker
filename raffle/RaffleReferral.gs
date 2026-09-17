@@ -710,9 +710,24 @@ function raffleSendReferralInvite_(d, test) {
   var subject = (test ? QA_TEST_PREFIX : '') + entrant.name +
     ' referred you — confirm and you are in the $300 drawing too';
 
+  // TWO MESSAGES, NOT ONE CC'd MESSAGE.
+  //
+  // Durand asked for "both the entrant and referral on the email", and this
+  // still does that -- they both get one. What it no longer does is hand the
+  // entrant the CONSENT TOKEN.
+  //
+  // The consent link is a bearer credential: whoever holds it can tick the
+  // consent box as that person. Cc'ing the entrant put it in the inbox of the
+  // one person with a motive to use it, and when a confirmed referral became
+  // worth RAFFLE_BONUS_TICKETS_PER_REFERRAL that motive went up sixfold. Worse
+  // than the tickets: a self-confirmed referral leaves a FUB record reading
+  // "CONSENT GIVEN BY THIS PERSON" for somebody who never saw the page, which
+  // is the one claim this whole design exists to be able to make honestly.
+  //
+  // So the link goes only to the address it belongs to, and the entrant gets a
+  // receipt showing exactly what was sent in their name, minus the credential.
   MailApp.sendEmail({
     to: found.entry.referralEmail,
-    cc: [entrant.email, 'info@tsg.homes'].join(','),
     replyTo: raffleReplyTo_(entrant.email),
     bcc: raffleOversightBcc_(test),
     name: 'The Stawasz Group',
@@ -724,9 +739,105 @@ function raffleSendReferralInvite_(d, test) {
   raffleSheet_(found.test).getRange(found.row, RAFFLE_COL['Referral Emailed At'] + 1)
     .setValue(raffleFmt_(raffleNow_()));
 
+  // Best-effort, and deliberately after the row is marked: the invite is the
+  // thing that had to happen, and a failed receipt must not make the entrant
+  // press the button again and re-mail their friend.
+  try {
+    MailApp.sendEmail({
+      to: entrant.email,
+      cc: RAFFLE_SHARED_INBOX,
+      replyTo: RAFFLE_SHARED_INBOX,
+      bcc: raffleOversightBcc_(test),
+      name: 'The Stawasz Group',
+      subject: (test ? QA_TEST_PREFIX : '') + 'Sent to ' +
+               String(found.entry.referralName || '').split(' ')[0] +
+               ' — here is exactly what went out',
+      htmlBody: raffleInviteReceiptHtml_(entrant, found.entry, test),
+      body: raffleInviteReceiptPlain_(entrant, found.entry)
+    });
+  } catch (receiptErr) {
+    Logger.log('Invite receipt to the entrant failed (non-fatal): ' + receiptErr);
+  }
+
   return jsonOut({ ok: true, sent: true,
-    message: 'Sent to ' + found.entry.referralEmail + ' (copied to you). You get ' +
-             RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries as soon as they confirm.' });
+    message: 'Sent to ' + found.entry.referralEmail + '. We have emailed you a copy of it. ' +
+             'You get ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
+             ' more entries as soon as they confirm.' });
+}
+
+// The entrant's copy. Every detail the invite carried EXCEPT the consent link,
+// and it says why the link is missing -- an email that looks like it lost its
+// button reads as broken, and the honest explanation is also the reassuring one.
+function raffleInviteReceiptHtml_(entrant, entry, test) {
+  var e = raffleEsc_;
+  var refFirst = String(entry.referralName || '').split(' ')[0];
+  return [
+    '<div style="margin:0;padding:0;background:#f4f6f6;">',
+    '<div style="max-width:560px;margin:0 auto;padding:24px 16px;',
+    "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;",
+    'color:#1d2b2c;line-height:1.55;">',
+    test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
+           'border-radius:6px;margin-bottom:16px;">QA TEST — not a real referral</div>' : '',
+    '<div style="background:#15464A;color:#fff;border-radius:10px 10px 0 0;padding:26px 24px;">',
+    '<div style="font-size:12px;letter-spacing:2px;opacity:.8;">THE STAWASZ GROUP</div>',
+    '<div style="font-size:22px;font-weight:700;margin-top:6px;">',
+    'Sent to ' + e(refFirst) + '</div>',
+    '</div>',
+    '<div style="background:#fff;border-radius:0 0 10px 10px;padding:24px;">',
+    '<p style="margin:0 0 14px;">Thanks ' + e(String(entrant.name).split(' ')[0]) + ' — ',
+    'this is what we sent, word for word, so you know exactly what went out in your name.</p>',
+    '<div style="background:#f4f6f6;border-radius:8px;padding:16px;margin:0 0 20px;font-size:15px;">',
+    '<div><strong>To</strong><br>' + e(entry.referralEmail) + '</div>',
+    '<div style="margin-top:10px;"><strong>Name</strong><br>' + e(entry.referralName) + '</div>',
+    entry.referralPhone ? '<div style="margin-top:10px;"><strong>Phone</strong><br>' +
+      e(entry.referralPhone) + '</div>' : '',
+    '<div style="margin-top:10px;"><strong>Looking to</strong><br>' + e(entry.referralRole) + '</div>',
+    entry.timeframe ? '<div style="margin-top:10px;"><strong>Timeframe</strong><br>' +
+      e(entry.timeframe) + '</div>' : '',
+    '</div>',
+    '<p style="margin:0 0 14px;">We asked them to confirm those details and give us ',
+    'permission to get in touch. <b>When they confirm, you get ' +
+      RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries</b> and we will email you.</p>',
+    '<div style="background:#f0f4f4;border-radius:8px;padding:16px 18px;margin:0 0 18px;">',
+    '<p style="margin:0;font-size:14px;color:#55696a;">The confirmation link went only to ',
+    e(refFirst) + '&rsquo;s own inbox, not to this copy. That is on purpose: it is how we ',
+    'can say honestly that they confirmed for themselves. If they cannot find it, a nudge ',
+    'from you is worth more than anything we can send &mdash; and we will send one reminder ',
+    'at 5:00 PM Saturday.</p></div>',
+    '<p style="margin:0;font-size:14px;color:#55696a;">Want to refer somebody else? Scan the ',
+    'sign again, or reply to this email and we will take it down for you.</p>',
+    '</div>',
+    '<div style="text-align:center;padding:18px 8px;font-size:12px;color:#7d8f90;">',
+    'The Stawasz Group &middot; Keller Williams Empower<br>',
+    '728 S Broad St, Philadelphia, PA 19146 &middot; (215) 760-6291 &middot; info@tsg.homes',
+    '</div></div></div>'
+  ].join('');
+}
+
+function raffleInviteReceiptPlain_(entrant, entry) {
+  var refFirst = String(entry.referralName || '').split(' ')[0];
+  return [
+    'Thanks ' + String(entrant.name).split(' ')[0] + ' - this is what we sent, word for',
+    'word, so you know exactly what went out in your name.',
+    '',
+    'To:         ' + entry.referralEmail,
+    'Name:       ' + entry.referralName,
+    'Phone:      ' + (entry.referralPhone || '(not given)'),
+    'Looking to: ' + entry.referralRole,
+    'Timeframe:  ' + (entry.timeframe || '(not given)'),
+    '',
+    'We asked them to confirm those details and give us permission to get in touch.',
+    'When they confirm you get ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
+      ' more entries, and we will email you.',
+    '',
+    'The confirmation link went only to ' + refFirst + "'s own inbox, not to this copy.",
+    'That is on purpose: it is how we can say honestly that they confirmed for',
+    'themselves. If they cannot find it, a nudge from you is worth more than anything',
+    'we can send - and we will send one reminder at 5:00 PM Saturday.',
+    '',
+    'The Stawasz Group - Keller Williams Empower',
+    '728 S Broad St, Philadelphia, PA 19146 - (215) 760-6291 - info@tsg.homes'
+  ].join('\n');
 }
 
 // Finds the row carrying a consent token, across BOTH tabs. The token is the
@@ -1136,8 +1247,9 @@ function raffleConsentSubmit_(d) {
       message: closed
         ? 'Thank you — you are confirmed and someone will be in touch. The drawing has ' +
           'already taken place, so this one came in after the close.'
-        : 'Thank you — you are confirmed, and ' + String(entry.name).split(' ')[0] +
-          "'s entry now counts." });
+        : 'Thank you — you are confirmed, and you are in the drawing too. ' +
+          String(entry.name).split(' ')[0] + ' just picked up ' +
+          RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries.' });
   } finally {
     try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
   }
