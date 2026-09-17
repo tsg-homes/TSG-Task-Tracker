@@ -92,6 +92,20 @@ var RAFFLE_SOURCE = 'TSG Block Party 2026 - Raffle';
 // everywhere; getUrl() is only the fallback.
 var RAFFLE_EXEC_URL_PROP = 'RAFFLE_EXEC_URL';
 var RAFFLE_EXEC_URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
+// A signed-in Workspace visitor is redirected to a domain-scoped form of the
+// same URL (/a/macros/<domain>/s/<id>/exec, or the older /a/<domain>/macros/...).
+// Durand opened the public link on 2026-09-17 and landed on exactly that, so
+// nothing was recorded. Both forms carry the same deployment id: strip the
+// domain and keep the plain URL, which is the one that works for everyone.
+var RAFFLE_EXEC_URL_SCOPED_RE =
+  /^https:\/\/script\.google\.com\/(?:a\/macros\/[^\/]+|a\/[^\/]+\/macros)\/s\/([A-Za-z0-9_-]+)\/exec$/;
+
+function raffleNormalizeExecUrl_(url) {
+  var u = String(url || '').split('?')[0].split('#')[0];
+  if (RAFFLE_EXEC_URL_RE.test(u)) return u;
+  var m = u.match(RAFFLE_EXEC_URL_SCOPED_RE);
+  return m ? 'https://script.google.com/macros/s/' + m[1] + '/exec' : '';
+}
 
 function raffleBaseUrl_() {
   var stored = '';
@@ -108,7 +122,8 @@ function raffleBaseUrl_() {
 // a Workspace login on whoever clicks it.
 function raffleRememberExecUrl_(url) {
   try {
-    if (!RAFFLE_EXEC_URL_RE.test(String(url || ''))) return false;
+    url = raffleNormalizeExecUrl_(url);
+    if (!url) return false;
     var props = PropertiesService.getScriptProperties();
     if (props.getProperty(RAFFLE_EXEC_URL_PROP) === url) return false;
     props.setProperty(RAFFLE_EXEC_URL_PROP, url);
@@ -704,11 +719,11 @@ function raffleAdminLinks() {
              'TEST ENTRY COUNT:',
              '  ' + base + '?form=raffle&action=status&key=' + key + '&test=1',
              '',
-             'TEST DRAW — rehearses the real thing, emails ' + QA_TEST_NOTIFY_EMAIL + ' only:',
+             'TEST DRAW — rehearses the real thing, emails ' + QA_TEST_NOTIFY_EMAIL + ' and ' + RAFFLE_REHEARSAL_CC + ':',
              '  ' + base + '?form=raffle&action=draw&key=' + key + '&test=1',
              '',
              'REHEARSAL CONSOLE — the full 6:30 walk-through on the test draw; the winner',
-             '  email goes to ' + QA_TEST_NOTIFY_EMAIL + ' only, the ceiling button only reports:',
+             '  email goes to ' + QA_TEST_NOTIFY_EMAIL + ' and ' + RAFFLE_REHEARSAL_CC + ', the ceiling button only reports:',
              '  ' + base + '?form=raffle&action=console&key=' + key + '&test=1',
              '',
              'Rehearse in this order: test form (enter two people) -> test draw -> rehearsal',
@@ -1957,7 +1972,7 @@ function raffleEmailResult_(result, test) {
   } catch (urlErr) { Logger.log('raffleEmailResult_: could not build the console URL: ' + urlErr); }
 
   MailApp.sendEmail({
-    to: qaTestRecipients_(RAFFLE_RESULT_EMAIL.split(',')).join(','),
+    to: raffleQaRecipients_(RAFFLE_RESULT_EMAIL.split(','), test).join(','),
     name: 'TSG Block Party Raffle',
     // People and tickets, not the row count. totalEligible is rows, and a row is
     // not an entrant: "(4 entries)" for three people holding eight tickets is
@@ -2374,6 +2389,10 @@ function raffleQaRun_(cleanUp) {
       'without this every assertion below would be writing to LIVE data — aborting')) {
     return log.join('\n');
   }
+  // Rehearsal emails copy Ryan; the ~60 this suite sends must not. The flag
+  // expires on its own if the run dies, so a crash cannot leave Ryan uncopied
+  // for longer than the TTL.
+  try { CacheService.getScriptCache().put(RAFFLE_SUITE_FLAG, '1', 1800); } catch (flagErr) { /* non-fatal */ }
 
   // Start from clean test state so counts are meaningful.
   try { raffleResetTest(); } catch (e) { log.push('(note: could not pre-clear test data: ' + e + ')'); }
@@ -3099,6 +3118,7 @@ function raffleQaRun_(cleanUp) {
   log.push('Verification-code emails were sent to ' + RAFFLE_QA_ADDRESS_BASE + stamp +
            '-N' + RAFFLE_QA_DOMAIN + ' — they deliver to Durand.');
 
+  try { CacheService.getScriptCache().remove(RAFFLE_SUITE_FLAG); } catch (flagErr2) { /* non-fatal */ }
   var msg = log.join('\n');
   Logger.log(msg);
   return msg;

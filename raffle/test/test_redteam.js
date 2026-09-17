@@ -905,13 +905,15 @@ section('T9  Rehearsal bleed: can a TEST run touch a real person?');
   check('a rehearsal winner email was produced (setup)', won.length === 1);
   check('a rehearsal winner email is labelled as a test',
     !!won.length && /QA TEST/.test(won[0].subject), won.length && won[0].subject);
-  // THE ONE THAT MATTERS: the project's rule is that Ryan is not paged about a
-  // rehearsal. The result email honours that via qaTestRecipients_; the winner
-  // email must too, or a practice run at 4pm on Thursday copies Ryan on a
-  // "you won" that nobody won.
+  // Durand reversed the "Ryan is never paged about a rehearsal" rule on
+  // 2026-09-17: he wants Ryan to see the rehearsal. What must still never
+  // happen is the LIVE result list (ryan@thestawaszgroup.com) or any real
+  // entrant being reached, and the QA suite's ~60 emails copying him.
   const cc = String((won[0] || {}).cc || '');
-  check('a rehearsal winner email does NOT copy Ryan',
-    cc.indexOf('ryan@') === -1, 'cc was: ' + cc);
+  check('a rehearsal winner email copies Durand and Ryan (tsg.homes)',
+    /durand@thestawaszgroup\.com/.test(cc) && /ryan@tsg\.homes/.test(cc), 'cc was: ' + cc);
+  check('but never the live result list', cc.indexOf('ryan@thestawaszgroup.com') === -1, 'cc was: ' + cc);
+  check('and the winner "to" is the QA entrant, not a real person', /mail-test\.co$/.test(String(won[0].to)), won[0].to);
 
   // A test draw must never write the live winner property.
   check('a test draw leaves the live winner unset', s.__props.RAFFLE_WINNER_JSON === undefined);
@@ -936,8 +938,9 @@ section('T9  Rehearsal bleed: can a TEST run touch a real person?');
   check('every rehearsal milestone email is labelled',
     notes.length > 0 && notes.every(m => /QA TEST/.test(m.subject)),
     notes.map(m => m.subject).join(' / '));
-  check('and they go only to the QA address',
-    notes.length > 0 && notes.every(m => String(m.to).indexOf('ryan@') === -1),
+  check('and they go to the QA address and Ryan, never the live list',
+    notes.length > 0 && notes.every(m => /durand@thestawaszgroup\.com/.test(m.to) &&
+      /ryan@tsg\.homes/.test(m.to) && String(m.to).indexOf('ryan@thestawaszgroup.com') === -1),
     notes.map(m => m.to).join(' / '));
 }
 

@@ -1138,8 +1138,17 @@ const cell = (s, row, name) => {
   check('test draw: LIVE winner property untouched',
     s.__props.RAFFLE_WINNER_JSON === undefined);
   eq('test draw: exactly one email', drawMail(s).length, 1);
-  check('test draw: email went to Durand only', drawMail(s)[0].to === 'durand@thestawaszgroup.com');
-  check('test draw: Ryan was NOT emailed about a rehearsal', !/ryan@/.test(drawMail(s)[0].to));
+  // Durand, 2026-09-17: "rehearsal emails should go to Ryan as well" -- so a
+  // test draw goes to Durand's QA address AND Ryan, never to the live list.
+  eq('test draw: email went to Durand and Ryan', drawMail(s)[0].to, 'durand@thestawaszgroup.com,ryan@tsg.homes');
+  check('test draw: not to the live result list', !/ryan@thestawaszgroup\.com/.test(drawMail(s)[0].to));
+  // ...but not while the QA suite is running: it sends ~60 emails a run.
+  s.CacheService.getScriptCache().put('raffle_suite_running', '1', 1800);
+  eq('during a suite run rehearsal notifications collapse to Durand', s.raffleQaRecipients_(['x@y'], true).join(','), 'durand@thestawaszgroup.com');
+  eq('and rehearsal bcc is dropped', s.raffleOversightBcc_(true), '');
+  s.CacheService.getScriptCache().remove('raffle_suite_running');
+  eq('outside a suite run the rehearsal bcc is Ryan', s.raffleOversightBcc_(true), 'ryan@tsg.homes');
+  eq('live bcc is unchanged', s.raffleOversightBcc_(false), 'durand@thestawaszgroup.com,ryan@tsg.homes');
   check('test draw: subject is marked as a test', /\[QA TEST\]/.test(drawMail(s)[0].subject));
   check('test draw: body says it is not the real winner',
     /THIS IS A TEST DRAW/.test(drawMail(s)[0].body));
@@ -1579,7 +1588,10 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   // The live paths pass their real weight: an invite costs 3 with oversight
   // copies, 1 in test mode where the copies are dropped.
   eq('a live invite weighs 3', cap.raffleSendWeight_(false), 3);
-  eq('a test-mode invite weighs 1', cap.raffleSendWeight_(true), 1);
+  eq('a rehearsal invite weighs 2 (Ryan is copied)', cap.raffleSendWeight_(true), 2);
+  cap.CacheService.getScriptCache().put('raffle_suite_running', '1', 1800);
+  eq('a suite-run invite weighs 1', cap.raffleSendWeight_(true), 1);
+  cap.CacheService.getScriptCache().remove('raffle_suite_running');
   const w = makeSandbox();
   const bucket = () => Number(w.CacheService.getScriptCache().get(
     w.RAFFLE_CODE_GLOBAL_PREFIX + Math.floor(Date.now() / (w.RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000))) || 0);
@@ -1744,8 +1756,16 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   const d = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key', RAFFLE_ADMIN_KEY: 'secret' } });
   at(DURING, () => d.raffleServeForm_({ parameter: {} }, 'https://script.google.com/a/tsg.homes/macros/s/AKfycbHEAD/dev'));
   eq('the /dev URL is never recorded', d.__props.RAFFLE_EXEC_URL, undefined);
-  at(DURING, () => d.raffleServeForm_({ parameter: {} }, 'https://script.google.com/a/tsg.homes/macros/s/AKfycbDEP/exec'));
-  eq('nor the domain-scoped /a/ form (it forces a Workspace login)', d.__props.RAFFLE_EXEC_URL, undefined);
+  at(DURING, () => d.raffleServeForm_({ parameter: {} }, 'https://script.google.com/a/macros/thestawaszgroup.com/s/AKfycbHEAD/dev'));
+  eq('nor a /dev URL in the domain-scoped form', d.__props.RAFFLE_EXEC_URL, undefined);
+  // A signed-in Workspace visitor lands on a domain-scoped /exec; Durand did on
+  // 2026-09-17 and nothing was recorded. Both scoped forms normalise to plain.
+  at(DURING, () => d.raffleServeForm_({ parameter: {} }, 'https://script.google.com/a/macros/thestawaszgroup.com/s/AKfycbDEP_1-2/exec'));
+  eq('the /a/macros/<domain>/ form is recorded as the plain URL', d.__props.RAFFLE_EXEC_URL, 'https://script.google.com/macros/s/AKfycbDEP_1-2/exec');
+  eq('the older /a/<domain>/macros/ form normalises the same way',
+    d.raffleNormalizeExecUrl_('https://script.google.com/a/tsg.homes/macros/s/AKfycbDEP_1-2/exec?form=raffle'),
+    'https://script.google.com/macros/s/AKfycbDEP_1-2/exec');
+  eq('a /dev URL normalises to nothing', d.raffleNormalizeExecUrl_('https://script.google.com/a/tsg.homes/macros/s/AKfycbHEAD/dev'), '');
   d.__props.RAFFLE_EXEC_URL = 'javascript:alert(1)';
   eq('a malformed property is ignored', d.raffleBaseUrl_(), 'https://x/exec');
 

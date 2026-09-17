@@ -1797,7 +1797,7 @@ function raffleSendWinnerEmail_(test, pickIndex, reason) {
   // QA entry, so w.email is already a QA address.
   MailApp.sendEmail({
     to: w.email,
-    cc: qaTestRecipients_(RAFFLE_RESULT_EMAIL.split(',')).join(','),
+    cc: raffleQaRecipients_(RAFFLE_RESULT_EMAIL.split(','), test).join(','),
     // Ryan fields winner replies, so that is where a reply lands -- plus the
     // shared inbox, per the standing rule that a reply never reaches only one place.
     replyTo: raffleReplyTo_(RAFFLE_WINNER_REPLY_TO),
@@ -1997,11 +1997,35 @@ var RAFFLE_SHARED_INBOX = 'info@tsg.homes';
 // remaining quota on each run (section 5c) precisely so this stays visible.
 var RAFFLE_OVERSIGHT_BCC = 'durand@thestawaszgroup.com,ryan@tsg.homes';
 
+// Durand, 2026-09-17 (evening): "rehearsal emails should go to Ryan as well".
+// That reverses the earlier rule that Ryan is never paged about a rehearsal,
+// with one carve-out that keeps it sane: the QA suite is also test mode and
+// sends ~60 emails a run, so while the suite is running nothing is copied to
+// Ryan. The suite sets a short-lived cache flag for its duration.
+var RAFFLE_REHEARSAL_CC = 'ryan@tsg.homes';
+var RAFFLE_SUITE_FLAG = 'raffle_suite_running';
+
+function raffleSuiteRunning_() {
+  try { return !!CacheService.getScriptCache().get(RAFFLE_SUITE_FLAG); }
+  catch (err) { return false; }
+}
+
 function raffleOversightBcc_(test) {
-  // In test mode qaTestRecipients_ already collapses everything to Durand, so a
-  // BCC would just duplicate the message to him -- and Ryan is never paged about
-  // a rehearsal, which is a rule the red-team suite enforces.
-  return test ? '' : RAFFLE_OVERSIGHT_BCC;
+  // Live: both oversight copies. Rehearsal: the test addresses are already
+  // Durand's own inbox, so the only copy worth adding is Ryan's -- and not
+  // while the suite is running.
+  if (!test) return RAFFLE_OVERSIGHT_BCC;
+  return raffleSuiteRunning_() ? '' : RAFFLE_REHEARSAL_CC;
+}
+
+// The "to"/"cc" list for notifications (result, winner, milestone). Live: as
+// given. Rehearsal: Durand's QA address plus Ryan, unless the suite is running.
+function raffleQaRecipients_(list, test) {
+  var given = Array.isArray(list) ? list : [list];
+  if (!test) return given;
+  var out = [QA_TEST_NOTIFY_EMAIL];
+  if (!raffleSuiteRunning_()) out.push(RAFFLE_REHEARSAL_CC);
+  return out;
 }
 
 // What one guarded send with oversight copies costs against the daily quota:
@@ -2396,7 +2420,7 @@ function raffleMaybeNotifyMilestone_(test) {
     var daysLeft = Math.max(0, Math.ceil(
       (new Date(RAFFLE_EVENT_AT).getTime() - Date.now()) / 86400000));
     MailApp.sendEmail({
-      to: qaTestRecipients_([RAFFLE_NOTIFY_EMAIL]).join(','),
+      to: raffleQaRecipients_([RAFFLE_NOTIFY_EMAIL], test).join(','),
       name: 'TSG Block Party Raffle',
       subject: (test ? QA_TEST_PREFIX : '') + count + ' people in the Block Party raffle',
       body: (function () {
