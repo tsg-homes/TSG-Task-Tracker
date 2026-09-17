@@ -311,6 +311,13 @@ function raffleEnsureHeaders_(sh) {
 // ---------- Small helpers ----------
 function raffleNow_() { return new Date(); }
 
+// "1 people, 1 tickets" went to Ryan in a real rehearsal email on 2026-09-17.
+// Counts that can legitimately be one need a plural helper, not a bare + 's'.
+function rafflePlural_(n, one, many) {
+  var k = Number(n);
+  return k + ' ' + (k === 1 ? one : (many || (one + 's')));
+}
+
 function raffleFmt_(d) {
   return Utilities.formatDate(d, RAFFLE_TZ, 'yyyy-MM-dd HH:mm:ss');
 }
@@ -1692,7 +1699,8 @@ function raffleEmailResult_(result, test) {
     // not an entrant: "(4 entries)" for three people holding eight tickets is
     // the same misreading the status page used to print.
     subject: (test ? QA_TEST_PREFIX : '🏈 ') + 'Block Party Raffle Winner: ' + w.name +
-             ' (' + result.totalPeople + ' people, ' + result.totalTickets + ' tickets)',
+             ' (' + rafflePlural_(result.totalPeople, 'person', 'people') + ', ' +
+             rafflePlural_(result.totalTickets, 'ticket') + ')',
     htmlBody: raffleResultHtml_(result, test, consoleUrl),
     body: lines.join('\n')
   });
@@ -2086,6 +2094,157 @@ function raffleQaRun_(cleanUp) {
   check('one address cannot pull more than ' + RAFFLE_CODE_MAX_PER_ADDRESS + ' codes',
         capSent <= RAFFLE_CODE_MAX_PER_ADDRESS, 'sent ' + capSent);
   check('the over-cap requests were refused', capRefused > 0);
+
+  // ---- 5d. THE SURFACES NOTHING LIVE HAD EVER TOUCHED --------------------
+  // Until 2026-09-17 this suite reached the submission pipeline, the status page,
+  // the draw and reset -- and nothing else. Every one of these was sandbox-only,
+  // which for a page means its real HtmlService templating was never rendered
+  // once, and for an email means it had never actually been sent by MailApp.
+  // They are the surfaces a stranger or a crowd sees, so they are the last place
+  // to be discovering a template error.
+  //
+  // Everything here runs in TEST mode, so every recipient collapses to Durand.
+  section('5d. Pages and emails that had never run live');
+  var adminKey = props.getProperty(RAFFLE_ADMIN_PROP) || '';
+  check('the admin key is available to drive the console', adminKey.length > 0);
+
+  // A pending referral to look at: staged off the session from section 2, so it
+  // adds a row but no new entrant.
+  var pend = json(raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: good.vid }, referralFor('live', '(215) 555-9150'))));
+  check('a referral can be staged for the page tests',
+        pend.ok === true && pend.staged === true, JSON.stringify(pend));
+  if (pend.staged) {
+    json(raffleHandleSubmission_({ step: 'invite', vid: good.vid, token: pend.token }));
+
+    // THE CONSENT PAGE, rendered by the real HtmlService.
+    var cOut = raffleConsentPage_({ parameter: { t: pend.token } });
+    var cHtml = String(typeof cOut.getContent === 'function' ? cOut.getContent() : cOut);
+    check('the consent page renders', cHtml.length > 800, 'got ' + cHtml.length + ' chars');
+    check('no unfilled template tag survives the real renderer',
+          cHtml.indexOf('<?') === -1, 'a scriptlet reached the browser');
+    check('it names the person who referred them', cHtml.indexOf('QA Tester1') !== -1);
+    check('the email field is locked', /id="rEmail"[^>]*readonly/.test(cHtml));
+    check('every field declares a type',
+          (cHtml.match(/<input id="r[A-Za-z]+"[^>]*>/g) || [])
+            .every(function (f) { return /\stype=/.test(f); }));
+    check('it promises them an entry while the drawing is open',
+          /enters you in the drawing too/.test(cHtml));
+
+    // Consent through it, which mints the chain token.
+    var cRes = json(raffleHandleSubmission_({
+      step: 'consent', decision: 'confirm', token: pend.token, consent: 'Yes',
+      referralName: 'QA Referrallive Blockparty', referralPhone: '(215) 555-9150',
+      referralRole: 'Buyer', referralTimeframe: raffleDefaultTimeframe_(raffleTimeframes_()) || '' }));
+    check('consent through the page works', cRes.ok === true, JSON.stringify(cRes));
+
+    // THE CHAIN LINK, which serves the whole entry form from a token.
+    var chainRow = raffleReadEntries_(true).filter(function (r) {
+      return r.consentToken === pend.token; })[0];
+    check('the consented row carries a chain token',
+          !!chainRow && /^[0-9a-fA-F-]{36}$/.test(String(chainRow.chainToken)),
+          chainRow && chainRow.chainToken);
+    if (chainRow && chainRow.chainToken) {
+      var chOut = raffleServeForm_({ parameter: { action: 'refer', t: chainRow.chainToken } },
+                                   ScriptApp.getService().getUrl());
+      var chHtml = String(typeof chOut.getContent === 'function' ? chOut.getContent() : chOut);
+      check('the chain link serves the entry form', chHtml.length > 5000,
+            'got ' + chHtml.length + ' chars');
+      check('with a session already minted, and no raw scriptlet',
+            /var\s+CHAIN_VID\s*=\s*"[0-9a-fA-F-]{36}"/.test(chHtml) && chHtml.indexOf('<?') === -1,
+            'CHAIN_VID missing or a scriptlet leaked');
+    }
+  }
+
+  // THE 5:00 PM BATCH. Window-gated, so it would report "not yet" on any day but
+  // Saturday -- ignoreWindow is what makes it testable at all before then.
+  var rem = raffleSendConsentReminders_(true, true);
+  check('the reminder batch runs and reports itself', !!rem && typeof rem.sent === 'number',
+        JSON.stringify(rem));
+  log.push('      reminder batch: ' + (rem && rem.summary));
+
+  // THE WINNER EMAIL, the one that must never fire on its own.
+  var winSend = raffleSendWinnerEmail_(true);
+  check('the winner email sends when asked', winSend.ok === true, JSON.stringify(winSend));
+  var winAgain = raffleSendWinnerEmail_(true);
+  check('and cannot be sent twice', winAgain.ok === false, JSON.stringify(winAgain));
+
+  // THE CONSOLE: the page, a preview, and a refusal.
+  var conOut = raffleWinnerConsolePage_(true, adminKey);
+  var conHtml = String(typeof conOut.getContent === 'function' ? conOut.getContent() : conOut);
+  check('the draw console renders', conHtml.length > 1500, 'got ' + conHtml.length + ' chars');
+  check('the console leaks no raw scriptlet', conHtml.indexOf('<?') === -1);
+  check('the console shows three picks',
+        (conHtml.match(/PICK \d/g) || []).length >= 3,
+        JSON.stringify(conHtml.match(/PICK \d/g)));
+  var prev = json(raffleHandleSubmission_({ step: 'console', consoleAction: 'preview',
+                                            key: adminKey, pick: 0, test: '1' }));
+  check('a preview comes back', prev.ok === true, JSON.stringify(prev).slice(0, 160));
+  var refused = json(raffleHandleSubmission_({ step: 'console', consoleAction: 'preview',
+                                               key: 'not-the-key', pick: 0 }));
+  check('a wrong key is refused by the console', refused.ok !== true,
+        JSON.stringify(refused).slice(0, 120));
+
+  // THE HOURLY DIGEST and THE ADMIN DRAW PAGE.
+  // Not `check(..., true)`: that passes whatever happens, and if the digest threw
+  // the whole suite would die before reporting anything. Catch it and say so.
+  var digestErr = '';
+  try { raffleEventDigest(); } catch (dErr) { digestErr = String(dErr); }
+  check('the hourly digest runs without throwing', digestErr === '', digestErr);
+  var dOut = raffleDrawPage_(true);
+  var dHtml = String(typeof dOut.getContent === 'function' ? dOut.getContent() : dOut);
+  check('the admin draw page renders', dHtml.length > 400, 'got ' + dHtml.length + ' chars');
+  check('and reports people and tickets, not just rows',
+        /people/.test(dHtml) && /tickets/.test(dHtml), dHtml.slice(0, 200));
+
+  // ---- 5c. THE MAIL SERVICE ACTUALLY ACCEPTED IT -------------------------
+  // Everything above reads the code out of the script cache (codeFor), which
+  // proves a code was ISSUED. It does not prove one was SENT, and sending is the
+  // whole entry path: if MailApp silently stops, every guest sees "check your
+  // email" forever and nobody can enter. That was the one failure this suite
+  // could not see.
+  //
+  // WHY NOT READ THE INBOX. The obvious version of this searches Gmail for the
+  // delivered message and verifies with the code out of the real subject. It was
+  // written that way first and then backed out: GmailApp anywhere in this project
+  // makes Apps Script request full mailbox access at the next authorization, and
+  // this project is a web app with access ANYONE_ANONYMOUS whose mailbox is the
+  // shared info@ five people use. Granting a public endpoint's project full read
+  // and write over that inbox to improve one assertion is the wrong trade.
+  //
+  // So this proves the strongest thing available without a new scope: that the
+  // mail service ACCEPTED the message, by watching the account's own remaining
+  // quota fall. Arrival itself is verified out of band, in Durand's inbox -- the
+  // QA addresses are durand+raffleqa tags, so every rehearsal email lands there
+  // and can be read directly.
+  section('5c. The mail service accepted the code (quota round trip)');
+  (function () {
+    var before = -1, after = -1;
+    try { before = MailApp.getRemainingDailyQuota(); } catch (qErr) { before = -1; }
+    check('the send quota is readable', before >= 0, String(before));
+    if (before < 0) return;
+    check('there is quota left to send with at all', before > 0,
+          'ZERO QUOTA LEFT — no entrant can receive a code until it resets');
+
+    var rd = request({ fullName: 'QA Delivery Blockparty',
+                       email: RAFFLE_QA_ADDRESS_BASE + stamp + '-deliver' + RAFFLE_QA_DOMAIN,
+                       phone: '(215) 555-8100', consent: 'Yes' });
+    check('a code was requested', rd.ok === true && rd.needsCode === true, JSON.stringify(rd));
+    try { after = MailApp.getRemainingDailyQuota(); } catch (qErr2) { after = -1; }
+    check('the mail service accepted the code email (quota went down)',
+          after >= 0 && after < before,
+          'quota ' + before + ' -> ' + after + ' — if it did not move, MailApp is not sending');
+
+    // And the loop closes on the code that was actually issued for this request.
+    var vOk = json(raffleHandleSubmission_({ step: 'verify', vid: rd.vid,
+                                             code: codeFor(rd.vid) }));
+    check('and the code verifies end to end', vOk.ok === true && vOk.verified === true,
+          JSON.stringify(vOk));
+    log.push('      send quota: ' + before + ' -> ' + after +
+             '  (' + after + ' emails left today)');
+    log.push('      delivery itself: check durand+raffleqa' + stamp +
+             '-deliver@thestawaszgroup.com for the code email.');
+  })();
 
   // ---- 6. The live raffle must be untouched -------------------------------
   section('6. The LIVE raffle is untouched');

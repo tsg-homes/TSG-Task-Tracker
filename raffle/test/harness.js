@@ -43,6 +43,7 @@ function makeSandbox(opts) {
   const qa = { active: !!opts.qaMode };
   const triggers = [];
   const templates = [];
+  const quota = { left: opts.quota === undefined ? 1500 : opts.quota };
 
   // Multi-tab fake: the whole point of the test/live split is that they are
   // different sheets, so the fake has to model that rather than share one array.
@@ -130,7 +131,13 @@ function makeSandbox(opts) {
     SpreadsheetApp: { openById: () => ss, create: () => ss },
     CacheService: { getScriptCache: () => ({ get: k => cache[k] || null, put: (k, v) => { cache[k] = v; }, remove: k => { delete cache[k]; } }) },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
-    MailApp: { sendEmail: m => sent.push(m) },
+    // The live suite proves the mail service ACCEPTED a message by watching the
+    // account's own remaining quota fall, so the fake models a real decrementing
+    // counter. A constant here would let that assertion ship unexercised.
+    MailApp: {
+      sendEmail: m => { sent.push(m); quota.left = Math.max(0, quota.left - 1); },
+      getRemainingDailyQuota: () => quota.left
+    },
     Session: { getEffectiveUser: () => ({ getEmail: () => opts.runAs || 'info@tsg.homes' }) },
     DriveApp: { getFileById: () => ({ getBlob: () => ({ getContentType: () => 'image/png', getBytes: () => [1, 2, 3] }) }) },
     ScriptApp: {
@@ -151,7 +158,11 @@ function makeSandbox(opts) {
         const r = Math.random() * 16 | 0;
         return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
       }),
-      base64Encode: () => 'b64'
+      base64Encode: () => 'b64',
+      // The delivery poll sleeps between Gmail searches. In the sandbox the mail
+      // is already "delivered" the moment it is sent, so this must be a no-op
+      // rather than a real pause or the suite would take a minute to run.
+      sleep: () => {}
     },
     // Route-aware FUB fake. opts.fubPeople seeds records that already exist, so
     // the match-and-update path can be exercised for real rather than assumed.

@@ -1643,7 +1643,8 @@ function raffleWinnerHtml_(w, result, test) {
     '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">',
     'Drawn from ' + e(result.totalEligible) + ' eligible ',
     (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' &mdash; ' +
-      e(result.totalPeople) + ' people holding ' + e(result.totalTickets) + ' tickets ',
+      e(rafflePlural_(result.totalPeople, 'person', 'people')) + ' holding ' +
+      e(rafflePlural_(result.totalTickets, 'ticket')) + ' ',
     '&mdash; at ' + e(result.drawnAt) + ' ET. ',
     'The prize is a gift card redeemable toward any Ticketmaster purchase, subject to ',
     'Ticketmaster&rsquo;s own terms. Approximate retail value ' + e(RAFFLE_PRIZE_ARV) + '. ',
@@ -1680,8 +1681,10 @@ function raffleWinnerPlain_(w, result) {
     'to pay.',
     '',
     'Drawn from ' + result.totalEligible + ' eligible ' +
-      (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' - ' + result.totalPeople +
-      ' people holding ' + result.totalTickets + ' tickets - at ' + result.drawnAt + ' ET.',
+      (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' - ' +
+      rafflePlural_(result.totalPeople, 'person', 'people') +
+      ' holding ' + rafflePlural_(result.totalTickets, 'ticket') +
+      ' - at ' + result.drawnAt + ' ET.',
     'Approximate retail value ' + RAFFLE_PRIZE_ARV + '. Any taxes on the prize are the',
     "winner's responsibility. This promotion is not sponsored, endorsed by, or associated",
     'with Ticketmaster, Live Nation, the Philadelphia Eagles or the NFL.',
@@ -1840,7 +1843,8 @@ function raffleResultHtml_(result, test, consoleUrl) {
     '<div style="font-size:14px;opacity:.85;margin-top:6px;">Drawn ' + e(result.drawnAt) +
       ' ET from ' + e(result.totalEligible) + ' eligible ' +
       (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' &middot; ' +
-      e(result.totalPeople) + ' people &middot; ' + e(result.totalTickets) + ' tickets</div>',
+      e(rafflePlural_(result.totalPeople, 'person', 'people')) + ' &middot; ' +
+      e(rafflePlural_(result.totalTickets, 'ticket')) + '</div>',
     '</div>',
 
     '<div style="background:#fff;border-radius:0 0 10px 10px;padding:20px;">',

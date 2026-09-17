@@ -541,6 +541,22 @@ const cell = (s, row, name) => {
   eq('but enters nobody', selfRows(s).length, 1);
 }
 
+// ---- The live suite's own new assertions -------------------------------------
+{
+  // Two of the live suite's checks are about the mail service rather than the
+  // code, so they can only be trusted if the fake can fail them. Prove the
+  // quota-delta assertion is real by starving the account.
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  const before = s.MailApp.getRemainingDailyQuota();
+  check('the sandbox models a send quota', before > 0, String(before));
+  at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry())));
+  check('and sending a code moves it', s.MailApp.getRemainingDailyQuota() < before,
+    before + ' -> ' + s.MailApp.getRemainingDailyQuota());
+
+  const starved = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1' }, quota: 0 });
+  eq('a starved account reports zero', starved.MailApp.getRemainingDailyQuota(), 0);
+}
+
 // ---- Migrating a sheet that predates the referral columns --------------------
 // Not hypothetical: the live sheet on 2026-09-17 still carried the original 11
 // columns, because it was created before the referral work and setupRaffle only
