@@ -212,7 +212,18 @@ function makeSandbox(opts) {
           return json(people.find(p => String(p.id) === m[1]) ||
                       created.find(p => String(p.id) === m[1]) || {});
         }
-        if (m && o && o.method === 'put') return json({ id: Number(m[1]) });
+        if (m && o && o.method === 'put') {
+          // FUB REPLACES the tag set on a PUT rather than merging it. Modelling
+          // that is the only way the sandbox can see a later PUT stripping the
+          // QA tag a create had just applied -- which is what happened live on
+          // 2026-09-17 and left QA referrals untagged and undeletable.
+          const rec = created.find(p => String(p.id) === m[1]);
+          if (rec) {
+            const body = JSON.parse(o.payload || '{}');
+            if (Array.isArray(body.tags)) rec.tags = body.tags.slice();
+          }
+          return json({ id: Number(m[1]) });
+        }
 
         // A created person gets a real id and is remembered, so a later GET can
         // read back the tags and name the cleanup gate checks.
@@ -353,8 +364,17 @@ function makeSandbox(opts) {
       const hit = list.find(t => t.name === name);
       return hit ? hit.id : null;
     },
+    // Faithful to the real Code.gs function: it prefixes the NAME as well as
+    // adding the tag, and both matter -- the FUB cleanup gate requires both, and
+    // the stub previously only did the tag, so any test of the prefix passed or
+    // failed for the wrong reason.
     applyQaTestPersonMarking_: p => {
-      if (!qa.active) return p;
+      if (!qa.active || !p) return p;
+      if (typeof p.firstName === 'string' && p.firstName) {
+        if (p.firstName.indexOf('[QA TEST] ') !== 0) p.firstName = '[QA TEST] ' + p.firstName;
+      } else if (typeof p.lastName === 'string' && p.lastName) {
+        if (p.lastName.indexOf('[QA TEST] ') !== 0) p.lastName = '[QA TEST] ' + p.lastName;
+      }
       p.tags = (p.tags || []).slice();
       if (p.tags.indexOf('QA Test — Safe to Delete') === -1) p.tags.push('QA Test — Safe to Delete');
       return p;

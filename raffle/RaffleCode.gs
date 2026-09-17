@@ -1771,7 +1771,15 @@ function raffleDeleteQaContactsFromFub(maxScan) {
     people.forEach(function (p) {
       scanned++;
       var tags = p.tags || [];
-      if (tags.some(function (t) { return String(t) === QA_TEST_TAG; })) ids.push(p.id);
+      var nm = String(p.firstName || '') + ' ' + String(p.lastName || '');
+      // Tagged OR name-prefixed. The prefix-only case is the stray the tags-PUT
+      // bug left behind; raffleDeleteFubContactsById_ still applies its own
+      // double gate to every id collected here, so a false positive cannot
+      // delete anything.
+      if (tags.some(function (t) { return String(t) === QA_TEST_TAG; }) ||
+          nm.indexOf(QA_TEST_PREFIX.trim()) !== -1) {
+        ids.push(p.id);
+      }
     });
     if (people.length < 100) break;
     offset += 100;

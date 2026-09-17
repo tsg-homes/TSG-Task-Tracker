@@ -541,6 +541,42 @@ const cell = (s, row, name) => {
   eq('but enters nobody', selfRows(s).length, 1);
 }
 
+// ---- A tags PUT must not strip the QA tag ------------------------------------
+// FUB replaces the tag set on a PUT instead of merging it. The consented-referral
+// path creates the contact (tag applied), then PUTs tags a second later -- and
+// that PUT did not re-assert the tag, so every QA referral ended up carrying the
+// "[QA TEST]" name prefix and NO tag. Both cleanup paths search on the tag, so
+// they refused to delete them and the strays accumulated in the real CRM.
+{
+  const s = makeSandbox({ qaMode: true,
+                          props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  enterFull(s, entry(), DURING);
+
+  const creates = s.__fetches.filter(f => /\/v1\/people$/.test(f.url) &&
+                                          f.o && f.o.method === 'post');
+  check('a referral contact was created (setup)', creates.length >= 1,
+    'got ' + creates.length);
+
+  // Read the contact back the way the cleanup does, AFTER every PUT has landed.
+  const refRow = s.__data('Test Entries').filter(r =>
+    cell(s, r, 'Referral Name') !== '' && cell(s, r, 'Referral FUB ID') !== '')[0];
+  check('the referral row carries a FUB id (setup)', !!refRow,
+    JSON.stringify(s.__data('Test Entries').map(r => cell(s, r, 'Referral FUB ID'))));
+  if (refRow) {
+    const id = cell(s, refRow, 'Referral FUB ID');
+    const got = JSON.parse(s.UrlFetchApp
+      .fetch('https://api.followupboss.com/v1/people/' + id, { method: 'get' })
+      .getContentText());
+    check('the QA tag SURVIVES the tags PUT that follows the create',
+      (got.tags || []).indexOf(s.QA_TEST_TAG) !== -1,
+      'tags are ' + JSON.stringify(got.tags) +
+      ' — an untagged QA contact is invisible to both cleanup paths');
+    check('and the name still carries the QA prefix',
+      /\[QA TEST\]/.test(String(got.firstName) + String(got.lastName)),
+      JSON.stringify(got.firstName) + ' ' + JSON.stringify(got.lastName));
+  }
+}
+
 // ---- The live suite's own new assertions -------------------------------------
 {
   // Two of the live suite's checks are about the mail service rather than the

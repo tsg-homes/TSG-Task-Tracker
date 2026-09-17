@@ -640,9 +640,15 @@ function raffleDeleteFubContactsById_(ids) {
       var name = String(who.body.firstName || '') + ' ' + String(who.body.lastName || '');
       var tagged = tags.some(function (t) { return String(t) === QA_TEST_TAG; });
       var prefixed = name.indexOf(QA_TEST_PREFIX.trim()) !== -1;
-      if (!tagged || !prefixed) {
+      // The SOURCE is the second signal when the tag is missing. Runs before
+      // 2026-09-17 left QA referrals carrying the name prefix but no tag, because
+      // a tags PUT stripped it, and those strays were unreachable by a tool that
+      // demanded the tag. A name carrying the QA prefix AND a source naming this
+      // raffle is still two independent signals, so this stays a double gate.
+      var fromRaffle = String(who.body.source || '').indexOf(RAFFLE_SOURCE) !== -1;
+      if (!prefixed || !(tagged || fromRaffle)) {
         Logger.log('raffleDeleteFubContactsById_: REFUSING to delete ' + id +
-                   ' (tagged=' + tagged + ', prefixed=' + prefixed + ') — ' + name);
+                   ' (tagged=' + tagged + ', prefixed=' + prefixed + ', fromRaffle=' + fromRaffle + ') — ' + name);
         skipped++;
         return;
       }
@@ -1495,7 +1501,18 @@ function raffleUpdateReferralInFub_(entry, edited, test) {
 
   // Additive by the same rule as the entry path: never overwrite a populated
   // name, add emails and phones rather than replacing them.
+  //
+  // A FUB PUT on tags REPLACES the tag set rather than adding to it, so this has
+  // to re-assert the QA tag or it strips the one applyQaTestPersonMarking_ put
+  // on at create time, a second earlier. Caught live on 2026-09-17: seven QA
+  // referrals read back tagged=false with the name prefix intact, which left
+  // them invisible to both cleanup paths, since those search on the tag.
+  //
+  // applyQaTestPersonMarking_ is deliberately NOT used here: it would also set
+  // background, and on a PUT that overwrites the contact's background with
+  // nothing but the QA lead-in.
   var update = { tags: RAFFLE_REFERRAL_TAGS.concat([edited.role, 'Consented']) };
+  if (test) update.tags.push(QA_TEST_TAG);
   var timeframeId = null;
   try { timeframeId = resolveTimeframeId(edited.timeframe); } catch (tfErr) { timeframeId = null; }
   if (timeframeId !== null && timeframeId !== undefined) update.timeframeId = timeframeId;
@@ -1610,8 +1627,11 @@ function raffleMarkDeclinedInFub_(entry, test) {
       return null;
     }
   } else {
+    // Same trap as the consented PUT above: tags are replaced, not merged.
+    var declineTags = ['Do Not Contact', 'Referral Declined', 'Block Party 2026'];
+    if (test) declineTags.push(QA_TEST_TAG);
     raffleFubCall_('https://api.followupboss.com/v1/people/' + personId, 'put', {
-      tags: ['Do Not Contact', 'Referral Declined', 'Block Party 2026']
+      tags: declineTags
     }, apiKey);
   }
 
