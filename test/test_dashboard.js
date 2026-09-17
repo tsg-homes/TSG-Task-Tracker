@@ -72,7 +72,7 @@ const dom = new JSDOM(html, {
       if (u.includes('api=meetings')) { window.__meetingsFetchUrls.push(u); return { ok: true, status: 200, json: async () => ({ events: window.__pickerEvents || [], bestGuessId: null }) }; }
       if (u.includes('api=geocode')) return { ok: true, status: 200, json: async () => ({ ok: true, places: [{ label: '45 Baltimore Pike, Media, PA 19063, USA', name: '' }] }) };
       if (u.includes('api=mailSearch')) return { ok: true, status: 200, json: async () => ({ ok: true, threads: [{ url: 'https://mail.google.com/mail/u/0/#all/t9', label: 'Flyer proof thread', from: 'marj@thestawaszgroup.com', date: '2026-09-10', count: 2 }] }) };
-      if (u.includes('api=meetingSlots')) { window.__slotsUrl = u; return { ok: true, status: 200, json: async () => ({ ok: true, minutes: 60, guestCalendar: false, window: 'fallback', slots: [{ startISO: '2026-09-22T14:00:00.000Z', endISO: '2026-09-22T15:00:00.000Z', dateLabel: 'Tue, Sep 22', timeLabel: '10:00 AM–11:00 AM' }] }) }; }
+      if (u.includes('api=meetingSlots')) { window.__slotsUrl = u; return { ok: true, status: 200, json: async () => ({ ok: true, minutes: 60, guestCalendar: false, window: 'third', slots: [{ startISO: '2026-09-22T14:00:00.000Z', endISO: '2026-09-22T15:00:00.000Z', dateLabel: 'Tue, Sep 22', timeLabel: '10:00 AM–11:00 AM' }] }) }; }
       if (u.includes('api=driveSearch')) return { ok: true, status: 200, json: async () => ({ ok: true, files: [{ name: 'Fall Flyer Draft', url: 'https://docs.google.com/document/d/FLYER/edit', mime: 'application/vnd.google-apps.document', modified: '2026-09-14' }] }) };
       if (u.includes('api=linkLabel')) return { ok: true, status: 200, json: async () => ({ ok: true, label: 'Resolved Title', kind: 'drive' }) };
       return { ok: true, status: 200, json: async () => ({ ok: true, users: [], events: [], meetings: [] }) };
@@ -710,13 +710,14 @@ setTimeout(async () => {
   tryCall('the Claude prompt carries the task, its steps, links and the write-back instruction', () => {
     const t = w.findTask(1);
     const p = w.claudePromptFor_(t);
+    if (!p.startsWith('/optimize-prompt\n')) throw new Error('prompt does not invoke optimize-prompt');
     if (!p.includes('task #1') || !p.includes(t.title)) throw new Error('missing head');
     if (!p.includes('Steps:') || !p.includes(t.subitems[0].title)) throw new Error('missing steps');
     if (!p.includes('tsg-task-tracker-protocol')) throw new Error('missing write-back instruction');
     const links = w.claudeLinksFor_(t);
-    if (!links.cowork.startsWith('claude://cowork/new?q=TSG')) throw new Error('bad cowork url: ' + links.cowork.slice(0, 40));
-    if (!links.code.startsWith('claude://code/new?q=TSG') || links.code.includes('&repo=')) throw new Error('bad code url: ' + links.code.slice(0, 40));
-    if (!links.cloud.startsWith('https://claude.ai/code?prompt=TSG')) throw new Error('bad cloud url: ' + links.cloud.slice(0, 40));
+    if (!links.cowork.startsWith('claude://cowork/new?q=%2Foptimize-prompt')) throw new Error('bad cowork url: ' + links.cowork.slice(0, 40));
+    if (!links.code.startsWith('claude://code/new?q=%2Foptimize-prompt') || links.code.includes('&repo=')) throw new Error('bad code url: ' + links.code.slice(0, 40));
+    if (!links.cloud.startsWith('https://claude.ai/code?prompt=%2Foptimize-prompt')) throw new Error('bad cloud url: ' + links.cloud.slice(0, 40));
     w.eval("CLAUDE_REPO = 'tsg-homes/task-tracker'");
     const withRepo = w.claudeLinksFor_(t);
     if (!withRepo.code.endsWith('&repo=tsg-homes%2Ftask-tracker') || !withRepo.cloud.endsWith('&repositories=tsg-homes%2Ftask-tracker')) throw new Error('repo not applied');
@@ -769,12 +770,62 @@ setTimeout(async () => {
     if (!w.__slotsUrl.includes('end=2026-12-01')) throw new Error('window not bounded by the due date');
     if (!doc.getElementById('mfSlots').textContent.includes('Tue, Sep 22')) throw new Error('slot row missing');
     if (!doc.getElementById('mfSlots').textContent.includes('not shared')) throw new Error('unshared-calendar hint missing');
-    if (!doc.getElementById('mfSlots').textContent.includes('Nothing free Mon–Thu 9–2')) throw new Error('fallback hint missing');
+    if (!doc.getElementById('mfSlots').textContent.includes('plus Friday 10–2')) throw new Error('third-window hint missing');
+    if (!w.__slotsUrl.includes('blocks=1')) throw new Error('blocks default not sent: ' + w.__slotsUrl);
+    if (!doc.getElementById('mfBlocks') || !doc.getElementById('mfBlocks').checked) throw new Error('blocks checkbox missing or unchecked');
     w.useMeetingSlot_(0);
     if (doc.getElementById('mfDate').value !== '2026-09-22') throw new Error('date not filled: ' + doc.getElementById('mfDate').value);
     if (!/^\d\d:\d\d$/.test(doc.getElementById('mfStart').value)) throw new Error('start not filled');
     if (doc.getElementById('mfDuration').value !== '60') throw new Error('duration not filled');
     w.closeMeetingPicker();
+  });
+
+  // Due time + reminders (2026-09-17)
+  tryCall('modal Due row has a time input and a reminder select; a preset computes remindAt from the due date and time', () => {
+    const t = w.findTask(1);
+    t.timelineEnd = '2026-09-25'; delete t.dueTime; delete t.remindAt;
+    w.openTaskCard(1);
+    const html = doc.getElementById('modalMeta').innerHTML;
+    if (!html.includes('type="time"') || !html.includes('remind-select')) throw new Error('controls missing');
+    w.modalDueTimeChange(1, '14:00');
+    if (w.findTask(1).dueTime !== '14:00') throw new Error('dueTime not set');
+    w.onRemindPreset(1, null, '60');
+    if (w.findTask(1).remindAt !== '2026-09-25T13:00') throw new Error('remindAt ' + w.findTask(1).remindAt);
+    if (!w.findTask(1).history.some(h => h.field === 'remindAt')) throw new Error('no history');
+  });
+  tryCall('a preset reminder follows a due-date or due-time change; clearing removes it', () => {
+    w.modalDueChange(1, '2026-09-26');
+    if (w.findTask(1).remindAt !== '2026-09-26T13:00') throw new Error('did not follow date: ' + w.findTask(1).remindAt);
+    w.modalDueTimeChange(1, '09:00');
+    if (w.findTask(1).remindAt !== '2026-09-26T08:00') throw new Error('did not follow time: ' + w.findTask(1).remindAt);
+    w.findTask(1).reminderSentAt = '2026-09-17T12:00:00Z';
+    w.onRemindPreset(1, null, '');
+    if (w.findTask(1).remindAt || w.findTask(1).reminderSentAt) throw new Error('not cleared');
+  });
+  tryCall('custom reminder takes a datetime; without a due date only Custom works', () => {
+    w.onRemindPreset(1, null, 'custom');
+    if (!w.findTask(1).remindAt) throw new Error('custom did not seed a time');
+    w.onRemindCustom(1, null, '2026-09-24T07:45');
+    if (w.findTask(1).remindAt !== '2026-09-24T07:45') throw new Error('custom not stored');
+    const t = w.findTask(1); t.timelineEnd = ''; delete t.remindAt;
+    w.onRemindPreset(1, null, '15');
+    if (t.remindAt) throw new Error('preset should refuse without a due date');
+    t.timelineEnd = '2026-09-15'; delete t.dueTime;
+    w.closeTaskCard();
+  });
+  tryCall('subtask rows carry a time input and a reminder select', () => {
+    w.setView('board');
+    w.eval("expandedSubtasks.add(1)");
+    w.renderAll();
+    const row = doc.querySelector('tr.task-row[data-id="1"]');
+    const subHtml = doc.getElementById('board').innerHTML;
+    if (!subHtml.includes('sub-time')) throw new Error('subtask time input missing');
+    w.onDueTimeChange_(1, 0, '11:00');
+    if (w.findTask(1).subitems[0].dueTime !== '11:00') throw new Error('sub dueTime not set');
+    w.findTask(1).subitems[0].timelineEnd = '2026-09-25';
+    w.onRemindPreset(1, 0, '0');
+    if (w.findTask(1).subitems[0].remindAt !== '2026-09-25T11:00') throw new Error('sub remindAt ' + w.findTask(1).subitems[0].remindAt);
+    delete w.findTask(1).subitems[0].remindAt; delete w.findTask(1).subitems[0].dueTime;
   });
 
   tryCall('setView(table)', () => w.setView('table'));

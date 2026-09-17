@@ -484,8 +484,10 @@ times when both are free before the deadline, duration from the estimate in Goog
   `https://claude.ai/code?prompt=<prompt>&repositories=<repo>` (claude.ai/code, pull down with
   `claude --teleport`); "Open linked session" when the task links a claude.ai session (opens it,
   prompt copied, since an existing session cannot take a prompt by URL); "Copy prompt".
-  `claudePromptFor_`: id, title, fields, notes capped at 4000 chars (desktop q limit ~14k), steps,
-  links, write-back instruction naming the tsg-task-tracker-protocol skill. claude:// links are
+  `claudePromptFor_`: starts with `/optimize-prompt` (per Durand 2026-09-17 "use the optimize
+  prompt skill to generate the prompts": the receiving session recomposes the brief and runs it),
+  then id, title, fields, notes capped at 4000 chars (desktop q limit ~14k), steps, links,
+  write-back instruction naming the tsg-task-tracker-protocol skill. claude:// links are
   opened by same-tab navigation. Settings > Team "Claude Code repo" -> `set_meta {claudeRepo}`
   (`CLAUDE_REPO`), optional owner/repo.
 - Directions: Location row gets "Directions" (Maps directions URL, home base -> location, in the
@@ -496,10 +498,33 @@ times when both are free before the deadline, duration from the estimate in Goog
   ignored) plus the guest's via `CalendarApp.getCalendarById` (must be shared, SOP 09; else
   `guestCalendar:false` and Durand-only slots), 2 per day, 10 max, window capped at 42 days.
   `tsgDurationBucket_` / dashboard `meetingBucket_`: 15/30/45/60/90/120 from estHours (30 when
-  none). Preferred window Mon-Thu 09:00-14:00 (`TSG_MEETING_WINDOW_PREFERRED`), the wider
-  Mon-Fri 07:30-16:00 only when the preferred one has nothing (`window: 'fallback'`, the form
-  says so) — per Durand "default the meeting time search to 9-2 mon-thur, show outside that
-  only if there are no matches" (backend 2026-09-17.2, dashboard UI 2026-09-17.5). The picker's "+ New meeting" form lists "Suggested times" up to the item's due date
+  none). Windows cascade (`TSG_MEETING_WINDOWS`, per Durand 2026-09-17): 'preferred' Mon-Thu
+  9-2, then 'second' Mon-Thu 8-4 only when that has nothing, then 'third' Mon-Thu 8-4 plus Fri
+  10-2 only when the second has nothing; the form says which applied. The day template's errand
+  (10:00-10:30), lunch (12-1) and relief (14:00-14:20) blocks (`TSG_DAY_BLOCKS`) are busy by
+  default ("exclude errands and break blocks by default"); `&blocks=0` / the form's "skip
+  errand and break blocks" checkbox lifts that (backend 2026-09-17.3, dashboard UI 2026-09-17.6). The picker's "+ New meeting" form lists "Suggested times" up to the item's due date
   (`loadMeetingSlots_`, `useMeetingSlot_` fills date/start/duration; guest email change reloads).
 - Scopes: GmailApp (read) and MailApp were already in use (verifyEmail, write-failure mail), so no
   new authorization was needed.
+
+## Due time and reminders (2026-09-17, backend 2026-09-17.3, dashboard UI 2026-09-17.6)
+
+- Per Durand: "add a reminder function and optional time component for due dates". Fields on
+  tasks AND subtasks: `dueTime` 'HH:mm' (optional; `timelineEnd` stays the date and the
+  scheduler ignores the time), `remindAt` 'YYYY-MM-DDTHH:mm' in the script time zone,
+  `reminderSentAt` (server-set ISO). `dueTime` / `remindAt` are in both DIFF_FIELDS lists.
+- Backend: `tsgIndexReminders_` runs inside `tsgAutoScheduleDoc_` (every write) and stores the
+  earliest pending reminder (`tsgPendingReminders_`: remindAt set, not sent, item not Done) in
+  script property `TSG_NEXT_REMINDER`. `tsgInboxTick` (the installed 1-minute trigger) calls
+  `tsgReminderTick_` first: no Drive read until the property is due; then it emails OWNER_EMAIL
+  one message per due item (subject "Reminder: <title> — due <date> <time>", body with parent,
+  priority, delegate, location, notes, links) and queues a `bulk` patch (source "Reminder")
+  stamping `reminderSentAt`; a 15-minute cache key `reminderFired:<key>` guards against a double
+  send before the stamp lands. No new trigger or scope (MailApp already in use).
+- Dashboard: the modal Due row and every subtask row carry a time input and a bell select
+  (`REMIND_PRESETS`: none / at due time / 15 min / 1 h / 1 day before / Custom with a
+  datetime-local). Presets are computed from the due date + due time (09:00 when no time) and
+  follow later date/time changes (`followDueReminder_`, `onDueTimeChange_`); a change clears
+  `reminderSentAt`; "· sent" shows once emailed. A preset without a due date is refused (Custom
+  still works). The board row shows the time as a chip next to the date.

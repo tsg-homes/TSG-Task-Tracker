@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-17.2';
+const TSG_CODE_VERSION = '2026-09-17.3';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -1073,10 +1073,92 @@ function tsgAssertOwner_(what) {
 }
 
 function tsgInboxTick() {
+  // Reminders ride on this minute tick (2026-09-17): a script property holds the earliest
+  // pending remindAt, so nothing is read from Drive until one is actually due.
+  try { tsgReminderTick_(); } catch (remErr) { Logger.log('[reminders] tick failed: ' + remErr.message); }
   // processInbox_ sets a short-lived "inbox was empty" flag; while it holds, skip the Drive
   // listing entirely (the dashboard's own saves clear the flag and process immediately).
   if (tsgCacheGet_('inboxEmptyUntil')) return;
   processInbox_();
+}
+
+// ---- Reminders (2026-09-17, per Durand: "add a reminder function and optional time component
+// for due dates"). Fields on tasks and subtasks: dueTime 'HH:mm' (optional, the due date stays
+// timelineEnd), remindAt 'YYYY-MM-DDTHH:mm' (script time zone), reminderSentAt (ISO, server-set).
+// Every data write re-indexes the earliest pending reminder into script property
+// TSG_NEXT_REMINDER; tsgInboxTick fires due ones by email to the owner and queues an inbox
+// patch stamping reminderSentAt (a 15-minute cache guard prevents a second send meanwhile).
+var TSG_REMINDER_PROP = 'TSG_NEXT_REMINDER';
+function tsgReminderDate_(remindAt) {
+  if (!remindAt || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(String(remindAt))) return null;
+  var d = new Date(String(remindAt).slice(0, 16) + ':00');
+  return isNaN(d.getTime()) ? null : d;
+}
+function tsgReminderPending_(item) {
+  if (!item || !item.remindAt || item.reminderSentAt) return false;
+  if (item.done || item.status === 'Done') return false;
+  return !!tsgReminderDate_(item.remindAt);
+}
+function tsgPendingReminders_(doc) {
+  var out = [];
+  (doc && doc.tasks || []).forEach(function(t) {
+    if (!t) return;
+    if (tsgReminderPending_(t)) out.push({ key: 't' + t.id, task: t, item: t, subIdx: null, at: tsgReminderDate_(t.remindAt) });
+    (t.subitems || []).forEach(function(s, i) {
+      if (tsgReminderPending_(s)) out.push({ key: 't' + t.id + 's' + i, task: t, item: s, subIdx: i, at: tsgReminderDate_(s.remindAt) });
+    });
+  });
+  out.sort(function(a, b) { return a.at - b.at; });
+  return out;
+}
+function tsgIndexReminders_(doc) {
+  var pending = tsgPendingReminders_(doc);
+  var next = pending.length ? pending[0].at.toISOString() : '';
+  try { PropertiesService.getScriptProperties().setProperty(TSG_REMINDER_PROP, next); } catch (err) {}
+  return next;
+}
+function tsgReminderBody_(r) {
+  var it = r.item, t = r.task;
+  var lines = [];
+  if (r.subIdx != null) lines.push('Step of #' + t.id + ' ' + t.title);
+  lines.push('Due: ' + (it.timelineEnd || '(no date)') + (it.dueTime ? ' ' + it.dueTime : ''));
+  if (it.priority) lines.push('Priority: ' + it.priority);
+  if (it.delegate) lines.push('Delegate: ' + it.delegate);
+  if (it.location) lines.push('Location: ' + it.location);
+  var notes = String(it.notes || '').trim();
+  if (notes) lines.push('', notes.length > 600 ? notes.slice(0, 600) + '…' : notes);
+  var links = [it.doc].concat((it.docs || []).map(function(d) { return d && d.url; })).filter(Boolean);
+  if (links.length) lines.push('', 'Links:', links.join('\n'));
+  lines.push('', '— TSG Task Tracker reminder');
+  return lines.join('\n');
+}
+function tsgReminderTick_() {
+  var next = '';
+  try { next = PropertiesService.getScriptProperties().getProperty(TSG_REMINDER_PROP) || ''; } catch (err) { return { ok: false, error: err.message }; }
+  if (!next) return { ok: true, fired: 0 };
+  var now = new Date();
+  if (new Date(next) > now) return { ok: true, fired: 0, next: next };
+  var doc;
+  try { doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString()); }
+  catch (err) { return { ok: false, error: 'data unreadable: ' + err.message }; }
+  var pending = tsgPendingReminders_(doc);
+  var due = pending.filter(function(r) { return r.at <= now && !tsgCacheGet_('reminderFired:' + r.key); });
+  var ops = [];
+  due.forEach(function(r) {
+    var subject = 'Reminder: ' + r.item.title + (r.item.timelineEnd ? ' — due ' + r.item.timelineEnd + (r.item.dueTime ? ' ' + r.item.dueTime : '') : '');
+    try { MailApp.sendEmail(OWNER_EMAIL, subject, tsgReminderBody_(r)); }
+    catch (mailErr) { Logger.log('[reminders] send failed for ' + r.key + ': ' + mailErr.message); return; }
+    tsgCachePut_('reminderFired:' + r.key, '1', 900);
+    var sentAt = now.toISOString();
+    if (r.subIdx == null) ops.push({ op: 'update_task', id: r.task.id, fields: { reminderSentAt: sentAt } });
+    else ops.push({ op: 'update_subitem', id: r.task.id, index: r.subIdx, expectTitle: r.item.title, fields: { reminderSentAt: sentAt } });
+  });
+  if (ops.length) tsgQueueDataPatch_({ op: 'bulk', source: 'Reminder', ops: ops });
+  // Point the property at the next reminder still in the future; the queued patch's write
+  // re-indexes properly once it lands.
+  var later = pending.filter(function(r) { return r.at > now; });
+  try { PropertiesService.getScriptProperties().setProperty(TSG_REMINDER_PROP, later.length ? later[0].at.toISOString() : ''); } catch (err) {}
+  return { ok: true, fired: ops.length, next: later.length ? later[0].at.toISOString() : '' };
 }
 function tsgInstallInboxTrigger() {
   tsgAssertOwner_('tsgInstallInboxTrigger');
@@ -1410,7 +1492,7 @@ function doGet(e) {
   }
   if (e.parameter.api === 'meetingSlots') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
-    return ContentService.createTextOutput(JSON.stringify(tsgMeetingSlots_(e.parameter.guest, e.parameter.start, e.parameter.end, e.parameter.minutes)))
+    return ContentService.createTextOutput(JSON.stringify(tsgMeetingSlots_(e.parameter.guest, e.parameter.start, e.parameter.end, e.parameter.minutes, e.parameter.blocks)))
       .setMimeType(ContentService.MimeType.JSON);
   }
   if (e.parameter.api === 'geocode') {
@@ -2217,7 +2299,8 @@ function tsgDurationBucket_(minutes) {
   for (var i = 0; i < TSG_MEETING_BUCKETS.length; i++) if (TSG_MEETING_BUCKETS[i] >= m) return TSG_MEETING_BUCKETS[i];
   return TSG_MEETING_BUCKETS[TSG_MEETING_BUCKETS.length - 1];
 }
-function tsgMeetingSlots_(guestEmail, startStr, endStr, minutes) {
+function tsgMeetingSlots_(guestEmail, startStr, endStr, minutes, excludeBlocks) {
+  excludeBlocks = (excludeBlocks == null || excludeBlocks === '' ) ? true : !(excludeBlocks === false || excludeBlocks === '0' || excludeBlocks === 'false' || excludeBlocks === 0);
   var cal = CalendarApp.getDefaultCalendar();
   var tz = cal.getTimeZone();
   var todayIso = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
@@ -2246,14 +2329,19 @@ function tsgMeetingSlots_(guestEmail, startStr, endStr, minutes) {
   // Preferred window first (2026-09-17, per Durand: "default the meeting time search to 9-2
   // mon-thur, show outside that only if there are no matches in that window"), then the wider
   // work window (07:30-16:00, Mon-Fri) only when the preferred one has nothing.
+  // Errand / break blocks of the day template (the Today view's fixed blocks: errands 10:00,
+  // lunch 12:00, relief 14:00) are treated as busy unless the caller opts in to them —
+  // 2026-09-17 per Durand: "exclude errands and break blocks by default".
+  var blocks = excludeBlocks ? TSG_DAY_BLOCKS : [];
   function scan(win) {
     var out = [];
     for (var d = startIso; d <= endIso && out.length < 10; d = tsgAddDays_(d, 1)) {
       var dow = new Date(d + 'T12:00:00').getDay();
-      if (win.days.indexOf(dow) === -1) continue;
+      var hours = win[dow];
+      if (!hours) continue;
       var perDay = 0;
-      for (var hm = win.from; hm + dur <= win.to && perDay < 2; hm += 30) {
-        if (hm < 13 * 60 && hm + dur > 12 * 60) continue; // lunch
+      for (var hm = hours[0]; hm + dur <= hours[1] && perDay < 2; hm += 30) {
+        if (blocks.some(function(b) { return hm < b[1] && hm + dur > b[0]; })) continue;
         var sDate = new Date(d + 'T' + pad(Math.floor(hm / 60)) + ':' + pad(hm % 60) + ':00');
         var sMs = sDate.getTime(), eMs = sMs + dur * 60000;
         if (sMs < notBefore) continue;
@@ -2266,12 +2354,21 @@ function tsgMeetingSlots_(guestEmail, startStr, endStr, minutes) {
     }
     return out;
   }
-  var slots = scan(TSG_MEETING_WINDOW_PREFERRED), window = 'preferred';
-  if (!slots.length) { slots = scan(TSG_MEETING_WINDOW_FALLBACK); window = 'fallback'; }
-  return { ok: true, minutes: dur, guestEmail: guestEmail, guestCalendar: guestOk, start: startIso, end: endIso, window: window, slots: slots };
+  // Windows cascade (2026-09-17 per Durand): Mon-Thu 9-2 first; Mon-Thu 8-4 only when that has
+  // nothing; Mon-Thu 8-4 plus Friday 10-2 only when the second has nothing either.
+  var slots = [], window = '';
+  for (var w = 0; w < TSG_MEETING_WINDOWS.length && !slots.length; w++) { slots = scan(TSG_MEETING_WINDOWS[w].hours); window = TSG_MEETING_WINDOWS[w].name; }
+  return { ok: true, minutes: dur, guestEmail: guestEmail, guestCalendar: guestOk, start: startIso, end: endIso, window: window, excludeBlocks: excludeBlocks, slots: slots };
 }
-var TSG_MEETING_WINDOW_PREFERRED = { days: [1, 2, 3, 4], from: 9 * 60, to: 14 * 60 };          // Mon-Thu 9:00-14:00
-var TSG_MEETING_WINDOW_FALLBACK = { days: [1, 2, 3, 4, 5], from: 7 * 60 + 30, to: 16 * 60 };   // Mon-Fri 07:30-16:00
+// Hours per weekday (0 = Sunday) in minutes from midnight.
+var TSG_MEETING_WINDOWS = [
+  { name: 'preferred', hours: { 1: [9 * 60, 14 * 60], 2: [9 * 60, 14 * 60], 3: [9 * 60, 14 * 60], 4: [9 * 60, 14 * 60] } },
+  { name: 'second', hours: { 1: [8 * 60, 16 * 60], 2: [8 * 60, 16 * 60], 3: [8 * 60, 16 * 60], 4: [8 * 60, 16 * 60] } },
+  { name: 'third', hours: { 1: [8 * 60, 16 * 60], 2: [8 * 60, 16 * 60], 3: [8 * 60, 16 * 60], 4: [8 * 60, 16 * 60], 5: [10 * 60, 14 * 60] } }
+];
+// The day template's fixed blocks at their default positions (see the dashboard's
+// buildTodayFixed): errands 10:00-10:30, lunch 12:00-13:00, relief 14:00-14:20.
+var TSG_DAY_BLOCKS = [[10 * 60, 10 * 60 + 30], [12 * 60, 13 * 60], [14 * 60, 14 * 60 + 20]];
 
 // Send directions to the phone (2026-09-17, per Durand: "a send to phone button for
 // directions"): a Google Maps directions link from the home base to the task's location,
@@ -2881,9 +2978,9 @@ function backupTrackerFile_(key, payload) {
 // edits (replace_all) or 'unknown' if a caller genuinely didn't say. tags is diffed as
 // one whole-array entry rather than per-tag; every other field here is a plain scalar.
 var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned', 'dueTime', 'remindAt'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done', 'location', 'travelMode', 'travelMethod'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done', 'location', 'travelMode', 'travelMethod', 'dueTime', 'remindAt'];
 
 function tsgValuesEqual_(a, b) {
   if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a || []) === JSON.stringify(b || []);
@@ -5049,6 +5146,7 @@ function tsgItemHours_(r) {
 }
 
 function tsgAutoScheduleDoc_(doc) {
+  try { tsgIndexReminders_(doc); } catch (remErr) { Logger.log('[reminders] index failed: ' + remErr.message); }
   var tasks = doc.tasks || [];
 
   // Transient, recomputed from scratch each run: a warning from a previous pass must not

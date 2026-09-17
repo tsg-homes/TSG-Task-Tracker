@@ -564,6 +564,11 @@
   :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
   .icon-btn:hover { background: var(--surface-2); color: var(--text-primary); }
   .pin-btn { font-size: 12px; opacity: 0.35; margin-right: 4px; vertical-align: middle; }
+  .remind-wrap { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 12px; }
+  .remind-select { font-size: 11px; padding: 2px 4px; }
+  .sub-time { width: 84px; margin-left: 4px; }
+  .due-time-chip { margin-left: 4px; }
+  .mf-blocks { margin-left: 10px; font-weight: normal; cursor: pointer; }
   .pin-btn.on { opacity: 1; }
   .pin-btn:hover { opacity: 1; }
   .group-section.pinned-group { border-color: var(--brand); }
@@ -1543,7 +1548,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-17.5';
+  const UI_VERSION = '2026-09-17.6';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2751,13 +2756,16 @@
   function hasClaudeLink_(t) { return (t.docs || []).some(d => d && /claude\.ai\//.test(String(d.url || ''))); }
   function claudeLinkOf_(t) { const d = (t.docs || []).find(d => d && /claude\.ai\//.test(String(d.url || ''))); return d ? d.url : ''; }
   function claudePromptFor_(t) {
-    const lines = [];
+    // The receiving session runs Durand's optimize-prompt skill on the raw task description
+    // below (2026-09-17: "use the optimize prompt skill to generate the prompts"): the skill
+    // recomposes the brief, matches the workstream and executes.
+    const lines = ['/optimize-prompt', ''];
     lines.push('TSG Task Tracker — task #' + t.id + ': ' + (t.title || ''));
     const meta = [];
     if (t.group) meta.push('Group: ' + t.group);
     if (t.priority) meta.push('Priority: ' + t.priority);
     meta.push('Status: ' + rollupStatus(t));
-    if (t.timelineEnd) meta.push('Due: ' + t.timelineEnd);
+    if (t.timelineEnd) meta.push('Due: ' + t.timelineEnd + (t.dueTime ? ' ' + t.dueTime : ''));
     if (t.estHours != null) meta.push('Estimate: ' + t.estHours + ' h');
     if (taskDelegate(t)) meta.push('Delegate: ' + taskDelegate(t));
     if (t.location) meta.push('Location: ' + t.location);
@@ -4822,7 +4830,7 @@
             <span class="sub-delegate" title="Delegate — who this subtask is delegated to">${avatarHtml(s.delegate)}${delegateSelect(t.id, i, s.delegate)}</span>
             ${subPillSelect('status', s.status, t.id, i)}
             ${subPillSelect('priority', s.priority, t.id, i)}
-            <span class="sub-due ${overdueSub ? 'overdue' : ''}"><input type="date" class="due-input" value="${due}" onchange="onSubFieldChange(${t.id}, ${i}, 'timelineEnd', this.value)"></span>
+            <span class="sub-due ${overdueSub ? 'overdue' : ''}"><input type="date" class="due-input" value="${due}" onchange="onSubFieldChange(${t.id}, ${i}, 'timelineEnd', this.value)"><input type="time" class="due-input sub-time" value="${s.dueTime || ''}" title="Optional time of day" onchange="onDueTimeChange_(${t.id}, ${i}, this.value)">${reminderControlHtml_(s, t.id, i)}</span>
             <span class="sub-hours"><input type="number" min="0.25" step="0.25" class="due-input sub-hours-input" value="${s.estHours != null ? s.estHours : ''}" placeholder="hrs" onchange="onSubFieldChange(${t.id}, ${i}, 'estHours', this.value ? Number(this.value) : null)"></span>
             ${t.subitems.length > 1 ? `<select class="due-input sub-depends-select" title="Depends on — defaults to the subitem right before it" onchange="onSubFieldChange(${t.id}, ${i}, 'depends', this.value)"><option value="">${i > 0 ? 'Previous subtask (default)' : 'No dependency (default)'}</option>${dependsOptions}</select>` : ''}
           </div>
@@ -4907,7 +4915,7 @@
           <div class="cell-group-stack">
             <div class="cell-group-row tags-cell">${typeBadgeHtml(t)}${tagsHtml}<button type="button" class="icon-btn" onclick="addTag(${t.id})" title="Add tag">+</button></div>
             <div class="cell-group-row">
-              <span class="due-cell ${isOverdue(t) ? 'overdue' : ''}"><input type="date" class="due-input" value="${t.timelineEnd || ''}" onchange="onDueChange(${t.id}, this)"></span>
+              <span class="due-cell ${isOverdue(t) ? 'overdue' : ''}"><input type="date" class="due-input" value="${t.timelineEnd || ''}" onchange="onDueChange(${t.id}, this)">${t.dueTime ? `<span class="hist-time due-time-chip" title="Due time">${escapeHtml(t.dueTime)}</span>` : ''}</span>
               <div class="progress-wrap"><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div><span class="pct">${pct}%</span></div>
             </div>
             <div class="cell-group-row">${bonusCountdownHtml_(t)}</div>
@@ -4973,8 +4981,9 @@
   function onDueChange(id, el) {
     const t = findTask(id);
     const before = t.timelineEnd;
+    const presetBefore = remindPresetOf_(t);
     t.timelineEnd = el.value;
-    if (before !== el.value) { logHistory(t, 'due', before, el.value); cascadeDependents(id); }
+    if (before !== el.value) { logHistory(t, 'due', before, el.value); cascadeDependents(id); followDueReminder_(t, presetBefore); }
     renderAll(); scheduleSave();
   }
   function onTitleEdit(id, el) {
@@ -5571,7 +5580,7 @@
           <label>Start<input type="time" class="due-input" id="mfStart" value="10:00"></label>
           <label>Duration (min)<input type="number" class="due-input" id="mfDuration" value="${meetingBucket_(item.estHours)}" min="15" step="15"></label>
         </div>
-        <div class="sched-detail-note">Suggested times — Mon–Thu 9–2 when free for both of you, before the due date, ${meetingBucket_(item.estHours)} min from the estimate</div>
+        <div class="sched-detail-note">Suggested times — Mon–Thu 9–2 when free for both of you, before the due date, ${meetingBucket_(item.estHours)} min from the estimate <label class="mf-blocks"><input type="checkbox" id="mfBlocks" checked onchange="onMfGuestChange_()"> skip errand and break blocks</label></div>
         <div class="meeting-list" id="mfSlots"><div class="history-empty">Finding times…</div></div>
         <label>Location / video link<input type="text" class="text-input" id="mfLocation" value=""></label>
         <label>Description<textarea class="text-input" id="mfDescription" rows="3">${escapeHtml(item.notes || '')}</textarea></label>
@@ -5606,12 +5615,15 @@
     const minutes = Number((document.getElementById('mfDuration') || {}).value) || meetingBucket_(item.estHours);
     const end = item.timelineEnd && item.timelineEnd > todayISO() ? item.timelineEnd : addDays(todayISO(), 14);
     try {
-      const res = await apiFetch('api=meetingSlots&guest=' + encodeURIComponent(guestEmail || '') + '&start=' + todayISO() + '&end=' + end + '&minutes=' + minutes);
+      const blocksEl = document.getElementById('mfBlocks');
+      const blocks = blocksEl && !blocksEl.checked ? '0' : '1';
+      const res = await apiFetch('api=meetingSlots&guest=' + encodeURIComponent(guestEmail || '') + '&start=' + todayISO() + '&end=' + end + '&minutes=' + minutes + '&blocks=' + blocks);
       const data = await res.json();
       if (!data || data.ok === false) throw new Error((data && data.error) || 'No answer');
       MF_SLOTS = data.slots || [];
       let note = guestEmail && !data.guestCalendar ? '<div class="meeting-form-hint">' + escapeHtml(guestEmail) + '\'s calendar is not shared with you, so these are only your own free times.</div>' : '';
-      if (data.window === 'fallback' && MF_SLOTS.length) note += '<div class="meeting-form-hint">Nothing free Mon–Thu 9–2 before the due date — these are other work hours (Mon–Fri 7:30–4).</div>';
+      if (data.window === 'second' && MF_SLOTS.length) note += '<div class="meeting-form-hint">Nothing free Mon–Thu 9–2 before the due date — showing Mon–Thu 8–4.</div>';
+      if (data.window === 'third' && MF_SLOTS.length) note += '<div class="meeting-form-hint">Nothing free Mon–Thu 9–2 or 8–4 before the due date — showing Mon–Thu 8–4 plus Friday 10–2.</div>';
       host.innerHTML = note + (MF_SLOTS.length
         ? MF_SLOTS.map((sl, i) => `<div class="meeting-row" onclick="useMeetingSlot_(${i})"><div class="meeting-row-main"><b>${escapeHtml(sl.dateLabel)}</b></div><div class="meeting-row-sub">${escapeHtml(sl.timeLabel)}</div></div>`).join('')
         : '<div class="history-empty">No shared free time before ' + escapeHtml(end) + ' — pick a time by hand or move the due date.</div>');
@@ -5716,12 +5728,81 @@
     if (before !== val) logHistory(t, kind, before, val);
     renderAll(); openTaskCard(id); scheduleSave();
   }
+  // Optional due time + reminders (2026-09-17, per Durand: "add a reminder function and optional
+  // time component for due dates"). remindAt is a local 'YYYY-MM-DDTHH:mm'; the backend emails the
+  // owner when it comes due and stamps reminderSentAt. Presets are relative to the due date and
+  // its time (09:00 when no time is set).
+  const REMIND_PRESETS = [['', 'No reminder'], ['0', 'At due time'], ['15', '15 min before'], ['60', '1 hour before'], ['1440', '1 day before'], ['custom', 'Custom…']];
+  function remindPresetOf_(item) {
+    if (!item.remindAt) return '';
+    const base = dueDateTime_(item);
+    if (!base) return 'custom';
+    const diff = Math.round((base - new Date(item.remindAt.slice(0, 16) + ':00')) / 60000);
+    return REMIND_PRESETS.some(p => p[0] === String(diff)) ? String(diff) : 'custom';
+  }
+  function dueDateTime_(item) {
+    if (!item.timelineEnd) return null;
+    const dt = new Date(item.timelineEnd + 'T' + (item.dueTime || '09:00') + ':00');
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+  function localMinuteIso_(dt) { const pad = n => (n < 10 ? '0' : '') + n; return dt.getFullYear() + '-' + pad(dt.getMonth() + 1) + '-' + pad(dt.getDate()) + 'T' + pad(dt.getHours()) + ':' + pad(dt.getMinutes()); }
+  function remindAtFor_(item, preset) {
+    if (preset === '' || preset == null) return '';
+    if (preset === 'custom') return item.remindAt || '';
+    const base = dueDateTime_(item);
+    if (!base) return '';
+    return localMinuteIso_(new Date(base.getTime() - Number(preset) * 60000));
+  }
+  function reminderControlHtml_(item, id, idx) {
+    const preset = remindPresetOf_(item);
+    const args = idx == null ? `${id}, null` : `${id}, ${idx}`;
+    const sent = item.reminderSentAt ? ` <span class="hist-time" title="Reminder emailed ${escapeHtml(item.reminderSentAt)}">· sent</span>` : '';
+    return `<span class="remind-wrap" title="Email reminder to you">&#128276; <select class="due-input remind-select" onchange="onRemindPreset(${args}, this.value)">${REMIND_PRESETS.map(p => `<option value="${p[0]}" ${p[0] === preset ? 'selected' : ''}>${p[1]}</option>`).join('')}</select>${preset === 'custom' ? `<input type="datetime-local" class="due-input" value="${escapeHtml(item.remindAt || '')}" onchange="onRemindCustom(${args}, this.value)">` : ''}${sent}</span>`;
+  }
+  function itemFor_(id, idx) { const t = findTask(id); if (!t) return null; return { t, item: idx == null ? t : (t.subitems || [])[idx] }; }
+  function setRemindAt_(ctx, id, idx, val) {
+    const before = ctx.item.remindAt || '';
+    if (val) ctx.item.remindAt = val; else delete ctx.item.remindAt;
+    delete ctx.item.reminderSentAt;
+    if (before !== (val || '')) logHistory(ctx.t, idx == null ? 'remindAt' : 'subitem-remindAt', before || null, val || null);
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+  function onRemindPreset(id, idx, preset) {
+    const ctx = itemFor_(id, idx); if (!ctx || !ctx.item) return;
+    if (preset === 'custom') {
+      if (!ctx.item.remindAt) { const base = dueDateTime_(ctx.item) || new Date(Date.now() + 3600000); ctx.item.remindAt = localMinuteIso_(base); }
+      setRemindAt_(ctx, id, idx, ctx.item.remindAt); return;
+    }
+    if (preset !== '' && !dueDateTime_(ctx.item)) { alert('Set a due date first, or pick Custom for a specific time.'); renderAll(); if (currentModalTaskId === id) openTaskCard(id); return; }
+    setRemindAt_(ctx, id, idx, remindAtFor_(ctx.item, preset));
+  }
+  function onRemindCustom(id, idx, val) {
+    const ctx = itemFor_(id, idx); if (!ctx || !ctx.item) return;
+    setRemindAt_(ctx, id, idx, val ? val.slice(0, 16) : '');
+  }
+  function onDueTimeChange_(id, idx, val) {
+    const ctx = itemFor_(id, idx); if (!ctx || !ctx.item) return;
+    const before = ctx.item.dueTime || '';
+    const preset = remindPresetOf_(ctx.item);
+    if (val) ctx.item.dueTime = val; else delete ctx.item.dueTime;
+    if (before !== (val || '')) logHistory(ctx.t, idx == null ? 'dueTime' : 'subitem-dueTime', before || null, val || null);
+    // A preset reminder follows the due time.
+    if (preset && preset !== 'custom') { ctx.item.remindAt = remindAtFor_(ctx.item, preset); delete ctx.item.reminderSentAt; }
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+  function modalDueTimeChange(id, val) { onDueTimeChange_(id, null, val); }
   function modalDueChange(id, val) {
     const t = findTask(id);
     const before = t.timelineEnd;
+    const presetBefore = remindPresetOf_(t);
     t.timelineEnd = val;
-    if (before !== val) { logHistory(t, 'due', before, val); cascadeDependents(id); }
+    if (before !== val) { logHistory(t, 'due', before, val); cascadeDependents(id); followDueReminder_(t, presetBefore); }
     renderAll(); openTaskCard(id); scheduleSave();
+  }
+  // The preset is read BEFORE the date moves: a one-day shift would otherwise read as the
+  // "1 day before" preset.
+  function followDueReminder_(item, preset) {
+    if (preset && preset !== 'custom') { item.remindAt = remindAtFor_(item, preset); delete item.reminderSentAt; }
   }
   function modalHoursChange(id, val) {
     const t = findTask(id);
@@ -5906,7 +5987,7 @@
       `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}</div>`,
       `<div class="modal-row"><b>Priority</b>${modalPillSelect('priority', t.priority, id)}</div>`,
       `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Actionable Task')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,
-      `<div class="modal-row"><b>Due</b><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)"></div>`,
+      `<div class="modal-row"><b>Due</b><span class="modal-est-wrap"><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)"><input type="time" class="due-input" value="${t.dueTime || ''}" title="Optional time of day" onchange="modalDueTimeChange(${id}, this.value)">${reminderControlHtml_(t, id, null)}</span></div>`,
       (t.timelineEnd ? `<div class="modal-row"><b>Countdown</b>${bonusCountdownHtml_(t)}</div>` : ''),
       `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button>${t.location ? `<a class="btn small" href="${escapeHtml(directionsUrl_(t))}" target="_blank" rel="noopener" title="Open directions in Google Maps">&#128506; Directions</a><button type="button" class="btn small" onclick="sendDirections(${id}, this)" title="Email the Maps directions link to your phone">&#128241; Send to phone</button>` : ''}</span></div>`,
       `<div class="modal-row"><b>Estimate</b><span class="modal-est-wrap"><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs${(pendingJudgment_(id, 'enrich') || pendingJudgment_(id, 'estimate')) ? ' <span class="hist-time" title="Queued for the hourly Claude Routine: the title, notes and fields update when it answers">· queued for Claude</span>' : ''}${travelRowHtml_(t)}</span></div>`,

@@ -1420,15 +1420,27 @@ section('Links every update: Gmail candidates, web links, meeting slots, directi
   guestCalendarEvents = [{ start: new Date(dIso + 'T09:00:00'), end: new Date(dIso + 'T10:00:00') }];
   const slots = sandbox.tsgMeetingSlots_('marj@thestawaszgroup.com', dIso, dIso, 60);
   check('preferred window Mon-Thu 9-2: slots avoid both calendars, start after the guest is free, at most 2 per day', slots.ok && slots.window === 'preferred' && slots.guestCalendar === true && slots.minutes === 60 && slots.slots.length === 2 && new Date(slots.slots[0].startISO).getHours() === 10 && slots.slots.every(sl => sl.dateLabel && sl.timeLabel));
-  calendarEventsFixture = [{ id: 'allday', title: 'Blocked 9-2', start: new Date(dIso + 'T09:00:00'), end: new Date(dIso + 'T14:00:00') }];
+  calendarEventsFixture = [{ id: 'blk', title: 'Blocked 9-2', start: new Date(dIso + 'T09:00:00'), end: new Date(dIso + 'T14:00:00') }];
   guestCalendarEvents = [];
   const fb = sandbox.tsgMeetingSlots_('marj@thestawaszgroup.com', dIso, dIso, 30);
-  check('outside 9-2 only when the preferred window has nothing: fallback slots at 7:30 and 8:00', fb.window === 'fallback' && fb.slots.length === 2 && new Date(fb.slots[0].startISO).getHours() === 7 && new Date(fb.slots[1].startISO).getHours() === 8);
+  check('second window Mon-Thu 8-4 only when 9-2 has nothing: slots at 8:00 and 8:30', fb.window === 'second' && fb.slots.length === 2 && new Date(fb.slots[0].startISO).getHours() === 8 && new Date(fb.slots[0].startISO).getMinutes() === 0 && new Date(fb.slots[1].startISO).getMinutes() === 30);
+  calendarEventsFixture = [{ id: 'blk2', title: 'Blocked 8-4', start: new Date(dIso + 'T08:00:00'), end: new Date(dIso + 'T16:00:00') }];
   const fri = new Date(dIso + 'T12:00:00'); fri.setDate(fri.getDate() + (5 - fri.getDay()));
   const friIso = fri.getFullYear() + '-' + pad(fri.getMonth() + 1) + '-' + pad(fri.getDate());
+  const third = sandbox.tsgMeetingSlots_('', dIso, friIso, 30);
+  check('third window adds Friday 10-2 only when Mon-Thu 8-4 has nothing', third.window === 'third' && third.slots.length > 0 && third.slots.every(sl => new Date(sl.startISO).getDay() === 5 && new Date(sl.startISO).getHours() >= 10 && new Date(sl.startISO).getHours() < 14));
   calendarEventsFixture = [];
-  const friSlots = sandbox.tsgMeetingSlots_('', friIso, friIso, 30);
-  check('a Friday only appears through the fallback window', friSlots.window === 'fallback' && friSlots.slots.length === 2);
+  const friOnly = sandbox.tsgMeetingSlots_('', friIso, friIso, 30);
+  check('a Friday alone falls through to the third window', friOnly.window === 'third' && friOnly.slots.length === 2);
+  // errand / break blocks excluded by default (10:00-10:30, 12-1, 14:00-14:20)
+  calendarEventsFixture = [{ id: 'am', title: 'Morning', start: new Date(dIso + 'T09:00:00'), end: new Date(dIso + 'T10:00:00') }];
+  const withBlocks = sandbox.tsgMeetingSlots_('', dIso, dIso, 30);
+  check('errand block 10:00-10:30 is skipped by default (first slot 10:30)', withBlocks.excludeBlocks === true && withBlocks.slots.length && new Date(withBlocks.slots[0].startISO).getHours() === 10 && new Date(withBlocks.slots[0].startISO).getMinutes() === 30);
+  const noBlocks = sandbox.tsgMeetingSlots_('', dIso, dIso, 30, '0');
+  check('blocks=0 allows the errand block slot at 10:00', noBlocks.excludeBlocks === false && new Date(noBlocks.slots[0].startISO).getHours() === 10 && new Date(noBlocks.slots[0].startISO).getMinutes() === 0);
+  calendarEventsFixture = [{ id: 'am2', title: 'Morning', start: new Date(dIso + 'T09:00:00'), end: new Date(dIso + 'T11:30:00') }];
+  const lunchTest = sandbox.tsgMeetingSlots_('', dIso, dIso, 60);
+  check('a 60-min slot never overlaps lunch 12-1 (11:30 would, so 13:00 is first)', lunchTest.slots.length && new Date(lunchTest.slots[0].startISO).getHours() === 13);
   calendarEventsFixture = [{ id: 'busy1', title: 'Durand busy', start: new Date(dIso + 'T07:30:00'), end: new Date(dIso + 'T09:00:00') }];
   const lunchFree = slots.slots.every(sl => { const h = new Date(sl.startISO).getHours(); return !(h === 12); });
   check('no slot starts inside lunch', lunchFree);
@@ -1448,6 +1460,44 @@ section('Links every update: Gmail candidates, web links, meeting slots, directi
   check('directions are emailed to the owner with a Maps link in the chosen mode', dir.ok && sentMail.length === 1 && sentMail[0].to === 'durand@thestawaszgroup.com' && dir.url.includes('travelmode=transit') && dir.url.includes('origin=728') && sentMail[0].body.includes(dir.url));
   check('directions refuse without a location', sandbox.tsgSendDirections_({ location: '' }).ok === false);
   sandbox.PropertiesService.getScriptProperties = origProps2;
+}
+
+section('Reminders and due time (2026-09-17)');
+{
+  const props = {};
+  const origProps3 = sandbox.PropertiesService.getScriptProperties;
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (props[k] == null ? null : props[k]), setProperty: (k, v) => { props[k] = v; } });
+  const d = freshDoc();
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { dueTime: '10:30', remindAt: '2026-09-20T10:15' }, source: 'Durand', ts: '2026-09-17T12:00:00Z' });
+  check('dueTime and remindAt are logged task fields', d.tasks[0].dueTime === '10:30' && d.tasks[0].history.some(h => h.field === 'remindAt' && h.to === '2026-09-20T10:15'));
+  sandbox.tsgAutoScheduleDoc_(d);
+  check('every write indexes the earliest pending reminder into the script property', props.TSG_NEXT_REMINDER === new Date('2026-09-20T10:15:00').toISOString());
+  d.tasks[0].subitems = [{ title: 'Step one', done: false, status: 'Not Started', remindAt: '2026-09-19T08:00', notes: '' }];
+  sandbox.tsgAutoScheduleDoc_(d);
+  check('a subtask reminder earlier than the task\'s becomes the next one', props.TSG_NEXT_REMINDER === new Date('2026-09-19T08:00:00').toISOString());
+  check('the tick does nothing before the reminder is due', sandbox.tsgReminderTick_().fired === 0);
+  // Fire: reminder in the past, data file readable
+  d.tasks[0].subitems[0].remindAt = '2020-01-01T08:00';
+  d.tasks[0].remindAt = '2020-01-01T09:00';
+  const origGetFile2 = sandbox.DriveApp.getFileById;
+  const origFolder2 = sandbox.DriveApp.getFolderById;
+  let queued = [];
+  sandbox.DriveApp.getFileById = () => ({ getBlob: () => ({ getDataAsString: () => JSON.stringify(d) }), setContent: () => {}, getName: () => 'data' });
+  sandbox.DriveApp.getFolderById = () => ({ createFile: (name, body) => { queued.push(JSON.parse(body)); }, getFilesByName: () => ({ hasNext: () => false }), getFiles: () => ({ hasNext: () => false }) });
+  sandbox.tsgAutoScheduleDoc_(d);
+  sentMail = []; cacheStore = {};
+  const fired = sandbox.tsgReminderTick_();
+  check('due reminders are emailed to the owner, one per item, with the due date and time', fired.fired === 2 && sentMail.length === 2 && sentMail.every(m => m.to === 'durand@thestawaszgroup.com') && sentMail.some(m => m.subject.includes('Reminder: Confirm Vendor Invoice For Photography') && m.subject.includes('2026-09-20 10:30')) && sentMail.some(m => m.subject.includes('Step one')));
+  check('a bulk patch stamping reminderSentAt is queued for the task and the subtask', queued.length === 1 && queued[0].op === 'bulk' && queued[0].ops.length === 2 && queued[0].ops.some(o => o.op === 'update_task' && o.fields.reminderSentAt) && queued[0].ops.some(o => o.op === 'update_subitem' && o.expectTitle === 'Step one'));
+  check('the property is cleared once nothing later is pending', props.TSG_NEXT_REMINDER === '');
+  props.TSG_NEXT_REMINDER = new Date('2020-01-01T00:00:00').toISOString();
+  sentMail = []; queued = [];
+  sandbox.tsgReminderTick_();
+  check('the cache guard prevents a second send before the stamp lands', sentMail.length === 0 && queued.length === 0);
+  d.tasks[0].reminderSentAt = '2026-09-17T12:01:00Z';
+  check('a sent reminder is no longer pending; a Done item never is', sandbox.tsgPendingReminders_(d).length === 1 && (d.tasks[0].subitems[0].done = true, sandbox.tsgPendingReminders_(d).length === 0));
+  sandbox.DriveApp.getFileById = origGetFile2; sandbox.DriveApp.getFolderById = origFolder2;
+  sandbox.PropertiesService.getScriptProperties = origProps3; cacheStore = {};
 }
 
 section('No secrets in tracked files (repo is public)');
