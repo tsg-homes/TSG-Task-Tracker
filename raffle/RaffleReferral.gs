@@ -263,7 +263,11 @@ function raffleReferralEligibility_(email, phone, test) {
   var rows = raffleReadEntries_(test);
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
-    if (r.status === RAFFLE_STATUS_DECLINED || r.status === RAFFLE_STATUS_SUPERSEDED) continue;
+    // A DECLINED referral is deliberately NOT skipped: somebody who said "do not
+    // contact me" must not be put through the same email again by the next person
+    // who happens to think of them. Superseded rows are skipped, because that
+    // person did confirm -- just for somebody else's entry.
+    if (r.status === RAFFLE_STATUS_SUPERSEDED) continue;
     if ((emailKey && r.referralEmailKey === emailKey) ||
         (phoneKey && r.referralPhoneKey === phoneKey)) {
       return { ok: false, reason: 'already-claimed' };
@@ -374,21 +378,18 @@ function raffleSubmitReferral_(d, test) {
     try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
   }
 
-  // Everything below is best-effort on top of a row that already exists.
-  var fub = raffleReferralToFub_({
-    entrant: entrant, refName: refName, refEmail: refEmail, refPhone: refPhone,
-    role: role, timeframe: timeframe
-  }, test);
-  try { raffleRecordReferralFub_(appended.row, fub, test); }
-  catch (recErr) { Logger.log('raffleRecordReferralFub_ failed: ' + recErr); }
-
-  if (!fub.ok) {
-    try {
-      sendErrorAlert('Raffle: referral FUB write failed for ' + refName,
-        'The raffle row IS saved (row ' + appended.row + ') and the consent link works, ' +
-        'so the entry is not lost. Only the FUB write failed.\n\n' + fub.error);
-    } catch (alertErr) { Logger.log('Raffle referral alert failed: ' + alertErr); }
-  }
+  // NOTHING IS WRITTEN TO FUB HERE. Per Durand, 2026-09-17: a referral becomes a
+  // FUB contact when they CONSENT, not when somebody types their name into a form
+  // at a street party.
+  //
+  // The old behaviour created the contact immediately, marked "no consent given",
+  // and relied on a note to stop anyone working it. That meant the CRM filled up
+  // with people who had never heard of us and might never reply -- and it made the
+  // form a way for a stranger to inject contacts into the database. Now the row in
+  // the sheet is the only record until they answer.
+  //
+  // Nobody is lost either way: anyone still unconfirmed at draw time is swept into
+  // FUB, flagged, by raffleLogUnconfirmedReferrals_.
 
   return jsonOut({
     ok: true,
@@ -415,8 +416,13 @@ function raffleAppendReferralEntry_(x, test) {
   row[RAFFLE_COL['Consent']]          = 'Yes';
   row[RAFFLE_COL['Consent Version']]  = RAFFLE_CONSENT_VERSION;
   row[RAFFLE_COL['Entry Source']]     = test ? (QA_TEST_PREFIX + RAFFLE_EVENT_NAME) : RAFFLE_EVENT_NAME;
-  row[RAFFLE_COL['FUB Status']]       = 'pending';
-  row[RAFFLE_COL['FUB Person ID']]    = '';
+  // The entrant's FUB id comes off the verified session, where raffleVerifyCode_
+  // put it. It has to be written onto the ROW here: the row is what the consent
+  // step reads later, and without it there is nothing to link the referral to.
+  // (Caught by test_raffle.js when the FUB write moved to consent time.)
+  row[RAFFLE_COL['FUB Status']]       = e.personId ? 'entrant ok; referral pending consent'
+                                                   : 'entrant push failed; referral pending consent';
+  row[RAFFLE_COL['FUB Person ID']]    = e.personId || '';
   row[RAFFLE_COL['Eligible']]         = 'Yes';
   row[RAFFLE_COL['Email Verified']]   = 'Yes (code confirmed)';
   row[RAFFLE_COL['Entry Status']]     = RAFFLE_STATUS_PENDING;
@@ -962,8 +968,14 @@ function raffleConsentSubmit_(d) {
     // nobody on the team calls them anyway.
     if (String(d.decision || '') === 'decline') {
       sh.getRange(found.row, RAFFLE_COL['Entry Status'] + 1).setValue(RAFFLE_STATUS_DECLINED);
-      sh.getRange(found.row, RAFFLE_COL['Eligible'] + 1).setValue('No');
-      raffleMarkDeclinedInFub_(entry, found.test);
+      // NOT Eligible='No'. That column is Durand's manual disqualification switch,
+      // and raffleReadEntries_ drops those rows entirely -- which would hide the
+      // decline from the claim check and let the next person refer them all over
+      // again. 'Entry Status' already keeps a declined row out of the draw.
+      var declinedId = raffleMarkDeclinedInFub_(entry, found.test);
+      if (declinedId && !entry.referralFubId) {
+        sh.getRange(found.row, RAFFLE_COL['Referral FUB ID'] + 1).setValue(declinedId);
+      }
       return jsonOut({ ok: true, declined: true,
         message: 'Understood — we will not contact you. Sorry for the interruption.' });
     }
@@ -1044,11 +1056,28 @@ function raffleConsentSubmit_(d) {
     sh.getRange(found.row, RAFFLE_COL['Entry Status'] + 1)
       .setValue(closed ? RAFFLE_STATUS_SUPERSEDED : RAFFLE_STATUS_ELIGIBLE);
 
-    raffleUpdateReferralInFub_(entry, { name: name, email: email, phone: phone,
-                                        role: role, timeframe: timeframe }, found.test);
+    var newPersonId = raffleUpdateReferralInFub_(entry,
+      { name: name, email: email, phone: phone, role: role, timeframe: timeframe }, found.test);
+    if (newPersonId && !entry.referralFubId) {
+      sh.getRange(found.row, RAFFLE_COL['Referral FUB ID'] + 1).setValue(newPersonId);
+      entry.referralFubId = newPersonId;
+    }
     raffleNotifyEntrantEntered_(entry, name, found.test, closed);
     // A row only just became a real entry, so this is the moment the count moved.
     if (!closed) raffleMaybeNotifyMilestone_(found.test);
+
+    // They proved this inbox is theirs, so they can enter by referring someone
+    // without verifying anything again. The token is minted whether or not the
+    // invite sends, so the link keeps working if the send is throttled -- and it
+    // is NOT minted after the draw, because there is nothing left to enter.
+    if (!closed) {
+      var chainToken = entry.chainToken || Utilities.getUuid();
+      sh.getRange(found.row, RAFFLE_COL['Chain Token'] + 1).setValue(chainToken);
+      if (raffleSendChainInvite_(entry, { name: name, email: email }, chainToken, found.test)) {
+        sh.getRange(found.row, RAFFLE_COL['Chain Emailed At'] + 1)
+          .setValue(raffleFmt_(raffleNow_()));
+      }
+    }
 
     return jsonOut({ ok: true, confirmed: true, closed: closed,
       message: closed
@@ -1078,27 +1107,62 @@ function raffleAddressWasSubstituted_(entry, edited) {
   return !!(was && now && was !== now);
 }
 
+// The ONE place a referral becomes a FUB contact, or an already-swept one is
+// upgraded. Since 2026-09-17 nothing writes the referral to FUB before this
+// point, so the usual case here is a create; an update happens only when the
+// draw-time sweep got there first (they consented afterwards) .
 function raffleUpdateReferralInFub_(entry, edited, test) {
   var apiKey = raffleFubKey_();
-  if (!apiKey) return;
+  if (!apiKey) return null;
   var personId = entry.referralFubId;
   if (!personId) {
-    // The submit-time create failed. Create now rather than losing a consented
-    // lead -- this is the one case where a consented person has no record.
     var parts = splitName(edited.name);
     var payload = {
       firstName: parts.first, lastName: parts.last,
       source: RAFFLE_SOURCE + ' (referral)',
       tags: RAFFLE_REFERRAL_TAGS.concat([edited.role, 'Consented']),
       emails: [{ value: edited.email, type: 'home' }],
-      phones: edited.phone ? [{ value: edited.phone, type: 'mobile' }] : []
+      phones: edited.phone ? [{ value: edited.phone, type: 'mobile' }] : [],
+      background: raffleConsentedBackground_(entry, edited)
     };
+    var timeframeIdNew = null;
+    try { timeframeIdNew = resolveTimeframeId(edited.timeframe); } catch (tfErr) { timeframeIdNew = null; }
+    if (timeframeIdNew !== null && timeframeIdNew !== undefined) payload.timeframeId = timeframeIdNew;
     applyQaTestPersonMarking_(payload);
     var created = raffleFubCall_('https://api.followupboss.com/v1/people', 'post', payload, apiKey);
     personId = created.ok && created.body && created.body.id;
     if (!personId) {
-      Logger.log('raffleUpdateReferralInFub_: no person to update and create failed.');
-      return;
+      Logger.log('raffleUpdateReferralInFub_: create failed ' + created.code + ': ' +
+        String(created.text).slice(0, 200));
+      try {
+        sendErrorAlert('Raffle: could not create a CONSENTED referral in FUB',
+          'This person confirmed their details and gave consent, and we failed to write ' +
+          'them to FUB. The raffle sheet has everything -- add them by hand.\n\n' +
+          edited.name + ' / ' + edited.email + ' / ' + (edited.phone || '(none)') + '\n' +
+          'Referred by ' + entry.name + ' (' + entry.email + ')');
+      } catch (alertErr) { /* never swallow the visitor's response */ }
+      return null;
+    }
+    // The relationship and the referrer's count belong to a CONFIRMED referral,
+    // so they are established here rather than when the name was typed in.
+    if (entry.fubId) {
+      raffleLinkPeople_(entry.fubId, personId, 'Referred', apiKey);
+      raffleLinkPeople_(personId, entry.fubId, 'Referred by', apiKey);
+      raffleBumpReferralCount_(entry.fubId, apiKey);
+      raffleFubCall_('https://api.followupboss.com/v1/notes', 'post', {
+        personId: entry.fubId,
+        subject: (test ? QA_TEST_PREFIX : '') + 'Referred ' + edited.name + ' — confirmed',
+        body: raffleEntrantNote_({ entrant: { name: entry.name, email: entry.email,
+          phone: entry.phone }, refName: edited.name, refEmail: edited.email,
+          refPhone: edited.phone, role: edited.role, timeframe: edited.timeframe }),
+        isHtml: false
+      }, apiKey);
+    }
+    var referredByKey = raffleCustomFieldKey_(RAFFLE_REFERRED_BY_LABELS);
+    if (referredByKey) {
+      var rb = {};
+      rb[referredByKey] = entry.name;
+      raffleFubCall_('https://api.followupboss.com/v1/people/' + personId, 'put', rb, apiKey);
     }
   }
 
@@ -1120,6 +1184,7 @@ function raffleUpdateReferralInFub_(entry, edited, test) {
     Logger.log('raffleUpdateReferralInFub_: PUT returned ' + res.code + ': ' +
       String(res.text).slice(0, 200));
   }
+  var createdPersonId = personId;
 
   raffleFubCall_('https://api.followupboss.com/v1/notes', 'post', {
     personId: personId,
@@ -1153,18 +1218,78 @@ function raffleUpdateReferralInFub_(entry, edited, test) {
     ].join('\n'),
     isHtml: false
   }, apiKey);
+
+  return createdPersonId;
+}
+
+// The background written on a referral at the moment they consent -- which, since
+// 2026-09-17, is the moment the record is created at all.
+function raffleConsentedBackground_(entry, edited) {
+  return [
+    'Referred by ' + entry.name + ' at the ' + RAFFLE_EVENT_NAME + '.',
+    '',
+    'Looking to: ' + edited.role,
+    'Timeframe:  ' + (edited.timeframe || '(not given)'),
+    '',
+    'CONSENT GIVEN BY THIS PERSON THEMSELVES. They opened a link sent only to this',
+    'email address, confirmed their own details and ticked the consent box: express',
+    'written consent to be contacted by call, text and email (including autodialed or',
+    'prerecorded messages) about real estate services.',
+    'Consent language version: ' + RAFFLE_CONSENT_VERSION + '.',
+    '',
+    'Referrer: ' + entry.name + ' / ' + entry.email + ' / ' + entry.phone
+  ].join('\n');
 }
 
 // A decline is recorded loudly, because the cost of missing it is calling
 // somebody who explicitly said no.
 function raffleMarkDeclinedInFub_(entry, test) {
   var apiKey = raffleFubKey_();
-  if (!apiKey || !entry.referralFubId) return;
-  raffleFubCall_('https://api.followupboss.com/v1/people/' + entry.referralFubId, 'put', {
-    tags: ['Do Not Contact', 'Referral Declined', 'Block Party 2026']
-  }, apiKey);
+  if (!apiKey) return null;
+  var personId = entry.referralFubId;
+
+  // Since referrals are no longer created in FUB up front, a decline usually has
+  // no record to mark -- so it creates one. That reads backwards at first glance
+  // ("they said don't contact me, so we made a file on them"), and it is right:
+  // a suppression record is the only way the next person who tries to refer them,
+  // or an agent who meets them next year, finds out they already said no. Holding
+  // nothing means we email them again in six months.
+  if (!personId) {
+    var parts = splitName(entry.referralName || '');
+    var payload = {
+      firstName: parts.first, lastName: parts.last,
+      source: RAFFLE_SOURCE + ' (referred, declined)',
+      tags: ['Do Not Contact', 'Referral Declined', 'Block Party 2026'],
+      emails: entry.referralEmail ? [{ value: entry.referralEmail, type: 'home' }] : [],
+      phones: entry.referralPhone ? [{ value: entry.referralPhone, type: 'mobile' }] : [],
+      background: [
+        'DO NOT CONTACT. This person was named as a referral at the ' + RAFFLE_EVENT_NAME +
+          ' and',
+        'explicitly chose "do not contact me" on the confirmation page.',
+        '',
+        'They gave no consent and actively refused it. This record exists ONLY so that',
+        'nobody contacts them by accident and so a second referral of the same person is',
+        'refused. Do not call, text, email or drip this contact.',
+        '',
+        'Referred by: ' + entry.name + ' (' + entry.email + ')'
+      ].join('\n')
+    };
+    applyQaTestPersonMarking_(payload);
+    var created = raffleFubCall_('https://api.followupboss.com/v1/people', 'post', payload, apiKey);
+    personId = created.ok && created.body && created.body.id;
+    if (!personId) {
+      Logger.log('raffleMarkDeclinedInFub_: could not create the suppression record: ' +
+        created.code + ' ' + String(created.text).slice(0, 200));
+      return null;
+    }
+  } else {
+    raffleFubCall_('https://api.followupboss.com/v1/people/' + personId, 'put', {
+      tags: ['Do Not Contact', 'Referral Declined', 'Block Party 2026']
+    }, apiKey);
+  }
+
   raffleFubCall_('https://api.followupboss.com/v1/notes', 'post', {
-    personId: entry.referralFubId,
+    personId: personId,
     subject: (test ? QA_TEST_PREFIX : '') + 'DECLINED — do not contact',
     body: [
       'This person opened the referral link and explicitly chose "do not contact me".',
@@ -1177,6 +1302,8 @@ function raffleMarkDeclinedInFub_(entry, test) {
     ].join('\n'),
     isHtml: false
   }, apiKey);
+
+  return personId;
 }
 
 // Tells the entrant their entry has landed. This matters more than it looks:
@@ -1825,4 +1952,297 @@ function raffleAppendDrawAudit_(test, cells) {
   } catch (err) {
     Logger.log('raffleAppendDrawAudit_ failed: ' + err);
   }
+}
+
+
+// ============================================================================
+// DRAW-TIME SWEEP — the referrals who never answered
+// ============================================================================
+// Per Durand, 2026-09-17: "those that haven't consented by the draw time will get
+// logged and flagged, if at any point they submit consent after that their contact
+// gets updated."
+//
+// So silence is not nothing. Someone was named, an email reached them, and they
+// did not reply -- that is still a person worth having on file, provided the file
+// is honest about what it is. Each gets a contact tagged so nobody can mistake it
+// for a lead that opted in, with a background that says in plain words what we do
+// and do not know. If they consent later, raffleUpdateReferralInFub_ finds this
+// record by its id and upgrades it rather than making a second one.
+//
+// Their referrer's entry stays invalid regardless: no consent, no entry.
+var RAFFLE_UNCONFIRMED_TAGS = ['Block Party 2026', 'Referred Lead',
+  'Needs Consent', 'Unconfirmed Contact Info'];
+
+function raffleLogUnconfirmedReferrals_(test) {
+  var apiKey = raffleFubKey_();
+  if (!apiKey) {
+    Logger.log('raffleLogUnconfirmedReferrals_: FUB_API_KEY unset; nothing swept.');
+    return { swept: 0, failed: 0 };
+  }
+  var sh = raffleSheet_(test);
+  var rows = raffleReadEntries_(test);
+  var swept = 0, failed = 0;
+
+  rows.forEach(function (r) {
+    if (r.status !== RAFFLE_STATUS_PENDING) return;      // consented, declined or superseded
+    if (r.referralFubId || r.referralLoggedAt) return;   // already in FUB
+    if (!r.referralEmail) return;
+
+    // Belt and braces: never create a duplicate of somebody FUB already holds.
+    // The submit-time check said they were new, but that was hours or days ago.
+    try {
+      var existing = raffleFindCandidates_(r.referralEmail,
+        rafflePhoneKey_(r.referralPhone), apiKey) || [];
+      if (existing.length) {
+        sh.getRange(r.row, RAFFLE_COL['Referral Logged At'] + 1)
+          .setValue(raffleFmt_(raffleNow_()) + ' (already in FUB — not created again)');
+        return;
+      }
+    } catch (searchErr) {
+      Logger.log('raffleLogUnconfirmedReferrals_: search failed for row ' + r.row + ': ' + searchErr);
+    }
+
+    var parts = splitName(r.referralName || '');
+    var payload = {
+      firstName: parts.first, lastName: parts.last,
+      source: RAFFLE_SOURCE + ' (referred, never confirmed)',
+      tags: RAFFLE_UNCONFIRMED_TAGS.concat(r.referralRole ? [r.referralRole] : []),
+      emails: [{ value: r.referralEmail, type: 'home' }],
+      phones: r.referralPhone ? [{ value: r.referralPhone, type: 'mobile' }] : [],
+      background: [
+        'NAMED AS A REFERRAL AT THE ' + RAFFLE_EVENT_NAME.toUpperCase() + ' — NEVER CONFIRMED.',
+        '',
+        'THIS PERSON HAS GIVEN NO CONSENT. They were named by ' + r.name + ', we emailed',
+        'them a link asking them to confirm their details and consent, and they did not',
+        'reply before the drawing closed. Everything below came from the person who',
+        'referred them, NOT from them:',
+        '',
+        '  Name:       ' + (r.referralName || '(not given)'),
+        '  Email:      ' + r.referralEmail + '   (we emailed this; it did not bounce as far as we know)',
+        '  Phone:      ' + (r.referralPhone || '(not given)'),
+        '  Looking to: ' + (r.referralRole || '(not given)'),
+        '  Timeframe:  ' + (r.referralTimeframe || '(not given)'),
+        '',
+        'DO NOT call, text or drip this contact on the strength of this record.',
+        'Confirm the contact details and get consent from the person first. The record',
+        'exists so the referral is not lost, not so it can be worked.',
+        '',
+        'Referred by: ' + r.name + ' / ' + r.email + ' / ' + r.phone,
+        'Emailed:     ' + (r.chainEmailedAt || r.referralEmail ? 'yes' : 'unknown')
+      ].join('\n')
+    };
+    applyQaTestPersonMarking_(payload);
+
+    var created = raffleFubCall_('https://api.followupboss.com/v1/people', 'post', payload, apiKey);
+    if (created.ok && created.body && created.body.id) {
+      sh.getRange(r.row, RAFFLE_COL['Referral FUB ID'] + 1).setValue(created.body.id);
+      sh.getRange(r.row, RAFFLE_COL['Referral Logged At'] + 1).setValue(raffleFmt_(raffleNow_()));
+      raffleFubCall_('https://api.followupboss.com/v1/notes', 'post', {
+        personId: created.body.id,
+        subject: (test ? QA_TEST_PREFIX : '') + 'Referred but never confirmed — needs consent',
+        body: payload.background,
+        isHtml: false
+      }, apiKey);
+      swept++;
+    } else {
+      failed++;
+      Logger.log('raffleLogUnconfirmedReferrals_: create failed for row ' + r.row +
+        ' (' + created.code + '): ' + String(created.text).slice(0, 200));
+    }
+  });
+
+  if (swept || failed) {
+    Logger.log('raffleLogUnconfirmedReferrals_: ' + swept + ' swept into FUB, ' + failed + ' failed.');
+  }
+  return { swept: swept, failed: failed };
+}
+
+
+// ============================================================================
+// THE CHAIN — a confirmed referral can enter by referring somebody themselves
+// ============================================================================
+// Per Durand, 2026-09-17: "once a referral submits with consent they get the send
+// a referral to enter email as well, already linked to them so they don't need to
+// enter their own information, creating a potentially endless referral chain."
+//
+// WHY THEY DO NOT RE-VERIFY. The whole point of the consent step is that only
+// their inbox could have received that link. Having proved that, asking for a
+// six-digit code to the same address would prove nothing new and would cost most
+// of them. So consenting mints a CHAIN TOKEN on their row, and that token buys
+// exactly one thing: a verified session in their name.
+//
+// WHAT BOUNDS THE CHAIN. Nothing bounds its DEPTH, and that is deliberate -- a
+// chain of confirmed people who each consented is the best thing this raffle can
+// produce. What is bounded is the BRANCHING and the mail volume:
+//   * one referral at a time per person, and a referral already in FUB is refused,
+//     so a chain cannot loop back onto anyone who has already consented;
+//   * RAFFLE_LOOKUP_MAX_PER_ENTRANT caps how many people one person can try;
+//   * every invite goes through the same per-address and global send caps as a
+//     verification code, so the chain cannot outrun the daily send quota; and
+//   * after the draw, no chain invite is sent at all (Durand: "no new entry
+//     emails get sent after the draw").
+var RAFFLE_CHAIN_ACTION = 'refer';
+
+function raffleChainUrl_(token) {
+  return ScriptApp.getService().getUrl() +
+    '?form=raffle&action=' + RAFFLE_CHAIN_ACTION + '&t=' + encodeURIComponent(token);
+}
+
+// Sent right after someone consents. Silent after the draw.
+function raffleSendChainInvite_(entry, edited, chainToken, test) {
+  if (!chainToken) return false;
+  if (!test && Date.now() >= new Date(RAFFLE_CLOSE_AT).getTime()) {
+    Logger.log('Raffle: chain invite suppressed — entries are closed.');
+    return false;
+  }
+  try {
+    raffleCheckCodeSendQuota_(raffleEmailKey_(edited.email));
+  } catch (quotaErr) {
+    Logger.log('Raffle: chain invite skipped (send quota): ' + quotaErr);
+    return false;
+  }
+  var url = raffleChainUrl_(chainToken);
+  var first = String(edited.name || '').split(' ')[0];
+  try {
+    MailApp.sendEmail({
+      to: edited.email,
+      name: 'The Stawasz Group',
+      replyTo: 'info@tsg.homes',
+      subject: (test ? QA_TEST_PREFIX : '') + first + ', you can win ' + RAFFLE_PRIZE_SHORT + ' too',
+      htmlBody: raffleChainHtml_(entry, edited, url, test),
+      body: raffleChainPlain_(entry, edited, url)
+    });
+    return true;
+  } catch (err) {
+    Logger.log('raffleSendChainInvite_ failed: ' + err);
+    return false;
+  }
+}
+
+function raffleChainHtml_(entry, edited, url, test) {
+  var e = raffleEsc_;
+  var first = String(edited.name || '').split(' ')[0];
+  return [
+    '<div style="margin:0;padding:0;background:#f4f6f6;">',
+    '<div style="max-width:560px;margin:0 auto;padding:24px 16px;',
+    'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;',
+    'color:#1d2b2c;line-height:1.55;">',
+    test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
+           'border-radius:6px;margin-bottom:16px;">QA TEST — not a real invitation</div>' : '',
+    '<div style="background:#15464A;color:#fff;border-radius:10px 10px 0 0;padding:26px 24px;">',
+    '<div style="font-size:12px;letter-spacing:2px;opacity:.8;">THE STAWASZ GROUP</div>',
+    '<div style="font-size:22px;font-weight:700;margin-top:6px;">Thanks, ' + e(first) + '</div>',
+    '</div>',
+    '<div style="background:#fff;border-radius:0 0 10px 10px;padding:24px;">',
+    '<p style="margin:0 0 14px;">You are all set &mdash; we have your details and we will be ',
+    'in touch. And because you confirmed, <strong>' + e(entry.name) + '</strong> is now ',
+    'entered in our drawing for ' + e(RAFFLE_PRIZE_SHORT) + '.</p>',
+    '<p style="margin:0 0 18px;">You can enter too. Think of one person who is considering ',
+    'buying or selling in the next year, and pass their name along the same way. ',
+    '<b>We already have your details, so there is nothing to fill in about yourself.</b></p>',
+    '<div style="text-align:center;margin:0 0 20px;">',
+    '<a href="' + e(url) + '" style="display:inline-block;background:#15464A;color:#fff;',
+    'text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:8px;">',
+    'Refer someone and enter</a></div>',
+    '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">Same rules: your entry counts ',
+    'once the person you name confirms their own details and gives their own permission. ',
+    'Entries close at 6:15 PM on Saturday 19 September, when the winner is drawn. ',
+    'You do not need to be at the party to enter or to win.</p>',
+    '<p style="margin:0;font-size:14px;color:#55696a;">Not interested? Ignore this &mdash; ',
+    'nothing changes and we will not chase you about it.</p>',
+    '</div>',
+    '<div style="text-align:center;padding:18px 8px;font-size:12px;color:#7d8f90;">',
+    'The Stawasz Group &middot; Keller Williams Empower<br>',
+    '728 S Broad St, Philadelphia, PA 19146 &middot; (215) 760-6291 &middot; info@tsg.homes',
+    '</div></div></div>'
+  ].join('');
+}
+
+function raffleChainPlain_(entry, edited, url) {
+  var first = String(edited.name || '').split(' ')[0];
+  return [
+    'Thanks, ' + first + '.',
+    '',
+    'You are all set - we have your details and we will be in touch. And because you',
+    'confirmed, ' + entry.name + ' is now entered in our drawing for ' + RAFFLE_PRIZE_SHORT + '.',
+    '',
+    'You can enter too. Think of one person considering buying or selling in the next',
+    'year and pass their name along the same way. We already have your details, so',
+    'there is nothing to fill in about yourself:',
+    '',
+    url,
+    '',
+    'Same rules: your entry counts once the person you name confirms their own details',
+    'and gives their own permission. Entries close at 6:15 PM on Saturday 19 September.',
+    'You do not need to be at the party to enter or to win.',
+    '',
+    'Not interested? Ignore this - nothing changes.',
+    '',
+    'The Stawasz Group - Keller Williams Empower',
+    '728 S Broad St, Philadelphia, PA 19146 - (215) 760-6291 - info@tsg.homes'
+  ].join('\n');
+}
+
+// Finds the row whose CHAIN token this is, across both tabs, and returns the
+// person that token speaks for -- who is the REFERRAL on that row, and becomes the
+// ENTRANT on the new one.
+function raffleFindChain_(token) {
+  var tabs = [false, true];
+  for (var t = 0; t < tabs.length; t++) {
+    var rows;
+    try { rows = raffleReadEntries_(tabs[t]); } catch (err) { continue; }
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].chainToken && rows[i].chainToken === token) {
+        return { row: rows[i], test: tabs[t] };
+      }
+    }
+  }
+  return null;
+}
+
+// GET ?form=raffle&action=refer&t=<chainToken>
+// Mints a verified session for that person and serves the ordinary entry form,
+// opened at the referral step with their details already known.
+function raffleChainStart_(e) {
+  var token = String((e && e.parameter && e.parameter.t) || '');
+  var found = /^[0-9a-fA-F-]{36}$/.test(token) ? raffleFindChain_(token) : null;
+  if (!found) {
+    return raffleConsentShell_('<h2 style="margin:0 0 10px">That link has expired</h2>' +
+      '<p>We could not find that invitation. If you would like to refer someone, ' +
+      'call us on (215) 760-6291 and we will take it down for you.</p>', false);
+  }
+  var r = found.row;
+  if (r.status !== RAFFLE_STATUS_ELIGIBLE && r.status !== RAFFLE_STATUS_SUPERSEDED) {
+    return raffleConsentShell_('<h2 style="margin:0 0 10px">Confirm your own details first</h2>' +
+      '<p>Use the link in the email we sent you to confirm your details and give ' +
+      'permission, and we will invite you to refer someone straight afterwards.</p>',
+      found.test);
+  }
+
+  // The session this token buys. Same shape raffleVerifyCode_ writes, because the
+  // referral step must not be able to tell the difference -- a chain entrant IS a
+  // verified entrant, proved by a link only their inbox received.
+  var vid = Utilities.getUuid();
+  CacheService.getScriptCache().put(RAFFLE_VERIFIED_PREFIX + vid, JSON.stringify({
+    name: r.referralName, email: r.referralEmail, phone: r.referralPhone,
+    personId: r.referralFubId || '',
+    test: !!found.test, verifiedAt: raffleFmt_(raffleNow_()),
+    viaChain: true
+  }), RAFFLE_VERIFIED_TTL_SECONDS);
+
+  // The action MUST be stripped before handing back to raffleServeForm_. Passing
+  // `e` through unchanged means it sees action=refer again, calls straight back
+  // into here, and recurses until the stack blows -- which is what the chain link
+  // did until test_raffle.js exercised it end to end (2026-09-17). A caught
+  // infinite loop is why the test drives the real route rather than the helper.
+  var inner = { parameter: {} };
+  Object.keys((e && e.parameter) || {}).forEach(function (k) {
+    if (k !== 'action' && k !== 't') inner.parameter[k] = e.parameter[k];
+  });
+
+  return raffleServeForm_(inner, ScriptApp.getService().getUrl(), {
+    chainVid: vid,
+    chainFirst: String(r.referralName || '').split(' ')[0],
+    chainTest: found.test
+  });
 }

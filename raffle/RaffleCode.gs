@@ -233,7 +233,11 @@ var RAFFLE_SHEET_HEADERS = [
   'Referral FUB ID',
   'Referral Consent At',
   'Referral Emailed At',
-  'Consent Token'
+  'Consent Token',
+  // --- added 2026-09-17 (deferred FUB creation + the referral chain) ---
+  'Referral Logged At',   // when an unconsented referral was swept into FUB, flagged
+  'Chain Token',          // lets a consented referral enter by referring, without re-verifying
+  'Chain Emailed At'
 ];
 
 // Column indexes, by name, resolved once. Reading by index literal is what makes
@@ -574,7 +578,7 @@ function raffleAdminLinks() {
 }
 
 // ---------- doGet branch (reached from Code.gs's one-line hook) ----------
-function raffleServeForm_(e, baseUrl) {
+function raffleServeForm_(e, baseUrl, chain) {
   var action = (e.parameter.action || '').toString().toLowerCase();
   // ?qatest=<QA_TEST_SECRET> mints the token AND flips this execution into test
   // mode. A wrong or absent value returns '' and renders the ordinary live page,
@@ -585,6 +589,8 @@ function raffleServeForm_(e, baseUrl) {
   // The link in the referral's email. No key: the token in ?t= is the credential,
   // and it only ever unlocks that one person's own record.
   if (action === RAFFLE_CONSENT_ACTION) return raffleConsentPage_(e);
+  // The chain invite's link: a confirmed referral entering by referring someone.
+  if (action === RAFFLE_CHAIN_ACTION) return raffleChainStart_(e);
 
   // Every admin action goes through ONE gate. Adding a branch inside this block
   // without adding its name here is a silent dead end: the action falls through
@@ -616,6 +622,13 @@ function raffleServeForm_(e, baseUrl) {
   }
 
   var tmpl = HtmlService.createTemplateFromFile('RaffleForm');
+  // A chain entrant arrives already verified (they clicked a link only their own
+  // inbox received), so the page opens at the referral step with their session in
+  // hand. No chain context = the ordinary first-time flow, unchanged.
+  chain = chain || {};
+  tmpl.chainVid   = safeJsonForScript_(chain.chainVid || '');
+  tmpl.chainFirst = safeJsonForScript_(chain.chainFirst || '');
+  if (chain.chainTest) isTest = true;
   tmpl.submitToken   = getSubmitToken();
   tmpl.baseUrl       = baseUrl;
   tmpl.kiosk         = (e.parameter.kiosk || '') ? '1' : '';
@@ -999,6 +1012,9 @@ function raffleReadEntries_(test) {
       referralEmailKey: raffleEmailKey_(unmark(r[RAFFLE_COL['Referral Email']])),
       referralPhoneKey: rafflePhoneKey_(unmark(r[RAFFLE_COL['Referral Phone']])),
       referralFubId: unmark(r[RAFFLE_COL['Referral FUB ID']]),
+      referralLoggedAt: unmark(r[RAFFLE_COL['Referral Logged At']]),
+      chainToken: unmark(r[RAFFLE_COL['Chain Token']]),
+      chainEmailedAt: unmark(r[RAFFLE_COL['Chain Emailed At']]),
       referralTimeframe: unmark(r[RAFFLE_COL['Referral Timeframe']]),
       consentToken: unmark(r[RAFFLE_COL['Consent Token']])
     });
@@ -1386,6 +1402,13 @@ function raffleDrawWinner_(test, force) {
     };
 
     props.setProperty(raffleWinnerProp_(test), JSON.stringify(result));
+
+    // Entries are closed and the result is recorded, so every referral still
+    // unanswered is now definitively unanswered. Sweep them into FUB, flagged --
+    // see raffleLogUnconfirmedReferrals_. Best-effort: a CRM problem must never
+    // put the draw itself at risk, since the draw has already happened by here.
+    try { raffleLogUnconfirmedReferrals_(test); }
+    catch (sweepErr) { Logger.log('Unconfirmed-referral sweep failed: ' + sweepErr); }
     try { raffleWriteDrawTab_(result, test); } catch (tabErr) { Logger.log('Draw tab write failed: ' + tabErr); }
     try { raffleEmailResult_(result, test); } catch (mailErr) {
       Logger.log('Draw email failed: ' + mailErr);

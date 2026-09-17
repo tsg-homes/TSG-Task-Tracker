@@ -7,6 +7,15 @@
  */
 const { makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J, check, eq, HEADERS, DURING, BEFORE, AFTER, counts } = require('./harness');
 
+// Read a row cell BY COLUMN NAME. Magic indexes are how a schema change turns a
+// test green against the wrong column -- writing 21 for "Chain Token" when the
+// header list had moved it to 22 is exactly the mistake this prevents.
+const cell = (s, row, name) => {
+  const i = s.RAFFLE_SHEET_HEADERS.indexOf(name);
+  if (i === -1) throw new Error('no such column: ' + name);
+  return String(row[i] === undefined ? '' : row[i]);
+};
+
 // ---- Identity normalization ------------------------------------------------
 {
   const s = makeSandbox();
@@ -94,7 +103,7 @@ const { makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J,
   check('entrant still gets a success when FUB is down', res.ok === true);
   eq('entry is still recorded in the sheet', s.__data().length, 1);
   check('row records the FUB failure for later retry',
-    String(s.__data()[0][7]).indexOf('failed') === 0);
+    /failed/.test(String(s.__data()[0][7])), String(s.__data()[0][7]));
   check('entry is still eligible for the draw', s.__data()[0][9] === 'Yes');
 }
 
@@ -106,11 +115,10 @@ const { makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J,
   // the actual create.
   const people = s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post');
   const notes  = s.__fetches.filter(f => /\/v1\/notes/.test(f.url));
-  // Two creates now: the entrant and the person they referred. And more notes --
-  // both records get one at referral time, and the referral gets a second when
-  // they consent.
+  // Two creates: the entrant (at verification) and the referral (at CONSENT, not
+  // when their name was typed -- see raffleLogUnconfirmedReferrals_ for why).
   eq('two people created in FUB (entrant + referral)', people.length, 2);
-  check('at least three notes written in FUB', notes.length >= 3, 'got ' + notes.length);
+  check('at least two notes written in FUB', notes.length >= 2, 'got ' + notes.length);
   const body = JSON.parse(people[0].o.payload);
   eq('first name split', body.firstName, 'Dana');
   eq('last name split', body.lastName, 'Reid');
@@ -130,9 +138,13 @@ const { makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J,
   check('referral tagged as a referred lead', refBody.tags.indexOf('Referred Lead') !== -1);
   check('referral carries the live FUB timeframe id', refBody.timeframeId === 3,
     JSON.stringify(refBody.timeframeId));
-  check('referral background says consent is NOT yet given',
-    /NOT YET GIVEN/.test(refBody.background));
+  // The referral record is only ever created once they have consented, so its
+  // background says so rather than warning that consent is missing.
+  check('referral background records consent given by them personally',
+    /CONSENT GIVEN BY THIS PERSON THEMSELVES/.test(refBody.background), refBody.background);
   check('referral background names the referrer', /Dana Reid/.test(refBody.background));
+  check('referral is tagged as having consented', refBody.tags.indexOf('Consented') !== -1,
+    JSON.stringify(refBody.tags));
 
   // Both directions of the relationship, so the link is visible from either record.
   const links = s.__fetches.filter(f => /peopleRelationships/.test(f.url));
@@ -444,6 +456,155 @@ const { makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J,
   const s2 = makeSandbox();
   at(BEFORE, () => s2.raffleEventDigest());
   eq('the digest is silent before the party', s2.__sent.length, 0);
+}
+
+// ---- Referrals reach FUB only when they consent -------------------------------
+{
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  const v = verifySession(s, entry(), DURING);
+  const creates = () => s.__fetches.filter(f => /\/v1\/people$/.test(f.url) &&
+                                                f.o && f.o.method === 'post');
+  eq('verifying creates the ENTRANT in FUB', creates().length, 1);
+
+  J(at(DURING, () => s.raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: v.vid }, referral({})))));
+  eq('naming a referral creates NOBODY in FUB', creates().length, 1);
+  eq('but the row exists', s.__data('Entries').length, 1);
+  check('and the row carries the entrant FUB id for later linking',
+    cell(s, s.__data()[0], 'FUB Person ID').length > 0,
+    cell(s, s.__data()[0], 'FUB Person ID'));
+
+  const token = cell(s, s.__data()[0], 'Consent Token');
+  J(at(DURING, () => s.raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: token, consent: 'Yes',
+    referralName: 'Robin Vale', referralPhone: '(215) 555-9001',
+    referralRole: 'Buyer', referralTimeframe: '7-12 Months' })));
+  eq('consenting is what creates the referral', creates().length, 2);
+  const refBody = JSON.parse(creates()[1].o.payload);
+  check('created with consent recorded', /CONSENT GIVEN BY THIS PERSON/.test(refBody.background));
+  const links = s.__fetches.filter(f => /peopleRelationships/.test(f.url));
+  eq('and only now are they linked to the referrer', links.length, 2);
+}
+
+// ---- The draw sweeps up everyone who never answered ---------------------------
+{
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  // One who confirms, one who never does.
+  enterFull(s, entry(), DURING);
+  enterFull(s, entry({ fullName: 'Quiet Entrant', email: 'quiet@mail-test.co',
+                       phone: '(267) 555-8400' }), DURING, {
+    skipConsent: true,
+    referral: { referralName: 'Silent Person', referralEmail: 'silent@mail-test.co',
+                referralPhone: '(215) 555-9400' } });
+  const before = s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post').length;
+
+  const drawn = at(AFTER, () => s.raffleDrawWinner_(false));
+  check('the draw only sees the confirmed entry', drawn.ok && drawn.result.totalEligible === 1,
+    JSON.stringify(drawn && drawn.result && drawn.result.totalEligible));
+
+  const after = s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post');
+  eq('the silent referral is swept into FUB by the draw', after.length, before + 1);
+  const swept = JSON.parse(after[after.length - 1].o.payload);
+  check('flagged as needing consent', swept.tags.indexOf('Needs Consent') !== -1,
+    JSON.stringify(swept.tags));
+  check('flagged as unconfirmed contact info',
+    swept.tags.indexOf('Unconfirmed Contact Info') !== -1, JSON.stringify(swept.tags));
+  check('and the record says plainly it has no consent',
+    /HAS GIVEN NO CONSENT/.test(swept.background), swept.background.slice(0, 200));
+  check('and says not to work it', /DO NOT call, text or drip/.test(swept.background));
+  check('their referrer STILL has no valid entry',
+    s.__data().filter(r => cell(s, r, 'Entry Status') === 'eligible').length === 1);
+
+  // Idempotency has to be tested on the SWEEP itself, not by drawing twice: the
+  // draw is once-only, so a second raffleDrawWinner_ returns the stored result and
+  // never reaches the sweep at all. Calling it that way passed happily with the
+  // duplicate guard deleted — a vacuous test.
+  at(AFTER, () => s.raffleLogUnconfirmedReferrals_(false));
+  at(AFTER, () => s.raffleLogUnconfirmedReferrals_(false));
+  eq('running the sweep again creates nobody twice',
+    s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post').length,
+    before + 1);
+  check('the swept row records when it was logged',
+    cell(s, s.__data()[1], 'Referral Logged At').length > 0,
+    cell(s, s.__data()[1], 'Referral Logged At'));
+}
+
+// ---- The referral chain --------------------------------------------------------
+{
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  enterFull(s, entry(), DURING);
+
+  const chainMail = s.__sent.filter(m => /you can win/i.test(m.subject));
+  eq('a confirmed referral is invited to enter too', chainMail.length, 1);
+  eq('sent to the person who confirmed', chainMail[0].to, 'robin@mail-test.co');
+  check('it says they need not re-enter their own details',
+    /nothing to fill in about yourself/i.test(chainMail[0].htmlBody));
+  // The & is HTML-escaped in an href, which is correct markup -- match the parts.
+  check('it carries a chain link',
+    /action=refer/.test(chainMail[0].htmlBody) && /t=[0-9a-f-]{36}/.test(chainMail[0].htmlBody));
+
+  const chainToken = cell(s, s.__data()[0], 'Chain Token');
+  check('the chain token is on the row', /^[0-9a-fA-F-]{36}$/.test(chainToken), chainToken);
+
+  // The link opens the form already past verification.
+  const page = String(at(DURING, () => s.raffleServeForm_(
+    { parameter: { action: 'refer', t: chainToken } }, 'u')));
+  check('the chain link serves the entry form', page.length > 1000);
+  const vidLine = (page.match(/var\s+CHAIN_VID\s*=\s*(.*?);/) || [])[1];
+  check('with a session already minted', !!vidLine && JSON.parse(vidLine).length === 36, vidLine);
+  check('and greets them by name',
+    JSON.parse((page.match(/var\s+CHAIN_FIRST\s*=\s*(.*?);/) || [])[1]) === 'Robin');
+
+  // That session can refer somebody, creating a second entry in Robin's name.
+  const vid = JSON.parse(vidLine);
+  const chained = J(at(DURING, () => s.raffleHandleSubmission_({
+    step: 'referral', vid: vid, consent: 'Yes',
+    referralName: 'Third Person', referralEmail: 'third@mail-test.co',
+    referralPhone: '(215) 555-9500', referralRole: 'Seller',
+    referralTimeframe: '0-3 Months' })));
+  check('a chain entrant can refer somebody', chained.ok === true && chained.staged === true,
+    JSON.stringify(chained));
+  eq('which is a second row', s.__data('Entries').length, 2);
+  eq('with the confirmed referral as the entrant', s.__data()[1][1], 'Robin Vale');
+}
+
+{
+  // Durand: "no new entry emails get sent after the draw."
+  //
+  // The scenario that matters is a referral who was named in time and replies
+  // LATE: the consent page still works (we want their details and their consent
+  // in FUB), but there is nothing left for them to enter, so inviting them to
+  // refer somebody would be a lie.
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  const v = verifySession(s, entry(), DURING);
+  const staged = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: v.vid }, referral({})))));
+  check('staged before the close (setup)', !!staged.staged, JSON.stringify(staged));
+
+  const late = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
+    referralName: 'Robin Vale', referralPhone: '(215) 555-9001',
+    referralRole: 'Buyer', referralTimeframe: '7-12 Months' })));
+  check('late consent still works', late.ok === true, JSON.stringify(late));
+  check('and is honest that it missed the draw', late.closed === true);
+  check('their details still reach FUB',
+    s.__fetches.some(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post' &&
+      /robin@mail-test\.co/.test(String(f.o.payload))));
+  eq('but no chain invite is sent after the draw',
+    s.__sent.filter(m => /you can win/i.test(m.subject)).length, 0);
+  check('and no chain token is minted', cell(s, s.__data()[0], 'Chain Token') === '',
+    cell(s, s.__data()[0], 'Chain Token'));
+  check('and it did not become an entry',
+    cell(s, s.__data()[0], 'Entry Status') !== 'eligible',
+    cell(s, s.__data()[0], 'Entry Status'));
+}
+
+{
+  // And after the close nothing can even be staged.
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  const r = enterFull(s, entry(), AFTER);
+  check('a fresh entry after the close is refused', !(r && r.ok), JSON.stringify(r));
+  eq('and writes no row', s.__data('Entries').length, 0);
 }
 
 // ---- Admin endpoints are key-gated -----------------------------------------

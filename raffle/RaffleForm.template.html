@@ -536,7 +536,14 @@ body.qa-test{padding-top:62px;}
     }
   }
 
-  render();
+  if (CHAIN_VID) {
+    pendingVid = CHAIN_VID;
+    document.getElementById('entrantFirst').textContent = CHAIN_FIRST || '';
+    show(referPanel);
+    lastPhase = phase();
+  } else {
+    render();
+  }
   // One second, so 3:00:00 opens and 6:15:00 closes on the second, with no
   // reload either way.
   setInterval(render, 1000);
@@ -591,6 +598,12 @@ body.qa-test{padding-top:62px;}
   // copy of FUB's labels to drift out of date. DEFAULT_TIMEFRAME is matched
   // server-side against that same list, so a renamed bucket in FUB changes the
   // preselection here with no code change.
+  // A chain entrant: someone who confirmed a referral and is now entering by
+  // referring in turn. They arrive with a server-minted session, so the page skips
+  // straight to the referral step -- they have already proved this inbox is theirs.
+  var CHAIN_VID   = <?!= chainVid ?>;
+  var CHAIN_FIRST = <?!= chainFirst ?>;
+
   var TIMEFRAMES = <?!= timeframeList ?>;
   var DEFAULT_TIMEFRAME = "<?!= defaultTimeframe ?>";
   (function(){

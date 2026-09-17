@@ -617,10 +617,20 @@ const stage = (s, who, ref, when) => {
   check('a decline is accepted', !!(declined && declined.declined));
   check('a declined row is not eligible',
     s.__data('Entries').filter(r => String(r[11]) === 'eligible').length === 0);
-  const put = s.__fetches.filter(f => /\/v1\/people\/\d+$/.test(f.url) &&
-                                      f.o && f.o.method === 'put').pop();
+  // A decline now CREATES a suppression record, because there is no longer a
+  // contact sitting there to mark: referrals only reach FUB when they consent.
+  const declineWrite = s.__fetches.filter(f => /\/v1\/people/.test(f.url) && f.o &&
+    /Do Not Contact/.test(String(f.o.payload || ''))).pop();
   check('the decline is written to FUB as do-not-contact',
-    !!put && /Do Not Contact/.test(String(put.o.payload)), put && put.o.payload);
+    !!declineWrite, 'no FUB write carried a Do Not Contact tag');
+  check('and the record says plainly not to work it',
+    !!declineWrite && /DO NOT CONTACT/.test(String(declineWrite.o.payload)));
+
+  // And they cannot simply be referred again by the next person who thinks of them.
+  const again = stage(s, { fullName: 'Another Entrant', email: 'another@mail-test.co',
+                           phone: '(267) 555-8330' }, {}, DURING);
+  check('a person who declined cannot be referred again',
+    !(again.staged && again.staged.staged), JSON.stringify(again.staged));
 }
 
 // ---------------------------------------------------------------------------

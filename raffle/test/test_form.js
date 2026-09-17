@@ -43,7 +43,10 @@ function page(opts) {
     ]),
     defaultTimeframe: opts.defaultTimeframe === undefined ? '7-12 Months' : opts.defaultTimeframe,
     prizeShort: '$300 toward any Ticketmaster purchase',
-    announceAt: '6:30 PM'
+    announceAt: '6:30 PM',
+    // JSON-encoded server-side, like the console's values.
+    chainVid: JSON.stringify(opts.chainVid || ''),
+    chainFirst: JSON.stringify(opts.chainFirst || '')
   }, opts.vals || {});
   // Model Apps Script's templating faithfully, including its escaping, because
   // getting that wrong is exactly how the countdown broke live: <?= ?> ESCAPES
