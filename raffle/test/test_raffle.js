@@ -1722,6 +1722,51 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   })());
 }
 
+// ---- The web app's own URL: remembered, not asked for --------------------------
+// raffleAdminLinks printed /dev links on 2026-09-17 because getUrl() returns the
+// URL of the CURRENT execution -- editor, /dev; a visitor, whatever /exec they
+// used; a trigger, nothing dependable. The 5:00 reminders and the 6:15 result
+// are triggers, and both put links in email.
+{
+  const EXEC = 'https://script.google.com/macros/s/AKfycbTESTDEPLOYMENTID_x-y/exec';
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key', RAFFLE_ADMIN_KEY: 'secret' } });
+  eq('with nothing on record the fallback is getUrl()', s.raffleBaseUrl_(), 'https://x/exec');
+  check('a consent link uses it', s.raffleConsentUrl_('tok').indexOf('https://x/exec?form=raffle') === 0);
+
+  // Serving the public page on the plain /exec URL records it.
+  at(DURING, () => s.raffleServeForm_({ parameter: {} }, EXEC));
+  eq('the public URL is recorded the first time the page is served on it', s.__props.RAFFLE_EXEC_URL, EXEC);
+  eq('and every link prefers it from then on', s.raffleBaseUrl_(), EXEC);
+  check('consent, chain and rules links all use it',
+    s.raffleConsentUrl_('t').indexOf(EXEC) === 0 && s.raffleChainUrl_('t').indexOf(EXEC) === 0);
+
+  // Only the plain form is worth keeping.
+  const d = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key', RAFFLE_ADMIN_KEY: 'secret' } });
+  at(DURING, () => d.raffleServeForm_({ parameter: {} }, 'https://script.google.com/a/tsg.homes/macros/s/AKfycbHEAD/dev'));
+  eq('the /dev URL is never recorded', d.__props.RAFFLE_EXEC_URL, undefined);
+  at(DURING, () => d.raffleServeForm_({ parameter: {} }, 'https://script.google.com/a/tsg.homes/macros/s/AKfycbDEP/exec'));
+  eq('nor the domain-scoped /a/ form (it forces a Workspace login)', d.__props.RAFFLE_EXEC_URL, undefined);
+  d.__props.RAFFLE_EXEC_URL = 'javascript:alert(1)';
+  eq('a malformed property is ignored', d.raffleBaseUrl_(), 'https://x/exec');
+
+  // The trigger paths build from it.
+  const t = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key', RAFFLE_ADMIN_KEY: 'secret', RAFFLE_EXEC_URL: EXEC } });
+  t.ScriptApp.getService = () => ({ getUrl: () => 'https://script.google.com/a/tsg.homes/macros/s/AKfycbHEAD/dev' });
+  enterFull(t, entry(), DURING, { skipConsent: true });
+  const invite = t.__sent.find(m => /confirm and you are in/.test(m.subject));
+  check('the invite\'s consent link is the public URL even when the execution is on /dev',
+    !!invite && invite.body.indexOf(EXEC + '?form=raffle&action=') !== -1, invite && invite.body.match(/https?:\S+/)[0]);
+  at(AFTER, () => t.raffleDrawWinner_(false, true));
+  const result = t.__sent.find(m => /Winner/.test(m.subject));
+  check('the 6:15 result\'s console link is the public URL', !!result && result.htmlBody.indexOf(EXEC + '?form=raffle&amp;action=console') !== -1);
+  const links = t.raffleAdminLinks();
+  check('raffleAdminLinks prints the public URL', links.indexOf(EXEC + '?form=raffle') !== -1 && !/\/dev/.test(links));
+  const bare = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key', RAFFLE_ADMIN_KEY: 'secret' } });
+  bare.ScriptApp.getService = () => ({ getUrl: () => 'https://script.google.com/a/tsg.homes/macros/s/AKfycbHEAD/dev' });
+  check('and warns when it can only print /dev links', /NOT the/.test(bare.raffleAdminLinks()));
+  check('setupRaffle says when the URL is not on record', /RAFFLE_EXEC_URL is not set/.test(String(at(DURING, () => bare.setupRaffle()))));
+}
+
 const { passes, fails } = counts();
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
 process.exit(fails ? 1 : 0);

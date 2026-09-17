@@ -79,6 +79,43 @@ var RAFFLE_RESULT_EMAIL = 'durand@thestawaszgroup.com,ryan@thestawaszgroup.com,r
 var RAFFLE_BONUS_TICKETS_PER_REFERRAL = 5;
 
 var RAFFLE_SOURCE = 'TSG Block Party 2026 - Raffle';
+
+// ---------- The web app's own URL ----------
+// Every link this project puts in an email (consent, chain, rules, the console
+// link in the 6:15 result) was built from ScriptApp.getService().getUrl(). That
+// returns whatever URL the CURRENT execution came in on: the /exec a visitor
+// used, the /dev URL when run from the editor (raffleAdminLinks printed /dev
+// links on 2026-09-17), and, from a time-driven trigger, nothing anyone should
+// rely on. The 5:00 reminder and the 6:15 result are both triggers. So the
+// plain public /exec URL is remembered in a script property -- recorded the
+// first time the public page is served on it, or set by hand -- and preferred
+// everywhere; getUrl() is only the fallback.
+var RAFFLE_EXEC_URL_PROP = 'RAFFLE_EXEC_URL';
+var RAFFLE_EXEC_URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
+
+function raffleBaseUrl_() {
+  var stored = '';
+  try { stored = PropertiesService.getScriptProperties().getProperty(RAFFLE_EXEC_URL_PROP) || ''; }
+  catch (err) { stored = ''; }
+  if (RAFFLE_EXEC_URL_RE.test(stored)) return stored;
+  var live = '';
+  try { live = ScriptApp.getService().getUrl() || ''; } catch (err2) { live = ''; }
+  return live;
+}
+
+// Called with the URL a public GET actually arrived on. Only the plain /exec
+// form is worth keeping: /dev is editor-only, and the /a/<domain>/ form forces
+// a Workspace login on whoever clicks it.
+function raffleRememberExecUrl_(url) {
+  try {
+    if (!RAFFLE_EXEC_URL_RE.test(String(url || ''))) return false;
+    var props = PropertiesService.getScriptProperties();
+    if (props.getProperty(RAFFLE_EXEC_URL_PROP) === url) return false;
+    props.setProperty(RAFFLE_EXEC_URL_PROP, url);
+    Logger.log('Raffle: remembered the public web-app URL.');
+    return true;
+  } catch (err) { return false; }
+}
 var RAFFLE_TAGS   = ['Block Party 2026', 'Block Party Raffle Entrant', 'Event Lead'];
 
 // ---------- Test mode vs live ----------
@@ -559,6 +596,14 @@ function setupRaffle() {
   } else {
     out.push('RAFFLE_ADMIN_KEY already set.');
   }
+  var execUrl = props.getProperty(RAFFLE_EXEC_URL_PROP) || '';
+  if (RAFFLE_EXEC_URL_RE.test(execUrl)) {
+    out.push('Public web-app URL on record: ' + execUrl);
+  } else {
+    out.push('!! ' + RAFFLE_EXEC_URL_PROP + ' is not set. Links in emails sent by the 5:00 and',
+             '!! 6:15 triggers need it. Open the public entry page once (the QR link) and it',
+             '!! records itself, or set the property to the plain .../exec URL by hand.');
+  }
 
   // Drop any previously installed draw trigger before adding this one, so
   // re-running setup can never arm two draws.
@@ -618,7 +663,7 @@ function raffleAdminLinks() {
   var props = PropertiesService.getScriptProperties();
   var key = props.getProperty(RAFFLE_ADMIN_PROP);
   if (!key) throw new Error('Run setupRaffle() first.');
-  var base = ScriptApp.getService().getUrl();
+  var base = raffleBaseUrl_();
   var sheetId = props.getProperty(RAFFLE_SHEET_PROP);
 
   var out = [
@@ -639,11 +684,13 @@ function raffleAdminLinks() {
     '  mean to close entries now:',
     '  ' + base + '?form=raffle&action=draw&key=' + key + '&force=1',
     '',
-    'DRAW CONSOLE (private) — email budget and the ceiling button before the draw;',
-    '  pick, preview and send the winner email after it:',
-    '  ' + base + '?form=raffle&action=console&key=' + key,
-    ''
   ];
+  if (!RAFFLE_EXEC_URL_RE.test(base)) {
+    out.unshift('!! These links are built from ' + (base || '(no URL)') + ', which is NOT the',
+                '!! public web-app URL (you ran this from the editor, so it is the /dev URL).',
+                '!! Open the public entry page once after deploying and run this again, or set',
+                '!! the ' + RAFFLE_EXEC_URL_PROP + ' script property to the plain .../exec URL.', '');
+  }
 
   // The QA secret is a separate property, shared with the other two forms. If it
   // is missing the test URLs cannot work, so say that outright rather than
@@ -702,6 +749,7 @@ function raffleAdminLinks() {
 
 // ---------- doGet branch (reached from Code.gs's one-line hook) ----------
 function raffleServeForm_(e, baseUrl, chain) {
+  raffleRememberExecUrl_(baseUrl);
   var action = (e.parameter.action || '').toString().toLowerCase();
   // ?qatest=<QA_TEST_SECRET> mints the token AND flips this execution into test
   // mode. A wrong or absent value returns '' and renders the ordinary live page,
@@ -1904,7 +1952,7 @@ function raffleEmailResult_(result, test) {
   var consoleUrl = '';
   try {
     var adminKey = PropertiesService.getScriptProperties().getProperty(RAFFLE_ADMIN_PROP);
-    consoleUrl = ScriptApp.getService().getUrl() + '?form=raffle&action=console&key=' +
+    consoleUrl = raffleBaseUrl_() + '?form=raffle&action=console&key=' +
       encodeURIComponent(adminKey || '') + (test ? '&test=1' : '');
   } catch (urlErr) { Logger.log('raffleEmailResult_: could not build the console URL: ' + urlErr); }
 
@@ -2082,6 +2130,35 @@ function raffleInspectFubEmailLogging() {
 // that arrived means FUB sends; a 200/201 and nothing in the inbox means the
 // endpoint only LOGS. Everything else it prints is context (users = agents,
 // action plans = the automation that does send from an agent's mailbox).
+// What FUB actually has on this account, for building smart lists and templates
+// by hand in the FUB UI with real names: users, stages, pipelines, custom fields,
+// and whether the API exposes smart lists or templates at all.
+function raffleProbeFubSetup() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+  var base = 'https://api.followupboss.com/v1/';
+  function list(path, pick) {
+    var r = raffleFubCall_(base + path + (path.indexOf('?') === -1 ? '?limit=100' : '&limit=100'),
+                           'get', null, apiKey);
+    say('GET /v1/' + path + ' -> ' + r.code);
+    if (!r.ok || !r.body) { say('  ' + String(r.text).slice(0, 200)); return; }
+    var arrKey = Object.keys(r.body).filter(function (k) {
+      return Object.prototype.toString.call(r.body[k]) === '[object Array]'; })[0];
+    (arrKey ? r.body[arrKey] : []).forEach(function (x) { say('  ' + pick(x)); });
+  }
+  list('users', function (u) { return u.id + ': ' + u.name + ' <' + u.email + '> ' + u.role + ' ' + u.status; });
+  list('stages', function (s) { return s.id + ': ' + s.name; });
+  list('pipelines', function (p) { return p.id + ': ' + p.name + ' — stages: ' +
+    ((p.stages || []).map(function (s) { return s.name; }).join(', ') || '(none listed)'); });
+  list('customFields', function (f) { return f.id + ': "' + f.label + '" (' + f.name + ', ' + f.type + ')'; });
+  list('smartLists', function (l) { return l.id + ': ' + l.name; });
+  list('emailTemplates', function (t) { return t.id + ': ' + t.name; });
+  list('deals?status=Closed', function (d) { return d.id + ': ' + (d.name || '') + ' stage=' +
+    (d.stageId || d.stage || '?') + ' people=' + JSON.stringify(d.people || d.personIds || []); });
+  return out.join('\n');
+}
+
 function raffleProbeFubEmailSend() {
   var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
   var out = [];
@@ -2776,7 +2853,7 @@ function raffleQaRun_(cleanUp) {
           chainRow && chainRow.chainToken);
     if (chainRow && chainRow.chainToken) {
       var chOut = raffleServeForm_({ parameter: { action: 'refer', t: chainRow.chainToken } },
-                                   ScriptApp.getService().getUrl());
+                                   raffleBaseUrl_());
       var chHtml = String(typeof chOut.getContent === 'function' ? chOut.getContent() : chOut);
       check('the chain link serves the entry form', chHtml.length > 5000,
             'got ' + chHtml.length + ' chars');

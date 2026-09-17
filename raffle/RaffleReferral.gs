@@ -1060,7 +1060,7 @@ function raffleFindRowByToken_(token) {
 }
 
 function raffleConsentUrl_(token) {
-  return ScriptApp.getService().getUrl() +
+  return raffleBaseUrl_() +
     '?form=raffle&action=' + RAFFLE_CONSENT_ACTION + '&t=' + encodeURIComponent(token);
 }
 
@@ -1203,7 +1203,7 @@ function raffleConsentPage_(e) {
   // works (we want the contact record) but there is no drawing left to join.
   var stillOpen = !!found.test || raffleEntryState_() === 'open';
   var rulesUrl = '';
-  try { rulesUrl = ScriptApp.getService().getUrl() + '?form=raffle'; } catch (urlErr) { rulesUrl = ''; }
+  try { rulesUrl = raffleBaseUrl_() + '?form=raffle'; } catch (urlErr) { rulesUrl = ''; }
 
   var body = [
     '<h2 style="margin:0 0 6px">' + esc(entry.name) + ' referred you to us</h2>',
@@ -2648,7 +2648,7 @@ function raffleLogUnconfirmedReferrals_(test) {
 var RAFFLE_CHAIN_ACTION = 'refer';
 
 function raffleChainUrl_(token) {
-  return ScriptApp.getService().getUrl() +
+  return raffleBaseUrl_() +
     '?form=raffle&action=' + RAFFLE_CHAIN_ACTION + '&t=' + encodeURIComponent(token);
 }
 
@@ -2823,7 +2823,7 @@ function raffleChainStart_(e) {
     if (k !== 'action' && k !== 't') inner.parameter[k] = e.parameter[k];
   });
 
-  return raffleServeForm_(inner, ScriptApp.getService().getUrl(), {
+  return raffleServeForm_(inner, raffleBaseUrl_(), {
     chainVid: vid,
     chainFirst: String(r.referralName || '').split(' ')[0],
     chainTest: found.test
