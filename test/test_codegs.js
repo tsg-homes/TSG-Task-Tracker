@@ -1672,5 +1672,36 @@ section('No secrets in tracked files (repo is public)');
   check('dashboard TSG_TOKEN is the __TSG_TOKEN__ placeholder', dash.includes("const TSG_TOKEN = '__TSG_TOKEN__';"));
 }
 
+section('Actual time: log_time op and ACTUALS_BY_TYPE (2026-09-17)');
+{
+  const doc = freshDoc();
+  doc.tasks[0].subitems = [{ title: 'Step A', estHours: 1, status: 'Not Started' }];
+  sandbox.applyDataPatch_(doc, { op: 'log_time', id: 1, minutes: 45, kind: 'timer', source: 'Durand', ts: '2026-09-17T15:00:00Z' });
+  const t = doc.tasks[0];
+  check('timer entry lands in timeLog; actualHours is the quarter-hour sum; actualSource set', t.timeLog.length === 1 && t.actualHours === 0.75 && t.actualSource === 'timer');
+  sandbox.applyDataPatch_(doc, { op: 'log_time', id: 1, minutes: 20, kind: 'session', source: 'Claude session', turns: 6, spanMin: 95, note: 'drafted the vendor reply', ts: '2026-09-17T16:00:00Z' });
+  check('a session report keeps turns and span on the entry and counts only attention minutes', t.timeLog[1].turns === 6 && t.timeLog[1].spanMin === 95 && t.actualHours === 1 && t.claudeTurns === 6);
+  check('history logs actualHours with the source and the turns', t.history.some(h => h.field === 'actualHours' && h.source === 'Claude session' && /1 h \(session, 6 turns\)/.test(h.to)));
+  sandbox.applyDataPatch_(doc, { op: 'log_time', id: 1, subIdx: 0, minutes: 30, kind: 'manual', source: 'Durand', ts: '2026-09-17T16:10:00Z' });
+  check('a subtask keeps its own log; the parent total adds it', t.subitems[0].actualHours === 0.5 && sandbox.tsgItemActualHours_(t) === 1.5 && t.history.some(h => h.field === 'subitem-actualHours'));
+  let threw = null; try { sandbox.applyDataPatch_(doc, { op: 'log_time', id: 1, minutes: 0, ts: '2026-09-17T16:11:00Z' }); } catch (e) { threw = e.message; }
+  check('zero minutes is refused', /positive/.test(threw || ''));
+  sandbox.applyDataPatch_(doc, { op: 'log_time', id: 1, minutes: 5, kind: 'guess', ts: '2026-09-17T16:12:00Z' });
+  check('an unknown kind falls back to manual', t.timeLog[t.timeLog.length - 1].kind === 'manual');
+  const d2 = freshDoc();
+  d2.tasks = [1, 2, 3].map(i => ({ id: i, title: 'E' + i, status: 'Done', taskType: 'Email', estHours: 0.5, actualHours: [0.25, 0.5, 1][i - 1], subitems: [], history: [] }))
+    .concat([{ id: 4, title: 'X', status: 'Done', taskType: 'Actionable Task', estHours: 2, actualHours: 3, subitems: [], history: [] }]);
+  const act = sandbox.tsgActualsByType_(d2);
+  check('three Email samples give a row with medians; a single Actionable sample is left out', !!act.Email && act.Email.n === 3 && act.Email.medianActualHours === 0.5 && act.Email.medianActualOverEstimate === 1 && !act['Actionable Task']);
+  const p = sandbox.tsgEstimatePrompt_('Email the vendor', 'notes', 'High', ['estHours', 'taskType', 'subitems'], { actuals: act });
+  const txt = p.user.map(b => b.text).join('\n');
+  check('the estimator prompt carries ACTUALS_BY_TYPE when asked for hours', /ACTUALS_BY_TYPE/.test(txt) && txt.includes('"Email":{"n":3'));
+  const p2 = sandbox.tsgEstimatePrompt_('Email the vendor', 'notes', 'High', ['progress'], { actuals: act });
+  check('...and not on a progress-only read', !/ACTUALS_BY_TYPE/.test(p2.user.map(b => b.text).join('\n')));
+  check('tsgBoardContext_ exposes actuals', sandbox.tsgBoardContext_(d2).actuals.Email.n === 3);
+  check('the system prompt tells Claude measured work beats the table', /measured work beats the table/.test(sandbox.TSG_ESTIMATE_SYSTEM));
+  check('actualHours is a diffed field on tasks and subtasks', sandbox.TSG_TASK_DIFF_FIELDS.includes('actualHours') && sandbox.TSG_SUBITEM_DIFF_FIELDS.includes('actualHours'));
+}
+
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
 if (FAILS) process.exitCode = 1;

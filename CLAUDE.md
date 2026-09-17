@@ -621,3 +621,31 @@ uploaded files/pasted images (add the ability to add local files and paste image
   attaches to that card (`pastedFiles_`, document paste listener).
 - Tests: backend "Attachments and the one docs list"; dashboard unified-picker / upload / paste
   tests. The test `Utilities.formatDate` stub handles `yyyy-MM-dd`, `HH:mm`, `yyyy-MM-dd-HHmmss`.
+
+## Actual time capture and measured reference class (2026-09-17, backend 2026-09-17.7, dashboard UI 2026-09-17.10)
+
+Per Durand: "how are we currently measuring actual time spent on a project?" (nothing was), "build
+the timer, but that might not be accurate either cause it relies on me starting and stopping it",
+and "update the skill". His Cowork usage readings (87 rows, plan-quota % over time) are NOT effort
+data: they give quota burn per active hour, not minutes per turn or concurrency; every capacity
+default is still self-reported until session reports or an export feed it.
+- One log: `timeLog[]` on tasks and steps, entries `{ts, minutes, kind, source, note?, turns?,
+  spanMin?}`; `actualHours` = own log in quarter hours (`tsgActualHoursFromLog_`), `actualSource`
+  = last kind; parent total for calibration = own + steps (`tsgItemActualHours_`). `actualHours`
+  is in both DIFF_FIELDS lists. NEW op `log_time {id, subIdx?, minutes, kind, source, note?,
+  turns?, spanMin?}` (`tsgLogTime_`); kinds timer | manual | session | calendar; a `session`
+  entry keeps `turns`/`spanMin` and sums `claudeTurns` on the item, only attention minutes count.
+- Dashboard: Actual row on the card (`actualRowHtml_`: total, % of estimate, Start/Stop timer,
+  "+ Log time"); `TIMER` in localStorage `tsgTimer` (survives reload), toolbar chip `#timerChip`,
+  `logTime_` writes the entry locally with source Durand and saves through the usual replace_all;
+  `captureActualOnDone_` runs on every Done path (modal pill, row select, kanban drop, step tick):
+  a running timer on the item stops and logs, else with nothing logged the `#actualModal` prompt
+  opens prefilled with the estimate (Enter saves, Skip is free); `buildActualsCheck` adds "Log time
+  on N tasks finished today" to the Evening Wrap-Up block.
+- Calibration: `tsgActualsByType_` (done items with logged time, by taskType, 3+ samples: n,
+  median actual hours, median actual/estimate ratio) rides in `tsgBoardContext_().actuals`, in the
+  estimator prompt as `ACTUALS_BY_TYPE` whenever `estHours` is needed, and in queued enrich
+  requests as `actuals`; the system prompt says measured work beats the table.
+- The protocol skill's source of truth is now `skills/tsg-task-tracker-protocol/SKILL.md` in this
+  repo (Durand applies it in Cowork; the synced copy there was last revised 2026-09-02 and still
+  said assignee/doc/curl). It carries the session effort report and the one estimation workflow.

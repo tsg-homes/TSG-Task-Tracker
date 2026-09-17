@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-17.6';
+const TSG_CODE_VERSION = '2026-09-17.7';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -607,7 +607,7 @@ function applyDataPatch_(doc, patch) {
         const context = {
           groups: board.groups,
           openTitles: board.openTitles,
-          existingTags: board.existingTags,
+          existingTags: board.existingTags, actuals: board.actuals,
           batchSiblings: batchSiblings,
           current: tsgCurrentSnapshot_(task),
           driveCandidates: driveCands ? driveCands.listText : '',
@@ -844,6 +844,8 @@ function applyDataPatch_(doc, patch) {
     if (!st) throw new Error('request_steps: task id not found: ' + patch.id);
     var want = Array.isArray(patch.indices) ? patch.indices : (st.subitems || []).map(function(x, i) { return (x && !x.done && x.status !== 'Done' && !(typeof x.estHours === 'number' && x.estHours > 0)) ? i : -1; }).filter(function(i) { return i >= 0; });
     if (want.length) tsgEnrichSteps_(doc, st, now, patch.source || 'unknown', want);
+  } else if (patch.op === 'log_time') {
+    tsgLogTime_(doc, patch, now);
   } else if (patch.op === 'request_tidy') {
     // The Tidy button (2026-09-16, per Durand: "the tidy should now just be automatic"): a
     // full re-run of the enrichment on one task, applied when the answer lands, no review
@@ -2154,7 +2156,7 @@ function tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts) {
   var current = tsgCurrentSnapshot_(item);
   if (sub) { current.subtask = true; current.parentTitle = parent.title; }
   if (sub && parent) current.parentNotes = String(parent.notes || '').trim().slice(0, 600);
-  var context = { groups: board.groups, openTitles: board.openTitles, existingTags: board.existingTags, batchSiblings: [],
+  var context = { groups: board.groups, openTitles: board.openTitles, existingTags: board.existingTags, actuals: board.actuals, batchSiblings: [],
     current: current, target: { taskId: parent.id, subIdx: sub ? subIdx : undefined }, subTitle: sub ? item.title : undefined,
     driveCandidates: driveCands ? driveCands.listText : '', driveCandidateCount: driveCands ? driveCands.files.length : 0,
     calendarCandidates: calCands ? calCands.listText : '', calendarCandidateCount: calCands ? calCands.events.length : 0,
@@ -3175,9 +3177,9 @@ function backupTrackerFile_(key, payload) {
 // edits (replace_all) or 'unknown' if a caller genuinely didn't say. tags is diffed as
 // one whole-array entry rather than per-tag; every other field here is a plain scalar.
 var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned', 'dueTime', 'remindAt', 'dependsNone'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned', 'dueTime', 'remindAt', 'dependsNone', 'actualHours'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done', 'location', 'travelMode', 'travelMethod', 'dueTime', 'remindAt'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done', 'location', 'travelMode', 'travelMethod', 'dueTime', 'remindAt', 'actualHours'];
 
 function tsgValuesEqual_(a, b) {
   if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a || []) === JSON.stringify(b || []);
@@ -3920,6 +3922,10 @@ var TSG_ESTIMATE_SYSTEM =
   '- Training a group, including prep and materials: 6-12h\n' +
   'Multiply for genuine repetition: a task spanning 12 agents is not a 1-agent task.\n' +
   'Do not pad. Most tasks are small. If the task is one message to one person, say 0.25.\n' +
+  'ACTUALS_BY_TYPE, when present, is measured time from this team\'s own completed items (a reference ' +
+  'class). For the task\'s type with n >= 3, anchor on its median actual hours for comparable work and ' +
+  'scale the calibration row by its actual/estimate ratio; measured work beats the table. With fewer ' +
+  'samples, or no row for the type, use the table as is.\n' +
   'subitems: NEW steps only — concrete steps actually stated or clearly implied by the title/notes ' +
   'and not already present in CURRENT_STEPS. Each is {"title", "estHours", "taskType", "priority"} ' +
   'judged by the same rules as the task\'s own fields (hands-on hours from the calibration table). ' +
@@ -4067,7 +4073,8 @@ function tsgBoardContext_(doc) {
     groups: Array.from(new Set(tasks.map(function(t) { return t.group; }).filter(Boolean))),
     openTitles: tasks.filter(function(t) { return t.status !== 'Done'; }).map(function(t) { return t.title; }),
     existingTags: Array.from(new Set(tasks.reduce(function(acc, t) { return acc.concat(t.tags || []); }, [])))
-      .filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1; })
+      .filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1; }),
+    actuals: tsgActualsByType_(doc)
   };
 }
 function tsgIsHeldForReview_(item) { return !!item && (item.tags || []).indexOf(TSG_REVIEW_TAG) !== -1; }
@@ -4166,6 +4173,9 @@ function tsgEstimatePrompt_(title, notes, priority, need, context) {
     'NEEDED_FIELDS: ' + JSON.stringify(need)
   ];
   if (context.current) userParts.push('CURRENT_FIELDS (return these unchanged unless the title/notes clearly justify a change): ' + JSON.stringify(context.current));
+  if (need.indexOf('estHours') !== -1 && context.actuals && Object.keys(context.actuals).length) {
+    userParts.push('ACTUALS_BY_TYPE (this team\'s measured completed work: n items with logged time, median actual hours, median actual/estimate ratio):\n' + JSON.stringify(context.actuals));
+  }
   if (need.indexOf('dependsOnTitle') !== -1 && context.batchSiblings && context.batchSiblings.length) {
     userParts.push('BATCH_SIBLING_TITLES: ' + JSON.stringify(context.batchSiblings));
   }
@@ -4293,7 +4303,7 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
     // source 'queued' so callers fall back exactly as for an unreachable Claude.
     var req = { kind: 'enrich', need: p.need, title: String(title || ''), notes: String(notes || '').trim(), priority: priority || '',
       current: context.current || null, subTitle: context.subTitle, batchSiblings: context.batchSiblings || [], driveCandidates: context.driveList || null, calendarCandidates: context.calendarList || null, mailCandidates: context.mailList || null,
-      currentSteps: context.currentSteps || null };
+      currentSteps: context.currentSteps || null, actuals: (context.actuals && Object.keys(context.actuals).length) ? context.actuals : null };
     var out = tsgEstimateParse_(null, p.need, title, context);
     out.source = 'queued';
     if (context.target && context.target.taskId != null) {
@@ -4654,6 +4664,86 @@ function tsgClaudeEndpoint_(body) {
  * book the work. Anything else would be a number dressed up as a measurement.
  * ============================================================================
  */
+
+/**
+ * ACTUAL TIME CAPTURE — added 2026-09-17 (per Durand: "how are we currently measuring actual
+ * time spent on a project?" — nothing was — and "build the timer, but that might not be
+ * accurate either cause it relies on me starting and stopping it").
+ *
+ * One log, several ways in, each entry tagged with how it was measured so a number is
+ * always traceable: kind 'timer' (the card timer on the dashboard), 'manual' (a value typed
+ * when an item is marked Done, prefilled with the estimate, or "+ Log time"), 'session' (a
+ * Claude session's self-report through this op: Durand's ATTENTION minutes as `minutes`,
+ * with the session's `turns` and wall-clock `spanMin` kept alongside and never counted as
+ * hours), 'calendar' (tsgAttributeCalendarHours). actualHours on an item is always the sum
+ * of its own timeLog; a parent's total for calibration adds its steps' (tsgItemActualHours_).
+ *
+ *   {op:'log_time', id, subIdx?, minutes, kind?, source?, note?, at?, turns?, spanMin?}
+ */
+var TSG_TIME_KINDS = ['timer', 'manual', 'session', 'calendar'];
+function tsgActualHoursFromLog_(log) {
+  var min = (log || []).reduce(function(n, e) { return n + (Number(e && e.minutes) || 0); }, 0);
+  return Math.round(min / 60 * 4) / 4;
+}
+function tsgItemActualHours_(t) {
+  var h = Number(t && t.actualHours) || 0;
+  ((t && t.subitems) || []).forEach(function(s) { h += Number(s && s.actualHours) || 0; });
+  return Math.round(h * 4) / 4;
+}
+function tsgLogTime_(doc, patch, now) {
+  var t = (doc.tasks || []).filter(function(x) { return x && x.id === patch.id; })[0];
+  if (!t) throw new Error('log_time: task id not found: ' + patch.id);
+  var subIdx = (typeof patch.subIdx === 'number') ? patch.subIdx : null;
+  var item = t;
+  if (subIdx !== null) { item = (t.subitems || [])[subIdx]; if (!item) throw new Error('log_time: no subitem ' + subIdx + ' on task ' + patch.id); }
+  var minutes = Math.round(Number(patch.minutes));
+  if (!isFinite(minutes) || minutes <= 0) throw new Error('log_time: minutes must be a positive number');
+  var kind = TSG_TIME_KINDS.indexOf(patch.kind) !== -1 ? patch.kind : 'manual';
+  var source = patch.source || 'unknown';
+  item.timeLog = Array.isArray(item.timeLog) ? item.timeLog : [];
+  var entry = { ts: patch.at || now, minutes: minutes, kind: kind, source: source };
+  if (patch.note) entry.note = String(patch.note).slice(0, 300);
+  if (typeof patch.turns === 'number' && patch.turns > 0) entry.turns = Math.round(patch.turns);
+  if (typeof patch.spanMin === 'number' && patch.spanMin > 0) entry.spanMin = Math.round(patch.spanMin);
+  item.timeLog.push(entry);
+  var before = (item.actualHours == null) ? null : item.actualHours;
+  item.actualHours = tsgActualHoursFromLog_(item.timeLog);
+  item.actualSource = kind;
+  var turns = item.timeLog.reduce(function(n, e) { return n + (Number(e && e.turns) || 0); }, 0);
+  if (turns) item.claudeTurns = turns;
+  t.history = Array.isArray(t.history) ? t.history : [];
+  t.history.push({ ts: now, field: subIdx !== null ? 'subitem-actualHours' : 'actualHours', from: before,
+    to: item.actualHours + ' h (' + kind + (entry.turns ? ', ' + entry.turns + ' turns' : '') + ')', source: source });
+  return entry;
+}
+/**
+ * Reference class from the team's OWN measured work, by task type: n done items with logged
+ * time, median actual hours, and the median actual/estimate ratio. Goes to the estimator as
+ * ACTUALS_BY_TYPE (and into every queued enrich request) so a type with enough samples is
+ * anchored on measurement instead of the calibration table. Fewer than 3 samples: the type
+ * is left out (one number is an anecdote).
+ */
+function tsgActualsByType_(doc) {
+  var by = {};
+  ((doc && doc.tasks) || []).forEach(function(t) {
+    if (!t || t.status !== 'Done') return;
+    var actual = tsgItemActualHours_(t);
+    if (!(actual > 0)) return;
+    var type = t.taskType || 'Actionable Task';
+    by[type] = by[type] || { actual: [], ratio: [] };
+    by[type].actual.push(actual);
+    if (Number(t.estHours) > 0) by[type].ratio.push(actual / Number(t.estHours));
+  });
+  function median(a) { if (!a.length) return null; var s = a.slice().sort(function(x, y) { return x - y; }); var m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
+  var out = {};
+  Object.keys(by).forEach(function(type) {
+    if (by[type].actual.length < 3) return;
+    var r = median(by[type].ratio);
+    out[type] = { n: by[type].actual.length, medianActualHours: Math.round(median(by[type].actual) * 4) / 4,
+      medianActualOverEstimate: r == null ? null : Math.round(r * 100) / 100 };
+  });
+  return out;
+}
 
 function tsgIsWorkday_(d) {
   var day = d.getDay();

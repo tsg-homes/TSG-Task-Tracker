@@ -987,6 +987,61 @@ setTimeout(async () => {
     w.closeTaskCard();
   });
 
+  // Actual time: card timer, Done prompt, EOD check (2026-09-17)
+  tryCall('the task card has an Actual row with Start; starting shows the toolbar chip and persists', () => {
+    w.openTaskCard(1);
+    if (!doc.getElementById('timerStartBtn')) throw new Error('no Start button');
+    w.startTimer(1, null);
+    w.eval('TIMER.startedAt = Date.now() - 90 * 1000');
+    w.renderTimerChip_();
+    const chip = doc.getElementById('timerChip');
+    if (chip.style.display === 'none' || !chip.textContent.includes('1:30')) throw new Error('chip: ' + chip.textContent);
+    if (!doc.getElementById('timerStopBtn')) throw new Error('no Stop button while running');
+    if (JSON.parse(w.localStorage.getItem('tsgTimer')).id !== 1) throw new Error('timer not persisted');
+  });
+  tryCall('stopping logs a timer entry to the minute, actualHours in quarter hours, history with source Durand', () => {
+    w.eval('TIMER.startedAt = Date.now() - 20 * 60 * 1000');
+    w.stopTimer(true);
+    const t = w.findTask(1);
+    if (!t.timeLog || t.timeLog.length !== 1 || t.timeLog[0].minutes !== 20 || t.timeLog[0].kind !== 'timer') throw new Error('log ' + JSON.stringify(t.timeLog));
+    if (t.actualHours !== 0.25) throw new Error('actualHours ' + t.actualHours);
+    if (!t.history.some(h => h.field === 'actualHours' && h.source === 'Durand')) throw new Error('no history line');
+    if (w.localStorage.getItem('tsgTimer')) throw new Error('timer still persisted');
+    if (!doc.getElementById('taskModal').innerHTML.includes('0.25 h')) throw new Error('card does not show the actual');
+    w.closeTaskCard();
+  });
+  tryCall('marking a task Done with nothing logged opens the prompt prefilled with the estimate; Save logs a manual entry', () => {
+    const t = w.findTask(2); t.estHours = 1.5; t.actualHours = 0; t.timeLog = []; t.status = 'In Progress';
+    w.modalPillChange(2, 'status', 'Done');
+    const m = doc.getElementById('actualModal');
+    if (!m.classList.contains('open')) throw new Error('prompt not open');
+    if (doc.getElementById('actualHoursInput').value !== '1.5') throw new Error('prefill ' + doc.getElementById('actualHoursInput').value);
+    doc.getElementById('actualHoursInput').value = '2';
+    w.saveActualModal_();
+    if (m.classList.contains('open')) throw new Error('prompt still open');
+    if (t.actualHours !== 2 || t.timeLog[0].kind !== 'manual' || t.timeLog[0].minutes !== 120) throw new Error('log ' + JSON.stringify(t.timeLog));
+    w.closeTaskCard();
+  });
+  tryCall('a task with time already logged is not prompted again; ticking a step prompts for that step', () => {
+    w.modalPillChange(2, 'status', 'In Progress'); w.modalPillChange(2, 'status', 'Done');
+    if (doc.getElementById('actualModal').classList.contains('open')) throw new Error('prompted twice');
+    w.closeTaskCard();
+    const t1 = w.findTask(1);
+    if (!t1.subitems || !t1.subitems.length) t1.subitems = [{ title: 'Step', status: 'Not Started', done: false }];
+    t1.subitems[0].estHours = 0.5; t1.subitems[0].actualHours = 0; t1.subitems[0].timeLog = [];
+    w.toggleSubitem(1, 0, { checked: true });
+    if (!doc.getElementById('actualModal').classList.contains('open')) throw new Error('no prompt for the step');
+    if (doc.getElementById('actualHoursInput').value !== '0.5') throw new Error('step prefill ' + doc.getElementById('actualHoursInput').value);
+    w.closeActualModal();
+  });
+  tryCall('the Evening Wrap-Up lists tasks finished today with no time logged', () => {
+    const all = w.eval('TASKS');
+    const t3 = all.find(x => x.id !== 1 && x.id !== 2) || all[0];
+    t3.status = 'Done'; t3.actualHours = 0; t3.timeLog = []; t3.subitems = []; t3.completedAt = new Date().toISOString();
+    const items = w.buildActualsCheck(w.todayISO());
+    if (items.length !== 1 || !items[0].ids.includes(t3.id)) throw new Error('items ' + JSON.stringify(items));
+    if (items[0].ids.includes(2)) throw new Error('task with logged time listed');
+  });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

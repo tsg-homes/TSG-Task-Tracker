@@ -1405,6 +1405,7 @@
     <span class="toolbar-sep"></span>
     <button class="btn" id="btnCommentMode" type="button" onclick="toggleCommentMode()" title="Comment mode: click anything on the board to leave a note on it">&#128172; Comment</button>
     <button class="btn" id="btnComments" type="button" onclick="openCommentsPanel()" title="All comments">Comments <span class="count-badge" id="commentCount"></span></button>
+    <button class="btn" id="timerChip" type="button" style="display:none" onclick="openTimerTask_()" title="Timer running — click to open the task"></button>
     <span class="toolbar-sep"></span>
     <span class="team-views" id="teamViews" title="A team member's tasks and delegated steps, as a pop-up. Shift-click opens the page they see."></span>
     <span class="count" id="resultCount"></span>
@@ -1521,6 +1522,15 @@
     <div id="locationModalBody"></div>
   </div>
 </div>
+<div class="modal-overlay" id="actualModal" role="dialog" aria-modal="true" tabindex="-1" onclick="if(event.target===this) closeActualModal()">
+  <div class="modal-card meeting-card">
+    <div class="modal-header">
+      <h2>How long did this take?</h2>
+      <button class="icon-btn" onclick="closeActualModal()" title="Close">&#10005;</button>
+    </div>
+    <div id="actualModalBody"></div>
+  </div>
+</div>
 
 <div class="modal-overlay" id="linkModal" role="dialog" aria-modal="true" tabindex="-1" onclick="if(event.target===this) closeLinkPicker()">
   <div class="modal-card meeting-card">
@@ -1557,7 +1567,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-17.9';
+  const UI_VERSION = '2026-09-17.10';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -3257,6 +3267,7 @@
     if (status === 'Done') t.progress = 100;
     logHistory(t, 'status', before, status);
     renderAll(); scheduleSave();
+    if (status === 'Done') captureActualOnDone_(t, null);
   }
 
   // ---- Cards view ----
@@ -4390,7 +4401,7 @@
     // TODAY_ADMIN_MAX_PER_BLOCK with its own "+N more" overflow line.
     const statics = TODAY_ADMIN_STATIC_ITEMS.map(label => ({ label: label, sub: '', taskId: null }));
     const sodDynamic = buildStandingItemChecks(today).concat(buildOperationalTaskChecks(today)).concat(buildConfirmRollupCheck());
-    const eodDynamic = buildOperationalTaskChecks(today).concat(buildConfirmRollupCheck());
+    const eodDynamic = buildOperationalTaskChecks(today).concat(buildConfirmRollupCheck()).concat(buildActualsCheck(today));
     const perBlockSlots = Math.max(0, TODAY_ADMIN_MAX_PER_BLOCK - statics.length);
     // Overflow used to just say "— see Board" with nothing behind the click. Now it
     // collects the real ids of whatever got dropped (a dropped 'group' line's own ids
@@ -5134,6 +5145,7 @@
     renderAll();
     if (landOnId != null) openTaskCard(landOnId);
     scheduleSave();
+    if (kind === 'status' && el.value === 'Done' && before !== 'Done') captureActualOnDone_(t, null);
   }
   function onDueChange(id, el) {
     const t = findTask(id);
@@ -5220,6 +5232,7 @@
     s.done = el.checked;
     s.status = el.checked ? 'Done' : (s.status === 'Done' ? 'Not Started' : (s.status || 'Not Started'));
     logHistory(t, 'subitem', s.title, el.checked ? 'checked' : 'unchecked');
+    if (el.checked) captureActualOnDone_(t, idx);
     // Marking a subitem done (or un-done) changes how much of the parent's rolled-up
     // estHours is actually still outstanding — recompute immediately rather than waiting
     // on the next full data reload (2026-09-01, per Durand: a done subtask's time should
@@ -5884,6 +5897,7 @@
     if (kind === 'status' && val === 'Done') t.progress = 100;
     if (before !== val) logHistory(t, kind, before, val);
     renderAll(); openTaskCard(id); scheduleSave();
+    if (kind === 'status' && val === 'Done' && before !== 'Done') captureActualOnDone_(t, null);
   }
   // Optional due time + reminders (2026-09-17, per Durand: "add a reminder function and optional
   // time component for due dates"). remindAt is a local 'YYYY-MM-DDTHH:mm'; the backend emails the
@@ -6179,8 +6193,131 @@
   }
   // Escape closes the topmost open dialog. An editable field with focus is blurred first so
   // its onblur save runs before the dialog goes away.
+  // ---- Actual time (2026-09-17) ----
+  // Per Durand: "how are we currently measuring actual time spent?" (nothing was) and "build the
+  // timer, but that might not be accurate either cause it relies on me starting and stopping it".
+  // So three captures feed ONE log, each entry tagged with how it was measured: the card timer
+  // (kind 'timer'), a value typed when an item is marked Done or via "+ Log time" (kind 'manual',
+  // prefilled with the estimate so Enter costs nothing), and a Claude session's self-report
+  // through the log_time inbox op (kind 'session': Durand's attention minutes; the session's
+  // turns and wall-clock ride alongside, never counted as hours). actualHours on an item is the
+  // sum of its own timeLog; a parent's total adds its steps' (actualHoursOf_). The Evening
+  // Wrap-Up block lists today's finished items with nothing logged, so a skipped prompt is
+  // caught once more before the day closes. The running timer survives a reload (localStorage).
+  let TIMER = null;
+  try { TIMER = JSON.parse(localStorage.getItem('tsgTimer') || 'null'); } catch (e) { TIMER = null; }
+  if (TIMER && !(TIMER.startedAt > 0)) TIMER = null;
+  function saveTimer_() { try { if (TIMER) localStorage.setItem('tsgTimer', JSON.stringify(TIMER)); else localStorage.removeItem('tsgTimer'); } catch (e) {} }
+  function timerItem_(t, subIdx) { return (subIdx == null) ? t : (((t && t.subitems) || [])[subIdx] || null); }
+  function timerRunningOn_(id, subIdx) { return !!TIMER && TIMER.id === id && (TIMER.subIdx == null ? null : TIMER.subIdx) === (subIdx == null ? null : subIdx); }
+  function timerElapsedSec_() { return TIMER ? Math.max(0, Math.floor((Date.now() - TIMER.startedAt) / 1000)) : 0; }
+  function fmtElapsed_(sec) { const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60; return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(s).padStart(2, '0'); }
+  function startTimer(id, subIdx) {
+    if (TIMER) stopTimer(true);
+    const t = findTask(id); if (!t) return;
+    TIMER = { id: id, subIdx: subIdx == null ? null : subIdx, startedAt: Date.now() };
+    saveTimer_(); renderTimerChip_();
+    if (currentModalTaskId === id) openTaskCard(id);
+  }
+  function stopTimer(save) {
+    if (!TIMER) return;
+    const run = TIMER; TIMER = null; saveTimer_();
+    const minutes = Math.round((Date.now() - run.startedAt) / 60000);
+    const t = findTask(run.id);
+    if (save !== false && t && minutes >= 1) logTime_(t, run.subIdx, minutes, 'timer', 'card timer');
+    renderTimerChip_();
+    if (t && currentModalTaskId === run.id) openTaskCard(run.id);
+  }
+  function openTimerTask_() { if (TIMER) openTaskCard(TIMER.id); }
+  function renderTimerChip_() {
+    const el = document.getElementById('timerChip'); if (!el) return;
+    if (!TIMER) { el.style.display = 'none'; el.textContent = ''; return; }
+    const t = findTask(TIMER.id); const item = t ? timerItem_(t, TIMER.subIdx) : null;
+    el.style.display = '';
+    el.innerHTML = '&#9632; ' + fmtElapsed_(timerElapsedSec_()) + ' <span class="hist-time">' + escapeHtml((item && item.title) || ('#' + TIMER.id)) + '</span>';
+    const lbl = document.getElementById('timerModalLabel'); if (lbl && currentModalTaskId === TIMER.id) lbl.textContent = fmtElapsed_(timerElapsedSec_());
+  }
+  setInterval(renderTimerChip_, 1000);
+  function actualHoursOf_(t) {
+    let h = Number(t && t.actualHours) || 0;
+    ((t && t.subitems) || []).forEach(s => { h += Number(s && s.actualHours) || 0; });
+    return Math.round(h * 4) / 4;
+  }
+  function logTime_(t, subIdx, minutes, kind, note) {
+    const item = timerItem_(t, subIdx); if (!item) return null;
+    minutes = Math.round(Number(minutes)); if (!(minutes > 0)) return null;
+    item.timeLog = Array.isArray(item.timeLog) ? item.timeLog : [];
+    const entry = { ts: new Date().toISOString(), minutes: minutes, kind: kind || 'manual', source: 'Durand', note: note || '' };
+    item.timeLog.push(entry);
+    const before = item.actualHours == null ? null : item.actualHours;
+    item.actualHours = Math.round(item.timeLog.reduce((n, e) => n + (Number(e.minutes) || 0), 0) / 60 * 4) / 4;
+    item.actualSource = entry.kind;
+    logHistory(t, subIdx == null ? 'actualHours' : 'subitem-actualHours', before, item.actualHours + ' h (' + entry.kind + ')');
+    renderAll(); scheduleSave();
+    return entry;
+  }
+  function actualRowHtml_(t, id) {
+    const own = Number(t.actualHours) || 0, total = actualHoursOf_(t), n = (t.timeLog || []).length;
+    const parts = [];
+    parts.push(total
+      ? `<b>${total} h</b>` + (total !== own && own ? ` <span class="hist-time">(${own} h on the task itself)</span>` : '') + (n ? ` <span class="hist-time">· ${n} entr${n === 1 ? 'y' : 'ies'}</span>` : '')
+      : '<span class="hist-time">none logged</span>');
+    if (t.estHours && total) parts.push(`<span class="hist-time">· ${Math.round(total / t.estHours * 100)}% of estimate</span>`);
+    parts.push(timerRunningOn_(id, null)
+      ? `<button class="btn small" id="timerStopBtn" onclick="stopTimer(true)" title="Stop and log the elapsed time">&#9632; Stop <span id="timerModalLabel">${fmtElapsed_(timerElapsedSec_())}</span></button>`
+      : `<button class="btn small" id="timerStartBtn" onclick="startTimer(${id}, null)" title="Start a timer on this task">&#9654; Start</button>`);
+    parts.push(`<button class="btn small" onclick="openActualModal(${id}, null)" title="Log time by hand">+ Log time</button>`);
+    return `<div class="modal-row"><b>Actual</b><span class="modal-est-wrap">${parts.join(' ')}</span></div>`;
+  }
+  let ACTUAL_TARGET = null;
+  function openActualModal(id, subIdx, opts) {
+    const t = findTask(id); if (!t) return;
+    const item = timerItem_(t, subIdx); if (!item) return;
+    ACTUAL_TARGET = { id: id, subIdx: subIdx == null ? null : subIdx };
+    const est = Number(item.estHours) || 0;
+    const prefill = (opts && opts.prefill != null) ? opts.prefill : (est || 0.25);
+    const body = document.getElementById('actualModalBody'); if (!body) return;
+    body.innerHTML = `<div class="history-empty" style="margin-bottom:8px;">${escapeHtml(item.title || '')}${est ? ' · estimated ' + est + ' h' : ''}${item.actualHours ? ' · ' + item.actualHours + ' h logged so far' : ''}</div>` +
+      `<div class="modal-row"><b>Hours</b><input type="number" min="0.05" step="0.25" class="due-input modal-due" id="actualHoursInput" style="width:90px;" value="${prefill}" onkeydown="if(event.key==='Enter'){event.preventDefault();saveActualModal_();}"></div>` +
+      `<div class="modal-row"><b>Note</b><input type="text" class="text-input" id="actualNoteInput" placeholder="optional" onkeydown="if(event.key==='Enter'){event.preventDefault();saveActualModal_();}"></div>` +
+      `<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;"><button class="btn" onclick="closeActualModal()">Skip</button><button class="btn primary" onclick="saveActualModal_()">Save</button></div>`;
+    const m = document.getElementById('actualModal'); m.classList.add('open');
+    const inp = document.getElementById('actualHoursInput'); if (inp) { inp.focus(); inp.select(); }
+  }
+  function saveActualModal_() {
+    if (!ACTUAL_TARGET) return;
+    const hours = parseFloat((document.getElementById('actualHoursInput') || {}).value);
+    const note = ((document.getElementById('actualNoteInput') || {}).value || '').trim();
+    const t = findTask(ACTUAL_TARGET.id);
+    if (t && hours > 0) logTime_(t, ACTUAL_TARGET.subIdx, hours * 60, 'manual', note);
+    closeActualModal();
+  }
+  function closeActualModal() { ACTUAL_TARGET = null; const m = document.getElementById('actualModal'); if (m) m.classList.remove('open'); }
+  // Called wherever an item goes to Done: a running timer on it stops and logs; otherwise, with
+  // nothing logged yet on it (or, for a task, on any of its steps), the prompt opens prefilled.
+  function captureActualOnDone_(t, subIdx) {
+    if (!t) return;
+    if (timerRunningOn_(t.id, subIdx == null ? null : subIdx)) { stopTimer(true); return; }
+    const item = timerItem_(t, subIdx); if (!item) return;
+    if (Number(item.actualHours) > 0) return;
+    if (subIdx == null && (t.subitems || []).some(s => Number(s && s.actualHours) > 0)) return;
+    openActualModal(t.id, subIdx);
+  }
+  function buildActualsCheck(dateISO) {
+    const today = dateISO || todayISO();
+    const ids = [];
+    TASKS.forEach(t => {
+      if (!t || t.status !== 'Done' || actualHoursOf_(t) > 0) return;
+      const doneToday = (t.completedAt && String(t.completedAt).slice(0, 10) === today) ||
+        (t.history || []).some(h => h && h.field === 'status' && h.to === 'Done' && String(h.ts || '').slice(0, 10) === today);
+      if (doneToday) ids.push(t.id);
+    });
+    if (!ids.length) return [];
+    return [{ label: 'Log time on ' + ids.length + ' task' + (ids.length === 1 ? '' : 's') + ' finished today', sub: 'no actual hours recorded', taskId: ids.length === 1 ? ids[0] : null, kind: ids.length === 1 ? 'task' : 'group', ids: ids }];
+  }
+
   function closeTopmostModal_() {
-    const order = [['noteModal', closeNotePopup], ['locationModal', closeLocationPicker], ['meetingModal', closeMeetingPicker], ['dayViewModal', closeDayView], ['newTaskModal', closeNewTaskModal], ['settingsModal', closeSettings], ['taskModal', closeTaskCard]];
+    const order = [['actualModal', closeActualModal], ['noteModal', closeNotePopup], ['locationModal', closeLocationPicker], ['meetingModal', closeMeetingPicker], ['dayViewModal', closeDayView], ['newTaskModal', closeNewTaskModal], ['settingsModal', closeSettings], ['taskModal', closeTaskCard]];
     for (const [id, close] of order) {
       const el = document.getElementById(id);
       if (el && el.classList.contains('open')) {
@@ -6226,6 +6363,7 @@
       (t.timelineEnd ? `<div class="modal-row"><b>Countdown</b>${bonusCountdownHtml_(t)}</div>` : ''),
       `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button>${t.location ? `<a class="btn small" href="${escapeHtml(directionsUrl_(t))}" target="_blank" rel="noopener" title="Open directions in Google Maps">&#128506; Directions</a><button type="button" class="btn small" onclick="sendDirections(${id}, this)" title="Email the Maps directions link to your phone">&#128241; Send to phone</button>` : ''}</span></div>`,
       `<div class="modal-row"><b>Estimate</b><span class="modal-est-wrap"><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs${(pendingJudgment_(id, 'enrich') || pendingJudgment_(id, 'estimate')) ? ' <span class="hist-time" title="Queued for the hourly Claude Routine: the title, notes and fields update when it answers">· queued for Claude</span>' : ''}${travelRowHtml_(t)}</span></div>`,
+      actualRowHtml_(t, id),
       `<div class="modal-row"><b>Progress</b><span>${pct}%</span></div>`,
       reviewFlagsRowHtml_(t),
       `<div class="modal-row"><b>Tags</b><span class="modal-tags">${tagsChips}<input type="text" class="text-input tag-input" list="tagOptions" placeholder="+ tag" spellcheck="true" onkeydown="if(event.key==='Enter'){event.preventDefault();modalAddTagFrom(${id}, this);}" onchange="modalAddTagFrom(${id}, this)"></span></div>`,

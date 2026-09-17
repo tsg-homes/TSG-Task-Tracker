@@ -231,6 +231,34 @@ url is already on the item (Gmail as type `email`, sites as type `web`);
 every change gets its own history line with the answer's source. Verify by re-reading the data
 file after a minute: the answered ids are gone from `meta.judgments`.
 
+## Actual time (2026-09-17): one log, three ways in
+
+Nothing measured actual time before this. Now every item (task or step) carries `timeLog[]`
+entries `{ts, minutes, kind, source, note?, turns?, spanMin?}` and `actualHours` = the sum of
+its own log in quarter hours (a parent's total for calibration adds its steps'). Kinds:
+
+- `timer` — the card timer on the dashboard (Start / Stop on the Actual row; survives a reload;
+  the toolbar chip shows it running).
+- `manual` — the "How long did this take?" prompt that opens when an item is marked Done with
+  nothing logged (prefilled with the estimate, Enter accepts, Skip costs nothing), "+ Log time"
+  on the card, and the Evening Wrap-Up line "Log time on N tasks finished today".
+- `session` — a Claude session's self-report, pushed as an inbox op at write-back time:
+
+```json
+{"target":"data","op":"log_time","id":123,"subIdx":null,"minutes":20,"kind":"session",
+ "source":"Claude session","turns":6,"spanMin":95,"note":"drafted and sent the vendor reply","ts":"<ISO>"}
+```
+
+  `minutes` is DURAND'S ATTENTION on the task (his messages on it × the minutes-per-turn figure,
+  default 5, unless he states his time), `turns` is how many messages he sent on it, `spanMin`
+  the session's first-to-last wall-clock. Claude's own processing time is never logged as hours.
+- `calendar` — `tsgAttributeCalendarHours` (editor-run) for booked work.
+
+`tsgActualsByType_` turns done items with logged time into `ACTUALS_BY_TYPE` (n, median actual
+hours, median actual/estimate ratio per task type, only types with 3+ samples). The estimator
+prompt carries it whenever `estHours` is asked for, queued enrich requests carry it as `actuals`,
+and the rule is: measured work beats the calibration table.
+
 ## Conventions carried over from prior work on this project
 
 - All writes to the tracker's Data/Rulesets files go through the `_Inbox` patch-file
