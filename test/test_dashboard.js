@@ -607,6 +607,48 @@ setTimeout(async () => {
     w.closeTaskCard();
   });
 
+  // Notes clamp + pop-up (2026-09-17)
+  w.setView('board');
+  w.findTask(1).notes = 'line one\nline two\nline three\nline four\n' + 'x'.repeat(200);
+  w.renderAll();
+  tryCall('row notes are clamped and flagged long', () => {
+    const el = doc.querySelector('tr.task-row[data-id="1"] td.notes-cell .note-clamp');
+    if (!el) throw new Error('no clamped notes span');
+    if (!el.classList.contains('note-long')) throw new Error('long note not flagged');
+  });
+  tryCall('a note that fits edits inline (clamp lifted while focused)', () => {
+    w.noteOverflows_ = () => false;
+    const el = doc.querySelector('tr.task-row[data-id="1"] td.notes-cell .note-clamp');
+    w.noteFocus_(el, 'task', 1, null);
+    if (!el.classList.contains('editing')) throw new Error('editing class missing');
+    if (doc.getElementById('noteModal').classList.contains('open')) throw new Error('popup opened for a fitting note');
+    el.classList.remove('editing');
+  });
+  tryCall('a note that overflows opens the pop-up instead of editing inline', () => {
+    w.noteOverflows_ = () => true;
+    const el = doc.querySelector('tr.task-row[data-id="1"] td.notes-cell .note-clamp');
+    w.noteFocus_(el, 'task', 1, null);
+    if (el.classList.contains('editing')) throw new Error('should not edit inline');
+    if (!doc.getElementById('noteModal').classList.contains('open')) throw new Error('popup not open');
+    if (!doc.getElementById('noteModalText').value.startsWith('line one')) throw new Error('popup lacks the note text');
+  });
+  tryCall('saving the pop-up writes the note, logs it and closes', () => {
+    doc.getElementById('noteModalText').value = 'rewritten from the pop-up';
+    w.saveNotePopup();
+    if (w.findTask(1).notes !== 'rewritten from the pop-up') throw new Error('note not saved');
+    if (!w.findTask(1).history.some(h => h.field === 'notes' && h.to === 'rewritten from the pop-up')) throw new Error('no history');
+    if (doc.getElementById('noteModal').classList.contains('open')) throw new Error('popup still open');
+  });
+  tryCall('subtask notes use the same pop-up and Escape closes it', () => {
+    w.findTask(1).subitems[0].notes = 'sub note text';
+    w.renderAll();
+    w.openNotePopup('sub', 1, 0);
+    if (doc.getElementById('noteModalText').value !== 'sub note text') throw new Error('sub note not loaded');
+    if (!w.closeTopmostModal_()) throw new Error('escape did not close');
+    if (doc.getElementById('noteModal').classList.contains('open')) throw new Error('still open');
+    w.noteOverflows_ = (el) => el.scrollHeight > el.clientHeight + 1;
+  });
+
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

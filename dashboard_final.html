@@ -352,6 +352,15 @@
   td.title-cell .ttl-edit:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
   td.notes-cell { color: var(--text-secondary); min-width: 260px; cursor: text; }
   td.notes-cell:hover { background: var(--surface-2); }
+  /* Notes never stretch a row or a subtask (2026-09-17, per Durand): clamped to a few lines;
+     a clamped note that does not fit opens in the note pop-up on click, a short one edits inline. */
+  .note-clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; word-break: break-word; max-height: 4.6em; cursor: pointer; }
+  .note-clamp.editing { display: block; -webkit-line-clamp: unset; max-height: none; overflow: visible; cursor: text; }
+  .sub-item-notes.note-clamp { -webkit-line-clamp: 2; max-height: 3em; }
+  .note-long { position: relative; }
+  .note-long:not(.editing)::after { content: '…more'; position: absolute; right: 0; bottom: 0; padding-left: 18px; font-size: 10px; font-style: normal; color: var(--brand); background: linear-gradient(90deg, transparent, var(--surface-1) 40%); }
+  .modal-notes { max-height: 40vh; overflow: auto; }
+  #noteModalText { width: 100%; min-height: 40vh; max-height: 65vh; resize: vertical; font: inherit; font-size: 13px; line-height: 1.45; }
   td.due-cell.overdue { color: var(--status-critical); font-weight: 700; }
   td.tags-cell { max-width: 140px; }
   td.owner-cell { white-space: nowrap; }
@@ -1473,6 +1482,22 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="noteModal" role="dialog" aria-modal="true" tabindex="-1" onclick="if(event.target===this) closeNotePopup()">
+  <div class="modal-card meeting-card note-card">
+    <div class="modal-header">
+      <h2 id="noteModalTitle">Notes</h2>
+      <button class="icon-btn" onclick="closeNotePopup()" title="Close">&#10005;</button>
+    </div>
+    <div class="meeting-form">
+      <textarea class="text-input" id="noteModalText" spellcheck="true"></textarea>
+      <div class="meeting-actions" style="display:flex; gap:8px; justify-content:flex-end; margin-top:8px;">
+        <button class="btn small" onclick="closeNotePopup()">Cancel</button>
+        <button class="btn small primary" onclick="saveNotePopup()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="locationModal" role="dialog" aria-modal="true" tabindex="-1" onclick="if(event.target===this) closeLocationPicker()">
   <div class="modal-card meeting-card">
     <div class="modal-header">
@@ -1518,7 +1543,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-16.8';
+  const UI_VERSION = '2026-09-17.1';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -4638,7 +4663,7 @@
             ${s.taskType === 'Meeting' ? `<button type="button" class="icon-btn" onclick="openMeetingPicker(${t.id}, ${i})" title="Link a calendar meeting">${(s.docs || []).some(d => d.type === 'meeting') ? '&#128197; meeting' : '+ meeting'}</button>` : ''}
           </div>
           <div class="sub-meta sub-docs-row">${docsListHtml(s.docs, t.id, i)}<button type="button" class="icon-btn" onclick="addManualDoc(${t.id}, ${i})" title="Add a link or file">+ link</button>${s.location ? `<span class="today-task-loc" title="${escapeHtml(s.location)}">&#128205; ${escapeHtml(s.location)}${travelMinutesFor_(s) ? ' · ' + travelModeLabel_(s) : ''}</span>` : ''}</div>
-          ${s.notes ? `<div class="sub-item-notes" contenteditable="true" onblur="onSubFieldEdit(${t.id}, ${i}, 'notes', this)">${escapeHtml(s.notes)}</div>` : `<div class="sub-item-notes sub-item-notes-empty" contenteditable="true" onblur="onSubFieldEdit(${t.id}, ${i}, 'notes', this)" data-placeholder="Add notes…"></div>`}
+          ${s.notes ? `<div class="sub-item-notes note-clamp ${noteLongClass_(s.notes)}" contenteditable="true" onfocus="noteFocus_(this, 'sub', ${t.id}, ${i})" onblur="this.classList.remove('editing'); onSubFieldEdit(${t.id}, ${i}, 'notes', this)" title="Click to open the full note">${escapeHtml(s.notes)}</div>` : `<div class="sub-item-notes sub-item-notes-empty" contenteditable="true" onblur="onSubFieldEdit(${t.id}, ${i}, 'notes', this)" data-placeholder="Add notes…"></div>`}
         </div>
       </div>`;
   }
@@ -4719,7 +4744,7 @@
             <div class="cell-group-row">${bonusCountdownHtml_(t)}</div>
           </div>
         </td>
-        <td class="notes-cell"><span contenteditable="true" onblur="onFieldEdit(${t.id}, 'notes', this)">${escapeHtml(t.notes || '')}</span></td>
+        <td class="notes-cell"><span class="note-clamp ${noteLongClass_(t.notes)}" contenteditable="true" onfocus="noteFocus_(this, 'task', ${t.id}, null)" onblur="this.classList.remove('editing'); onFieldEdit(${t.id}, 'notes', this)" title="Click to open the full note">${escapeHtml(t.notes || '')}</span></td>
         <td class="row-actions">
           <button class="icon-btn danger" title="Delete task" onclick="deleteTask(${t.id})">${TRASH_ICON_SVG}</button>
         </td>
@@ -4790,6 +4815,46 @@
     t.title = after;
     if (before !== after) logHistory(t, 'title', before, after);
     renderStats(); scheduleSave();
+  }
+  // Note clamp + pop-up (2026-09-17, per Durand: "do not show the full note text by default;
+  // clicking into a note whose contents exceed the visible area opens a pop up of the note").
+  // Overflow is measured on the clamped element; a note that fits edits inline (the clamp is
+  // lifted while it has focus), one that does not opens #noteModal instead of taking focus.
+  let NOTE_TARGET = null;
+  function noteOverflows_(el) { return el.scrollHeight > el.clientHeight + 1; }
+  function noteLongClass_(text) { const n = String(text || ''); return (n.length > 160 || n.split('\n').length > 3) ? 'note-long' : ''; }
+  function noteFocus_(el, kind, id, idx) {
+    if (noteOverflows_(el)) { el.blur(); openNotePopup(kind, id, idx); return; }
+    el.classList.add('editing');
+  }
+  function openNotePopup(kind, id, idx) {
+    const t = findTask(id);
+    if (!t) return;
+    const s = kind === 'sub' ? (t.subitems || [])[idx] : null;
+    if (kind === 'sub' && !s) return;
+    NOTE_TARGET = { kind, id, idx };
+    document.getElementById('noteModalTitle').textContent = kind === 'sub' ? 'Notes — ' + s.title : 'Notes — #' + t.id + ' ' + t.title;
+    const ta = document.getElementById('noteModalText');
+    ta.value = (kind === 'sub' ? s.notes : t.notes) || '';
+    document.getElementById('noteModal').classList.add('open');
+    setTimeout(function() { ta.focus(); }, 0);
+  }
+  function closeNotePopup() { document.getElementById('noteModal').classList.remove('open'); NOTE_TARGET = null; }
+  function saveNotePopup() {
+    if (!NOTE_TARGET) return;
+    const { kind, id, idx } = NOTE_TARGET;
+    const t = findTask(id);
+    const after = document.getElementById('noteModalText').value.trim();
+    if (t) {
+      if (kind === 'sub') {
+        const s = (t.subitems || [])[idx];
+        if (s) { const before = s.notes; s.notes = after; if (before !== after) logHistory(t, 'subitem-notes', s.title, after); }
+      } else {
+        const before = t.notes; t.notes = after; if (before !== after) logHistory(t, 'notes', before, after);
+      }
+    }
+    closeNotePopup();
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
   function onFieldEdit(id, field, el) {
     const t = findTask(id);
@@ -5583,7 +5648,7 @@
   // Escape closes the topmost open dialog. An editable field with focus is blurred first so
   // its onblur save runs before the dialog goes away.
   function closeTopmostModal_() {
-    const order = [['locationModal', closeLocationPicker], ['meetingModal', closeMeetingPicker], ['dayViewModal', closeDayView], ['newTaskModal', closeNewTaskModal], ['settingsModal', closeSettings], ['taskModal', closeTaskCard]];
+    const order = [['noteModal', closeNotePopup], ['locationModal', closeLocationPicker], ['meetingModal', closeMeetingPicker], ['dayViewModal', closeDayView], ['newTaskModal', closeNewTaskModal], ['settingsModal', closeSettings], ['taskModal', closeTaskCard]];
     for (const [id, close] of order) {
       const el = document.getElementById(id);
       if (el && el.classList.contains('open')) {
