@@ -352,6 +352,7 @@ function raffleSubmitReferral_(d, test) {
 
   var refName = collapseSpaces(d.referralName);
   if (!refName) throw makeValidationError("Enter your referral's full name.");
+  raffleRejectJunkName_(refName);
   if (refName.indexOf(' ') === -1) {
     throw makeValidationError("Enter your referral's first and last name.");
   }
@@ -1329,6 +1330,7 @@ function raffleConsentSubmit_(d) {
     if (!name || name.indexOf(' ') === -1) {
       throw makeValidationError('Please give your first and last name.');
     }
+    raffleRejectJunkName_(name);
 
     // THE EMAIL IS LOCKED. Per Durand, 2026-09-17.
     //

@@ -69,8 +69,11 @@ section('T1  Stored XSS in the pages TSG opens');
     '"><svg/onload=alert(1)>',
     "<a href='javascript:alert(1)'>click</a>"
   ];
+  // The door refuses these names now (test_raffle.js, "Names are checked at the
+  // door"); relax it here so the SINK escaping is still proved on its own.
   PAYLOADS.forEach((payload, i) => {
     const s = makeSandbox();
+  s.RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/; s.RAFFLE_NAME_MAX = 1000;   // sink test: get the payload past the door check
     const name = payload + ' Lastname';        // needs a space to pass the name check
     const r = enterFull(s, entry({ fullName: name, email: 'x' + i + '@mail-test.co',
                                    phone: '(215) 555-81' + (20 + i) }), DURING);
@@ -105,6 +108,7 @@ section('T1  Stored XSS in the pages TSG opens');
 
   // Backups are rendered too, from a second and third entrant.
   const s = makeSandbox();
+  s.RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/; s.RAFFLE_NAME_MAX = 1000;   // sink test: get the payload past the door check
   enterFull(s, entry({ fullName: 'Aaa Bbb', email: 'a@mail-test.co', phone: '(215) 555-8101' }), DURING);
   enterFull(s, entry({ fullName: '<img src=x onerror=alert(2)> Backup',
                        email: 'b@mail-test.co', phone: '(215) 555-8102' }), DURING);
@@ -159,6 +163,7 @@ section('T2  Spreadsheet formula injection');
   // And the data must still be READABLE -- neutralizing must not mean deleting.
   {
     const s = makeSandbox();
+  s.RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/; s.RAFFLE_NAME_MAX = 1000;   // sink test: get the payload past the door check
     enterFull(s, entry({ fullName: "=Bad Formula", email: 'f7@mail-test.co',
                          phone: '(215) 555-8137' }), DURING);
     const row = s.__data('Entries')[0];
@@ -356,6 +361,7 @@ section('T6  Header and protocol injection');
   // CRLF in a name would, in a naive mailer, let an attacker add Bcc: headers
   // to the winner email that goes to Durand and Ryan.
   const s = makeSandbox();
+  s.RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/; s.RAFFLE_NAME_MAX = 1000;   // sink test: get the payload past the door check
   enterFull(s, entry({ fullName: 'Eve\r\nBcc: attacker@evil.example\r\n Adams',
                        email: 'crlf@mail-test.co', phone: '(215) 555-8701' }), DURING);
   at(DURING, () => s.raffleDrawWinner_(false, true));
@@ -369,6 +375,7 @@ section('T6  Header and protocol injection');
 
   // Same for the phone field, which is stored raw (only its digits are checked).
   const p = makeSandbox();
+  p.RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/; p.RAFFLE_NAME_MAX = 1000;   // sink test: get the payload past the door check
   enterFull(p, entry({ fullName: 'Raw Phone', email: 'rawphone@mail-test.co',
                        phone: '(215) 555-8702\r\nBcc: attacker@evil.example' }), DURING);
   const row = p.__data('Entries')[0];
@@ -378,6 +385,7 @@ section('T6  Header and protocol injection');
   // The FUB note must stay plain text -- if isHtml ever flipped, every note
   // body would render entrant-controlled markup inside the CRM.
   const f = makeSandbox();
+  f.RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/; f.RAFFLE_NAME_MAX = 1000;   // sink test: get the payload past the door check
   enterFull(f, entry({ fullName: '<b>Bold</b> Person', email: 'fub@mail-test.co',
                        phone: '(215) 555-8703' }), DURING);
   const note = f.__fetches.find(x => /\/v1\/notes/.test(x.url));
@@ -602,6 +610,7 @@ const stage = (s, who, ref, when) => {
   // -- HTML injection into the invite email and the consent page. Both render
   //    entrant-controlled text, so both are sinks like the admin pages were.
   const s = makeSandbox();
+  s.RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/; s.RAFFLE_NAME_MAX = 1000;   // sink test: get the payload past the door check
   const payload = '<img src=x onerror=alert(1)>';
   const a = stage(s, { fullName: payload + ' Entrant' },
                      { referralName: payload + ' Referral' }, DURING);
@@ -711,6 +720,7 @@ section('T12  EVERY email, not just the pages');
 
   const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key',
                                    RAFFLE_ADMIN_KEY: 'secret' } });
+  s.RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/; s.RAFFLE_NAME_MAX = 1000;   // sink test: get the payload past the door check
 
   // 1. code email, 2. invite, 3. entrant "5 more entries", 4. chain invite
   const v = verifySession(s, entry({ fullName: hostile('Aaa'),

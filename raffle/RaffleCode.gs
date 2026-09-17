@@ -237,6 +237,29 @@ var RAFFLE_QUOTA_ALERT_PROP    = 'RAFFLE_QUOTA_ALERT_SENT_AT';
 var RAFFLE_QUOTA_RATE_MIN_MS   = 10 * 60000;   // need 10 minutes of readings before projecting
 var RAFFLE_QUOTA_RECENT_MS     = 60 * 60000;   // the "recent" rate window
 
+// Names. Durand, 2026-09-17, reading the QA suite's inbox: "some of the subject
+// lines don't look right" -- the hostile-input entrants ("<img src=x onerror=..>
+// QA Tester", "=IMPORTXML(...) QA") had produced invitation subjects reading
+// "<img src=x onerror=alert(1)> QA Tester referred you". Every sink escapes, so
+// nothing executed, but a name is interpolated into the SUBJECT of an email to a
+// third party, and a subject line has no escaping to hide behind. So a name is
+// letters (any script), digits, spaces, apostrophes, hyphens and periods, up to
+// 60 characters -- checked at the door for the entrant, the referral, and the
+// consent page's edited name. Sink escaping stays as defence in depth; the
+// suites relax this regex to keep proving it.
+var RAFFLE_NAME_MAX = 60;
+var RAFFLE_NAME_ALLOWED_RE = /^[\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N} .'\u2019\-]*$/u;
+var RAFFLE_NAME_MESSAGE = 'Names can only use letters, spaces, apostrophes, hyphens and periods.';
+
+function raffleRejectJunkName_(name) {
+  var n = String(name || '');
+  if (n.length > RAFFLE_NAME_MAX) {
+    throw makeValidationError('That name is too long (' + RAFFLE_NAME_MAX + ' characters at most).');
+  }
+  if (!RAFFLE_NAME_ALLOWED_RE.test(n)) throw makeValidationError(RAFFLE_NAME_MESSAGE);
+  return n;
+}
+
 // Junk rejection, applied to BOTH steps. This is not politeness -- FUB already
 // carries "test@me.com / 1234567899" and "asdf@asdf.caf" from earlier form
 // testing, and a raffle at a party is exactly where that gets typed on purpose.
@@ -985,6 +1008,7 @@ function raffleRequestCode_(d, test) {
   var name  = collapseSpaces(d.fullName);
   if (!name) throw makeValidationError('Enter your full name.');
   if (name.indexOf(' ') === -1) throw makeValidationError('Enter your first and last name.');
+  raffleRejectJunkName_(name);
   var email  = raffleRejectJunkEmail_(d.email);
   var digits = raffleRejectJunkPhone_(d.phone);
   // collapseSpaces, not trim: trim only strips the ENDS, so a CR/LF pasted
@@ -2771,6 +2795,23 @@ function raffleQaRun_(cleanUp) {
   // admin page really does render a hostile name inert.
   section('5b. Hostile input');
   var xssName = '<img src=x onerror=alert(1)> QA Tester ' + stamp;
+  // The door first: a name carrying markup is refused outright now, with the
+  // message a guest would see. Then the regex is relaxed for the rest of this
+  // section so the sink proofs below (escaping, formula-safe cells) still run
+  // on the real runtime, and restored at the end.
+  var doorRes = request({ fullName: xssName, email: RAFFLE_QA_ADDRESS_BASE + stamp + '-door' +
+    RAFFLE_QA_DOMAIN, phone: qaPhone(), consent: 'Yes' });
+  check('a name with markup is refused at the door', doorRes.ok === false &&
+        doorRes.error === RAFFLE_NAME_MESSAGE, JSON.stringify(doorRes));
+  var doorRes2 = request({ fullName: '=IMPORTXML("x") QA ' + stamp, email: RAFFLE_QA_ADDRESS_BASE +
+    stamp + '-door2' + RAFFLE_QA_DOMAIN, phone: qaPhone(), consent: 'Yes' });
+  check('and so is a name starting with a formula', doorRes2.ok === false, JSON.stringify(doorRes2));
+  var okName = request({ fullName: "Siobhán O'Brien-Núñez Jr.", email: RAFFLE_QA_ADDRESS_BASE +
+    stamp + '-door3' + RAFFLE_QA_DOMAIN, phone: qaPhone(), consent: 'Yes' });
+  check('while accents, apostrophes, hyphens and periods pass', okName.ok === true &&
+        okName.needsCode === true, JSON.stringify(okName));
+  var strictNameRe = RAFFLE_NAME_ALLOWED_RE;
+  RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/;
   var xssRes = enterFully({ fullName: xssName,
     email: RAFFLE_QA_ADDRESS_BASE + stamp + '-xss' + RAFFLE_QA_DOMAIN,
     phone: qaPhone(), consent: 'Yes' }, 'xss', qaPhone());
@@ -2818,6 +2859,7 @@ function raffleQaRun_(cleanUp) {
   }
   check('one address cannot pull more than ' + RAFFLE_CODE_MAX_PER_ADDRESS + ' codes',
         capSent <= RAFFLE_CODE_MAX_PER_ADDRESS, 'sent ' + capSent);
+  RAFFLE_NAME_ALLOWED_RE = strictNameRe;
   check('the over-cap requests were refused', capRefused > 0);
 
   // ---- 5d. THE SURFACES NOTHING LIVE HAD EVER TOUCHED --------------------

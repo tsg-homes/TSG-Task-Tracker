@@ -322,9 +322,12 @@ const cell = (s, row, name) => {
   check('and it says how to deliberately resend', /script property/.test(again.message));
 }
 
-// The winner's name came from a public text box like everything else.
+// The winner's name came from a public text box like everything else. The door
+// now refuses markup in a name (see "Names are checked at the door" below), so
+// this sink proof relaxes the door to keep proving the escaping underneath.
 {
   const s = makeSandbox();
+  s.RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/; s.RAFFLE_NAME_MAX = 1000;   // sink test: get the payload past the door check
   const payload = '<img src=x onerror=alert(1)>';
   enterFull(s, entry({ fullName: payload + ' Winner' }), DURING);
   at(AFTER, () => s.raffleDrawWinner_(false));
@@ -1785,6 +1788,45 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   bare.ScriptApp.getService = () => ({ getUrl: () => 'https://script.google.com/a/tsg.homes/macros/s/AKfycbHEAD/dev' });
   check('and warns when it can only print /dev links', /NOT the/.test(bare.raffleAdminLinks()));
   check('setupRaffle says when the URL is not on record', /RAFFLE_EXEC_URL is not set/.test(String(at(DURING, () => bare.setupRaffle()))));
+}
+
+// ---- Names are checked at the door --------------------------------------------
+// Durand, 2026-09-17, reading the QA inbox: invitation subjects read
+// "<img src=x onerror=alert(1)> QA Tester referred you". Every sink escaped, so
+// nothing ran -- but a name is interpolated into the SUBJECT of an email to a
+// stranger, and a subject line has no escaping. Names are now letters, digits,
+// spaces, apostrophes, hyphens and periods, at every door.
+{
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key', RAFFLE_ADMIN_KEY: 'secret' } });
+  const tryName = (n, i) => J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' },
+    entry({ fullName: n, email: 'n' + i + '@mail-test.co', phone: '(215) 555-83' + (10 + i) })))));
+  const bad = ['<img src=x onerror=alert(1)> Smith', '=IMPORTXML("x") Jones', 'Robert"); DROP Smith',
+               'Bob <b>Smith</b>', 'Ann\r\nBcc: x@y Smith', 'x'.repeat(61) + ' Smith'];
+  bad.forEach((n, i) => {
+    const r = tryName(n, i);
+    check('refused at the door: ' + JSON.stringify(n).slice(0, 40), r.ok === false &&
+      /letters, spaces|too long/.test(r.error), JSON.stringify(r));
+  });
+  eq('nothing was emailed for any of them', s.__sent.length, 0);
+  const good = ["Siobhán O'Brien-Núñez Jr.", 'José María de la Cruz', '李 小龙', 'Mary-Kate O’Neil', 'QA Tester1 Blockparty'];
+  good.forEach((n, i) => {
+    const r = tryName(n, 20 + i);
+    check('accepted: ' + n, r.ok === true && r.needsCode === true, JSON.stringify(r));
+  });
+
+  // The referral's name and the consent page's edited name go through the same check.
+  const v = verifySession(s, entry({ fullName: 'Dana Reid', email: 'dana@mail-test.co', phone: '(215) 555-8123' }), DURING);
+  const badRef = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'referral', vid: v.vid },
+    referral({ referralName: '<script>alert(1)</script> Friend' })))));
+  check('a referral name with markup is refused', badRef.ok === false && /letters, spaces/.test(badRef.error), JSON.stringify(badRef));
+  const staged = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'referral', vid: v.vid }, referral({})))));
+  check('a clean referral stages (setup)', !!staged.staged);
+  const badEdit = J(at(DURING, () => s.raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
+    referralName: '=HYPERLINK("x") Person', referralEmail: 'robin@mail-test.co',
+    referralPhone: '(215) 555-9001', referralRole: 'Buyer', referralTimeframe: '7-12 Months' })));
+  check('an edited name with a formula is refused on the consent page', badEdit.ok === false && /letters, spaces/.test(badEdit.error), JSON.stringify(badEdit));
+  eq('and the row is still pending', s.__data('Entries').filter(r => String(r[9]) === 'PENDING' || /PENDING/i.test(r.join('|'))).length >= 1, true);
 }
 
 const { passes, fails } = counts();

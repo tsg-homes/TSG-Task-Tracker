@@ -302,6 +302,13 @@ weeks ahead.
 
 ### Junk rejection (both fields, server-side)
 
+Names too (2026-09-17): the entrant's name, the referral's name and the name edited on
+the consent page must be letters (any script), digits, spaces, apostrophes, hyphens and
+periods, 60 characters at most. A name is interpolated into the *subject* of an email to
+a third party ("<name> referred you — …"), and a subject line has no escaping to hide
+behind; the QA suite's hostile entrants made that visible in the inbox. Sink escaping
+stays as defence in depth, and the suites relax `RAFFLE_NAME_ALLOWED_RE` to keep proving it.
+
 Rejected outright: disposable/temp mail domains (mailinator, 10minutemail,
 yopmail, …), `example.*` and `test.*`, role and mash local-parts (`test@`,
 `asdf@`, `admin@`, `noreply@`), empty values, all-same digits (5555555555),
@@ -333,7 +340,7 @@ and intake forms already use.
 | FUB record | normal | name prefixed `[QA TEST] `, tagged `QA Test — Safe to Delete` |
 | Winner stored as | `RAFFLE_WINNER_JSON` | `RAFFLE_TEST_WINNER_JSON` |
 | Draw result tab | `Draw Result` | `Draw Result (TEST)` |
-| Result email | Durand + Ryan | Durand only |
+| Result email | Durand + Ryan | Durand's QA address + Ryan (Durand only during a QA suite run) |
 | On-screen | normal page | red TEST MODE banner, impossible to miss |
 
 **Test entries can never win the real prize.** That is structural, not a filter:
