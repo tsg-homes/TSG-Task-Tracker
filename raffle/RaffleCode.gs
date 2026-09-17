@@ -1654,8 +1654,11 @@ function raffleEmailResult_(result, test) {
   MailApp.sendEmail({
     to: qaTestRecipients_(RAFFLE_RESULT_EMAIL.split(',')).join(','),
     name: 'TSG Block Party Raffle',
+    // People and tickets, not the row count. totalEligible is rows, and a row is
+    // not an entrant: "(4 entries)" for three people holding eight tickets is
+    // the same misreading the status page used to print.
     subject: (test ? QA_TEST_PREFIX : '🏈 ') + 'Block Party Raffle Winner: ' + w.name +
-             ' (' + result.totalEligible + ' entries)',
+             ' (' + result.totalPeople + ' people, ' + result.totalTickets + ' tickets)',
     htmlBody: raffleResultHtml_(result, test, consoleUrl),
     body: lines.join('\n')
   });

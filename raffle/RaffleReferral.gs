@@ -907,7 +907,7 @@ function raffleConsentPage_(e) {
       esc(String(entry.name).split(' ')[0]) + ' for introducing us. $300 toward any ' +
       'Ticketmaster purchase, drawn 6:15 PM Saturday. No purchase necessary.</div>' : '',
     '<form id="f" onsubmit="return false">',
-    '<label>Full name<input id="rName" value="' + esc(entry.referralName) + '"></label>',
+    '<label>Full name<input id="rName" type="text" value="' + esc(entry.referralName) + '"></label>',
     // Shown, but not editable: see the note in raffleConsentSubmit_. `readonly`
     // rather than `disabled` so it still renders as their address rather than
     // greying out to look broken, and a line underneath says why, because a field
@@ -1696,10 +1696,15 @@ function raffleResultHtml_(result, test, consoleUrl) {
       fub ? '<div style="margin-top:8px;"><a href="' + e(fub) + '" ' +
             'style="color:#15464A;font-weight:600;font-size:14px;">Open in Follow Up Boss &rarr;</a></div>' : '',
       '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e7eded;font-size:14px;">',
-      '<span style="color:#7d8f90;">Referred</span> <b>' + e(p.referralName || '(unknown)') + '</b>',
-      p.referralRole ? ' <span style="color:#7d8f90;">&mdash; looking to ' +
+      // Most winners will have referred nobody -- an own entry is a whole entry.
+      // "(unknown)" read like a missing value; this says what is actually true.
+      p.referralName
+        ? '<span style="color:#7d8f90;">Referred</span> <b>' + e(p.referralName) + '</b>'
+        : '<span style="color:#7d8f90;">Referred nobody &mdash; entered on their own</span>',
+      p.referralName && p.referralRole ? ' <span style="color:#7d8f90;">&mdash; looking to ' +
         e(raffleRoleVerb_(p.referralRole)) + '</span>' : '',
-      p.referralTimeframe ? ' <span style="color:#7d8f90;">(' + e(p.referralTimeframe) + ')</span>' : '',
+      p.referralName && p.referralTimeframe
+        ? ' <span style="color:#7d8f90;">(' + e(p.referralTimeframe) + ')</span>' : '',
       refFub ? '<br><a href="' + e(refFub) + '" style="color:#15464A;font-weight:600;">' +
                'Open the referral in Follow Up Boss &rarr;</a>' : '',
       '</div>',
@@ -1782,9 +1787,12 @@ function raffleWinnerConsolePage_(test, key) {
       '<div class="ct"><a href="tel:' + e(String(p.phone).replace(/[^0-9+]/g, '')) + '">' +
         e(p.phone) + '</a> · <a href="mailto:' + e(p.email) + '">' + e(p.email) + '</a></div>',
       fub ? '<div class="lk"><a href="' + e(fub) + '" target="_blank">Open in Follow Up Boss →</a></div>' : '',
-      '<div class="ref"><span>Referred</span> <b>' + e(p.referralName || '(unknown)') + '</b>' +
-        (p.referralRole ? ' — looking to ' + e(raffleRoleVerb_(p.referralRole)) : '') +
-        (p.referralTimeframe ? ' (' + e(p.referralTimeframe) + ')' : '') +
+      '<div class="ref">' +
+        (p.referralName
+          ? '<span>Referred</span> <b>' + e(p.referralName) + '</b>' +
+            (p.referralRole ? ' — looking to ' + e(raffleRoleVerb_(p.referralRole)) : '') +
+            (p.referralTimeframe ? ' (' + e(p.referralTimeframe) + ')' : '')
+          : '<span>Referred nobody — entered on their own</span>') +
         (refFub ? '<br><a href="' + e(refFub) + '" target="_blank">Open the referral in FUB →</a>' : '') +
       '</div>',
       '</div></label>'
@@ -2054,7 +2062,8 @@ function raffleEventDigest() {
         '',
         'Most recent valid entries:',
         eligible.slice(-5).map(function (r) {
-          return '  ' + r.name + ' — referred ' + (r.referralName || '(unknown)');
+          return '  ' + r.name +
+            (r.referralName ? ' — referred ' + r.referralName : ' — own entry, no referral');
         }).join('\n') || '  (none yet)'
       ].join('\n')
     });
@@ -2532,8 +2541,11 @@ function raffleSendConsentReminders_(test, ignoreWindow) {
         replyTo: raffleReplyTo_(r.email),      // the referrer AND the shared inbox
         bcc: raffleOversightBcc_(test),
         name: 'The Stawasz Group',
-        subject: (test ? QA_TEST_PREFIX : '') + 'Last chance to confirm — ' +
-                 r.name + ' is counting on it',
+        // Same reasoning as the invite subject: lead with what THEY get. "X is
+        // counting on it" is a guilt appeal on somebody else's behalf, which is
+        // exactly the ask that got ignored the first time.
+        subject: (test ? QA_TEST_PREFIX : '') +
+                 'Last chance — confirm and you are in the $300 drawing',
         htmlBody: raffleReminderHtml_(r, url, minsLeft, test),
         body: raffleReminderPlain_(r, url, minsLeft)
       });

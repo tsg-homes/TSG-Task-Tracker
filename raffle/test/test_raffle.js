@@ -487,6 +487,15 @@ const cell = (s, row, name) => {
   check('referral staged (setup)', !!staged.staged, JSON.stringify(staged));
 
   const page = String(at(DURING, () => s.raffleConsentPage_({ parameter: { t: staged.token } })));
+  // Every text field must carry a type, or it misses the stylesheet's selector
+  // and renders inline and unstyled beside its label while its neighbours are
+  // full-width boxes. That shipped on the name field and was only visible in a
+  // real render, so it is asserted here rather than left to the eye.
+  const fields = page.match(/<input id="r[A-Za-z]+"[^>]*>/g) || [];
+  check('the consent page renders its fields (guards a vacuous test)',
+    fields.length >= 3, JSON.stringify(fields));
+  check('every consent field declares a type',
+    fields.every(f => /\stype=/.test(f)), JSON.stringify(fields.filter(f => !/\stype=/.test(f))));
   check('the consent page promises them an entry',
     /Confirming enters you in the drawing too/.test(page), page.slice(0, 1400));
   check('and the box carries the 18+ and US-resident attestation',
@@ -828,7 +837,7 @@ const cell = (s, row, name) => {
     skipConsent: true,
     referral: { referralName: 'Unsure Person', referralEmail: 'unsure@mail-test.co',
                 referralPhone: '(215) 555-9600' } });
-  const reminders = () => s.__sent.filter(m => /Last chance to confirm/.test(m.subject));
+  const reminders = () => s.__sent.filter(m => /^Last chance/.test(m.subject));
 
   // Before the batch time: nothing, however close it is.
   const early = at(BEFORE, () => s.raffleSendConsentReminders_(false));
@@ -849,6 +858,10 @@ const cell = (s, row, name) => {
   const res = at(new Date('2026-09-19T17:00:00-04:00').getTime(),
                  () => s.raffleSendConsentReminders_(false));
   eq('the batch sends at the batch time', reminders().length, 1);
+  // The subject has to give the REFERRAL a reason. "X is counting on it" is a
+  // guilt appeal on somebody else's behalf, which is the ask they ignored once.
+  check('the reminder subject leads with what they get',
+    /in the \$300 drawing/.test(reminders()[0].subject), reminders()[0].subject);
 
   // The other half of the 5pm batch: the referrer gets told to nudge, because at
   // 5pm they are at the party with their phone.
