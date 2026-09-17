@@ -710,6 +710,7 @@ function raffleSendReferralInvite_(d, test) {
     to: found.entry.referralEmail,
     cc: [entrant.email, 'info@tsg.homes'].join(','),
     replyTo: raffleReplyTo_(entrant.email),
+    bcc: raffleOversightBcc_(test),
     name: 'The Stawasz Group',
     subject: subject,
     htmlBody: raffleInviteHtml_(entrant, found.entry, url, test),
@@ -1314,6 +1315,7 @@ function raffleNotifyEntrantEntered_(entry, referralName, test, closed) {
     MailApp.sendEmail({
       to: entry.email,
       replyTo: RAFFLE_SHARED_INBOX,     // this one IS to the referrer, so info@ alone
+      bcc: raffleOversightBcc_(test),
       name: 'The Stawasz Group',
       subject: (test ? QA_TEST_PREFIX : '') +
         (closed ? 'Your referral confirmed (after the drawing closed)'
@@ -1569,6 +1571,28 @@ var RAFFLE_WINNER_REPLY_TO = 'ryan@tsg.homes';
 // is to swap these calls to GmailApp with an explicit Reply-To header. Flagged for
 // the live QA run rather than assumed.
 var RAFFLE_SHARED_INBOX = 'info@tsg.homes';
+
+// Durand on every outbound email, per his request 2026-09-17.
+//
+// BCC, not CC, on anything a member of the public receives. A client-facing email
+// that visibly copies a third person they have never heard of reads as odd at
+// best and as a data-handling mistake at worst; BCC gives Durand the same
+// visibility without putting an internal address in front of a stranger. On the
+// internal emails (the 6:15 result, the entry counts) he is already a named
+// recipient, so nothing changes there.
+//
+// ONE DELIBERATE EXCEPTION: the verification-code email is NOT copied. That code
+// is a credential — anyone holding it can complete somebody else's entry — and
+// routing every entrant's code to a second inbox turns a one-time secret into a
+// standing collection of them. The exception is enforced in code, not left to
+// whoever edits this next.
+var RAFFLE_OVERSIGHT_BCC = 'durand@thestawaszgroup.com';
+
+function raffleOversightBcc_(test) {
+  // In test mode qaTestRecipients_ already collapses everything to Durand, so a
+  // BCC would just duplicate the message to him.
+  return test ? '' : RAFFLE_OVERSIGHT_BCC;
+}
 
 function raffleReplyTo_(referrerEmail) {
   var who = String(referrerEmail || '').trim();
@@ -2132,6 +2156,7 @@ function raffleSendChainInvite_(entry, edited, chainToken, test) {
       to: edited.email,
       name: 'The Stawasz Group',
       replyTo: raffleReplyTo_(entry.name ? entry.email : ''),
+      bcc: raffleOversightBcc_(test),
       subject: (test ? QA_TEST_PREFIX : '') + first + ', you can win ' + RAFFLE_PRIZE_SHORT + ' too',
       htmlBody: raffleChainHtml_(entry, edited, url, test),
       body: raffleChainPlain_(entry, edited, url)
@@ -2299,10 +2324,22 @@ function raffleChainStart_(e) {
 // not know what it is doing. A single send is also one thing to check afterwards
 // rather than twenty.
 //
-// Saturday morning: late enough to be a genuine last call, early enough that
-// somebody at work can still act on it before 6:15.
-var RAFFLE_REMINDER_AT = '2026-09-19T10:00:00-04:00';
-var RAFFLE_REMINDER_MIN_LEAD_MINUTES = 90;   // never send inside the last 90 minutes
+// 5:00 PM, 75 minutes before the draw. Durand asked for this over my earlier
+// 10:00 AM, and he is right for a reason I had missed: AT 5PM THE REFERRER IS
+// STANDING IN THE STREET WITH THEIR PHONE. A morning email is read alone and
+// deferred; a 5pm one lands while the person who made the referral is at the party
+// and can text their friend directly — which converts far better than any email we
+// could write. So the batch also nudges the REFERRER (raffleSendReferrerNudges_),
+// and that pairing is what makes 5pm the better time rather than a tighter one.
+//
+// The cost, stated plainly: anyone who does not look at their phone in those 75
+// minutes is gone, where a morning send would have reached them. That is the trade
+// — fewer people reached, far more of the ones reached acting on it.
+var RAFFLE_REMINDER_AT = '2026-09-19T17:00:00-04:00';
+// 30, not 90: a 5pm batch leaves 75 minutes, so a 90-minute floor would have
+// silently refused to send the very batch it was configured for. The floor exists
+// to stop a catch-up firing at 6:10, not to second-guess the chosen time.
+var RAFFLE_REMINDER_MIN_LEAD_MINUTES = 30;
 // Records when the one batch went, so it can never go twice -- a script property
 // rather than the cache, because the cache does not outlive the gap between the
 // trigger firing and anyone noticing it did not.
@@ -2391,6 +2428,7 @@ function raffleSendConsentReminders_(test, ignoreWindow) {
       MailApp.sendEmail({
         to: r.referralEmail,
         replyTo: raffleReplyTo_(r.email),      // the referrer AND the shared inbox
+        bcc: raffleOversightBcc_(test),
         name: 'The Stawasz Group',
         subject: (test ? QA_TEST_PREFIX : '') + 'Last chance to confirm — ' +
                  r.name + ' is counting on it',
@@ -2405,10 +2443,120 @@ function raffleSendConsentReminders_(test, ignoreWindow) {
     }
   });
 
-  var summary = sent + ' reminder(s) sent, ' + skipped + ' skipped' +
+  // The other half of the 5pm batch: tell each waiting REFERRER to nudge their
+  // person. They are at the party, they have the phone, and they know them.
+  var nudged = raffleSendReferrerNudges_(test, rows, minsLeft);
+
+  var summary = sent + ' reminder(s) sent, ' + skipped + ' skipped, ' +
+    nudged + ' referrer nudge(s) sent' +
     (ignoreWindow ? ' (timing window ignored — rehearsal)' : '') + '.';
-  if (sent) Logger.log('Raffle: ' + summary);
-  return { sent: sent, skipped: skipped, summary: summary };
+  if (sent || nudged) Logger.log('Raffle: ' + summary);
+  return { sent: sent, skipped: skipped, nudged: nudged, summary: summary };
+}
+
+// One email per WAITING REFERRER, not one per pending referral: somebody who
+// referred two people who have both gone quiet gets a single email listing both,
+// because two near-identical "go chase someone" emails a minute apart is how you
+// teach a person to ignore you.
+function raffleSendReferrerNudges_(test, rows, minsLeft) {
+  var byReferrer = {};
+  rows.forEach(function (r) {
+    if (r.status !== RAFFLE_STATUS_PENDING) return;
+    if (!r.email) return;
+    var key = raffleEmailKey_(r.email);
+    if (!byReferrer[key]) byReferrer[key] = { name: r.name, email: r.email, waiting: [] };
+    byReferrer[key].waiting.push(r);
+  });
+
+  var sent = 0;
+  Object.keys(byReferrer).forEach(function (key) {
+    var g = byReferrer[key];
+    try {
+      MailApp.sendEmail({
+        to: g.email,
+        replyTo: RAFFLE_SHARED_INBOX,
+        bcc: raffleOversightBcc_(test),
+        name: 'The Stawasz Group',
+        subject: (test ? QA_TEST_PREFIX : '') +
+          (g.waiting.length === 1
+            ? 'A nudge would do it — ' + String(g.waiting[0].referralName).split(' ')[0] +
+              ' has not confirmed yet'
+            : g.waiting.length + ' of your referrals have not confirmed yet'),
+        htmlBody: raffleReferrerNudgeHtml_(g, minsLeft, test),
+        body: raffleReferrerNudgePlain_(g, minsLeft)
+      });
+      sent++;
+    } catch (err) {
+      Logger.log('Referrer nudge failed for ' + g.email + ': ' + err);
+    }
+  });
+  return sent;
+}
+
+function raffleReferrerNudgeHtml_(g, minsLeft, test) {
+  var e = raffleEsc_;
+  var first = String(g.name || '').split(' ')[0];
+  var left = raffleTimeLeftPhrase_(minsLeft);
+  var list = g.waiting.map(function (r) {
+    return '<li style="margin:0 0 8px;"><b>' + e(r.referralName) + '</b> &mdash; ' +
+           e(r.referralEmail) + '</li>';
+  }).join('');
+  return [
+    '<div style="margin:0;padding:0;background:#f4f6f6;">',
+    '<div style="max-width:560px;margin:0 auto;padding:24px 16px;',
+    "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;",
+    'color:#1d2b2c;line-height:1.55;">',
+    test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
+           'border-radius:6px;margin-bottom:16px;">QA TEST — not a real nudge</div>' : '',
+    '<div style="background:#15464A;color:#fff;border-radius:10px 10px 0 0;padding:24px;">',
+    '<div style="font-size:12px;letter-spacing:2px;opacity:.8;">TSG BLOCK PARTY 2026</div>',
+    '<div style="font-size:21px;font-weight:700;margin-top:6px;">',
+    left + ' left &mdash; one text would do it</div>',
+    '</div>',
+    '<div style="background:#fff;border-radius:0 0 10px 10px;padding:24px;">',
+    '<p style="margin:0 0 14px;">Hi ' + e(first) + ',</p>',
+    '<p style="margin:0 0 14px;">We have emailed ',
+    g.waiting.length === 1 ? 'the person you referred' : 'the people you referred',
+    ' asking them to confirm, and ',
+    g.waiting.length === 1 ? 'they have' : 'they have',
+    ' not replied yet &mdash; so your entry does not count yet:</p>',
+    '<ul style="margin:0 0 18px;padding-left:22px;font-size:15px;">' + list + '</ul>',
+    '<div style="background:#FFF8E6;border:1px solid #F0DFAE;border-radius:8px;',
+    'padding:16px;margin:0 0 18px;">',
+    '<p style="margin:0;font-size:15px;color:#6B5720;">The winner is drawn at ',
+    '<b>6:15 PM</b>. A text from you saying &ldquo;check your email, it takes twenty ',
+    'seconds&rdquo; will do more than anything we can send.</p>',
+    '</div>',
+    '<p style="margin:0;font-size:14px;color:#55696a;">Nothing for you to do here &mdash; ',
+    'the link is in their inbox, not yours. And if they would rather not, that is ',
+    'genuinely fine; the same page lets them say so.</p>',
+    '</div>',
+    '<div style="text-align:center;padding:18px 8px;font-size:12px;color:#7d8f90;">',
+    'The Stawasz Group &middot; Keller Williams Empower<br>',
+    '728 S Broad St, Philadelphia, PA 19146 &middot; (215) 760-6291 &middot; info@tsg.homes',
+    '</div></div></div>'
+  ].join('');
+}
+
+function raffleReferrerNudgePlain_(g, minsLeft) {
+  return [
+    'Hi ' + String(g.name || '').split(' ')[0] + ',',
+    '',
+    raffleTimeLeftPhrase_(minsLeft) + ' left, and your entry does not count yet.',
+    '',
+    'We emailed these people asking them to confirm and have not heard back:',
+    g.waiting.map(function (r) {
+      return '  ' + r.referralName + ' - ' + r.referralEmail; }).join('\n'),
+    '',
+    'The winner is drawn at 6:15 PM. A text from you saying "check your email, it takes',
+    'twenty seconds" will do more than anything we can send.',
+    '',
+    'Nothing for you to do here - the link is in their inbox, not yours. And if they',
+    'would rather not, that is genuinely fine; the same page lets them say so.',
+    '',
+    'The Stawasz Group - Keller Williams Empower',
+    '728 S Broad St, Philadelphia, PA 19146 - (215) 760-6291 - info@tsg.homes'
+  ].join('\n');
 }
 
 // How long is left, in words a person reads rather than a number they decode.

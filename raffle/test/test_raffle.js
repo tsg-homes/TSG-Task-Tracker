@@ -628,21 +628,33 @@ const cell = (s, row, name) => {
   const early = at(BEFORE, () => s.raffleSendConsentReminders_(false));
   eq('no reminders before the batch time', reminders().length, 0);
   check('and it says when they go', /all at once/.test(early.summary), early.summary);
-  const nearly = at(new Date('2026-09-19T09:30:00-04:00').getTime(),
+  const nearly = at(new Date('2026-09-19T16:30:00-04:00').getTime(),
                     () => s.raffleSendConsentReminders_(false));
   eq('still nothing half an hour before the batch', reminders().length, 0);
   check('still explained', /Not yet/.test(nearly.summary), nearly.summary);
 
   // Too late: minutes to go, the email cannot change anything.
-  const late = at(new Date('2026-09-19T18:00:00-04:00').getTime(),
+  const late = at(new Date('2026-09-19T18:05:00-04:00').getTime(),
                   () => s.raffleSendConsentReminders_(false));
   eq('no reminders in the last minutes', reminders().length, 0);
   check('and it says why', /Too late/.test(late.summary), late.summary);
 
   // At the batch time: everything goes at once.
-  const res = at(new Date('2026-09-19T10:00:00-04:00').getTime(),
+  const res = at(new Date('2026-09-19T17:00:00-04:00').getTime(),
                  () => s.raffleSendConsentReminders_(false));
   eq('the batch sends at the batch time', reminders().length, 1);
+
+  // The other half of the 5pm batch: the referrer gets told to nudge, because at
+  // 5pm they are at the party with their phone.
+  const nudges = s.__sent.filter(m => /nudge would do it|have not confirmed yet/.test(m.subject));
+  eq('the waiting referrer is nudged too', nudges.length, 1);
+  eq('addressed to the referrer', nudges[0].to, 'waiting@mail-test.co');
+  check('it names who has gone quiet', /Unsure Person/.test(nudges[0].htmlBody));
+  check('it tells them a text beats anything we send', /one text|check your email/i.test(nudges[0].htmlBody));
+  check('it does not ask them to do our job', /link is in their inbox/.test(nudges[0].htmlBody));
+  check('and Durand is bcc\'d on that too',
+    String(nudges[0].bcc || '').indexOf('durand@') !== -1, String(nudges[0].bcc));
+  eq('and the sweep counts it', res.nudged, 1);
   eq('sent to the referral who has not answered', reminders()[0].to, 'unsure@mail-test.co');
   check('never to one who already confirmed',
     reminders().every(m => m.to !== 'robin@mail-test.co'));
@@ -655,6 +667,13 @@ const cell = (s, row, name) => {
   check('it names the referrer', /Waiting Entrant/.test(m.htmlBody));
   check('it carries the consent link', /action=consent/.test(m.htmlBody));
   check('it says when the draw is', /6:15 PM/.test(m.htmlBody));
+  check('and how little time is left, in words',
+    /\b(minutes|hours)\b/.test(m.htmlBody), 'no human time phrase');
+  // Durand on every public-facing email, BCC so a stranger never sees an internal
+  // address (2026-09-17).
+  check('Durand is bcc\'d, not cc\'d',
+    String(m.bcc || '').indexOf('durand@thestawaszgroup.com') !== -1 &&
+    String(m.cc || '').indexOf('durand@') === -1, 'bcc=' + m.bcc + ' cc=' + m.cc);
   check('it offers the decline route too', /button for that|Would rather we did not/.test(m.htmlBody));
   check('it promises not to nag again', /only reminder/.test(m.htmlBody));
   // Durand, 2026-09-17: a reply must reach BOTH the referrer and the shared inbox.
@@ -665,9 +684,9 @@ const cell = (s, row, name) => {
 
   // There is only ever ONE batch: the hourly catch-up must find the marker and do
   // nothing, or reminders would stagger out over the afternoon.
-  const again = at(new Date('2026-09-19T13:00:00-04:00').getTime(),
+  const again = at(new Date('2026-09-19T17:20:00-04:00').getTime(),
                    () => s.raffleSendConsentReminders_(false));
-  at(new Date('2026-09-19T14:00:00-04:00').getTime(),
+  at(new Date('2026-09-19T17:40:00-04:00').getTime(),
      () => s.raffleSendConsentReminders_(false));
   eq('the catch-up does not send a second batch', reminders().length, 1);
   check('and says the batch already went', /already went out/.test(again.summary), again.summary);
@@ -677,7 +696,7 @@ const cell = (s, row, name) => {
   // And once someone answers, no reminder can follow.
   const s2 = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
   enterFull(s2, entry(), DURING);
-  at(new Date('2026-09-19T10:00:00-04:00').getTime(),
+  at(new Date('2026-09-19T17:00:00-04:00').getTime(),
      () => s2.raffleSendConsentReminders_(false));
   eq('a confirmed referral is never reminded',
     s2.__sent.filter(m => /Last chance/.test(m.subject)).length, 0);

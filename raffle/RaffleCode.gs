@@ -822,6 +822,11 @@ function raffleRequestCode_(d, test) {
     name: name, email: email, phone: phone, code: code, attempts: 0, test: !!test
   }), RAFFLE_CODE_TTL_SECONDS);
 
+  // NO bcc HERE, ON PURPOSE. Durand is copied on every other email this project
+  // sends (raffleOversightBcc_), but not this one: the six-digit code is a
+  // credential, and copying every entrant's code to a second mailbox turns a
+  // one-time secret into a standing collection of them. If you are adding
+  // oversight copies, this is the email to leave alone.
   MailApp.sendEmail({
     to: email,
     subject: (test ? QA_TEST_PREFIX : '') + 'Your TSG Block Party entry code: ' + code,
