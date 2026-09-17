@@ -607,6 +607,78 @@ const cell = (s, row, name) => {
   eq('and writes no row', s.__data('Entries').length, 0);
 }
 
+// ---- The last-chance consent reminder ------------------------------------------
+{
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  // One who confirmed, one who has not.
+  enterFull(s, entry(), DURING);
+  enterFull(s, entry({ fullName: 'Waiting Entrant', email: 'waiting@mail-test.co',
+                       phone: '(267) 555-8500' }), DURING, {
+    skipConsent: true,
+    referral: { referralName: 'Unsure Person', referralEmail: 'unsure@mail-test.co',
+                referralPhone: '(215) 555-9600' } });
+  const reminders = () => s.__sent.filter(m => /Last chance to confirm/.test(m.subject));
+
+  // Too early: days out, this is nagging rather than a last chance.
+  const early = at(BEFORE, () => s.raffleSendConsentReminders_(false));
+  eq('no reminders days before the draw', reminders().length, 0);
+  check('and it says why', /Too early/.test(early.summary), early.summary);
+
+  // Too late: minutes to go, the email cannot change anything.
+  const late = at(new Date('2026-09-19T18:00:00-04:00').getTime(),
+                  () => s.raffleSendConsentReminders_(false));
+  eq('no reminders in the last minutes', reminders().length, 0);
+  check('and it says why', /Too late/.test(late.summary), late.summary);
+
+  // In the window: exactly one, to the person who has not answered.
+  const res = at(new Date('2026-09-19T12:00:00-04:00').getTime(),
+                 () => s.raffleSendConsentReminders_(false));
+  eq('one reminder inside the window', reminders().length, 1);
+  eq('sent to the referral who has not answered', reminders()[0].to, 'unsure@mail-test.co');
+  check('never to one who already confirmed',
+    reminders().every(m => m.to !== 'robin@mail-test.co'));
+  eq('and the sweep reports it', res.sent, 1);
+
+  // It is a real HTML email and says the things that make it actionable.
+  const m = reminders()[0];
+  check('it is HTML', !!m.htmlBody && m.htmlBody.indexOf('<div') === 0);
+  check('with a plain-text alternative', !!m.body && m.body.length > 150);
+  check('it names the referrer', /Waiting Entrant/.test(m.htmlBody));
+  check('it carries the consent link', /action=consent/.test(m.htmlBody));
+  check('it says when the draw is', /6:15 PM/.test(m.htmlBody));
+  check('it offers the decline route too', /button for that|Would rather we did not/.test(m.htmlBody));
+  check('it promises not to nag again', /only reminder/.test(m.htmlBody));
+  check('replies go to the person who referred them', m.replyTo === 'waiting@mail-test.co');
+
+  // One per person, ever.
+  at(new Date('2026-09-19T13:00:00-04:00').getTime(),
+     () => s.raffleSendConsentReminders_(false));
+  at(new Date('2026-09-19T14:00:00-04:00').getTime(),
+     () => s.raffleSendConsentReminders_(false));
+  eq('the hourly sweep does not nag', reminders().length, 1);
+  check('the row records when it went', cell(s, s.__data()[1], 'Reminder Sent At').length > 0);
+
+  // And once someone answers, no reminder can follow.
+  const s2 = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  enterFull(s2, entry(), DURING);
+  at(new Date('2026-09-19T12:00:00-04:00').getTime(),
+     () => s2.raffleSendConsentReminders_(false));
+  eq('a confirmed referral is never reminded',
+    s2.__sent.filter(m => /Last chance/.test(m.subject)).length, 0);
+}
+
+{
+  // The trigger must be armed, or none of the above ever runs.
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1' } });
+  at(BEFORE, () => s.setupRaffle());
+  const armed = n => s.ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === n).length;
+  eq('the reminder sweep is armed', armed('raffleConsentReminderSweep'), 1);
+  eq('and only once', armed('raffleConsentReminderSweep'), 1);
+  at(BEFORE, () => s.setupRaffle());
+  eq('re-running setup does not double-arm it', armed('raffleConsentReminderSweep'), 1);
+}
+
 // ---- Admin endpoints are key-gated -----------------------------------------
 {
   const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'secret' } });

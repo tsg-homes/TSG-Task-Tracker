@@ -2246,3 +2246,199 @@ function raffleChainStart_(e) {
     chainTest: found.test
   });
 }
+
+// ============================================================================
+// LAST-CHANCE REMINDER — the referrals who have not answered yet
+// ============================================================================
+// Per Durand, 2026-09-17: one nudge, with enough time left before the drawing
+// that answering it can still change the outcome.
+//
+// The window is deliberately BOUNDED AT BOTH ENDS. Too early and it is not a last
+// chance, it is nagging. Too late and it is worse than nothing: a "you have
+// minutes left" email that arrives after someone stopped checking their phone
+// wastes their goodwill and the referrer's entry alike. So the sweep fires only
+// between RAFFLE_REMINDER_LEAD_HOURS and RAFFLE_REMINDER_MIN_LEAD_MINUTES before
+// the close, and each person gets exactly one.
+//
+// Who is skipped, and why it matters:
+//   * anyone who already consented or declined -- obviously;
+//   * anyone who was never actually emailed the first time (no invite, nothing to
+//     remind them of);
+//   * anyone already reminded, tracked on the row rather than in cache, because
+//     the trigger runs hourly and cache does not survive long enough to be a
+//     safe idempotency key across a whole day; and
+//   * everyone, once the draw has run.
+var RAFFLE_REMINDER_LEAD_HOURS = 24;         // start nudging a day out
+var RAFFLE_REMINDER_MIN_LEAD_MINUTES = 90;   // stop with 90 minutes to go
+
+// Hourly trigger, armed by setupRaffle. Silent outside the window, so the trigger
+// can sit there all week without mailing anybody.
+function raffleConsentReminderSweep() {
+  try { return raffleSendConsentReminders_(false); }
+  catch (err) {
+    Logger.log('raffleConsentReminderSweep failed (non-fatal): ' + err);
+    return { sent: 0, skipped: 0, reason: String(err) };
+  }
+}
+
+// Editor-callable rehearsal: same code, test tab, and it ignores the timing
+// window so a reminder can actually be seen before Saturday.
+function raffleSendConsentRemindersTEST() {
+  return raffleSendConsentReminders_(true, true).summary;
+}
+
+function raffleSendConsentReminders_(test, ignoreWindow) {
+  var closeMs = new Date(RAFFLE_CLOSE_AT).getTime();
+  var now = Date.now();
+  var minsLeft = Math.round((closeMs - now) / 60000);
+
+  if (!ignoreWindow) {
+    if (now >= closeMs) {
+      return { sent: 0, skipped: 0, summary: 'Entries are closed — no reminders sent.' };
+    }
+    if (minsLeft > RAFFLE_REMINDER_LEAD_HOURS * 60) {
+      return { sent: 0, skipped: 0,
+        summary: 'Too early — reminders start ' + RAFFLE_REMINDER_LEAD_HOURS +
+                 ' hours before the draw (' + minsLeft + ' minutes to go).' };
+    }
+    if (minsLeft < RAFFLE_REMINDER_MIN_LEAD_MINUTES) {
+      return { sent: 0, skipped: 0,
+        summary: 'Too late — a reminder now would leave under ' +
+                 RAFFLE_REMINDER_MIN_LEAD_MINUTES + ' minutes to act (' + minsLeft +
+                 ' to go), so none sent.' };
+    }
+  }
+
+  var sh = raffleSheet_(test);
+  var rows = raffleReadEntries_(test);
+  var sent = 0, skipped = 0;
+
+  rows.forEach(function (r) {
+    if (r.status !== RAFFLE_STATUS_PENDING) { skipped++; return; }
+    if (!r.referralEmailedAt && !r.referralEmail) { skipped++; return; }
+    if (r.reminderSentAt) { skipped++; return; }
+    if (!r.consentToken) { skipped++; return; }
+
+    try {
+      raffleCheckCodeSendQuota_(raffleEmailKey_(r.referralEmail));
+    } catch (quotaErr) {
+      Logger.log('Reminder skipped (send quota) for ' + r.referralEmail + ': ' + quotaErr);
+      skipped++;
+      return;
+    }
+
+    var url = raffleConsentUrl_(r.consentToken);
+    var first = String(r.referralName || '').split(' ')[0];
+    try {
+      MailApp.sendEmail({
+        to: r.referralEmail,
+        replyTo: r.email,                       // the person who knows them
+        name: 'The Stawasz Group',
+        subject: (test ? QA_TEST_PREFIX : '') + 'Last chance to confirm — ' +
+                 r.name + ' is counting on it',
+        htmlBody: raffleReminderHtml_(r, url, minsLeft, test),
+        body: raffleReminderPlain_(r, url, minsLeft)
+      });
+      sh.getRange(r.row, RAFFLE_COL['Reminder Sent At'] + 1).setValue(raffleFmt_(raffleNow_()));
+      sent++;
+    } catch (mailErr) {
+      Logger.log('Reminder send failed for ' + r.referralEmail + ': ' + mailErr);
+      skipped++;
+    }
+  });
+
+  var summary = sent + ' reminder(s) sent, ' + skipped + ' skipped' +
+    (ignoreWindow ? ' (timing window ignored — rehearsal)' : '') + '.';
+  if (sent) Logger.log('Raffle: ' + summary);
+  return { sent: sent, skipped: skipped, summary: summary };
+}
+
+// How long is left, in words a person reads rather than a number they decode.
+function raffleTimeLeftPhrase_(minsLeft) {
+  if (minsLeft <= 0) return 'any moment now';
+  if (minsLeft < 90) return minsLeft + ' minutes';
+  var hours = Math.round(minsLeft / 60);
+  if (hours < 24) return 'about ' + hours + ' hours';
+  return 'about a day';
+}
+
+function raffleReminderHtml_(r, url, minsLeft, test) {
+  var e = raffleEsc_;
+  var first = String(r.referralName || '').split(' ')[0];
+  var left = raffleTimeLeftPhrase_(minsLeft);
+  return [
+    '<div style="margin:0;padding:0;background:#f4f6f6;">',
+    '<div style="max-width:560px;margin:0 auto;padding:24px 16px;',
+    'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;',
+    'color:#1d2b2c;line-height:1.55;">',
+
+    test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
+           'border-radius:6px;margin-bottom:16px;">QA TEST — not a real reminder</div>' : '',
+
+    '<div style="background:#15464A;color:#fff;border-radius:10px 10px 0 0;padding:24px;">',
+    '<div style="font-size:12px;letter-spacing:2px;opacity:.8;">THE STAWASZ GROUP</div>',
+    '<div style="font-size:21px;font-weight:700;margin-top:6px;">',
+    'One click, and ' + e(String(r.name).split(' ')[0]) + ' is entered</div>',
+    '</div>',
+
+    '<div style="background:#fff;border-radius:0 0 10px 10px;padding:24px;">',
+    '<p style="margin:0 0 14px;">Hi ' + e(first) + ',</p>',
+    '<p style="margin:0 0 14px;">A few days ago <strong>' + e(r.name) + '</strong> referred ',
+    'you to us, and we asked you to confirm your details. We have not heard back ',
+    '&mdash; which is completely fine, but it does mean their entry in our ',
+    e(RAFFLE_PRIZE_SHORT) + ' drawing does not count yet.</p>',
+
+    '<div style="background:#FFF8E6;border:1px solid #F0DFAE;border-radius:8px;',
+    'padding:16px;margin:0 0 20px;">',
+    '<p style="margin:0;font-size:15px;color:#6B5720;">',
+    'The winner is drawn at <b>6:15 PM this Saturday</b> &mdash; ' + e(left) + ' from now. ',
+    'After that their entry cannot be counted, however kind you are about it.</p>',
+    '</div>',
+
+    '<div style="text-align:center;margin:0 0 20px;">',
+    '<a href="' + e(url) + '" style="display:inline-block;background:#15464A;color:#fff;',
+    'text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:8px;">',
+    'Confirm my details</a></div>',
+
+    '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">It takes about twenty ',
+    'seconds. You can correct anything they got wrong, and confirming is also how you ',
+    'tell us it is alright to get in touch.</p>',
+    '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">',
+    '<b>Would rather we did not?</b> The same page has a button for that, and we will ',
+    'leave you alone. Either answer is better than none &mdash; and this is the only ',
+    'reminder we will send.</p>',
+    '<p style="margin:0;font-size:13px;color:#7d8f90;">If the button does not work, paste ',
+    'this into your browser:<br><span style="word-break:break-all;">' + e(url) + '</span></p>',
+    '</div>',
+
+    '<div style="text-align:center;padding:18px 8px;font-size:12px;color:#7d8f90;">',
+    'The Stawasz Group &middot; Keller Williams Empower<br>',
+    '728 S Broad St, Philadelphia, PA 19146 &middot; (215) 760-6291 &middot; info@tsg.homes',
+    '</div></div></div>'
+  ].join('');
+}
+
+function raffleReminderPlain_(r, url, minsLeft) {
+  var first = String(r.referralName || '').split(' ')[0];
+  return [
+    'Hi ' + first + ',',
+    '',
+    'A few days ago ' + r.name + ' referred you to us and we asked you to confirm your',
+    'details. We have not heard back - which is completely fine, but it does mean their',
+    'entry in our ' + RAFFLE_PRIZE_SHORT + ' drawing does not count yet.',
+    '',
+    'The winner is drawn at 6:15 PM this Saturday - ' + raffleTimeLeftPhrase_(minsLeft) +
+      ' from now.',
+    'After that their entry cannot be counted.',
+    '',
+    'Confirm your details here (about twenty seconds):',
+    url,
+    '',
+    'You can correct anything they got wrong, and confirming is also how you tell us it',
+    'is alright to get in touch. Would rather we did not? The same page has a button for',
+    'that. Either answer is better than none - and this is the only reminder we will send.',
+    '',
+    'The Stawasz Group - Keller Williams Empower',
+    '728 S Broad St, Philadelphia, PA 19146 - (215) 760-6291 - info@tsg.homes'
+  ].join('\n');
+}

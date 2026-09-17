@@ -237,7 +237,8 @@ var RAFFLE_SHEET_HEADERS = [
   // --- added 2026-09-17 (deferred FUB creation + the referral chain) ---
   'Referral Logged At',   // when an unconsented referral was swept into FUB, flagged
   'Chain Token',          // lets a consented referral enter by referring, without re-verifying
-  'Chain Emailed At'
+  'Chain Emailed At',
+  'Reminder Sent At'      // the one last-chance nudge before the draw
 ];
 
 // Column indexes, by name, resolved once. Reading by index literal is what makes
@@ -487,6 +488,12 @@ function setupRaffle() {
     if (t.getHandlerFunction() === 'raffleEventDigest') ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('raffleEventDigest').timeBased().everyHours(1).create();
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'raffleConsentReminderSweep') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('raffleConsentReminderSweep').timeBased().everyHours(1).create();
+  out.push('Hourly last-chance reminder sweep armed (fires only inside the ' +
+           RAFFLE_REMINDER_LEAD_HOURS + '-hour window before the draw).');
   out.push('Hourly entry digest armed (silent outside 3:00-6:15 PM on the day).');
   out.push('Before the party you get an email every ' + RAFFLE_MILESTONE_EVERY +
            ' valid entries instead.');
@@ -1013,8 +1020,10 @@ function raffleReadEntries_(test) {
       referralPhoneKey: rafflePhoneKey_(unmark(r[RAFFLE_COL['Referral Phone']])),
       referralFubId: unmark(r[RAFFLE_COL['Referral FUB ID']]),
       referralLoggedAt: unmark(r[RAFFLE_COL['Referral Logged At']]),
+      referralEmailedAt: unmark(r[RAFFLE_COL['Referral Emailed At']]),
       chainToken: unmark(r[RAFFLE_COL['Chain Token']]),
       chainEmailedAt: unmark(r[RAFFLE_COL['Chain Emailed At']]),
+      reminderSentAt: unmark(r[RAFFLE_COL['Reminder Sent At']]),
       referralTimeframe: unmark(r[RAFFLE_COL['Referral Timeframe']]),
       consentToken: unmark(r[RAFFLE_COL['Consent Token']])
     });
