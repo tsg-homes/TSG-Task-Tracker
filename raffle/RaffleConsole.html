@@ -109,10 +109,13 @@
 // Force-print tags everywhere a value reaches JavaScript. A plain <?= ?> escapes,
 // which turns a quoted string into &quot; and yields a syntax error or a silently
 // wrong value — that exact bug shipped once on the entry form (2026-09-16).
-var KEY     = "<?!= adminKey ?>";
-var FORMTK  = "<?!= submitToken ?>";
-var IS_TEST = "<?!= isTest ?>";
-var ALREADY_SENT = "<?!= sentAt ?>" !== '';
+// JSON-encoded server-side (safeJsonForScript_), NOT quoted here. Pasting a raw
+// value between quotes means any value containing a double quote closes the
+// string and the rest runs as code.
+var KEY     = <?!= adminKeyJson ?>;
+var FORMTK  = <?!= submitTokenJson ?>;
+var IS_TEST = <?!= isTestJson ?>;
+var ALREADY_SENT = <?!= sentAtJson ?> !== '';
 
 var sendBtn    = document.getElementById('sendBtn');
 var previewBtn = document.getElementById('previewBtn');

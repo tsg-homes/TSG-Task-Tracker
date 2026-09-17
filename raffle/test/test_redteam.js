@@ -37,6 +37,9 @@ function check(name, cond, detail) {
   else { fails++; console.log('FAIL  ' + name + (detail ? '  -- ' + detail : '')); }
 }
 function section(t) { console.log('\n--- ' + t + ' ---'); }
+function eq(name, actual, expected) {
+  check(name + '  (got ' + JSON.stringify(actual) + ')', actual === expected);
+}
 
 const req = (s, d, when) => J(at(when || DURING, () =>
   s.raffleHandleSubmission_(Object.assign({ step: 'request' }, d))));
@@ -618,6 +621,196 @@ const stage = (s, who, ref, when) => {
                                       f.o && f.o.method === 'put').pop();
   check('the decline is written to FUB as do-not-contact',
     !!put && /Do Not Contact/.test(String(put.o.payload)), put && put.o.payload);
+}
+
+// ---------------------------------------------------------------------------
+section('T9  Rehearsal bleed: can a TEST run touch a real person?');
+// ---------------------------------------------------------------------------
+// The project's stated rule is that test mode is "a LABELLING and ROUTING change
+// only" and that Ryan is never paged about a rehearsal. The raffle already
+// relaxes one check (the entry window) knowingly. What must NEVER happen is a
+// rehearsal reaching a real inbox or a real record -- and the surfaces added on
+// 2026-09-17 (winner email, console, notifications) are all new places it could.
+{
+  const s = makeSandbox({ qaMode: true,
+    props: { RAFFLE_ADMIN_KEY: 'secret', RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  ['a', 'b', 'c'].forEach((n, i) => enterFull(s, entry({
+    fullName: 'QA Person ' + n, email: 'qa' + n + '@mail-test.co', phone: '(215) 555-870' + i
+  }), DURING, {
+    referral: { referralName: 'QA Ref ' + n, referralEmail: 'qaref' + n + '@mail-test.co',
+                referralPhone: '(215) 555-97' + (10 + i) }
+  }));
+  check('test entries went to the test tab', s.__data('Test Entries').length === 3,
+    'got ' + s.__data('Test Entries').length);
+  eq('the live tab is untouched', s.__data('Entries').length, 0);
+
+  const drawn = at(DURING, () => s.raffleDrawWinner_(true));
+  check('a test draw works (setup)', drawn.ok === true, JSON.stringify(drawn));
+
+  // The result email already collapses to the QA address. The WINNER email is new.
+  at(DURING, () => s.raffleSendWinnerEmail_(true));
+  const won = s.__sent.filter(m => /You won/i.test(m.subject));
+  check('a rehearsal winner email was produced (setup)', won.length === 1);
+  check('a rehearsal winner email is labelled as a test',
+    !!won.length && /QA TEST/.test(won[0].subject), won.length && won[0].subject);
+  // THE ONE THAT MATTERS: the project's rule is that Ryan is not paged about a
+  // rehearsal. The result email honours that via qaTestRecipients_; the winner
+  // email must too, or a practice run at 4pm on Thursday copies Ryan on a
+  // "you won" that nobody won.
+  const cc = String((won[0] || {}).cc || '');
+  check('a rehearsal winner email does NOT copy Ryan',
+    cc.indexOf('ryan@') === -1, 'cc was: ' + cc);
+
+  // A test draw must never write the live winner property.
+  check('a test draw leaves the live winner unset', s.__props.RAFFLE_WINNER_JSON === undefined);
+  check('and the live winner-emailed marker unset',
+    s.__props.RAFFLE_WINNER_EMAILED_AT === undefined);
+}
+
+{
+  // Milestone notifications must collapse the same way.
+  const s = makeSandbox({ qaMode: true });
+  for (let i = 0; i < 10; i++) {
+    enterFull(s, entry({ fullName: 'QA Milestone ' + i, email: 'qm' + i + '@mail-test.co',
+                         phone: '(215) 555-88' + (10 + i) }), BEFORE, {
+      referral: { referralName: 'QMRef ' + i, referralEmail: 'qmref' + i + '@mail-test.co',
+                  referralPhone: '(215) 555-98' + (10 + i) } });
+  }
+  const notes = s.__sent.filter(m => /entries in the Block Party raffle/.test(m.subject));
+  check('a rehearsal milestone email is labelled', notes.length === 1 && /QA TEST/.test(notes[0].subject),
+    notes.length + ' | ' + (notes[0] || {}).subject);
+  check('and goes only to the QA address',
+    !!notes.length && String(notes[0].to).indexOf('ryan@') === -1, (notes[0] || {}).to);
+}
+
+// ---------------------------------------------------------------------------
+section('T10  The console as an attack surface');
+// ---------------------------------------------------------------------------
+{
+  const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'secret', RAFFLE_SHEET_ID: 'sheet1',
+                                   FUB_API_KEY: 'key' } });
+  ['a', 'b', 'c'].forEach((n, i) => enterFull(s, entry({
+    fullName: 'Con ' + n, email: 'con' + n + '@mail-test.co', phone: '(215) 555-890' + i
+  }), DURING, {
+    referral: { referralName: 'ConRef ' + n, referralEmail: 'conref' + n + '@mail-test.co',
+                referralPhone: '(215) 555-99' + (10 + i) }
+  }));
+  at(AFTER, () => s.raffleDrawWinner_(false));
+
+  // EVERY console action must be gated, not just 'send'. A gate that covers one
+  // verb and not the others is the classic way an admin surface leaks.
+  ['preview', 'redraw', 'send', 'nonsense'].forEach(verb => {
+    const r = J(at(AFTER, () => s.raffleHandleSubmission_({
+      step: 'console', consoleAction: verb, key: 'wrong', pick: 0,
+      reason: 'a plausible sounding reason here' })));
+    check('console action "' + verb + '" is refused with a wrong key', !(r && r.ok),
+      JSON.stringify(r));
+    check('and the refusal for "' + verb + '" gives nothing away',
+      /Not found/.test(String(r && r.error)), String(r && r.error));
+  });
+  ['preview', 'redraw', 'send'].forEach(verb => {
+    const r = J(at(AFTER, () => s.raffleHandleSubmission_({
+      step: 'console', consoleAction: verb, pick: 0,
+      reason: 'a plausible sounding reason here' })));
+    check('console action "' + verb + '" is refused with NO key', !(r && r.ok));
+  });
+  eq('nothing was emailed to a winner by any of that', 
+    s.__sent.filter(m => /You won/i.test(m.subject)).length, 0);
+  check('and no redraw happened', !!s.__props.RAFFLE_WINNER_JSON);
+
+  // The pick index is client-supplied. Out-of-range values must clamp, not throw
+  // and not read past the end of the list.
+  [-5, 99, 2.7, 'x', null, '1; DROP'].forEach((bad, i) => {
+    const r = J(at(AFTER, () => s.raffleHandleSubmission_({
+      step: 'console', consoleAction: 'preview', key: 'secret', pick: bad })));
+    check('a nonsense pick index ' + i + ' is handled, not crashed', !!(r && r.ok),
+      JSON.stringify(r));
+    check('and resolves to a real pick ' + i, r.pick >= 0 && r.pick <= 2, String(r.pick));
+  });
+
+  // The admin key is printed into the console page's JavaScript. It must be
+  // encoded, not concatenated -- a key containing a quote would otherwise break
+  // out of the string literal and could be made to run.
+  const s2 = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'ab");alert(1);//',
+                                    RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  enterFull(s2, entry(), DURING);
+  at(AFTER, () => s2.raffleDrawWinner_(false));
+  const page = String(at(AFTER, () => s2.raffleServeForm_(
+    { parameter: { action: 'console', key: 'ab");alert(1);//' } }, 'u')));
+  // Whitespace-tolerant, and it asserts on what the JS ENGINE would see rather
+  // than on an exact source string -- the first version of this check looked for
+  // 'var KEY = "' with single spaces while the template aligns them, so it
+  // matched nothing and passed vacuously against genuinely broken code.
+  const keyLine = (page.match(/var\s+KEY\s*=\s*(.*?);\s*$/m) || [])[1];
+  check('the console page has a KEY line at all (guards against a vacuous test)',
+    !!keyLine, 'no KEY line found — the page did not render as the console');
+  // Assert on what the JS ENGINE would end up with, not on the source text. A
+  // substring check is wrong in both directions here: the vulnerable form and the
+  // correctly-escaped form BOTH contain the literal characters '");alert(1);//'.
+  // The only question that matters is whether the line parses to exactly the key
+  // and nothing else follows it.
+  let parsed = null, parseErr = null;
+  try { parsed = JSON.parse(keyLine); } catch (err) { parseErr = String(err.message); }
+  check('the key is a single well-formed JS string literal',
+    parsed !== null, 'KEY line did not parse as one literal: ' + keyLine + ' — ' + parseErr);
+  check('and it evaluates to exactly the key, with no trailing code',
+    parsed === 'ab");alert(1);//', JSON.stringify(parsed));
+}
+
+// ---------------------------------------------------------------------------
+section('T11  Consent-page substitution');
+// ---------------------------------------------------------------------------
+// The consent page deliberately lets the referred person CORRECT their details --
+// that is most of its value. But it means whoever holds the token can replace the
+// email with a third party's and tick the consent box on their behalf. The
+// address is never re-verified, so a record can end up in FUB marked "consented"
+// for somebody who never saw the page.
+//
+// This cannot be closed without re-verifying the new address, which would mean a
+// second code round-trip for a cold referral and would cost more entries than it
+// saves. So it is made VISIBLE instead: a substituted address is recorded on the
+// row and stated in the FUB note, so nobody on the team reads "consented" and
+// assumes that person typed it.
+{
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  const v = verifySession(s, entry(), DURING);
+  const staged = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: v.vid }, referral({})))));
+  check('referral staged (setup)', !!staged.staged, JSON.stringify(staged));
+
+  // The referral consents, but swaps in an address nobody offered.
+  const res = J(at(DURING, () => s.raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
+    referralName: 'Robin Vale', referralEmail: 'someone.else@mail-test.co',
+    referralPhone: '(215) 555-9001', referralRole: 'Buyer',
+    referralTimeframe: '7-12 Months' })));
+  check('the substitution is accepted (correcting a typo is the normal case)',
+    res.ok === true, JSON.stringify(res));
+
+  const note = s.__fetches.filter(f => /\/v1\/notes/.test(f.url))
+    .map(f => JSON.parse(f.o.payload)).pop();
+  check('a consent note was written (setup)', !!note);
+  check('the note flags that the address was changed at consent time',
+    /different address|changed|substitut/i.test(String(note.body)),
+    String(note.body).slice(0, 300));
+  check('and names the address it was referred under',
+    String(note.body).indexOf('robin@mail-test.co') !== -1, String(note.body).slice(0, 300));
+
+  // An UNCHANGED address must not be flagged, or the warning becomes noise that
+  // gets ignored on the one record where it matters.
+  const s2 = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  const v2 = verifySession(s2, entry(), DURING);
+  const st2 = J(at(DURING, () => s2.raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: v2.vid }, referral({})))));
+  J(at(DURING, () => s2.raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: st2.token, consent: 'Yes',
+    referralName: 'Robin Vale', referralEmail: 'robin@mail-test.co',
+    referralPhone: '(215) 555-9001', referralRole: 'Buyer',
+    referralTimeframe: '7-12 Months' })));
+  const note2 = s2.__fetches.filter(f => /\/v1\/notes/.test(f.url))
+    .map(f => JSON.parse(f.o.payload)).pop();
+  check('an unchanged address is NOT flagged',
+    !/different address|substitut/i.test(String(note2.body)), String(note2.body).slice(0, 200));
 }
 
 console.log('\n' + passes + ' passed, ' + fails + ' failed');

@@ -1009,7 +1009,10 @@ function raffleConsentSubmit_(d) {
     sh.getRange(found.row, RAFFLE_COL['Referral Phone'] + 1).setValue(raffleSafeCell_(phone));
     sh.getRange(found.row, RAFFLE_COL['Referral Role'] + 1).setValue(role);
     sh.getRange(found.row, RAFFLE_COL['Referral Timeframe'] + 1).setValue(raffleSafeCell_(timeframe));
-    sh.getRange(found.row, RAFFLE_COL['Referral Consent At'] + 1).setValue(now);
+    sh.getRange(found.row, RAFFLE_COL['Referral Consent At'] + 1).setValue(
+      raffleAddressWasSubstituted_(entry, { email: email })
+        ? now + ' (ADDRESS CHANGED from ' + entry.referralEmail + ' — not re-verified)'
+        : now);
     // Consent after the draw still updates FUB, but it cannot retroactively
     // create an entry in a drawing that has already happened.
     sh.getRange(found.row, RAFFLE_COL['Entry Status'] + 1)
@@ -1036,6 +1039,18 @@ function raffleConsentSubmit_(d) {
 // The referral record already exists (created at submit time, with consent
 // recorded as NOT GIVEN). This is the update that turns it into a contact the
 // team is actually allowed to work.
+// True when the person who opened the link consented under a DIFFERENT address
+// from the one they were referred under. Usually a typo being corrected, which is
+// the whole point of the page. Occasionally it is somebody substituting a third
+// party -- the token is a bearer credential and the new address is never
+// re-verified, so this cannot be prevented without a second code round-trip that
+// a cold referral would mostly abandon. It is surfaced instead.
+function raffleAddressWasSubstituted_(entry, edited) {
+  var was = raffleEmailKey_(entry.referralEmail);
+  var now = raffleEmailKey_(edited.email);
+  return !!(was && now && was !== now);
+}
+
 function raffleUpdateReferralInFub_(entry, edited, test) {
   var apiKey = raffleFubKey_();
   if (!apiKey) return;
@@ -1085,6 +1100,17 @@ function raffleUpdateReferralInFub_(entry, edited, test) {
     body: [
       'This person opened the referral link and confirmed their own details.',
       '',
+      raffleAddressWasSubstituted_(entry, edited)
+        ? ['*** THE EMAIL ADDRESS WAS CHANGED ON THE CONSENT PAGE ***',
+           'Referred under: ' + entry.referralEmail,
+           'Consented as:   ' + edited.email,
+           '',
+           'Usually this is a typo being corrected. It can also mean the person holding',
+           'the link put in a different address, and the new one was NOT re-verified --',
+           'no code was sent to it. Treat this consent as weaker than the others: confirm',
+           'by phone before adding this contact to anything automated.',
+           ''].join('\n')
+        : '',
       'Confirmed: ' + raffleFmt_(raffleNow_()) + ' ET',
       '  Name:       ' + edited.name,
       '  Email:      ' + edited.email,
@@ -1216,9 +1242,15 @@ function raffleSendWinnerEmail_(test, pickIndex, reason) {
       'Something is wrong with the draw record — tell Claude before doing anything else.' };
   }
 
+  // qaTestRecipients_ on the CC, like raffleEmailResult_ does. Without it a
+  // rehearsal at 4pm on a Thursday copies Ryan on a "you won" that nobody won --
+  // which is exactly the thing this project's test mode exists to prevent, and it
+  // was the one new surface that had been left out. (test_redteam.js T9,
+  // 2026-09-17.) The `to` needs no such treatment: in test mode the winner IS a
+  // QA entry, so w.email is already a QA address.
   MailApp.sendEmail({
     to: w.email,
-    cc: RAFFLE_RESULT_EMAIL,
+    cc: qaTestRecipients_(RAFFLE_RESULT_EMAIL.split(',')).join(','),
     // Ryan fields winner replies, so that is where a reply lands.
     replyTo: RAFFLE_WINNER_REPLY_TO,
     name: 'The Stawasz Group',
@@ -1502,11 +1534,20 @@ function raffleWinnerConsolePage_(test, key) {
   var tmpl = HtmlService.createTemplateFromFile('RaffleConsole');
   tmpl.cards      = cards;
   tmpl.isTest     = test ? '1' : '';
+  // JSON-encoded, not concatenated. These land inside a <script> block, and a
+  // value carrying a double quote would otherwise close the string literal and
+  // run as code. The admin key is hex today, which is why this was not already
+  // exploitable -- but "the current value happens to be safe" is not a control,
+  // and the next person to set that property by hand would not know.
+  tmpl.adminKeyJson    = safeJsonForScript_(key || '');
+  tmpl.submitTokenJson = safeJsonForScript_(getSubmitToken());
+  tmpl.isTestJson      = safeJsonForScript_(test ? '1' : '');
   tmpl.adminKey   = key || '';
   tmpl.submitToken = getSubmitToken();
   tmpl.drawnAt    = e(stored.drawnAt);
   tmpl.totalEligible = String(stored.totalEligible);
   tmpl.sentAt     = sentAt ? e(sentAt) : '';
+  tmpl.sentAtJson = safeJsonForScript_(sentAt || '');
   tmpl.announceAt = RAFFLE_ANNOUNCE_AT;
   return tmpl.evaluate()
     .setTitle((test ? QA_TEST_PREFIX : '') + 'Draw console | TSG Block Party')
