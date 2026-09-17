@@ -34,11 +34,13 @@ untouched — nothing public goes anywhere near its Anthropic key or script toke
 
 ## Deployment status
 
-**Live as version @31, deployed 2026-09-16 by `info@tsg.homes`.**
+**Live as version @46, deployed 2026-09-17 by `info@tsg.homes`.**
 
-All six project files pushed and then verified byte-for-byte by re-pulling the
-live project — including `OpenHouseForm.html` and `ClientIntake.html`, which this
-work must not disturb. Deployed to the *existing* deployment, so the public URL
+All nine project files pushed and then verified byte-for-byte by re-pulling the
+live project — including `Code.js`, `OpenHouseForm.html` and `ClientIntake.html`,
+which this work must not disturb and which have **no version control of their
+own**: every deploy pulls the live project first and pushes the raffle files on
+top of what came back. Deployed to the *existing* deployment, so the public URL
 and any printed QR are unchanged.
 
 Deployed **as info@ deliberately**. The web app is `executeAs: USER_DEPLOYING`,
@@ -62,13 +64,18 @@ Saturday would be refused**.
 1. Open the project as info@ → select `setupRaffle` → **Run** → approve.
    The only new scope is trigger creation; Mail and Spreadsheet were already
    granted by `sendErrorAlert` and `logConsentRecord`.
-2. Expect: the entries sheet, a generated `RAFFLE_ADMIN_KEY`, and
-   `Draw trigger armed for 2026-09-19 18:15:00 ET`.
+2. Expect: the entries sheet, a generated `RAFFLE_ADMIN_KEY`,
+   `Draw trigger armed for 2026-09-19 18:15:00 ET`, the hourly entry digest, the
+   5:00 PM reminder batch and its hourly catch-up.
 3. Run `raffleAdminLinks()` and keep the output.
 
-**Must happen before 3:00 PM Saturday.** Until then the form renders but cannot
-save an entry and the draw is not armed. Harmless in the meantime: the
-entry-window check runs before anything touches the sheet.
+**Re-run it after any deploy that adds a trigger.** A deploy cannot create
+triggers — only running code can — so the reminder batch and the digest exist
+only once `setupRaffle()` has been run since they were added. Running it again is
+safe: it does not duplicate the sheet or re-mint the admin key.
+
+**Must happen before entries matter.** Until then the form renders but cannot
+save an entry and the draw is not armed.
 
 ### Then verify by hand (this session's proxy blocks `script.google.com`)
 
@@ -86,40 +93,88 @@ phone, any browser, any email domain. The email field is free text and is not
 verified against a Google identity. (The domain-restricted Deal Forms live on a
 different deployment and are unaffected.)
 
+## How entry works — 1 entry, +5 per confirmed referral
+
+Verifying your email address enters you, once, immediately. Each person you
+refer who **confirms** their own details and gives their own consent adds
+`RAFFLE_BONUS_TICKETS_PER_REFERRAL` (5) more entries. There is no cap on how
+many different people you may refer.
+
+It did not start this way. Entry originally *required* a confirmed referral,
+which put a stranger's inbox on the critical path of the raffle existing at all:
+cold-referral email confirmation converts somewhere around 20–40% even with a
+nudge, so a quiet weekend meant zero eligible entries and no drawing. That
+failure mode is worse than a thin pool, so on 2026-09-17 — before anybody had
+entered, so nothing published was broken by the change — the referral became a
+multiplier instead of a gate.
+
+The sheet carries **one row per thing worth tickets**:
+
+| Row | Written when | Status | Tickets |
+|---|---|---|---|
+| Own entry | the 6-digit code is confirmed | `eligible` at once | 1 |
+| Referral | the entrant submits a referral | `pending-consent` | 0 |
+| ″ | that person confirms | `eligible` | 5 |
+
+The draw expands every eligible row into that many tickets, shuffles the tickets
+and picks one, then de-dupes by person for the two backups. A referral that never
+replies is worth nothing and is counted in no number reported anywhere — and at
+draw time it is still logged to FUB, flagged `Needs Consent` and
+`Unconfirmed Contact Info`, so the lead is not lost.
+
+A referred person who confirms is then invited to enter in their own right, with
+their details already known: opening that link enters them (one ticket) and
+offers them the referral form. That is the chain, and it has no end condition
+other than the 6:15 close.
+
 ## The four URLs
 
 | URL | Share? |
 |---|---|
 | `<exec>?form=raffle` | **Yes** — this is the QR code. No key, safe to print. |
 | `<exec>?form=raffle&kiosk=1` | For the iPad at the table. Auto-resets 6s after each entry. |
-| `<exec>?form=raffle&action=status&key=…` | **Private.** Live entry count. |
+| `<exec>?form=raffle&action=status&key=…` | **Private.** People entered, tickets in the draw, referrals still pending. |
 | `<exec>?form=raffle&action=draw&key=…` | **Private.** Manual draw, if the trigger misfires. |
+| `<exec>?form=raffle&action=console&key=…` | **Private.** The 6:30 draw console: pick, preview, confirm, send. |
+| `<exec>?form=raffle&action=notifywinner&key=…` | **Private.** Sends the winner email. Pressed after the announcement, never before. |
 
 The two `key=` URLs carry the admin key — treat them like a password. A wrong key
 and a missing key both return an identical "Not found", so neither can be probed.
 
 ## How the day runs
 
-- **Before 3:00 PM** — the page shows a live **"Goes live in" countdown**
-  (days / hours / mins / secs) ticking down to 3:00. Entries are refused
-  server-side too, so a link shared early can't be used.
-- **3:00:00 PM** — the countdown runs out and the page **turns itself into the
-  live form**, no reload. Same server-clock basis as the close.
-- **3:00 PM – 6:15 PM** — form is live. One entry per person, matched on **both**
-  email and phone (country code and formatting normalized, so `+1 215.555.0123`
-  and `(215) 555-0123` are the same person). A repeat entrant is told they're
-  already in rather than shown an error.
+- **Now – 6:15 PM Saturday** — entries are **already open**, not just during the
+  party. The three-hour window the form shipped with made sense when entering was
+  a 20-second sign-in at a table; it does not when a referral has to read an email
+  and reply. Opening early is also what makes the pre-event email to invited
+  clients worth sending. One own-entry per person, matched on **both** email and
+  phone (country code and formatting normalized, so `+1 215.555.0123` and
+  `(215) 555-0123` are the same person), and a second visit from the same person
+  adds referrals rather than a second own entry.
+- **Every 10 people entered** — Durand gets a note with the people, ticket and
+  pending-referral counts. During the party an hourly digest takes over instead,
+  so he is not double-notified while standing in a street.
+- **5:00 PM Saturday** — every referral who has not replied gets one last-chance
+  email, and every entrant still waiting on somebody gets one nudge to text them.
+  All of them go out in a single batch, deliberately: one wave, 75 minutes of
+  runway, and nobody is chased twice.
 - **6:15:00 PM** — the page **goes dead by itself**, no reload needed, and shows
   "Entries are closed — winner announced at 6:30." It measures this against the
   *server* clock, so a phone with a wrong clock still closes on time. The trigger
-  fires, picks a winner plus **two backups** from one unbiased shuffle, and emails
-  you and Ryan.
-- **6:30 PM** — announce. The winner need not be present; the rules give a
-  14-day claim window and the backups are there in case they've left.
+  fires, picks a winner plus **two backups** from one weighted shuffle, and emails
+  you and Ryan an HTML summary with all three picks, their ticket counts, links
+  into their FUB records and into whoever they referred, and a button to the
+  console.
+- **6:30 PM** — Ryan announces. Nothing has reached the winner yet: the winner
+  email is a separate, explicit press in the console, after a preview and a
+  confirmation. The winner need not be present; the rules give a 14-day claim
+  window and the backups are there in case they've left. Picks 2 and 3, and any
+  redraw, need a written reason, recorded on an append-only `Draw Audit` tab.
 
 ## What lands in FUB
 
-Each entrant becomes a person record with:
+Each entrant becomes a person record — matched to an existing contact where there
+is one, never duplicated — with:
 
 - tags `Block Party 2026`, `Block Party Raffle Entrant`, `Event Lead`
 - source `TSG Block Party 2026 - Raffle`
@@ -344,14 +399,15 @@ version). Creating a *new* deployment mints a new URL and kills every printed QR
 
 ```
 npm test                     # from the repo root: tracker + raffle + red-team
-node test/test_raffle.js     # 212 server-side tests
-node test/test_redteam.js    #  80 adversarial tests
-node test/test_form.js       #  59 browser tests (needs: npm install playwright)
+node test/test_raffle.js     # 390 server-side tests
+node test/test_redteam.js    # 179 adversarial tests (T1–T11)
+node test/test_form.js       #      browser tests (needs: npm install playwright)
 ```
 
 All three share `test/harness.js`, which loads the real `RaffleCode.gs` into a
-`vm` sandbox with stubbed Apps Script globals — so these are tests of the
-shipped file, not of a model of it.
+`vm` sandbox with stubbed Apps Script globals — and it renders the **real**
+template files, modelling `<?= ?>` vs `<?!= ?>` — so these are tests of the
+shipped files, not of a model of them.
 
 Covers identity normalization, the entry window, required fields and consent,
 one-entry-per-person across both keys and all phone formats, FUB-outage
@@ -362,7 +418,7 @@ disqualification, and admin-endpoint key gating.
 ### The red-team suite
 
 `test/test_redteam.js` asks what a hostile entrant can make the form do, rather
-than whether it works. It is organised by threat (T1–T7) and every case runs
+than whether it works. It is organised by threat (T1–T11) and every case runs
 against the real `RaffleCode.gs`. It was written on 2026-09-16, after the form
 was already live, and it found four things that were genuinely wrong:
 
