@@ -173,6 +173,17 @@ function raffleFubCustomFields_() {
     var key = String(f.name || '').trim();
     if (label && key) map[label] = key;
   });
+  // NEVER cache an empty map. The account has twenty-odd custom fields, so an
+  // empty result means the response was not the shape this expected, not that
+  // there are no fields -- and caching it would make every lookup fail for
+  // thirty minutes with no log line to say why. (2026-09-17: both "Referrals
+  // Sent" and "Referred By" reported NOT FOUND on an account that has both.)
+  if (Object.keys(map).length === 0) {
+    Logger.log('raffleFubCustomFields_: parsed ZERO fields from a ' + res.code +
+      ' response. Top-level keys: ' + Object.keys(res.body || {}).join(', ') +
+      '. Not caching. Run raffleInspectFubRelationships to see the raw shape.');
+    return map;
+  }
   cache.put(RAFFLE_CUSTOM_FIELD_CACHE_KEY, JSON.stringify(map), RAFFLE_CUSTOM_FIELD_CACHE_SECONDS);
   return map;
 }
@@ -311,7 +322,7 @@ function raffleReferralRefusal_() {
 // ---------- Step 3/4: create the referral and stage the entry ----------
 function raffleSubmitReferral_(d, test) {
   var state = raffleEntryState_();
-  if (test) {
+  if (test && state !== 'open') {          // see the matching note in raffleRequestCode_
     Logger.log('RAFFLE TEST MODE: entry-window check BYPASSED for a referral submission ' +
       '(real state was "' + state + '").');
   } else if (state === 'before') {

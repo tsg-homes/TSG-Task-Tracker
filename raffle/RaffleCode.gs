@@ -856,7 +856,11 @@ function raffleRequestCode_(d, test) {
   // typo in a field only to then be told they were too late anyway.
   // This is the one check test mode relaxes; see the RAFFLE_TEST_* block.
   var state = raffleEntryState_();
-  if (test) {
+  // Announce the bypass only when it changed something. Entries have been open
+  // since RAFFLE_OPEN_AT, so until 6:15 on the day this check passes on its own
+  // and the announcement was thirty lines of noise per run -- the lines the FUB
+  // 401s and the relationship 400s were buried in. (Durand, 2026-09-17.)
+  if (test && state !== 'open') {
     Logger.log('RAFFLE TEST MODE: entry-window check BYPASSED (real state was "' + state +
       '"). This is the only check test mode relaxes; the entry is being written to the "' +
       RAFFLE_TEST_SHEET_NAME + '" tab and cannot be drawn as the real winner.');
@@ -1724,7 +1728,28 @@ function raffleResetDrawDANGER() {
 // Wipes the test tab and the test winner so a rehearsal can be run again from
 // clean. Touches nothing live -- safe to run as often as you like, including
 // during the party.
+// Deletes the FUB contacts the TEST tab points at (double-gated: QA-tagged or
+// raffle-sourced, AND name-prefixed). Reads the tab, so it must run BEFORE the
+// tab is wiped. Shared by the suite's cleanup and raffleResetTest.
+function rafflePurgeTestTabContacts_() {
+  var ids = [];
+  raffleReadEntries_(true).forEach(function (r) {
+    if (r.fubId) ids.push(r.fubId);
+    if (r.referralFubId) ids.push(r.referralFubId);
+  });
+  return raffleDeleteFubContactsById_(ids);
+}
+
 function raffleResetTest() {
+  // FUB first: once the tab is gone there is no record of what to delete. This
+  // is what makes raffleRunQaSuiteAndKeepData safe to use -- keep, inspect,
+  // reset -- without leaving contacts behind to poison the next run.
+  try {
+    var purged = rafflePurgeTestTabContacts_();
+    Logger.log('raffleResetTest: FUB contacts from the test tab: ' + purged.summary);
+  } catch (purgeErr) {
+    Logger.log('raffleResetTest: FUB purge failed (continuing with the sheet): ' + purgeErr);
+  }
   PropertiesService.getScriptProperties().deleteProperty(RAFFLE_TEST_WINNER_PROP);
   // And the EMAILED marker. Without this the second rehearsal of the day reports
   // "the winner was already emailed at ..." and refuses -- right for the live
@@ -1858,6 +1883,30 @@ function raffleInspectFubRelationships(qaPersonId, qaRelatedId) {
           'several and does NOT delete them -- then run this again.');
     }
   }
+
+  // WHILE WE ARE HERE: the custom fields, raw. The 15:50 run reported both
+  // "Referrals Sent" and "Referred By" as NOT FOUND on an account whose field
+  // list plainly shows both, so the parser is reading the wrong shape. Print
+  // the top-level keys, one record's keys, and every label exactly as FUB
+  // spells it -- and drop the cache first, so a stale empty map cannot mask it.
+  try { CacheService.getScriptCache().remove(RAFFLE_CUSTOM_FIELD_CACHE_KEY); } catch (cErr) {}
+  var cf = raffleFubCall_('https://api.followupboss.com/v1/customFields', 'get', null, apiKey);
+  say('GET /customFields -> ' + cf.code);
+  if (cf.ok && cf.body) {
+    say('  top-level keys: ' + Object.keys(cf.body).join(', '));
+    var cfKey = Object.keys(cf.body).filter(function (k) {
+      return Object.prototype.toString.call(cf.body[k]) === '[object Array]'; })[0];
+    var cfArr = cfKey ? cf.body[cfKey] : [];
+    say('  array is under: ' + (cfKey || '(no array found — THIS is the parsing problem)'));
+    if (cfArr.length) {
+      say('  A FIELD RECORD\'S KEYS: ' + Object.keys(cfArr[0]).join(', '));
+      say('  labels as FUB spells them: ' + cfArr.map(function (f) {
+        return JSON.stringify(f.label !== undefined ? f.label : f.name); }).join(', '));
+    }
+  } else {
+    say('  body: ' + String(cf.text).slice(0, 300));
+  }
+  say('');
 
   var list = raffleFubCall_(
     'https://api.followupboss.com/v1/peopleRelationships?limit=3', 'get', null, apiKey);
@@ -2563,36 +2612,36 @@ function raffleQaRun_(cleanUp) {
         ScriptApp.getProjectTriggers().filter(function (t) {
           return t.getHandlerFunction() === 'raffleScheduledDraw'; }).length === 1);
 
-  // FUB CLEANUP, BEFORE the tab is wiped -- the rows are the only record of which
-  // contacts this run created.
-  //
-  // This is not tidiness. The QA contacts are real FUB people, and the referral
-  // check matches on email OR phone, so a run that leaves them behind makes the
-  // NEXT run refuse its own referrals with "we already know that person". That
-  // is exactly what turned the 15:14 run into 23 failures: the key was fixed,
-  // the lookup started working, and it found what 14:52 and 14:59 had left.
-  var qaIds = [];
-  raffleReadEntries_(true).forEach(function (r) {
-    if (r.fubId) qaIds.push(r.fubId);
-    if (r.referralFubId) qaIds.push(r.referralFubId);
-  });
-  var purge = raffleDeleteFubContactsById_(qaIds);
-  check('this run cleaned its own FUB contacts up',
-        purge.failed === 0,
-        purge.deleted + ' deleted, ' + purge.failed + ' failed, ' + purge.skipped +
-        ' skipped — anything left behind will make the NEXT run refuse its referrals');
-  log.push('      FUB cleanup: ' + purge.summary);
-
   // ---- 7. Cleanup ---------------------------------------------------------
   section('7. Cleanup');
   if (cleanUp) {
+    // FUB FIRST, then the tab: the rows are the only record of which contacts
+    // this run created, so the order matters.
+    //
+    // This is not tidiness. The QA contacts are real FUB people, and the
+    // referral check matches on email OR phone, so a run that leaves them
+    // behind makes the NEXT run refuse its own referrals with "we already know
+    // that person". That is exactly what turned the 15:14 run into 23 failures.
+    //
+    // It lives INSIDE the cleanUp gate on purpose. It used to sit in section 6,
+    // above the gate, so raffleRunQaSuiteAndKeepData kept the sheet rows and
+    // deleted the contacts they pointed at -- which defeated the one reason to
+    // run that variant (leaving QA contacts for raffleInspectFubRelationships
+    // to probe with). raffleResetTest does the same purge, so "keep, inspect,
+    // then reset" cleans up completely.
+    var purge = rafflePurgeTestTabContacts_();
+    check('this run cleaned its own FUB contacts up',
+          purge.failed === 0,
+          purge.deleted + ' deleted, ' + purge.failed + ' failed, ' + purge.skipped +
+          ' skipped — anything left behind will make the NEXT run refuse its referrals');
+    log.push('      FUB cleanup: ' + purge.summary);
     raffleResetTest();
     check('test entries cleared', raffleReadEntries_(true).length === 0);
     check('test winner cleared', !props.getProperty(RAFFLE_TEST_WINNER_PROP));
     check('live entries STILL unchanged', raffleReadEntries_(false).length === liveBefore);
   } else {
-    log.push('SKIPPED — test data left in place for inspection.');
-    log.push('Run raffleResetTest() when you are done.');
+    log.push('SKIPPED — test data AND its FUB contacts left in place for inspection.');
+    log.push('Run raffleResetTest() when you are done; it deletes those contacts too.');
   }
 
   log.push('', '================================',
