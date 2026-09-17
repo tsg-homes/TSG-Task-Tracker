@@ -606,6 +606,88 @@ function raffleLinkPeople_(personId, relatedId, type, apiKey) {
 // Pass two ids from a "[QA TEST]" pair to get step 3 -- never a real pair.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// DELETING THE QA CONTACTS THE SUITE CREATES
+//
+// The rehearsal makes REAL FUB people. Leaving them behind is not untidy, it is
+// self-sabotage: the referral check matches on email OR phone, so yesterday's QA
+// referrals make today's run refuse its own with "we already know that person".
+// That is what turned the 15:14 run on 2026-09-17 into 23 failures.
+//
+// DOUBLE-GATED, because this deletes real records through the API. A contact is
+// only removed if BOTH hold: it carries the QA tag, and its name starts with the
+// QA prefix. Anything else is skipped and counted, never deleted -- so pointing
+// this at a real person's id does nothing.
+function raffleDeleteFubContactsById_(ids) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var deleted = 0, failed = 0, skipped = 0;
+  var seen = {};
+  (ids || []).forEach(function (id) {
+    if (!id || seen[id]) return;
+    seen[id] = true;
+    try {
+      var who = raffleFubCall_('https://api.followupboss.com/v1/people/' + id,
+                               'get', null, apiKey);
+      if (!who.ok || !who.body) { skipped++; return; }
+      var tags = who.body.tags || [];
+      var name = String(who.body.firstName || '') + ' ' + String(who.body.lastName || '');
+      var tagged = tags.some(function (t) { return String(t) === QA_TEST_TAG; });
+      var prefixed = name.indexOf(QA_TEST_PREFIX.trim()) !== -1;
+      if (!tagged || !prefixed) {
+        Logger.log('raffleDeleteFubContactsById_: REFUSING to delete ' + id +
+                   ' (tagged=' + tagged + ', prefixed=' + prefixed + ') — ' + name);
+        skipped++;
+        return;
+      }
+      var del = raffleFubCall_('https://api.followupboss.com/v1/people/' + id,
+                               'delete', null, apiKey);
+      if (del.ok) { deleted++; }
+      else {
+        failed++;
+        Logger.log('raffleDeleteFubContactsById_: DELETE ' + id + ' -> ' + del.code +
+                   ': ' + String(del.text).slice(0, 160));
+      }
+    } catch (err) {
+      failed++;
+      Logger.log('raffleDeleteFubContactsById_ threw for ' + id + ': ' + err);
+    }
+  });
+  var summary = deleted + ' deleted, ' + failed + ' failed, ' + skipped + ' skipped';
+  Logger.log('raffleDeleteFubContactsById_: ' + summary);
+  return { deleted: deleted, failed: failed, skipped: skipped, summary: summary };
+}
+
+// The backlog: every QA contact left behind by a run that predates the cleanup
+// above. Editor-only. Same double gate, so it can only ever remove QA records.
+// Scans newest-first and stops after `maxScan` contacts (default 500).
+function raffleDeleteQaContactsFromFub(maxScan) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var cap = maxScan || 500, offset = 0, ids = [], scanned = 0;
+  while (scanned < cap) {
+    var page = raffleFubCall_('https://api.followupboss.com/v1/people?limit=100&offset=' +
+                              offset + '&sort=-created', 'get', null, apiKey);
+    if (!page.ok || !page.body) {
+      Logger.log('raffleDeleteQaContactsFromFub: list failed ' + page.code + ': ' +
+                 String(page.text).slice(0, 200));
+      break;
+    }
+    var people = page.body.people || [];
+    if (!people.length) break;
+    people.forEach(function (p) {
+      scanned++;
+      var tags = p.tags || [];
+      if (tags.some(function (t) { return String(t) === QA_TEST_TAG; })) ids.push(p.id);
+    });
+    if (people.length < 100) break;
+    offset += 100;
+  }
+  Logger.log('raffleDeleteQaContactsFromFub: scanned ' + scanned + ', found ' +
+             ids.length + ' QA-tagged.');
+  var res = raffleDeleteFubContactsById_(ids);
+  return 'Scanned ' + scanned + ' contacts, found ' + ids.length +
+         ' tagged "' + QA_TEST_TAG + '": ' + res.summary;
+}
+
+// ---------------------------------------------------------------------------
 // LOGGING OUTBOUND EMAIL TO THE CONTACT'S FUB TIMELINE
 //
 // Durand, 2026-09-17: "all emails should be sent through fub so they're logged

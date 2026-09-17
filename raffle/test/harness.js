@@ -49,6 +49,8 @@ function makeSandbox(opts) {
   // the live 400 by pretending FUB wants something else.
   const relationships = [];
   const notes = [];
+  const deleted = [];
+  const created = [];
   const RELATIONSHIP_RELATED_KEY = opts.relationshipField || 'relatedPersonId';
   const RELATIONSHIP_FIELDS = ['personId', 'type', RELATIONSHIP_RELATED_KEY];
 
@@ -190,11 +192,36 @@ function makeSandbox(opts) {
           const q = dig(decodeURIComponent(url.split('phone=')[1]));
           return json({ people: people.filter(p => (p.phones || []).some(x => dig(x.value) === q)) });
         }
+        // DELETE on a person, so the suite's own FUB cleanup is exercised rather
+        // than assumed. The fake also lets a test make deletion fail.
+        const dm = url.match(/\/v1\/people\/(\d+)$/);
+        if (dm && o && o.method === 'delete') {
+          if (opts.fubDeleteFails) {
+            return { getResponseCode: () => 405,
+                     getContentText: () => JSON.stringify({ errorMessage: 'Not allowed.' }) };
+          }
+          deleted.push(Number(dm[1]));
+          return json({});
+        }
         const m = url.match(/\/v1\/people\/(\d+)$/);
         if (m && (!o || (o.method || 'get') === 'get')) {
-          return json(people.find(p => String(p.id) === m[1]) || {});
+          // Seeded records first, then anything this run CREATED. Returning {}
+          // for a created id made the suite's FUB cleanup unable to see its own
+          // contacts' tags, so the double gate refused every one of them and the
+          // happy path went unexercised.
+          return json(people.find(p => String(p.id) === m[1]) ||
+                      created.find(p => String(p.id) === m[1]) || {});
         }
         if (m && o && o.method === 'put') return json({ id: Number(m[1]) });
+
+        // A created person gets a real id and is remembered, so a later GET can
+        // read back the tags and name the cleanup gate checks.
+        if (/\/v1\/people$/.test(url) && o && o.method === 'post') {
+          const payload = JSON.parse(o.payload || '{}');
+          const rec = Object.assign({ id: 900 + created.length + 1 }, payload);
+          created.push(rec);
+          return json(rec);
+        }
 
         // RELATIONSHIPS, modelled as a real store rather than a blanket 200.
         // Every link was failing live with
@@ -327,6 +354,7 @@ function makeSandbox(opts) {
     // test flips to simulate ?qatest= having matched.
     QA_TEST_PREFIX: '[QA TEST] ',
     QA_TEST_TAG: 'QA Test — Safe to Delete',
+    __deletedFubIds: deleted,
     QA_TEST_NOTIFY_EMAIL: 'durand@thestawaszgroup.com',
     QA_TEST_SECRET_PROPERTY: 'QA_TEST_SECRET',
     QA_TEST_BACKGROUND_LEAD_IN: '[QA TEST] Created by a TSG QA test submission.',
