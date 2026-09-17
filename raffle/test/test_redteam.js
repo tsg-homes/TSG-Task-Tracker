@@ -28,7 +28,7 @@
  *   T6  Header/protocol injection into the outbound email and the FUB API.
  *   T7  Verification bypass -- entering without ever proving the email.
  */
-const { makeSandbox, at, entry, enterFull, J, DURING, BEFORE, AFTER } = require('./harness');
+const { makeSandbox, at, entry, enterFull, verifySession, referral, J, DURING, BEFORE, AFTER } = require('./harness');
 const AFTER_CLOSE = AFTER;
 
 let fails = 0, passes = 0;
@@ -43,6 +43,15 @@ function eq(name, actual, expected) {
 
 const req = (s, d, when) => J(at(when || DURING, () =>
   s.raffleHandleSubmission_(Object.assign({ step: 'request' }, d))));
+
+// A single journey now writes TWO rows: verifying an email writes an "own entry"
+// row worth 1 ticket, and each referral writes a row of its own worth the bonus.
+// So __data()[0] is the entrant's own row, not the referral -- any test that
+// means "the referral row" has to say so, or it silently asserts against the
+// wrong row and passes for the wrong reason.
+const REFERRAL_NAME_COL = 12;
+const refRows  = (s, tab) => s.__data(tab).filter(r => String(r[REFERRAL_NAME_COL] || '') !== '');
+const selfRows = (s, tab) => s.__data(tab).filter(r => String(r[REFERRAL_NAME_COL] || '') === '');
 
 // ---------------------------------------------------------------------------
 section('T1  Stored XSS in the pages TSG opens');
@@ -217,48 +226,60 @@ section('T3  Using the endpoint as a mailer / burning the send quota');
 section('T4  Ballot stuffing');
 // ---------------------------------------------------------------------------
 {
+  // Under the multiplier rules (2026-09-17) a returning visitor is NOT turned
+  // away -- they are someone back to refer another person, which is the behaviour
+  // the raffle exists to produce. What must not happen is a second FREE entry: one
+  // self-entry ticket per person, however many times they come back.
   const s = makeSandbox();
+  const selfCount = () => s.__data('Entries')
+    .filter(r => String(r[12] || '') === '').length;   // no Referral Name = self entry
   enterFull(s, entry({ fullName: 'Dana Reid', email: 'dana@mail-test.co',
                        phone: '(215) 555-8123' }), DURING);
+  eq('one free entry after the first journey', selfCount(), 1);
+
   // Same email, different phone.
-  const dup1 = req(s, entry({ fullName: 'Dana Reid', email: 'dana@mail-test.co',
-                              phone: '(267) 555-9999' }), DURING);
-  check('same email + new phone is caught as already entered', !!(dup1 && dup1.already));
+  verifySession(s, entry({ fullName: 'Dana Reid', email: 'dana@mail-test.co',
+                           phone: '(267) 555-9999' }), DURING);
+  eq('same email + new phone mints no second free entry', selfCount(), 1);
   // Same phone, different email.
-  const dup2 = req(s, entry({ fullName: 'Dana Reid', email: 'dana2@mail-test.co',
-                              phone: '(215) 555-8123' }), DURING);
-  check('same phone + new email is caught as already entered', !!(dup2 && dup2.already));
+  verifySession(s, entry({ fullName: 'Dana Reid', email: 'dana2@mail-test.co',
+                           phone: '(215) 555-8123' }), DURING);
+  eq('same phone + new email mints no second free entry', selfCount(), 1);
   // Case and formatting games.
-  const dup3 = req(s, entry({ fullName: 'dana reid', email: 'DANA@Mail-Test.CO',
-                              phone: '2155558123' }), DURING);
-  check('case/format variations are caught', !!(dup3 && dup3.already));
-  check('only one row exists after four attempts', s.__data('Entries').length === 1,
-    'rows=' + s.__data('Entries').length);
+  verifySession(s, entry({ fullName: 'dana reid', email: 'DANA@Mail-Test.CO',
+                           phone: '2155558123' }), DURING);
+  eq('case and formatting games mint no second free entry', selfCount(), 1);
+  eq('so still exactly two rows after four attempts', s.__data('Entries').length, 2);
 
   // Gmail's dot and +tag aliases all deliver to ONE inbox, so they are one
   // person for raffle purposes. This is the cheapest stuffing attack there is:
   // it needs no extra phone, no extra inbox, and it survives the email check.
+  // Gmail's dot and +tag aliases all deliver to ONE inbox, so they are one person.
+  // With the multiplier rules the test is no longer "are they turned away" -- it is
+  // whether an alias can mint a SECOND FREE ENTRY, which is the thing worth
+  // stealing now.
   const g = makeSandbox();
+  const gSelf = () => g.__data('Entries').filter(r => String(r[12] || '') === '').length;
   enterFull(g, entry({ fullName: 'Sam Vance', email: 'sam.vance@gmail.com',
                        phone: '(215) 555-8401' }), DURING);
-  const alias1 = req(g, entry({ fullName: 'Sam Vance', email: 'samvance@gmail.com',
-                                phone: '(215) 555-8402' }), DURING);
-  check('gmail dot-alias is recognised as the same inbox', !!(alias1 && alias1.already),
-    JSON.stringify(alias1));
-  const alias2 = req(g, entry({ fullName: 'Sam Vance', email: 'sam.vance+party@gmail.com',
-                                phone: '(215) 555-8403' }), DURING);
-  check('gmail +tag alias is recognised as the same inbox', !!(alias2 && alias2.already),
-    JSON.stringify(alias2));
+  eq('one free entry to start', gSelf(), 1);
+  verifySession(g, entry({ fullName: 'Sam Vance', email: 'samvance@gmail.com',
+                           phone: '(215) 555-8402' }), DURING);
+  eq('a gmail dot-alias mints no second free entry', gSelf(), 1);
+  verifySession(g, entry({ fullName: 'Sam Vance', email: 'sam.vance+party@gmail.com',
+                           phone: '(215) 555-8403' }), DURING);
+  eq('a gmail +tag alias mints no second free entry', gSelf(), 1);
 
   // A non-Gmail domain must NOT be collapsed the same way -- plenty of hosts
   // treat a dot as a real, distinct address.
   const o = makeSandbox();
   enterFull(o, entry({ fullName: 'Pat Lee', email: 'pat.lee@somecorp.co',
                        phone: '(215) 555-8501' }), DURING);
-  const other = req(o, entry({ fullName: 'Pat Lee', email: 'patlee@somecorp.co',
-                               phone: '(215) 555-8502' }), DURING);
-  check('a dot is NOT stripped on a non-Gmail domain', !(other && other.already),
-    'collapsed two distinct non-Gmail addresses into one');
+  const oSelf = () => o.__data('Entries').filter(r => String(r[12] || '') === '').length;
+  verifySession(o, entry({ fullName: 'Pat Lee', email: 'patlee@somecorp.co',
+                           phone: '(215) 555-8502' }), DURING);
+  eq('a dot is NOT stripped on a non-Gmail domain — two distinct people, two entries',
+    oSelf(), 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +451,7 @@ section('T8  Referral entry: consent tokens, claims and the invite mailer');
 // credential sitting in somebody else's inbox), the claim on a referred person
 // (worth stealing, because only the first claim counts), and the invite email
 // (a second way to make this endpoint mail a stranger).
-const { verifySession, referral } = require('./harness');
+// (verifySession and referral are imported at the top of this file)
 
 const stage = (s, who, ref, when) => {
   const v = verifySession(s, entry(who), when || DURING);
@@ -455,8 +476,10 @@ const stage = (s, who, ref, when) => {
       referralPhone: '(215) 555-9500', referralRole: 'Buyer' })));
     check('forged consent token ' + i + ' is refused', !(r && r.ok), JSON.stringify(r));
   });
-  check('no row became eligible from a forged token',
-    s.__data('Entries').filter(r => String(r[11]) === 'eligible').length === 0);
+  // Self entries are eligible by design, so scope this to REFERRAL rows.
+  check('no referral row became eligible from a forged token',
+    s.__data('Entries').filter(r => String(r[12] || '') !== '' &&
+                                    String(r[11]) === 'eligible').length === 0);
 
   // -- consent cannot be spoofed with a truthy non-'Yes'.
   ['no', '', 'true', '1', undefined].forEach((c, i) => {
@@ -495,14 +518,19 @@ const stage = (s, who, ref, when) => {
     referralPhone: '(215) 555-9001', referralRole: 'Buyer' })));
   check('a second claim on the same person does not become an entry',
     !!(steal && steal.superseded), JSON.stringify(steal));
-  const eligible = s.__data('Entries').filter(r => String(r[11]) === 'eligible');
-  check('exactly one eligible row for that referred person', eligible.length === 1,
-    'got ' + eligible.length);
+  const eligibleRefs = s.__data('Entries').filter(r => String(r[12] || '') !== '' &&
+                                                      String(r[11]) === 'eligible');
+  check('exactly one eligible REFERRAL row for that person', eligibleRefs.length === 1,
+    'got ' + eligibleRefs.length);
 
-  // And the draw must agree with the sheet.
+  // And the draw must agree: two people with their own entries, and only ONE of
+  // them holding the referral bonus.
   const drawn = at(AFTER_CLOSE, () => s.raffleDrawWinner_(false, true));
-  check('the draw sees exactly one entry', drawn.ok && drawn.result.totalEligible === 1,
-    JSON.stringify(drawn && drawn.result && drawn.result.totalEligible));
+  check('the draw sees both people', drawn.ok && drawn.result.totalPeople === 2,
+    JSON.stringify(drawn && drawn.result && drawn.result.totalPeople));
+  check('and the bonus was awarded exactly once',
+    drawn.ok && drawn.result.totalTickets === 2 + 5,
+    JSON.stringify(drawn && drawn.result && drawn.result.totalTickets));
 }
 
 {
@@ -620,8 +648,13 @@ const stage = (s, who, ref, when) => {
   const declined = J(at(DURING, () => s.raffleHandleSubmission_(
     { step: 'consent', decision: 'decline', token: a.staged.token })));
   check('a decline is accepted', !!(declined && declined.declined));
-  check('a declined row is not eligible',
-    s.__data('Entries').filter(r => String(r[11]) === 'eligible').length === 0);
+  // Scoped to referral rows: the entrant's own row is eligible the moment they
+  // verify, and a decline is not supposed to take that away from them.
+  check('a declined referral row is not eligible',
+    refRows(s, 'Entries').filter(r => String(r[11]) === 'eligible').length === 0,
+    JSON.stringify(refRows(s, 'Entries').map(r => String(r[11]))));
+  check('and the decline does not revoke the entrant\'s own entry',
+    selfRows(s, 'Entries').filter(r => String(r[11]) === 'eligible').length === 1);
   // A decline now CREATES a suppression record, because there is no longer a
   // contact sitting there to mark: referrals only reach FUB when they consent.
   const declineWrite = s.__fetches.filter(f => /\/v1\/people/.test(f.url) && f.o &&
@@ -655,8 +688,10 @@ section('T9  Rehearsal bleed: can a TEST run touch a real person?');
     referral: { referralName: 'QA Ref ' + n, referralEmail: 'qaref' + n + '@mail-test.co',
                 referralPhone: '(215) 555-97' + (10 + i) }
   }));
-  check('test entries went to the test tab', s.__data('Test Entries').length === 3,
+  check('test entries went to the test tab', s.__data('Test Entries').length === 6,
     'got ' + s.__data('Test Entries').length);
+  eq('three own-entry rows on the test tab', selfRows(s, 'Test Entries').length, 3);
+  eq('three referral rows on the test tab', refRows(s, 'Test Entries').length, 3);
   eq('the live tab is untouched', s.__data('Entries').length, 0);
 
   const drawn = at(DURING, () => s.raffleDrawWinner_(true));
@@ -691,7 +726,7 @@ section('T9  Rehearsal bleed: can a TEST run touch a real person?');
       referral: { referralName: 'QMRef ' + i, referralEmail: 'qmref' + i + '@mail-test.co',
                   referralPhone: '(215) 555-98' + (10 + i) } });
   }
-  const notes = s.__sent.filter(m => /entries in the Block Party raffle/.test(m.subject));
+  const notes = s.__sent.filter(m => /(entries|people) in the Block Party raffle/.test(m.subject));
   check('a rehearsal milestone email is labelled', notes.length === 1 && /QA TEST/.test(notes[0].subject),
     notes.length + ' | ' + (notes[0] || {}).subject);
   check('and goes only to the QA address',
@@ -796,7 +831,7 @@ section('T11  The consent page email is locked');
     referralTimeframe: '7-12 Months' })));
   check('consent still succeeds', res.ok === true, JSON.stringify(res));
 
-  const row = s.__data('Entries')[0].map(String);
+  const row = refRows(s, 'Entries')[0].map(String);
   check('the row keeps the address the referral was SENT to',
     row.indexOf('robin@mail-test.co') !== -1, JSON.stringify(row));
   check('and the substituted address is nowhere on the row',
@@ -821,7 +856,7 @@ section('T11  The consent page email is locked');
     step: 'consent', decision: 'confirm', token: st2.token, consent: 'Yes',
     referralName: 'Robin Vale-Smith', referralPhone: '(267) 555-4321',
     referralRole: 'Seller', referralTimeframe: '0-3 Months' })));
-  const row2 = s2.__data('Entries')[0].map(String);
+  const row2 = refRows(s2, 'Entries')[0].map(String);
   check('a corrected name is saved', row2.indexOf('Robin Vale-Smith') !== -1, JSON.stringify(row2));
   check('a corrected phone is saved', row2.join('|').indexOf('4321') !== -1, JSON.stringify(row2));
   check('a corrected role is saved', row2.indexOf('Seller') !== -1, JSON.stringify(row2));

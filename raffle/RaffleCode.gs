@@ -27,11 +27,11 @@ var RAFFLE_TZ           = 'America/New_York';
 // 2026-09-17, per Durand: the entry window is OPEN FROM NOW, not just during the
 // party. The original design only accepted entries between 3:00 and 6:15 on the
 // day, which made sense when entering was a 20-second sign-in at a table. It
-// stopped making sense when entry became "refer someone, and your entry counts
-// once THEY confirm": that puts a third party's inbox on the critical path, and
-// a three-hour Saturday window is not enough time for most people to open an
-// email and respond. A window that tight would have produced a 6:30 announcement
-// with a near-empty pool.
+// stopped making sense once a referral entered the picture: chasing somebody
+// else's inbox is not a three-hour job, and a window that tight would have
+// produced a 6:30 announcement with a near-empty pool. (A confirmed referral is
+// now a multiplier rather than a requirement, so a third party's inbox is no
+// longer on the critical path at all -- but the reasons to open early stand.)
 //
 // Opening it early is also what makes the pre-event email to invited clients
 // work -- people arrive already entered, and referrals have days rather than
@@ -59,6 +59,24 @@ var RAFFLE_PRIZE_ARV    = '$300.00';
 // roster has him as ryan@tsg.homes. Both are mailed rather than guessing which
 // one he actually reads on a Saturday evening — see README "Open items".
 var RAFFLE_RESULT_EMAIL = 'durand@thestawaszgroup.com,ryan@thestawaszgroup.com,ryan@tsg.homes';
+
+// ---------- Entry weighting ----------
+// 2026-09-17, per Durand, BEFORE anybody had entered. Entry used to REQUIRE a
+// confirmed referral, and that put a third party's inbox on the critical path of
+// the raffle existing at all: a cold referral confirming by email inside a few
+// days converts somewhere around 20-40% even with a nudge, so a handful of
+// referrals could realistically produce ZERO eligible entries and no drawing.
+// That failure mode is far worse than a thin pool.
+//
+// So a referral is now a MULTIPLIER, not a gate:
+//   * verifying your email enters you once, immediately;
+//   * every referral who confirms adds RAFFLE_BONUS_TICKETS_PER_REFERRAL more.
+//
+// Referring is still worth six times as much as not, so the incentive is intact,
+// but the drawing cannot fail to have entrants. Changed while the rules bound
+// nobody -- doing this after entries started would have meant judging people
+// under different rules than they entered under.
+var RAFFLE_BONUS_TICKETS_PER_REFERRAL = 5;
 
 var RAFFLE_SOURCE = 'TSG Block Party 2026 - Raffle';
 var RAFFLE_TAGS   = ['Block Party 2026', 'Block Party Raffle Entrant', 'Event Lead'];
@@ -210,12 +228,14 @@ var RAFFLE_ADMIN_PROP   = 'RAFFLE_ADMIN_KEY';
 var RAFFLE_BACKUP_COUNT = 2;
 
 // Consent language version stamped onto every row. Bump this string if the
-// consent copy in RaffleForm.html changes, so the audit trail stays honest
-// about which wording a given entrant actually saw.
-var RAFFLE_CONSENT_VERSION = 'raffle-v2 (2026-09-16, email-verified entry)';
+// consent copy OR the Official Rules in RaffleForm.html change, so the audit
+// trail stays honest about which wording a given entrant actually saw. The
+// consent paragraph itself is unchanged in v3 -- rules sections 4, 5 and 7 are
+// what moved, and the checkbox binds the entrant to those too.
+var RAFFLE_CONSENT_VERSION = 'raffle-v3 (2026-09-17, 1 entry + bonus per confirmed referral)';
 
-// 2026-09-17, per Durand: entry is now by REFERRAL. A row is written when the
-// entrant submits a referral, but it is not an entry yet -- 'Entry Status' is
+// 2026-09-17, per Durand: a row is written when the entrant submits a referral,
+// but it is not worth its bonus yet -- 'Entry Status' is
 // 'pending-consent' until the referred person clicks the link in their email and
 // consents themselves. Only 'eligible' rows are drawn from.
 //
@@ -506,7 +526,7 @@ function setupRaffle() {
   out.push('Hourly catch-up armed in case the batch trigger misfires.');
   out.push('Hourly entry digest armed (silent outside 3:00-6:15 PM on the day).');
   out.push('Before the party you get an email every ' + RAFFLE_MILESTONE_EVERY +
-           ' valid entries instead.');
+           ' people entered instead.');
 
   var msg = out.join('\n');
   Logger.log(msg);
@@ -688,13 +708,31 @@ function raffleEntryState_() {
 function raffleStatusPage_(test) {
   var rows = raffleReadEntries_(test);
   var winner = raffleStoredWinner_(test);
+
+  // raffleReadEntries_ returns EVERY row, pending ones included, so the headline
+  // number has to be computed rather than taken from rows.length -- that read
+  // "N eligible entries" while counting rows nobody had consented to. What is
+  // actually worth knowing is how many PEOPLE are in, how many tickets they
+  // hold, and how much is still sitting in referrals that have not replied.
+  var eligible = rows.filter(function (r) { return r.status === RAFFLE_STATUS_ELIGIBLE; });
+  var pending = rows.filter(function (r) { return r.status === RAFFLE_STATUS_PENDING; }).length;
+  var people = {}, tickets = 0;
+  eligible.forEach(function (r) {
+    people[r.emailKey || ('row' + r.row)] = true;
+    tickets += Math.max(1, Number(r.tickets) || 1);
+  });
+  var peopleCount = Object.keys(people).length;
+
   var html = '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:520px">' +
     (test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
             'border-radius:6px;margin-bottom:14px">TEST DATA — not the live raffle</div>' : '') +
     '<h2 style="margin:0 0 4px">' + RAFFLE_EVENT_NAME + '</h2>' +
     '<p style="color:#666;margin:0 0 20px">Entry state: <b>' + raffleEntryState_() + '</b></p>' +
-    '<div style="font-size:64px;font-weight:700;color:#15464A;line-height:1">' + rows.length + '</div>' +
-    '<div style="color:#666;margin-bottom:20px">eligible ' + (test ? 'TEST ' : '') + 'entries</div>';
+    '<div style="font-size:64px;font-weight:700;color:#15464A;line-height:1">' + peopleCount + '</div>' +
+    '<div style="color:#666;margin-bottom:6px">' + (test ? 'TEST ' : '') + 'people entered</div>' +
+    '<div style="color:#666;margin-bottom:20px">' + tickets + ' tickets in the draw &middot; ' +
+      eligible.length + ' eligible rows &middot; ' + pending + ' referral(s) still pending ' +
+      '(worth ' + (pending * RAFFLE_BONUS_TICKETS_PER_REFERRAL) + ' more)</div>';
   if (winner) {
     html += '<div style="background:#15464A;color:#fff;padding:16px;border-radius:8px">' +
       '<div style="opacity:.8;font-size:12px;letter-spacing:1px">WINNER DRAWN ' + raffleEsc_(winner.drawnAt) + '</div>' +
@@ -725,7 +763,8 @@ function raffleDrawPage_(test, force) {
     '<div style="opacity:.8;font-size:12px;letter-spacing:2px">WINNER</div>' +
     '<div style="font-size:30px;font-weight:700;margin:8px 0">' + raffleEsc_(w.name) + '</div>' +
     '<div style="opacity:.9">' + raffleEsc_(w.phone) + '<br>' + raffleEsc_(w.email) + '</div></div>' +
-    '<p style="color:#666">Drawn from ' + res.result.totalEligible + ' eligible entries at ' +
+    '<p style="color:#666">Drawn from ' + res.result.totalEligible + ' eligible entries (' +
+      res.result.totalPeople + ' people, ' + res.result.totalTickets + ' tickets) at ' +
     raffleEsc_(res.result.drawnAt) + ' ET.</p>';
   if (res.result.backups.length) {
     html += '<p style="color:#666"><b>Backups</b> (if the winner has left):<br>' +
@@ -801,20 +840,17 @@ function raffleRequestCode_(d, test) {
   var phone  = collapseSpaces(d.phone);
   if (d.consent !== 'Yes') throw makeValidationError('You must accept the Official Rules to enter.');
 
-  // Tell them they are already in BEFORE making them wait for a code.
-  var emailKey = raffleEmailKey_(email), phoneKey = rafflePhoneKey_(digits);
-  var existing = raffleReadEntries_(test);
-  for (var i = 0; i < existing.length; i++) {
-    if ((emailKey && existing[i].emailKey === emailKey) ||
-        (phoneKey && existing[i].phoneKey === phoneKey)) {
-      return jsonOut({ ok: true, already: true,
-        message: 'You are already entered! Winner announced at ' + RAFFLE_ANNOUNCE_AT + '.' });
-    }
-  }
+  // NO "already entered" SHORT-CIRCUIT ANY MORE. Under the multiplier rules a
+  // returning visitor is not a duplicate to be turned away -- they are somebody
+  // coming back to refer another person and collect another
+  // RAFFLE_BONUS_TICKETS_PER_REFERRAL entries, which is exactly the behaviour
+  // worth encouraging. The self-entry row is deduplicated at verification time
+  // instead, so coming back cannot mint a second free ticket.
 
-  // Checked here, AFTER the already-entered short-circuit above: a returning
-  // entrant is told they are already in without consuming any send quota.
-  raffleCheckCodeSendQuota_(emailKey);
+  // The per-address send cap. It matters more now that a returning visitor is no
+  // longer short-circuited: without it, somebody could request codes to the same
+  // address all afternoon.
+  raffleCheckCodeSendQuota_(raffleEmailKey_(email));
 
   var code = String(Math.floor(100000 + Math.random() * 900000));
   var vid  = Utilities.getUuid();
@@ -898,6 +934,48 @@ function raffleCheckCodeSendQuota_(emailKey) {
 }
 
 // ---------- Step 2: confirm the code, then actually enter them ----------
+// Writes the entrant's OWN entry row, once, under the script lock.
+//
+// Called from TWO places, which is the whole reason it is a function: the code
+// path (raffleVerifyCode_) and the chain path (raffleChainStart_). A chain
+// entrant proved their inbox by clicking a link only it received, so they are a
+// verified entrant by a different route and must get the same one ticket -- the
+// chain email tells them they can enter, and for a while it handed them a
+// referral form without ever entering them.
+//
+// Idempotent on purpose: somebody who comes back to refer a second friend must
+// not collect a second self-entry.
+function raffleEnsureSelfEntry_(name, email, phone, personId, isTest) {
+  var selfLock = LockService.getScriptLock();
+  var haveSelfLock = false;
+  try { haveSelfLock = selfLock.tryLock(10000); } catch (lockErr) { haveSelfLock = false; }
+  try {
+    var emailKey = raffleEmailKey_(email), phoneKey = rafflePhoneKey_(phone);
+    var existingRows = raffleReadEntries_(isTest);
+    var alreadyHasSelfEntry = existingRows.some(function (r) {
+      return !r.isReferralRow &&
+        ((emailKey && r.emailKey === emailKey) || (phoneKey && r.phoneKey === phoneKey));
+    });
+    if (!alreadyHasSelfEntry) {
+      raffleAppendSelfEntry_(name, email, phone, personId || '', isTest);
+      if (raffleEntryState_() === 'open') raffleMaybeNotifyMilestone_(isTest);
+      return true;
+    }
+    return false;
+  } catch (selfErr) {
+    Logger.log('raffleEnsureSelfEntry_: self-entry write failed: ' + selfErr);
+    try {
+      sendErrorAlert('Raffle: self-entry row failed for ' + name,
+        'The entrant verified their email but their own entry row could not be ' +
+        'written, so they are NOT in the draw. Add them by hand.\n\n' +
+        name + ' / ' + email + ' / ' + phone + '\n\n' + selfErr);
+    } catch (alertErr) { /* never swallow the visitor's response */ }
+    return false;
+  } finally {
+    if (haveSelfLock) { try { selfLock.releaseLock(); } catch (relErr) { /* non-fatal */ } }
+  }
+}
+
 function raffleVerifyCode_(d, test) {
   var cache = CacheService.getScriptCache();
   var vid = String(d.vid || '');
@@ -953,10 +1031,20 @@ function raffleVerifyCode_(d, test) {
     } catch (alertErr) { Logger.log('Raffle FUB alert failed: ' + alertErr); }
   }
 
+  // YOU ARE NOW ENTERED. One ticket, the moment the code comes back.
+  //
+  // This is the change that removes the catastrophic case: while a confirmed
+  // referral was REQUIRED, a weekend where nobody's referral replied meant no
+  // entrants and no drawing. Verification is proof of a real person with a real
+  // inbox who accepted the rules, which is enough to be in the draw. A confirmed
+  // referral is then worth RAFFLE_BONUS_TICKETS_PER_REFERRAL more.
+  //
+  // Written under the lock and only once per person: somebody who comes back to
+  // refer a second friend must not collect a second self-entry.
+  raffleEnsureSelfEntry_(name, email, phone, (fub && fub.personId) || '', isTest);
+
   // The verified session. This is what proves, on the NEXT request, that whoever
   // is submitting a referral owns the email address it will be attributed to.
-  // Nothing has been entered into the drawing yet: under the referral rules an
-  // entry does not exist until a referred person consents.
   var session = {
     name: name, email: email, phone: phone,
     personId: (fub && fub.personId) || '',
@@ -970,7 +1058,8 @@ function raffleVerifyCode_(d, test) {
     verified: true,
     vid: vid,
     firstName: String(name).split(' ')[0],
-    message: 'Thanks ' + String(name).split(' ')[0] + ' — now tell us who you are referring.'
+    message: 'You are in, ' + String(name).split(' ')[0] + '. Now multiply your odds: ' +
+      'refer one person and you get ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries.'
   });
 }
 
@@ -1040,7 +1129,11 @@ function raffleReadEntries_(test) {
       chainEmailedAt: unmark(r[RAFFLE_COL['Chain Emailed At']]),
       reminderSentAt: unmark(r[RAFFLE_COL['Reminder Sent At']]),
       referralTimeframe: unmark(r[RAFFLE_COL['Referral Timeframe']]),
-      consentToken: unmark(r[RAFFLE_COL['Consent Token']])
+      consentToken: unmark(r[RAFFLE_COL['Consent Token']]),
+      // Derived rather than stored: a stored count would need migrating and could
+      // drift from the row it describes.
+      isReferralRow: !!unmark(r[RAFFLE_COL['Referral Name']]),
+      tickets: unmark(r[RAFFLE_COL['Referral Name']]) ? RAFFLE_BONUS_TICKETS_PER_REFERRAL : 1
     });
   });
   return out;
@@ -1384,25 +1477,43 @@ function raffleDrawWinner_(test, force) {
     existing = raffleStoredWinner_(test);          // re-read inside the lock
     if (existing) return { ok: true, alreadyDrawn: true, result: existing };
 
-    // Only rows the referred person actually consented to. A pending-consent
-    // row is not an entry: the entrant was told plainly that their entry counts
-    // only once their referral says yes, and the draw has to mean that.
+    // Only rows that are actually worth something: an own entry (eligible the
+    // moment the email was verified) or a referral the referred person actually
+    // consented to. A pending-consent row earns nothing -- the entrant was told
+    // plainly that the bonus lands when their referral says yes, and the draw
+    // has to mean that.
     var entries = raffleReadEntries_(test).filter(function (e) {
       return e.status === RAFFLE_STATUS_ELIGIBLE;
     });
     if (!entries.length) {
-      return { ok: false, error: 'No eligible entries — nothing to draw. ' +
-        '(Rows still waiting on a referral to consent do not count.)' };
+      return { ok: false, error: 'No eligible entries — nothing to draw.' };
     }
 
-    // Fisher-Yates over a copy: the winner is element 0 and the backups follow,
-    // so winner and backups come from one unbiased shuffle rather than
-    // repeated independent picks that could land on the same person.
-    var pool = entries.slice();
-    for (var i = pool.length - 1; i > 0; i--) {
+    // WEIGHTED DRAW. Every eligible row becomes as many tickets as it is worth:
+    // one for entering, RAFFLE_BONUS_TICKETS_PER_REFERRAL for a referral who
+    // confirmed. The shuffle then runs over TICKETS, so somebody with a confirmed
+    // referral genuinely has six times the chance rather than a nominal bonus.
+    var tickets = [];
+    entries.forEach(function (e) {
+      var n = Math.max(1, Number(e.tickets) || 1);
+      for (var t = 0; t < n; t++) tickets.push(e);
+    });
+
+    // Fisher-Yates over the ticket list, then de-duplicated by person below: the
+    // winner is the first ticket drawn, and the backups are the next DIFFERENT
+    // people, so one entrant cannot occupy two of the three picks just because
+    // they hold more tickets.
+    for (var i = tickets.length - 1; i > 0; i--) {
       var j = Math.floor(Math.random() * (i + 1));
-      var tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+      var tmp = tickets[i]; tickets[i] = tickets[j]; tickets[j] = tmp;
     }
+    var pool = [], seen = {};
+    tickets.forEach(function (e) {
+      var key = e.emailKey || ('row' + e.row);
+      if (seen[key]) return;
+      seen[key] = true;
+      pool.push(e);
+    });
 
     // Carries the FUB ids and the referral, not just a name: the ops email links
     // straight through to both records, and the draw console shows who each pick
@@ -1421,6 +1532,10 @@ function raffleDrawWinner_(test, force) {
       test: !!test,
       drawnAt: raffleFmt_(raffleNow_()),
       totalEligible: entries.length,
+      // Both numbers, because they answer different questions: how many entries
+      // there were, and how many chances were in the draw.
+      totalTickets: tickets.length,
+      totalPeople: pool.length,
       winner: slim(pool[0]),
       backups: pool.slice(1, 1 + RAFFLE_BACKUP_COUNT).map(slim)
     };
@@ -1468,6 +1583,8 @@ function raffleWriteDrawTab_(result, test) {
     ['Prize', RAFFLE_PRIZE_SHORT],
     ['Drawn at (ET)', result.drawnAt],
     ['Eligible entries', result.totalEligible],
+    ['People in the draw', result.totalPeople],
+    ['Tickets in the draw', result.totalTickets],
     [],
     ['WINNER', result.winner.name],
     ['Phone', result.winner.phone],
@@ -1479,7 +1596,7 @@ function raffleWriteDrawTab_(result, test) {
   sh.getRange(1, 1, rows.length, 2).setValues(rows.map(function (r) {
     return [r[0] === undefined ? '' : r[0], r[1] === undefined ? '' : r[1]];
   }));
-  sh.getRange(6, 1, 1, 2).setFontWeight('bold').setFontSize(14);
+  sh.getRange(8, 1, 1, 2).setFontWeight('bold').setFontSize(14);   // the WINNER row
 }
 
 function raffleEmailResult_(result, test) {
@@ -1500,6 +1617,9 @@ function raffleEmailResult_(result, test) {
     'Prize:            ' + RAFFLE_PRIZE_SHORT + ' (ARV ' + RAFFLE_PRIZE_ARV + ')',
     'Drawn at:         ' + result.drawnAt + ' ET',
     'Eligible entries: ' + result.totalEligible,
+    'People:           ' + result.totalPeople,
+    'Tickets:          ' + result.totalTickets +
+      ' (1 per entrant, ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' per confirmed referral)',
     'Announce at:      ' + RAFFLE_ANNOUNCE_AT,
     ''
   ]);
@@ -1544,6 +1664,13 @@ function raffleEmailResult_(result, test) {
 // Break-glass: clears the recorded winner so a draw can be re-run. Only for a
 // genuine mistake (e.g. the draw fired before entries closed). Deliberately
 // not reachable from any URL — it has to be run by hand from the editor.
+// Test-tab only: lets the QA suite draw more than once in a single run. Never
+// touches the live winner -- there is a separate, deliberately awkward
+// raffleResetDrawDANGER() for that.
+function raffleResetDrawDANGER_TEST_() {
+  PropertiesService.getScriptProperties().deleteProperty(RAFFLE_TEST_WINNER_PROP);
+}
+
 function raffleResetDrawDANGER() {
   PropertiesService.getScriptProperties().deleteProperty(RAFFLE_WINNER_PROP);
   Logger.log('Recorded LIVE winner cleared. The next live draw will pick a NEW winner.');
@@ -1741,25 +1868,33 @@ function raffleQaRun_(cleanUp) {
   var good = json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code }));
   check('the right code verifies them', good.ok === true && good.verified === true, JSON.stringify(good));
   check('verification hands back a session id', /^[0-9a-fA-F-]{36}$/.test(String(good.vid)));
-  check('verification alone still writes NO entry', raffleReadEntries_(true).length === 0);
+  // Verification now enters them: one ticket, immediately. This is the change
+  // that made a zero-entry drawing impossible.
+  check('verification enters them with one ticket', raffleReadEntries_(true).length === 1);
+  check('and that row is eligible straight away',
+        raffleReadEntries_(true)[0].status === RAFFLE_STATUS_ELIGIBLE);
+  check('with no referral attached yet', !raffleReadEntries_(true)[0].isReferralRow);
   check('the reply does not reveal whether they were already in FUB',
         !/found|existing|already a|welcome back/i.test(JSON.stringify(good)), JSON.stringify(good));
   var replay = json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code }));
   check('the code cannot be replayed', replay.ok === false);
-  check('replay still wrote nothing', raffleReadEntries_(true).length === 0);
+  check('a replay mints no second free entry', raffleReadEntries_(true).length === 1);
 
   // ---- 3. The referral, and the consent it waits on ----------------------
   section('3. Referral -> invite -> consent');
   var refA = referralFor('1', '(215) 555-9101');
   var staged = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: good.vid }, refA)));
   check('the referral is staged', staged.ok === true && staged.staged === true, JSON.stringify(staged));
-  check('a row exists now', raffleReadEntries_(true).length === 1);
+  check('a second row exists now', raffleReadEntries_(true).length === 2);
   var pendingRows = raffleReadEntries_(true).filter(function (r) {
     return r.status === RAFFLE_STATUS_PENDING; });
-  check('but it is PENDING, not an entry', pendingRows.length === 1,
+  check('the referral row is PENDING, worth nothing yet', pendingRows.length === 1,
         JSON.stringify(raffleReadEntries_(true).map(function (r) { return r.status; })));
   var earlyDraw = raffleDrawWinner_(true);
-  check('a pending row cannot be drawn', earlyDraw.ok === false, JSON.stringify(earlyDraw));
+  check('the draw runs anyway, on their own entry alone',
+        earlyDraw.ok === true && earlyDraw.result.totalTickets === 1,
+        JSON.stringify(earlyDraw.ok && earlyDraw.result.totalTickets));
+  raffleResetDrawDANGER_TEST_();
 
   var invited = json(raffleHandleSubmission_(
     { step: 'invite', vid: good.vid, token: staged.token }));
@@ -1777,17 +1912,20 @@ function raffleQaRun_(cleanUp) {
         JSON.stringify(consented));
   var eligibleRows = raffleReadEntries_(true).filter(function (r) {
     return r.status === RAFFLE_STATUS_ELIGIBLE; });
-  check('and only NOW is it an entry', eligibleRows.length === 1);
+  check('and only NOW is the referral worth its bonus', eligibleRows.length === 2);
+  var tix = eligibleRows.reduce(function (n, r) { return n + (Number(r.tickets) || 1); }, 0);
+  check('which is 1 + ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' tickets',
+        tix === 1 + RAFFLE_BONUS_TICKETS_PER_REFERRAL, 'got ' + tix);
   var reConsent = json(raffleHandleSubmission_({
     step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
     referralName: refA.referralName, referralEmail: refA.referralEmail,
     referralPhone: refA.referralPhone, referralRole: refA.referralRole,
     referralTimeframe: refA.referralTimeframe }));
   check('consenting twice changes nothing', reConsent.already === true, JSON.stringify(reConsent));
-  check('still exactly one row', raffleReadEntries_(true).length === 1);
+  check('still exactly two rows', raffleReadEntries_(true).length === 2);
 
-  // ---- 3b. One entry per REFERRED PERSON ---------------------------------
-  section('3b. One entry per referred person');
+  // ---- 3b. One BONUS per REFERRED PERSON ---------------------------------
+  section('3b. One bonus per referred person');
   var b = person('9', '(215) 555-8199');
   var vB = verifyFully(b);
   check('a second entrant verifies fine', vB.ok === true && vB.verified === true, JSON.stringify(vB));
@@ -1796,7 +1934,8 @@ function raffleQaRun_(cleanUp) {
   check('and the refusal does not say which check failed',
         !/already a contact|in our database|existing contact/i.test(String(stolen.error)),
         String(stolen.error));
-  check('no extra row was written', raffleReadEntries_(true).length === 1);
+  check('no extra referral row was written',
+        raffleReadEntries_(true).filter(function (r) { return r.isReferralRow; }).length === 1);
   var self = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: vB.vid }, referralFor('9', '(215) 555-8199'), {
     referralEmail: b.email, referralPhone: b.phone })));
   check('and they cannot refer themselves', self.ok === false, JSON.stringify(self));
@@ -1809,12 +1948,17 @@ function raffleQaRun_(cleanUp) {
     var res = enterFully(person(p[0], p[1]), p[0], p[2]);
     check('entrant ' + p[0] + ' accepted', res.ok === true && !res.already, JSON.stringify(res));
   });
-  var n = raffleReadEntries_(true).filter(function (r) {
-    return r.status === RAFFLE_STATUS_ELIGIBLE; }).length;
-  check('four entrants on the test tab', n === 4, 'got ' + n);
+  var people = {};
+  raffleReadEntries_(true).filter(function (r) {
+    return r.status === RAFFLE_STATUS_ELIGIBLE; }).forEach(function (r) {
+      people[r.emailKey] = true; });
+  var n = Object.keys(people).length;
+  // FIVE, not four: section 3b verified a second entrant to test that a person
+  // already referred cannot be referred again, and verifying now enters them.
+  check('five distinct entrants on the test tab', n === 5, 'got ' + n);
   var statusOut = raffleStatusPage_(true);
   var statusHtml = String(typeof statusOut.getContent === 'function' ? statusOut.getContent() : statusOut);
-  check('status page reports 4', statusHtml.indexOf('>4<') !== -1 || /\b4\b/.test(statusHtml), 'count page did not show 4');
+  check('status page shows a count', /\b\d+\b/.test(statusHtml), 'count page showed no number');
   check('status page is labelled as test data', /TEST DATA/.test(statusHtml));
 
   // ---- 5. The draw --------------------------------------------------------
@@ -1823,8 +1967,14 @@ function raffleQaRun_(cleanUp) {
   check('draw succeeds', draw.ok === true, JSON.stringify(draw));
   if (draw.ok) {
     check('result is flagged as a test', draw.result.test === true);
-    check('drew from all four', draw.result.totalEligible === 4, 'got ' + draw.result.totalEligible);
+    check('drew from all five people', draw.result.totalPeople === 5,
+          'got ' + draw.result.totalPeople);
+    check('with more tickets than people (the referral bonus applied)',
+          draw.result.totalTickets > draw.result.totalPeople,
+          draw.result.totalTickets + ' tickets / ' + draw.result.totalPeople + ' people');
     check('winner is one of the entrants', /QA Tester/.test(draw.result.winner.name), draw.result.winner.name);
+    check('the ticket count is reported', draw.result.totalTickets > 0,
+          String(draw.result.totalTickets));
     check('two backups named', draw.result.backups.length === 2);
     var names = [draw.result.winner.name].concat(draw.result.backups.map(function (b) { return b.name; }));
     var uniq = names.filter(function (v, i) { return names.indexOf(v) === i; });

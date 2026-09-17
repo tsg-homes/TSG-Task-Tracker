@@ -2,7 +2,7 @@
 //
 // Added 2026-09-17, per Durand. This replaces "fill in your details to enter"
 // with "refer someone who is thinking of buying or selling in the next year,
-// and your entry counts once THEY confirm".
+// and each confirmed referral is worth five more entries".
 //
 // The flow, in order. Each step is a separate POST and each one is enforced
 // server-side, because the page can be bypassed:
@@ -398,8 +398,9 @@ function raffleSubmitReferral_(d, test) {
     token: token,
     referralName: refName,
     referralEmail: refEmail,
-    message: 'Nearly there. Send ' + refName.split(' ')[0] + ' the confirmation email — ' +
-             'your entry counts as soon as they confirm.'
+    message: 'Almost. Send ' + refName.split(' ')[0] + ' the confirmation email — ' +
+             'you get ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
+             ' more entries as soon as they confirm.'
   });
 }
 
@@ -626,9 +627,9 @@ function raffleReferralNote_(x) {
     'Looking to: ' + x.role,
     'Timeframe:  ' + (x.timeframe || '(not given)'),
     '',
-    'The referrer entered the ' + RAFFLE_PRIZE_SHORT + ' drawing by naming this person.',
-    'Their entry only counts once this person confirms their details and consents,',
-    'so a confirmation email has been sent here.',
+    'The referrer is entered in the ' + RAFFLE_PRIZE_SHORT + ' drawing and earns ' +
+      RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' bonus entries once this person confirms',
+    'their details and consents, so a confirmation email has been sent here.',
     '',
     'UNTIL THAT CONFIRMATION ARRIVES this contact has given no consent of their own.',
     'Reach out personally; do not drip.',
@@ -721,8 +722,8 @@ function raffleSendReferralInvite_(d, test) {
     .setValue(raffleFmt_(raffleNow_()));
 
   return jsonOut({ ok: true, sent: true,
-    message: 'Sent to ' + found.entry.referralEmail + ' (copied to you). ' +
-             'Your entry counts as soon as they confirm.' });
+    message: 'Sent to ' + found.entry.referralEmail + ' (copied to you). You get ' +
+             RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries as soon as they confirm.' });
 }
 
 // Finds the row carrying a consent token, across BOTH tabs. The token is the
@@ -796,7 +797,8 @@ function raffleInviteHtml_(entrant, entry, url, test) {
     'and if you would rather we did not, simply ignore this email and we will not contact you.</p>',
     '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">',
     'One more thing: ' + e(String(entrant.name).split(' ')[0]) + ' is entered in our ',
-    e(RAFFLE_PRIZE_SHORT) + ' drawing, and their entry only counts once you confirm. ',
+    e(RAFFLE_PRIZE_SHORT) + ' drawing, and confirming gives them ' +
+      RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' extra entries. ',
     'No pressure — but that is why they are copied on this.</p>',
     '<p style="margin:0 0 4px;font-size:14px;color:#55696a;">If the button does not work, ',
     'paste this into your browser:<br><span style="word-break:break-all;">' + e(url) + '</span></p>',
@@ -829,7 +831,8 @@ function raffleInvitePlain_(entrant, entry, url) {
     'you do -- if you would rather we did not, just ignore this email.',
     '',
     String(entrant.name).split(' ')[0] + ' is entered in our ' + RAFFLE_PRIZE_SHORT +
-      ' drawing, and their entry only counts once you confirm.',
+      ' drawing, and confirming gives them ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
+      ' extra entries.',
     '',
     'The Stawasz Group - Keller Williams Empower',
     '728 S Broad St, Philadelphia, PA 19146 - (215) 760-6291 - info@tsg.homes'
@@ -1033,7 +1036,7 @@ function raffleConsentSubmit_(d) {
                                             role: role, timeframe: timeframe }, found.test);
         return jsonOut({ ok: true, superseded: true,
           message: 'Thanks — you are confirmed. Someone had already referred you, so ' +
-                   'this one does not count toward the drawing, but we have your details.' });
+                   'this one does not add entries to the drawing, but we have your details.' });
       }
     }
 
@@ -1319,13 +1322,15 @@ function raffleNotifyEntrantEntered_(entry, referralName, test, closed) {
       name: 'The Stawasz Group',
       subject: (test ? QA_TEST_PREFIX : '') +
         (closed ? 'Your referral confirmed (after the drawing closed)'
-                : 'You are entered — ' + referralName + ' confirmed'),
+                : referralName + ' confirmed — ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
+                  ' more entries for you'),
       body: [
         (closed
           ? referralName + ' confirmed their details, but it came in after entries closed at ' +
             '6:15 PM, so it did not make the drawing. Thank you for the referral all the same —'
-          : referralName + ' confirmed their details, so your entry in the ' +
-            RAFFLE_PRIZE_SHORT + ' drawing now counts.'),
+          : referralName + ' confirmed their details, so you just picked up ' +
+            RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries in the ' +
+            RAFFLE_PRIZE_SHORT + ' drawing.'),
         '',
         (closed ? 'we will look after them.' :
           'The winner is drawn at 6:15 PM on Saturday and announced at ' + RAFFLE_ANNOUNCE_AT +
@@ -1476,7 +1481,9 @@ function raffleWinnerHtml_(w, result, test) {
 
     '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">',
     'Drawn from ' + e(result.totalEligible) + ' eligible ',
-    (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' at ' + e(result.drawnAt) + ' ET. ',
+    (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' &mdash; ' +
+      e(result.totalPeople) + ' people holding ' + e(result.totalTickets) + ' tickets ',
+    '&mdash; at ' + e(result.drawnAt) + ' ET. ',
     'The prize is a gift card redeemable toward any Ticketmaster purchase, subject to ',
     'Ticketmaster&rsquo;s own terms. Approximate retail value ' + e(RAFFLE_PRIZE_ARV) + '. ',
     'Any taxes on the prize are the winner&rsquo;s responsibility.</p>',
@@ -1512,7 +1519,8 @@ function raffleWinnerPlain_(w, result) {
     'to pay.',
     '',
     'Drawn from ' + result.totalEligible + ' eligible ' +
-      (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' at ' + result.drawnAt + ' ET.',
+      (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' - ' + result.totalPeople +
+      ' people holding ' + result.totalTickets + ' tickets - at ' + result.drawnAt + ' ET.',
     'Approximate retail value ' + RAFFLE_PRIZE_ARV + '. Any taxes on the prize are the',
     "winner's responsibility. This promotion is not sponsored, endorsed by, or associated",
     'with Ticketmaster, Live Nation, the Philadelphia Eagles or the NFL.',
@@ -1665,7 +1673,8 @@ function raffleResultHtml_(result, test, consoleUrl) {
     '<div style="font-size:22px;font-weight:700;margin-top:6px;">Raffle result</div>',
     '<div style="font-size:14px;opacity:.85;margin-top:6px;">Drawn ' + e(result.drawnAt) +
       ' ET from ' + e(result.totalEligible) + ' eligible ' +
-      (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + '</div>',
+      (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' &middot; ' +
+      e(result.totalPeople) + ' people &middot; ' + e(result.totalTickets) + ' tickets</div>',
     '</div>',
 
     '<div style="background:#fff;border-radius:0 0 10px 10px;padding:20px;">',
@@ -1748,6 +1757,8 @@ function raffleWinnerConsolePage_(test, key) {
   tmpl.submitToken = getSubmitToken();
   tmpl.drawnAt    = e(stored.drawnAt);
   tmpl.totalEligible = String(stored.totalEligible);
+  tmpl.totalPeople = String(stored.totalPeople === undefined ? '?' : stored.totalPeople);
+  tmpl.totalTickets = String(stored.totalTickets === undefined ? '?' : stored.totalTickets);
   tmpl.sentAt     = sentAt ? e(sentAt) : '';
   tmpl.sentAtJson = safeJsonForScript_(sentAt || '');
   tmpl.announceAt = RAFFLE_ANNOUNCE_AT;
@@ -1840,7 +1851,9 @@ function raffleRedraw_(test, reason) {
     raffleFmt_(raffleNow_()),
     'REDRAWN',
     'Previous winner: ' + previous.winner.name + ' (' + previous.winner.email + ')',
-    'Drawn from ' + previous.totalEligible + ' eligible entries at ' + previous.drawnAt,
+    'Drawn from ' + previous.totalEligible + ' eligible entries (' +
+      previous.totalPeople + ' people, ' + previous.totalTickets + ' tickets) at ' +
+      previous.drawnAt,
     reason
   ]);
 
@@ -1864,9 +1877,10 @@ function raffleRedraw_(test, reason) {
 //
 //   BEFORE THE PARTY  entries trickle in from the pre-event email over days, so a
 //                     time-based digest would mostly say "nothing happened". A
-//                     milestone every 10 VALID entries is the real news. "Valid"
-//                     means eligible -- a referral has consented. A pending row is
-//                     not an entry and is deliberately not counted, or the number
+//                     milestone every 10 PEOPLE is the real news. People, not rows:
+//                     one entrant owns an "own entry" row plus a row per referral,
+//                     so counting rows would say "20 entries" for ten people. A
+//                     pending referral row is likewise not counted, or the number
 //                     would flatter itself.
 //
 //   DURING THE PARTY  entries arrive in bursts and Durand is standing in a street,
@@ -1883,17 +1897,28 @@ function raffleMilestoneProp_(test) {
   return test ? RAFFLE_TEST_MILESTONE_PROP : RAFFLE_MILESTONE_PROP;
 }
 
-// Called after a row becomes eligible (i.e. from the consent step). Best-effort
-// and completely silent on failure: a notification must never be the reason a
-// referral's consent fails to record.
+// Called whenever a row becomes eligible: from the verification step (a new
+// person is in) and from the consent step (a referral confirmed, so that
+// entrant's ticket count jumped). Best-effort and completely silent on failure:
+// a notification must never be the reason a referral's consent fails to record.
 function raffleMaybeNotifyMilestone_(test) {
   try {
     // Once the party has started the hourly digest takes over; firing both would
     // double-notify during exactly the window Durand is least able to read email.
     if (Date.now() >= new Date(RAFFLE_EVENT_AT).getTime()) return;
 
-    var count = raffleReadEntries_(test).filter(function (r) {
-      return r.status === RAFFLE_STATUS_ELIGIBLE; }).length;
+    var eligible = raffleReadEntries_(test).filter(function (r) {
+      return r.status === RAFFLE_STATUS_ELIGIBLE; });
+    // Count PEOPLE, not rows. Under the multiplier model one entrant owns an "own
+    // entry" row plus one row per referral, so rows would announce "20 entries"
+    // for ten people and the number would flatter itself exactly the way a
+    // pending row would. The unit Durand is tracking is how many people are in.
+    var people = {}, tickets = 0;
+    eligible.forEach(function (r) {
+      people[r.emailKey || ('row' + r.row)] = true;
+      tickets += Math.max(1, Number(r.tickets) || 1);
+    });
+    var count = Object.keys(people).length;
     if (count < RAFFLE_MILESTONE_EVERY) return;
 
     var milestone = Math.floor(count / RAFFLE_MILESTONE_EVERY) * RAFFLE_MILESTONE_EVERY;
@@ -1907,23 +1932,33 @@ function raffleMaybeNotifyMilestone_(test) {
     MailApp.sendEmail({
       to: qaTestRecipients_([RAFFLE_NOTIFY_EMAIL]).join(','),
       name: 'TSG Block Party Raffle',
-      subject: (test ? QA_TEST_PREFIX : '') + count + ' entries in the Block Party raffle',
-      body: [
-        count + ' valid entries so far.',
+      subject: (test ? QA_TEST_PREFIX : '') + count + ' people in the Block Party raffle',
+      body: (function () {
+        // Three numbers, because they answer three different questions: how many
+        // people are in, how many chances are in the draw, and how much upside is
+        // still sitting in unanswered referrals. One number alone is misleading
+        // now that a confirmed referral is worth RAFFLE_BONUS_TICKETS_PER_REFERRAL.
+        var pending = raffleReadEntries_(test).filter(function (r) {
+          return r.status === RAFFLE_STATUS_PENDING; }).length;
+        return [
+        count + ' people are entered so far.',
+        tickets + ' tickets in the draw (each own entry is 1; each confirmed referral is ' +
+          RAFFLE_BONUS_TICKETS_PER_REFERRAL + ').',
         '',
-        'Valid means the referred person has confirmed their details and given consent.',
-        'Rows still waiting on a referral to reply are NOT counted here, and cannot be drawn.',
+        'Everyone who verified their email is entered. A referral who CONFIRMS adds',
+        RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries for whoever referred them.',
         '',
-        'Still pending: ' + raffleReadEntries_(test).filter(function (r) {
-          return r.status === RAFFLE_STATUS_PENDING; }).length + ' waiting on a referral.',
+        'Still pending: ' + pending + ' referral(s) yet to reply — worth ' +
+          (pending * RAFFLE_BONUS_TICKETS_PER_REFERRAL) + ' more tickets if they do.',
         '',
         daysLeft > 0 ? daysLeft + ' day(s) until the party. Entries close at 6:15 PM Saturday.'
                      : 'The party is today. Entries close at 6:15 PM.',
         '',
-        'Next note at ' + (milestone + RAFFLE_MILESTONE_EVERY) + '.'
-      ].join('\n')
+        'Next note at ' + (milestone + RAFFLE_MILESTONE_EVERY) + ' people.'
+        ].join('\n');
+      })()
     });
-    Logger.log('Raffle: milestone notification sent at ' + count + ' entries.');
+    Logger.log('Raffle: milestone notification sent at ' + count + ' people.');
   } catch (err) {
     Logger.log('raffleMaybeNotifyMilestone_ failed (non-fatal): ' + err);
   }
@@ -2184,17 +2219,20 @@ function raffleChainHtml_(entry, edited, url, test) {
     '</div>',
     '<div style="background:#fff;border-radius:0 0 10px 10px;padding:24px;">',
     '<p style="margin:0 0 14px;">You are all set &mdash; we have your details and we will be ',
-    'in touch. And because you confirmed, <strong>' + e(entry.name) + '</strong> is now ',
-    'entered in our drawing for ' + e(RAFFLE_PRIZE_SHORT) + '.</p>',
-    '<p style="margin:0 0 18px;">You can enter too. Think of one person who is considering ',
-    'buying or selling in the next year, and pass their name along the same way. ',
-    '<b>We already have your details, so there is nothing to fill in about yourself.</b></p>',
+    'in touch. And because you confirmed, <strong>' + e(entry.name) + '</strong> just earned ',
+    RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' extra entries in our drawing for ' +
+      e(RAFFLE_PRIZE_SHORT) + '.</p>',
+    '<p style="margin:0 0 18px;"><b>You are in it too.</b> Opening the link below enters you ',
+    'with one entry &mdash; we already have your details, so there is nothing to fill in about ',
+    'yourself. Name someone who is considering buying or selling in the next year and you get ',
+    RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more.</p>',
     '<div style="text-align:center;margin:0 0 20px;">',
     '<a href="' + e(url) + '" style="display:inline-block;background:#15464A;color:#fff;',
     'text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:8px;">',
-    'Refer someone and enter</a></div>',
-    '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">Same rules: your entry counts ',
-    'once the person you name confirms their own details and gives their own permission. ',
+    'Enter me and refer someone</a></div>',
+    '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">Same rules for everyone: one ',
+    'entry for entering, ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more for each person you ',
+    'name who confirms their own details and gives their own permission. ',
     'Entries close at 6:15 PM on Saturday 19 September, when the winner is drawn. ',
     'You do not need to be at the party to enter or to win.</p>',
     '<p style="margin:0;font-size:14px;color:#55696a;">Not interested? Ignore this &mdash; ',
@@ -2213,17 +2251,20 @@ function raffleChainPlain_(entry, edited, url) {
     'Thanks, ' + first + '.',
     '',
     'You are all set - we have your details and we will be in touch. And because you',
-    'confirmed, ' + entry.name + ' is now entered in our drawing for ' + RAFFLE_PRIZE_SHORT + '.',
+    'confirmed, ' + entry.name + ' just earned ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
+      ' extra entries in our drawing for ' + RAFFLE_PRIZE_SHORT + '.',
     '',
-    'You can enter too. Think of one person considering buying or selling in the next',
-    'year and pass their name along the same way. We already have your details, so',
-    'there is nothing to fill in about yourself:',
+    'You are in it too. Opening this link enters you with one entry - we already have',
+    'your details, so there is nothing to fill in about yourself. Name someone',
+    'considering buying or selling in the next year and you get ' +
+      RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more:',
     '',
     url,
     '',
-    'Same rules: your entry counts once the person you name confirms their own details',
-    'and gives their own permission. Entries close at 6:15 PM on Saturday 19 September.',
-    'You do not need to be at the party to enter or to win.',
+    'Same rules for everyone: one entry for entering, ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
+      ' more for each person you name who',
+    'confirms their own details and gives their own permission. Entries close at 6:15 PM',
+    'on Saturday 19 September. You do not need to be at the party to enter or to win.',
     '',
     'Not interested? Ignore this - nothing changes.',
     '',
@@ -2278,6 +2319,17 @@ function raffleChainStart_(e) {
     test: !!found.test, verifiedAt: raffleFmt_(raffleNow_()),
     viaChain: true
   }), RAFFLE_VERIFIED_TTL_SECONDS);
+
+  // And enter them, here, before the form is served. A chain entrant is a
+  // verified entrant -- they proved their inbox by clicking a link only it
+  // received -- so they get the same one ticket everybody else gets for
+  // verifying, whether or not they go on to refer anybody. Entries are only
+  // written while the raffle is open, which raffleEnsureSelfEntry_ does not
+  // check, so the gate is here.
+  if (raffleEntryState_() === 'open' || found.test) {
+    raffleEnsureSelfEntry_(r.referralName, r.referralEmail, r.referralPhone,
+                           r.referralFubId || '', !!found.test);
+  }
 
   // The action MUST be stripped before handing back to raffleServeForm_. Passing
   // `e` through unchanged means it sees action=refer again, calls straight back
@@ -2519,7 +2571,7 @@ function raffleReferrerNudgeHtml_(g, minsLeft, test) {
     g.waiting.length === 1 ? 'the person you referred' : 'the people you referred',
     ' asking them to confirm, and ',
     g.waiting.length === 1 ? 'they have' : 'they have',
-    ' not replied yet &mdash; so your entry does not count yet:</p>',
+    ' not replied yet &mdash; so those bonus entries are not yours yet:</p>',
     '<ul style="margin:0 0 18px;padding-left:22px;font-size:15px;">' + list + '</ul>',
     '<div style="background:#FFF8E6;border:1px solid #F0DFAE;border-radius:8px;',
     'padding:16px;margin:0 0 18px;">',
@@ -2527,6 +2579,9 @@ function raffleReferrerNudgeHtml_(g, minsLeft, test) {
     '<b>6:15 PM</b>. A text from you saying &ldquo;check your email, it takes twenty ',
     'seconds&rdquo; will do more than anything we can send.</p>',
     '</div>',
+    '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">You are already in the ',
+    'drawing either way &mdash; this is only about the ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' extra entries ',
+    'each confirmation is worth.</p>',
     '<p style="margin:0;font-size:14px;color:#55696a;">Nothing for you to do here &mdash; ',
     'the link is in their inbox, not yours. And if they would rather not, that is ',
     'genuinely fine; the same page lets them say so.</p>',
@@ -2542,7 +2597,7 @@ function raffleReferrerNudgePlain_(g, minsLeft) {
   return [
     'Hi ' + String(g.name || '').split(' ')[0] + ',',
     '',
-    raffleTimeLeftPhrase_(minsLeft) + ' left, and your entry does not count yet.',
+    raffleTimeLeftPhrase_(minsLeft) + ' left, and your bonus entries are not counted yet.',
     '',
     'We emailed these people asking them to confirm and have not heard back:',
     g.waiting.map(function (r) {
@@ -2550,6 +2605,10 @@ function raffleReferrerNudgePlain_(g, minsLeft) {
     '',
     'The winner is drawn at 6:15 PM. A text from you saying "check your email, it takes',
     'twenty seconds" will do more than anything we can send.',
+    '',
+    'You are already in the drawing either way - this is only about the ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
+      ' extra',
+    'entries each confirmation is worth.',
     '',
     'Nothing for you to do here - the link is in their inbox, not yours. And if they',
     'would rather not, that is genuinely fine; the same page lets them say so.',
@@ -2584,21 +2643,23 @@ function raffleReminderHtml_(r, url, minsLeft, test) {
     '<div style="background:#15464A;color:#fff;border-radius:10px 10px 0 0;padding:24px;">',
     '<div style="font-size:12px;letter-spacing:2px;opacity:.8;">THE STAWASZ GROUP</div>',
     '<div style="font-size:21px;font-weight:700;margin-top:6px;">',
-    'One click, and ' + e(String(r.name).split(' ')[0]) + ' is entered</div>',
+    'One click, and ' + e(String(r.name).split(' ')[0]) + ' gets ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
+      ' more entries</div>',
     '</div>',
 
     '<div style="background:#fff;border-radius:0 0 10px 10px;padding:24px;">',
     '<p style="margin:0 0 14px;">Hi ' + e(first) + ',</p>',
     '<p style="margin:0 0 14px;">A few days ago <strong>' + e(r.name) + '</strong> referred ',
     'you to us, and we asked you to confirm your details. We have not heard back ',
-    '&mdash; which is completely fine, but it does mean their entry in our ',
-    e(RAFFLE_PRIZE_SHORT) + ' drawing does not count yet.</p>',
+    '&mdash; which is completely fine, but it does mean the ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' bonus ',
+    'entries you are worth to them in our ' + e(RAFFLE_PRIZE_SHORT) + ' drawing have not ',
+    'been counted.</p>',
 
     '<div style="background:#FFF8E6;border:1px solid #F0DFAE;border-radius:8px;',
     'padding:16px;margin:0 0 20px;">',
     '<p style="margin:0;font-size:15px;color:#6B5720;">',
     'The winner is drawn at <b>6:15 PM this Saturday</b> &mdash; ' + e(left) + ' from now. ',
-    'After that their entry cannot be counted, however kind you are about it.</p>',
+    'After that those entries cannot be added, however kind you are about it.</p>',
     '</div>',
 
     '<div style="text-align:center;margin:0 0 20px;">',
@@ -2630,12 +2691,14 @@ function raffleReminderPlain_(r, url, minsLeft) {
     'Hi ' + first + ',',
     '',
     'A few days ago ' + r.name + ' referred you to us and we asked you to confirm your',
-    'details. We have not heard back - which is completely fine, but it does mean their',
-    'entry in our ' + RAFFLE_PRIZE_SHORT + ' drawing does not count yet.',
+    'details. We have not heard back - which is completely fine, but it does mean the ' +
+      RAFFLE_BONUS_TICKETS_PER_REFERRAL,
+    'bonus entries you are worth to them in our ' + RAFFLE_PRIZE_SHORT + ' drawing have',
+    'not been counted.',
     '',
     'The winner is drawn at 6:15 PM this Saturday - ' + raffleTimeLeftPhrase_(minsLeft) +
       ' from now.',
-    'After that their entry cannot be counted.',
+    'After that those entries cannot be added.',
     '',
     'Confirm your details here (about twenty seconds):',
     url,
@@ -2647,4 +2710,31 @@ function raffleReminderPlain_(r, url, minsLeft) {
     'The Stawasz Group - Keller Williams Empower',
     '728 S Broad St, Philadelphia, PA 19146 - (215) 760-6291 - info@tsg.homes'
   ].join('\n');
+}
+
+
+// The entrant's own entry: one ticket, no referral, eligible straight away. Kept
+// beside raffleAppendReferralEntry_ so the two row shapes stay legible together.
+function raffleAppendSelfEntry_(name, email, phone, personId, test) {
+  var sh = raffleSheet_(test);
+  var row = [];
+  row[RAFFLE_COL['Timestamp (ET)']]   = raffleFmt_(raffleNow_());
+  row[RAFFLE_COL['Full Name']]        = raffleSafeCell_(name);
+  row[RAFFLE_COL['Email']]            = raffleSafeCell_(email);
+  row[RAFFLE_COL['Phone']]            = raffleSafeCell_(phone);
+  row[RAFFLE_COL['Consent']]          = 'Yes';
+  row[RAFFLE_COL['Consent Version']]  = RAFFLE_CONSENT_VERSION;
+  row[RAFFLE_COL['Entry Source']]     = (test ? QA_TEST_PREFIX : '') + RAFFLE_EVENT_NAME +
+                                        ' — own entry';
+  row[RAFFLE_COL['FUB Status']]       = personId ? 'ok' : 'entrant push failed';
+  row[RAFFLE_COL['FUB Person ID']]    = personId || '';
+  row[RAFFLE_COL['Eligible']]         = 'Yes';
+  row[RAFFLE_COL['Email Verified']]   = 'Yes (code confirmed)';
+  // Eligible immediately: nothing is waiting on anybody else.
+  row[RAFFLE_COL['Entry Status']]     = RAFFLE_STATUS_ELIGIBLE;
+  for (var i = 0; i < RAFFLE_SHEET_HEADERS.length; i++) {
+    if (row[i] === undefined) row[i] = '';
+  }
+  sh.appendRow(row);
+  return { row: sh.getLastRow() };
 }

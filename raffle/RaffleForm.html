@@ -43,6 +43,8 @@ main{max-width:520px;margin:0 auto;padding:18px 16px 40px;}
 .prize .amount{font-family:'Playfair Display',serif;font-weight:700;font-size:52px;line-height:1;margin:4px 0 2px;}
 .prize .desc{font-size:15px;font-weight:700;}
 .prize .when{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.18);font-size:13px;opacity:.92;}
+.prize .multi{margin-top:10px;font-size:13px;line-height:1.5;opacity:.95;}
+.prize .multi b{color:#fff;}
 
 /* ---- Form ---- */
 fieldset{background:var(--tsg-white);border:1px solid var(--tsg-gray-border);border-radius:8px;padding:18px 20px 20px;margin:0 0 16px;}
@@ -153,6 +155,10 @@ body.qa-test{padding-top:62px;}
     <div class="amount">$300</div>
     <div class="desc">toward any Ticketmaster purchase</div>
     <div class="when"><?= eventDateShort ?><br>Winner drawn at <b>6:15 PM</b> &middot; Announced at <b>6:30 PM</b></div>
+    <!-- The mechanic stated up front. Referring is a multiplier, not a gate: an
+         entrant who reads only the hero should still know they are in. -->
+    <div class="multi"><b>1 entry</b> just for entering<br>
+      <b>+5 entries</b> for every friend who confirms</div>
   </div>
 
   <!-- Entries not open yet -->
@@ -192,10 +198,11 @@ body.qa-test{padding-top:62px;}
 
   <!-- Step 3: who are you referring -->
   <div class="panel" id="referPanel">
-    <h2>Who are you referring?</h2>
-    <p class="sent">Thanks <span class="addr" id="entrantFirst"></span> &mdash; you&rsquo;re verified.
-      Now tell us about <b>one person</b> you know who is thinking of buying or selling in the
-      next year. Your entry counts as soon as <b>they</b> confirm.</p>
+    <h2>You&rsquo;re in. Want 5 more entries?</h2>
+    <p class="sent">Thanks <span class="addr" id="entrantFirst"></span> &mdash; your email is verified
+      and <b>you are entered</b>. Now multiply your odds: tell us about someone you know who is
+      thinking of buying or selling in the next year. <b>When they confirm, you get 5 more
+      entries.</b> Refer as many different people as you like.</p>
 
     <div class="field">
       <label for="refName">Their full name <span class="req">*</span></label>
@@ -233,6 +240,7 @@ body.qa-test{padding-top:62px;}
 
     <div id="referErr" role="alert"></div>
     <button type="button" id="referBtn">Continue</button>
+    <button type="button" class="linkish" id="doneBtn">No thanks &mdash; I&rsquo;m done</button>
     <button type="button" class="linkish" id="startOverBtn2">Start over</button>
   </div>
 
@@ -241,9 +249,9 @@ body.qa-test{padding-top:62px;}
     <h2>One last step</h2>
     <p class="sent">We&rsquo;re ready to email <span class="addr" id="inviteName"></span>.
       They&rsquo;ll be asked to confirm their details and give permission for us to contact them.
-      <b>Your entry counts the moment they confirm.</b> You&rsquo;ll be copied on the email.</p>
+      <b>You get 5 more entries the moment they confirm.</b> You&rsquo;ll be copied on the email.</p>
     <div id="inviteErr" role="alert"></div>
-    <button type="button" id="inviteBtn">Send it &amp; enter me</button>
+    <button type="button" id="inviteBtn">Send it &mdash; give me 5 more entries</button>
     <div class="hint">Nothing is sent until you tap the button.</div>
   </div>
 
@@ -316,27 +324,30 @@ body.qa-test{padding-top:62px;}
 
             <h4>4. Entry period</h4>
             <p>Entries are accepted from the time this form is published until <b>6:15 PM Eastern
-               Time on Saturday, September 19, 2026</b>, when the winner is drawn. An entry is
-               complete only when the referred person confirms (see section 5); a confirmation
-               received after 6:15 PM does not enter the drawing.</p>
+               Time on Saturday, September 19, 2026</b>, when the winner is drawn. Your entry is
+               complete as soon as you verify your email address. Bonus entries are added only when
+               a referred person confirms (see section 5); a confirmation received after 6:15 PM
+               does not add entries to the drawing.</p>
 
-            <h4>5. How to enter &mdash; one entry per referral</h4>
+            <h4>5. How to enter &mdash; one entry, plus five per confirmed referral</h4>
             <p>To enter, submit this form with your full name, phone number and email address, accept
-               these Official Rules, and verify your email address using the code we send you. You
-               must then refer one (1) person &mdash; a friend or family member who is considering
-               buying or selling a home within the next year &mdash; by giving their name, phone
-               number and email address.</p>
-            <p>We will email that person and ask them to confirm their details and give their own
-               consent to be contacted. <b>YOUR ENTRY IS NOT COMPLETE, AND DOES NOT ENTER THE
-               DRAWING, UNTIL THAT PERSON CONFIRMS.</b> If they decline, or do not respond before
-               6:15 PM on September 19, 2026, the entry does not count. Both your consent and
-               theirs are required.</p>
-            <p><b>LIMIT ONE (1) ENTRY PER REFERRED PERSON.</b> A given person can be referred only
-               once: if two people refer the same person, the entry goes to whichever referral that
-               person confirms first, and the other does not count. A person who is already a
-               contact of Sponsor cannot be referred and does not create an entry. You may enter
-               more than once by referring different people, but each referral must be a different
-               person, and you may not refer yourself.</p>
+               these Official Rules, and verify your email address using the code we send you. That
+               gives you one (1) entry in the drawing. Referring someone is optional and is not
+               required to enter or to win.</p>
+            <p>To improve your chances, you may refer a friend or family member who is considering
+               buying or selling a home within the next year, by giving their name, phone number and
+               email address. We will email that person and ask them to confirm their details and
+               give their own consent to be contacted. <b>WHEN THEY CONFIRM, YOU RECEIVE FIVE (5)
+               ADDITIONAL ENTRIES.</b> If they decline, or do not respond before 6:15 PM on
+               September 19, 2026, you receive no additional entries &mdash; your own entry still
+               stands.</p>
+            <p><b>LIMIT ONE (1) ENTRY PER PERSON, PLUS FIVE (5) BONUS ENTRIES PER CONFIRMED
+               REFERRAL.</b> A given person can be referred only once: if two people refer the same
+               person, the bonus entries go to whichever referral that person confirms first, and
+               the other earns nothing. A person who is already a contact of Sponsor cannot be
+               referred and does not earn bonus entries. There is no limit on how many different
+               people you may refer, but each must be a different person, and you may not refer
+               yourself.</p>
             <p>Duplicate or conflicting referrals are matched by email address and by phone number.
                Automated, robotic, scripted or bulk entries are void.</p>
 
@@ -349,7 +360,8 @@ body.qa-test{padding-top:62px;}
                taxes on the prize are the sole responsibility of the winner.</p>
 
             <h4>7. Odds</h4>
-            <p>Odds of winning depend on the number of eligible entries received.</p>
+            <p>Odds of winning depend on the total number of entries in the drawing, including bonus
+               entries earned from confirmed referrals.</p>
 
             <h4>8. Winner selection, notification and claim</h4>
             <p>One (1) potential winner is selected by random drawing from all eligible entries at
@@ -732,6 +744,11 @@ body.qa-test{padding-top:62px;}
     lastPhase = null;
     render();
   });
+  // Declining to refer is not an error and needs no server round-trip: the entry
+  // was written when the code was verified. This only closes the panel.
+  document.getElementById('doneBtn').addEventListener('click', function(){
+    enteredOk({ ok: true, message: 'You are entered with 1 entry. Good luck!' });
+  });
 
   // ---- Step 3: the referral ----
   referBtn.addEventListener('click', function(){
@@ -787,13 +804,13 @@ body.qa-test{padding-top:62px;}
       step: 'invite', vid: pendingVid, token: pendingToken
     }).then(function(res){
       inviteBtn.disabled = false;
-      inviteBtn.textContent = 'Send it & enter me';
+      inviteBtn.textContent = 'Send it — give me 5 more entries';
       if (res && res.ok) enteredOk(res);
       else document.getElementById('inviteErr').textContent =
         (res && res.error) || 'That did not work. Try again.';
     }).catch(function(){
       inviteBtn.disabled = false;
-      inviteBtn.textContent = 'Send it & enter me';
+      inviteBtn.textContent = 'Send it — give me 5 more entries';
       document.getElementById('inviteErr').textContent =
         'Could not reach us — check your signal and try again.';
     });

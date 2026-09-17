@@ -10,6 +10,12 @@ const { makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J,
 // Read a row cell BY COLUMN NAME. Magic indexes are how a schema change turns a
 // test green against the wrong column -- writing 21 for "Chain Token" when the
 // header list had moved it to 22 is exactly the mistake this prevents.
+// Row selectors. With a self entry AND a referral entry per journey, __data()[0]
+// is no longer "the entry" — grabbing it blindly is how a test ends up asserting
+// against the wrong row.
+const refRows  = s => s.__data().filter(r => cell(s, r, 'Referral Name') !== '');
+const selfRows = s => s.__data().filter(r => cell(s, r, 'Referral Name') === '');
+
 const cell = (s, row, name) => {
   const i = s.RAFFLE_SHEET_HEADERS.indexOf(name);
   if (i === -1) throw new Error('no such column: ' + name);
@@ -39,7 +45,9 @@ const cell = (s, row, name) => {
 
   const early = enterFull(s, entry(), BEFORE);
   check('an entry days before the party is accepted', early.ok === true, JSON.stringify(early));
-  eq('and it is written', s.__data().length, 1);
+  // TWO rows per full journey now: the entrant's own entry (1 ticket) and the
+  // referral entry (5 tickets once confirmed).
+  eq('and both rows are written', s.__data().length, 2);
 
   const s2 = makeSandbox();
   const late = enterFull(s2, entry(), AFTER);
@@ -65,24 +73,46 @@ const cell = (s, row, name) => {
   check('nothing was written for any invalid entry', s.__data().length === 0);
 }
 
-// ---- One entry per person --------------------------------------------------
+// ---- One FREE entry per person, but come back as often as you like ----------
+//
+// Under the multiplier rules a returning visitor is no longer a duplicate to turn
+// away: they are somebody back to refer another person and collect another five
+// entries, which is the behaviour the whole thing exists to encourage. What must
+// NOT happen is a second SELF entry — that would be a free extra ticket for
+// clearing the browser and starting again.
 {
   const s = makeSandbox();
   const first = enterFull(s, entry(), DURING);
-  check('first entry accepted', first.ok === true && !first.already);
-  eq('one row written', s.__data().length, 1);
+  check('first entry accepted', first.ok === true);
+  eq('two rows: their own entry and the referral', s.__data().length, 2);
+  eq('exactly one self entry', s.__data().filter(r => !cell(s, r, 'Referral Name')).length, 1);
 
-  const dupEmail = enterFull(s, entry({ phone: '(267) 555-9999' }), DURING);
-  check('duplicate email rejected as already entered', dupEmail.already === true);
+  // Same person, same email, different phone. Verifying again must not mint a
+  // second free ticket.
+  verifySession(s, entry({ phone: '(267) 555-9999' }), DURING);
+  eq('still exactly one self entry', s.__data().filter(r => !cell(s, r, 'Referral Name')).length, 1);
 
-  const dupPhone = enterFull(s, entry({ email: 'other@mail-test.co' }), DURING);
-  check('duplicate phone rejected as already entered', dupPhone.already === true);
+  // Same phone, different email.
+  verifySession(s, entry({ email: 'other@mail-test.co' }), DURING);
+  eq('and still one after a different email, same phone',
+    s.__data().filter(r => !cell(s, r, 'Referral Name')).length, 1);
 
-  const dupPhoneFmt = enterFull(s, 
-    entry({ email: 'third@mail-test.co', phone: '+1 215.555.8123' }), DURING);
-  check('duplicate phone caught across formatting', dupPhoneFmt.already === true);
+  // Formatting games on the phone.
+  verifySession(s, entry({ email: 'third@mail-test.co', phone: '+1 215.555.8123' }), DURING);
+  eq('formatting variations do not mint one either',
+    s.__data().filter(r => !cell(s, r, 'Referral Name')).length, 1);
 
-  eq('still exactly one row after 3 duplicate attempts', s.__data().length, 1);
+  eq('no extra rows at all from the repeat attempts', s.__data().length, 2);
+
+  // But a SECOND referral from the same person is welcome, and worth another five.
+  const v = verifySession(s, entry(), DURING);
+  const second = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: v.vid },
+    referral({ referralName: 'Second Friend', referralEmail: 'second@mail-test.co',
+               referralPhone: '(215) 555-9777' })))));
+  check('a second referral from the same person is accepted',
+    second.ok === true && second.staged === true, JSON.stringify(second));
+  eq('which is a third row', s.__data().length, 3);
 
   // A different entrant AND a different referral: one entry per referred person
   // is the rule now, so reusing the default referral here would be refused --
@@ -93,7 +123,7 @@ const cell = (s, row, name) => {
     { referral: { referralName: 'Casey Wren', referralEmail: 'casey@mail-test.co',
                   referralPhone: '(215) 555-9002' } });
   check('a genuinely different person is accepted', other.ok === true, JSON.stringify(other));
-  eq('two rows now', s.__data().length, 2);
+  eq('five rows now — the three above plus a second person\'s two', s.__data().length, 5);
 }
 
 // ---- FUB outage must never cost an entry -----------------------------------
@@ -101,7 +131,7 @@ const cell = (s, row, name) => {
   const s = makeSandbox({ fubStatus: 500 });
   const res = enterFull(s, entry(), DURING);
   check('entrant still gets a success when FUB is down', res.ok === true);
-  eq('entry is still recorded in the sheet', s.__data().length, 1);
+  eq('both rows are still recorded in the sheet', s.__data().length, 2);
   check('row records the FUB failure for later retry',
     /failed/.test(String(s.__data()[0][7])), String(s.__data()[0][7]));
   check('entry is still eligible for the draw', s.__data()[0][9] === 'Yes');
@@ -167,12 +197,15 @@ const cell = (s, row, name) => {
                 referralEmail: 'ref' + n + '@mail-test.co',
                 referralPhone: '(215) 555-91' + (10 + i) }
   }));
-  eq('four entrants', s.__data().length, 4);
+  eq('four entrants, eight rows', s.__data().length, 8);
 
   const first = at(AFTER, () => s.raffleDrawWinner_());
   check('draw succeeds', first.ok === true);
   check('draw is not flagged as already drawn', first.alreadyDrawn !== true);
-  eq('drew from all four', first.result.totalEligible, 4);
+  eq('eight eligible rows', first.result.totalEligible, 8);
+  eq('four distinct people', first.result.totalPeople, 4);
+  // 4 people x (1 own entry + 5 for a confirmed referral) = 24 tickets.
+  eq('twenty-four tickets', first.result.totalTickets, 24);
   check('winner is one of the entrants',
     ['Person a', 'Person b', 'Person c', 'Person d'].indexOf(first.result.winner.name) !== -1);
   eq('two backups named', first.result.backups.length, 2);
@@ -213,9 +246,14 @@ const cell = (s, row, name) => {
     fullName: 'Sam Ortiz', email: 'sam@mail-test.co', phone: '(267) 555-8100' }), DURING,
     { referral: { referralName: 'Casey Wren', referralEmail: 'casey@mail-test.co',
                   referralPhone: '(215) 555-9002' } });
-  s.__tabs['Entries'].rows[1][9] = 'No';        // Durand marks a row ineligible by hand
+  // Disqualify EVERY row belonging to Dana — the self entry AND the referral.
+  // Marking only one would leave the other in the draw, which is the real risk
+  // now that one person owns more than one row.
+  s.__tabs['Entries'].rows.forEach((r, i) => {
+    if (i > 0 && String(r[1]) === 'Dana Reid') r[9] = 'No';
+  });
   const res = at(AFTER, () => s.raffleDrawWinner_());
-  eq('disqualified row excluded from the draw', res.result.totalEligible, 1);
+  eq('only the other entrant is left', res.result.totalPeople, 1);
   eq('the remaining entrant wins', res.result.winner.name, 'Sam Ortiz');
 }
 
@@ -297,8 +335,12 @@ const cell = (s, row, name) => {
   check('draw ran (setup)', drawn.ok === true, JSON.stringify(drawn));
 
   // The draw record has to carry enough to build the FUB links and show the referral.
-  check('the draw record carries the referral for each pick',
-    !!drawn.result.winner.referralName, JSON.stringify(drawn.result.winner));
+  // A pick may legitimately be a SELF entry with no referral attached, so the
+  // assertion is that the field exists and is carried, not that it is populated.
+  check('the draw record carries a referral field for each pick',
+    'referralName' in drawn.result.winner, JSON.stringify(drawn.result.winner));
+  check('and at least one pick has a referral on it',
+    [drawn.result.winner].concat(drawn.result.backups).some(p => !!p.referralName));
   eq('and two alternates', drawn.result.backups.length, 2);
 
   // The 6:15 email is HTML now, with all three picks and a console link.
@@ -399,35 +441,76 @@ const cell = (s, row, name) => {
   check('and says why in human terms', /phone call/.test(String(late.error)));
 }
 
+// ---- The admin status page ----------------------------------------------------
+{
+  // raffleReadEntries_ hands back every row, pending ones included, so the
+  // headline number is computed. It used to be rows.length under the label
+  // "eligible entries", which counted referrals nobody had consented to.
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  enterFull(s, entry(), DURING);                                     // 1 person, 6 tickets
+  enterFull(s, entry({ fullName: 'Pending Person', email: 'pend@mail-test.co',
+                       phone: '(215) 555-8600' }), DURING, {
+    skipConsent: true,
+    referral: { referralName: 'PRef Person', referralEmail: 'pref@mail-test.co',
+                referralPhone: '(215) 555-9600' } });                // +1 person, +1 ticket
+
+  const page = String(at(DURING, () => s.raffleStatusPage_(false)));
+  check('the status page counts people, not rows', />2</.test(page), page.slice(0, 900));
+  check('and says they are people', /people entered/.test(page));
+  check('and reports the ticket count', /7 tickets in the draw/.test(page), page.slice(0, 900));
+  check('and reports what is still pending',
+    /1 referral\(s\) still pending/.test(page), page.slice(0, 900));
+  check('and what that pending referral is worth', /worth 5 more/.test(page));
+  check('it no longer calls a pending row eligible',
+    !/>3<[\s\S]{0,80}people entered/.test(page), page.slice(0, 900));
+}
+
 // ---- Entry notifications -------------------------------------------------------
 {
   // Before the party: one email every 10 VALID entries. Pending rows must not count.
   const s = makeSandbox();
-  const note = () => s.__sent.filter(m => /entries in the Block Party raffle/.test(m.subject));
+  const note = () => s.__sent.filter(m => /(entries|people) in the Block Party raffle/.test(m.subject));
+  // The milestone counts PEOPLE, not rows: a full journey writes two eligible
+  // rows (the entrant's own entry plus the confirmed referral), so counting rows
+  // would announce "10 entries" after five people had entered.
   for (let i = 0; i < 9; i++) {
     enterFull(s, entry({ fullName: 'Early ' + i, email: 'e' + i + '@mail-test.co',
                          phone: '(215) 555-84' + (10 + i) }), BEFORE, {
       referral: { referralName: 'ERef ' + i, referralEmail: 'eref' + i + '@mail-test.co',
                   referralPhone: '(215) 555-95' + (10 + i) } });
   }
-  eq('no milestone email at 9 entries', note().length, 0);
+  eq('no milestone email at 9 people (18 rows)', note().length, 0);
 
   enterFull(s, entry({ fullName: 'Early 9', email: 'e9@mail-test.co',
                        phone: '(215) 555-8499' }), BEFORE, {
     referral: { referralName: 'ERef 9', referralEmail: 'eref9@mail-test.co',
                 referralPhone: '(215) 555-9599' } });
-  eq('one milestone email at 10', note().length, 1);
-  check('it reports the count', /10 entries/.test(note()[0].subject));
-  check('it explains what "valid" means', /confirmed their details/.test(note()[0].body));
-  check('it says when the next one comes', /Next note at 20/.test(note()[0].body));
+  eq('one milestone email at 10 people', note().length, 1);
+  check('it reports the count in people, not rows', /10 people/.test(note()[0].subject),
+    note()[0].subject);
+  check('and never calls twenty rows twenty entries', !/20/.test(note()[0].subject),
+    note()[0].subject);
+  // Three numbers, because one alone is misleading once a referral is worth five.
+  check('it reports how many people are in', /10 people are entered/.test(note()[0].body),
+    note()[0].body.slice(0, 160));
+  // 55, not 60: the milestone fires the moment the tenth PERSON verifies, which
+  // is before that person's own referral has replied -- 10 own entries plus the
+  // nine referrals confirmed so far.
+  check('it reports the ticket count', /55 tickets in the draw/.test(note()[0].body),
+    note()[0].body.slice(0, 200));
+  check('it explains the multiplier', /5 more entries/.test(note()[0].body),
+    note()[0].body.slice(0, 400));
+  check('it says when the next one comes', /Next note at 20 people/.test(note()[0].body));
 
-  // A pending entry (referral has not consented) must not move the counter.
+  // A PENDING referral row must not count toward the next milestone, and must be
+  // reported as upside rather than silently dropped. The entrant's own entry does
+  // count -- they are genuinely entered -- so this is eleven people, not twelve.
   enterFull(s, entry({ fullName: 'Pending Person', email: 'pend@mail-test.co',
                        phone: '(215) 555-8600' }), BEFORE, {
     skipConsent: true,
     referral: { referralName: 'PRef Person', referralEmail: 'pref@mail-test.co',
                 referralPhone: '(215) 555-9600' } });
-  eq('a pending referral does not trigger a milestone', note().length, 1);
+  eq('an eleventh person does not reach the next milestone', note().length, 1);
 
   // And it does not re-fire on the same milestone.
   eq('still only one milestone email', note().length, 1);
@@ -444,12 +527,12 @@ const cell = (s, row, name) => {
                   referralPhone: '(267) 555-96' + (10 + i) } });
   }
   eq('no milestone emails during the party', 
-    s.__sent.filter(m => /entries in the Block Party raffle/.test(m.subject)).length, 0);
+    s.__sent.filter(m => /(entries|people) in the Block Party raffle/.test(m.subject)).length, 0);
 
   at(DURING, () => s.raffleEventDigest());
   const digest = s.__sent.filter(m => /min to the draw|entries closed/.test(m.subject));
   eq('the hourly digest sends during the party', digest.length, 1);
-  check('it reports the valid count', /10 valid entries/.test(digest[0].body), digest[0].body.slice(0, 120));
+  check('it reports the valid count', /valid entries/.test(digest[0].body), digest[0].body.slice(0, 120));
   check('it counts down to the draw', /minutes \(6:15 PM\)/.test(digest[0].body));
   check('it goes to Durand only', digest[0].to === 'durand@thestawaszgroup.com');
 
@@ -471,12 +554,12 @@ const cell = (s, row, name) => {
   J(at(DURING, () => s.raffleHandleSubmission_(Object.assign(
     { step: 'referral', vid: v.vid }, referral({})))));
   eq('naming a referral creates NOBODY in FUB', creates().length, 1);
-  eq('but the row exists', s.__data('Entries').length, 1);
-  check('and the row carries the entrant FUB id for later linking',
-    cell(s, s.__data()[0], 'FUB Person ID').length > 0,
-    cell(s, s.__data()[0], 'FUB Person ID'));
+  eq('two rows: their own entry and the pending referral', s.__data('Entries').length, 2);
+  check('and the referral row carries the entrant FUB id for later linking',
+    cell(s, refRows(s)[0], 'FUB Person ID').length > 0,
+    cell(s, refRows(s)[0], 'FUB Person ID'));
 
-  const token = cell(s, s.__data()[0], 'Consent Token');
+  const token = cell(s, refRows(s)[0], 'Consent Token');
   J(at(DURING, () => s.raffleHandleSubmission_({
     step: 'consent', decision: 'confirm', token: token, consent: 'Yes',
     referralName: 'Robin Vale', referralPhone: '(215) 555-9001',
@@ -501,8 +584,14 @@ const cell = (s, row, name) => {
   const before = s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post').length;
 
   const drawn = at(AFTER, () => s.raffleDrawWinner_(false));
-  check('the draw only sees the confirmed entry', drawn.ok && drawn.result.totalEligible === 1,
+  // Three eligible rows: both entrants' own entries, plus the one confirmed
+  // referral. The unanswered referral is NOT among them.
+  check('the draw sees both own entries and the one confirmed referral',
+    drawn.ok && drawn.result.totalEligible === 3,
     JSON.stringify(drawn && drawn.result && drawn.result.totalEligible));
+  eq('which is two people', drawn.result.totalPeople, 2);
+  // Dana: 1 + 5 = 6. The quiet entrant: 1, because their referral never replied.
+  eq('and seven tickets, not twelve', drawn.result.totalTickets, 7);
 
   const after = s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post');
   eq('the silent referral is swept into FUB by the draw', after.length, before + 1);
@@ -514,8 +603,14 @@ const cell = (s, row, name) => {
   check('and the record says plainly it has no consent',
     /HAS GIVEN NO CONSENT/.test(swept.background), swept.background.slice(0, 200));
   check('and says not to work it', /DO NOT call, text or drip/.test(swept.background));
-  check('their referrer STILL has no valid entry',
-    s.__data().filter(r => cell(s, r, 'Entry Status') === 'eligible').length === 1);
+  // The referrer IS entered — that is the point of the change — but they got no
+  // bonus for a referral who never answered.
+  check('the quiet referrer is still entered themselves',
+    s.__data().some(r => cell(s, r, 'Full Name') === 'Quiet Entrant' &&
+                         cell(s, r, 'Entry Status') === 'eligible'));
+  check('but their unanswered referral earned them nothing',
+    s.__data().some(r => cell(s, r, 'Referral Name') === 'Silent Person' &&
+                         cell(s, r, 'Entry Status') === 'pending-consent'));
 
   // Idempotency has to be tested on the SWEEP itself, not by drawing twice: the
   // draw is once-only, so a second raffleDrawWinner_ returns the stored result and
@@ -527,8 +622,7 @@ const cell = (s, row, name) => {
     s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post').length,
     before + 1);
   check('the swept row records when it was logged',
-    cell(s, s.__data()[1], 'Referral Logged At').length > 0,
-    cell(s, s.__data()[1], 'Referral Logged At'));
+    refRows(s).some(r => cell(s, r, 'Referral Logged At').length > 0));
 }
 
 // ---- The referral chain --------------------------------------------------------
@@ -548,13 +642,25 @@ const cell = (s, row, name) => {
     /dana@mail-test\.co/.test(String(chainMail[0].replyTo)) &&
     /info@tsg\.homes/.test(String(chainMail[0].replyTo)), String(chainMail[0].replyTo));
 
-  const chainToken = cell(s, s.__data()[0], 'Chain Token');
+  const chainToken = cell(s, refRows(s)[0], 'Chain Token');
   check('the chain token is on the row', /^[0-9a-fA-F-]{36}$/.test(chainToken), chainToken);
 
   // The link opens the form already past verification.
   const page = String(at(DURING, () => s.raffleServeForm_(
     { parameter: { action: 'refer', t: chainToken } }, 'u')));
   check('the chain link serves the entry form', page.length > 1000);
+
+  // Opening the chain link ENTERS them, before they refer anybody. They proved
+  // their inbox by clicking a link only it received, so they get the same single
+  // ticket the code path gives -- otherwise the email says "you can enter too"
+  // and hands them a referral form that enters them only if someone else replies.
+  check('opening the chain link enters them on the spot',
+    selfRows(s).some(r => cell(s, r, 'Full Name') === 'Robin Vale' &&
+                          cell(s, r, 'Entry Status') === 'eligible'),
+    JSON.stringify(selfRows(s).map(r => cell(s, r, 'Full Name'))));
+  const selfCount = selfRows(s).length;
+  at(DURING, () => s.raffleServeForm_({ parameter: { action: 'refer', t: chainToken } }, 'u'));
+  eq('and opening it twice does not enter them twice', selfRows(s).length, selfCount);
   const vidLine = (page.match(/var\s+CHAIN_VID\s*=\s*(.*?);/) || [])[1];
   check('with a session already minted', !!vidLine && JSON.parse(vidLine).length === 36, vidLine);
   check('and greets them by name',
@@ -569,8 +675,11 @@ const cell = (s, row, name) => {
     referralTimeframe: '0-3 Months' })));
   check('a chain entrant can refer somebody', chained.ok === true && chained.staged === true,
     JSON.stringify(chained));
-  eq('which is a second row', s.__data('Entries').length, 2);
-  eq('with the confirmed referral as the entrant', s.__data()[1][1], 'Robin Vale');
+  check('which adds rows for them', s.__data('Entries').length > 2,
+    'rows=' + s.__data('Entries').length);
+  check('with the confirmed referral as the entrant',
+    s.__data().some(r => cell(s, r, 'Full Name') === 'Robin Vale'),
+    JSON.stringify(s.__data().map(r => cell(s, r, 'Full Name'))));
 }
 
 {
@@ -597,11 +706,11 @@ const cell = (s, row, name) => {
       /robin@mail-test\.co/.test(String(f.o.payload))));
   eq('but no chain invite is sent after the draw',
     s.__sent.filter(m => /you can win/i.test(m.subject)).length, 0);
-  check('and no chain token is minted', cell(s, s.__data()[0], 'Chain Token') === '',
-    cell(s, s.__data()[0], 'Chain Token'));
-  check('and it did not become an entry',
-    cell(s, s.__data()[0], 'Entry Status') !== 'eligible',
-    cell(s, s.__data()[0], 'Entry Status'));
+  check('and no chain token is minted', cell(s, refRows(s)[0], 'Chain Token') === '',
+    cell(s, refRows(s)[0], 'Chain Token'));
+  check('and the referral row did not become an entry',
+    cell(s, refRows(s)[0], 'Entry Status') !== 'eligible',
+    cell(s, refRows(s)[0], 'Entry Status'));
 }
 
 {
@@ -691,7 +800,8 @@ const cell = (s, row, name) => {
   eq('the catch-up does not send a second batch', reminders().length, 1);
   check('and says the batch already went', /already went out/.test(again.summary), again.summary);
   check('the batch time is recorded', !!s.__props.RAFFLE_REMINDER_BATCH_AT);
-  check('the row records when it went', cell(s, s.__data()[1], 'Reminder Sent At').length > 0);
+  check('the row records when it went',
+    refRows(s).some(r => cell(s, r, 'Reminder Sent At').length > 0));
 
   // And once someone answers, no reminder can follow.
   const s2 = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
@@ -746,7 +856,7 @@ const cell = (s, row, name) => {
 
   // 2. Test entries are in their own tab, and the live tab is empty.
   check('test mode: wrote to the "Test Entries" tab', !!s.__tabs['Test Entries']);
-  eq('test mode: two rows on the test tab', s.__data('Test Entries').length, 2);
+  eq('test mode: four rows on the test tab (two journeys)', s.__data('Test Entries').length, 4);
   eq('test mode: LIVE tab still empty', s.__data('Entries').length, 0);
 
   // 3. Every other check still runs.
@@ -754,8 +864,12 @@ const cell = (s, row, name) => {
     enterFull(s, entry({ consent: 'No', email: 'x@y.com' }), BEFORE).ok === false);
   check('test mode does NOT relax required fields',
     enterFull(s, entry({ fullName: '', email: 'q@y.com' }), BEFORE).ok === false);
-  check('test mode does NOT relax one-entry-per-person',
-    enterFull(s, entry(), BEFORE).already === true);
+  // One FREE entry per person still holds in test mode: repeating the journey
+  // must not mint a second self entry, however many referrals get added.
+  const selfBefore = s.__data('Test Entries').filter(r => cell(s, r, 'Referral Name') === '').length;
+  enterFull(s, entry(), BEFORE);
+  eq('test mode does NOT relax one free entry per person',
+    s.__data('Test Entries').filter(r => cell(s, r, 'Referral Name') === '').length, selfBefore);
 
   // 4. FUB records are marked so nobody mistakes them for leads.
   const people = s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post');
@@ -803,11 +917,11 @@ const cell = (s, row, name) => {
   // Same spreadsheet shape, so assert on the separation rule directly.
   enterFull(t, entry({
     fullName: 'Fake Tester', email: 'fake@mail-test.co', phone: '(267) 555-8222' }), DURING);
-  eq('live sandbox: real entry on the live tab', s.__data('Entries').length, 1);
+  eq('live sandbox: real entry on the live tab', s.__data('Entries').length, 2);
   eq('test sandbox: nothing on the live tab', t.__data('Entries').length, 0);
   const res = at(AFTER, () => s.raffleDrawWinner_(false, true));
   eq('live draw picks the real person', res.result.winner.name, 'Real Person');
-  eq('live draw pool excludes test entries entirely', res.result.totalEligible, 1);
+  eq('live draw pool excludes test entries entirely', res.result.totalPeople, 1);
 }
 
 // The 6:15 trigger is hard-wired to the live draw.
@@ -826,7 +940,7 @@ const cell = (s, row, name) => {
   const s = makeSandbox({ qaMode: true });
   enterFull(s, entry(), DURING);
   at(AFTER, () => s.raffleDrawWinner_(true));
-  eq('before reset: test rows present', s.__data('Test Entries').length, 1);
+  eq('before reset: test rows present', s.__data('Test Entries').length, 2);
   s.raffleResetTest();
   eq('after reset: test rows cleared', s.__data('Test Entries').length, 0);
   check('after reset: test winner cleared', s.__props.RAFFLE_TEST_WINNER_JSON === undefined);
@@ -871,7 +985,11 @@ const cell = (s, row, name) => {
   const good = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code })));
   check('the right code verifies them', good.ok === true && good.verified === true);
   check('verification hands back a session id', /^[0-9a-fA-F-]{36}$/.test(String(good.vid)));
-  eq('verification alone still writes no row', s.__data().length, 0);
+  // Verification now DOES write one row: the entrant's own entry, worth one
+  // ticket. That is the change that made a zero-entry drawing impossible.
+  eq('verification writes the entrant\'s own entry', s.__data().length, 1);
+  eq('and it is eligible immediately', cell(s, s.__data()[0], 'Entry Status'), 'eligible');
+  eq('with no referral attached', cell(s, s.__data()[0], 'Referral Name'), '');
   check('the response says nothing about whether they were already in FUB',
     !/found|existing|already a|welcome back/i.test(JSON.stringify(good)), JSON.stringify(good));
   const created = JSON.parse(s.__fetches.find(
@@ -884,7 +1002,7 @@ const cell = (s, row, name) => {
   // The id is single-use.
   const replay = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code })));
   check('the same code cannot be replayed', replay.ok === false);
-  eq('replay still writes nothing', s.__data().length, 0);
+  eq('a replay adds no second row', s.__data().length, 1);
 }
 
 // You cannot verify one address and enter a different one.
