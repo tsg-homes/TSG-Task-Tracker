@@ -32,6 +32,7 @@ function makeSandbox(opts) {
   const alerts = [];
   const qa = { active: !!opts.qaMode };
   const triggers = [];
+  const templates = [];
 
   // Multi-tab fake: the whole point of the test/live split is that they are
   // different sheets, so the fake has to model that rather than share one array.
@@ -44,6 +45,10 @@ function makeSandbox(opts) {
       rows: r,
       appendRow: x => r.push(x.slice()),
       getLastRow: () => r.length,
+      // Real sheets report the widest populated column; the header row is what
+      // sets that here, which is exactly what raffleEnsureHeaders_ reads to
+      // decide whether the tab needs widening.
+      getLastColumn: () => (r[0] ? r[0].length : 0),
       getRange: (row, c, nr, nc) => ({
         // Sheets semantics, modelled: a cell whose stored text begins with '='
         // IS a formula, and a leading apostrophe is a text marker that getValue
@@ -61,10 +66,22 @@ function makeSandbox(opts) {
           const v = r[row - 1][c - 1];
           return (typeof v === 'string' && v.charAt(0) === '=') ? v : '';
         },
-        setValue: v => { r[row - 1][c - 1] = v; },
-        setValues: () => {},
+        setValue: v => {
+          if (!r[row - 1]) r[row - 1] = [];
+          r[row - 1][c - 1] = v;
+          return { setFontWeight: () => ({}) };
+        },
+        setValues: vals => {
+          vals.forEach((rowVals, ri) => {
+            const target = row - 1 + ri;
+            if (!r[target]) r[target] = [];
+            rowVals.forEach((v, ci) => { r[target][c - 1 + ci] = v; });
+          });
+          return { setFontWeight: () => ({ setFontSize: () => {}, setBackground: () => {} }) };
+        },
         setFontWeight: () => ({ setFontSize: () => {}, setBackground: () => {} })
       }),
+      getName: () => sh.name,
       setName: n => { sh.name = n; }, setFrozenRows: () => {}, clear: () => {},
       deleteRows: (start, n) => { r.splice(start - 1, n); }
     };
@@ -144,7 +161,23 @@ function makeSandbox(opts) {
         return json({ id: 999 });
       }
     },
-    HtmlService: { createHtmlOutput: h => h, createTemplateFromFile: () => ({ evaluate: () => ({ setTitle: () => ({ addMetaTag: () => 'page' }) }) }) },
+    // The template fake records what the server assigned and renders bodyHtml, so
+    // a test can assert on what the consent page would actually emit. A fake that
+    // returned a constant would make every XSS assertion on that page vacuous.
+    HtmlService: {
+      createHtmlOutput: h => h,
+      createTemplateFromFile: name => {
+        const t = {
+          __file: name,
+          evaluate: () => {
+            const out = String(t.bodyHtml === undefined ? 'page' : t.bodyHtml);
+            templates.push({ file: name, props: Object.assign({}, t), rendered: out });
+            return { setTitle: () => ({ addMetaTag: () => out }) };
+          }
+        };
+        return t;
+      }
+    },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: t => ({ setMimeType: () => JSON.parse(t) }) },
 
     // Helpers that live in Code.gs (shared global scope in a real project).
@@ -161,6 +194,27 @@ function makeSandbox(opts) {
     },
     sendErrorAlert: (context, detail) => { alerts.push({ context, detail }); },
     getSubmitToken: () => 'tok',
+    // Live-from-FUB timeframe list (Code.gs getFubTimeframes). These labels are
+    // this account's real ones, taken from the 2026-09-15 live response, so the
+    // "default to the 1-year bucket" matching is exercised against real data.
+    getFubTimeframes: () => (opts.timeframes || [
+      { id: 1, name: '0-3 Months' }, { id: 2, name: '3-6 Months' },
+      { id: 3, name: '7-12 Months' }, { id: 4, name: '12+ Months' }
+    ]),
+    resolveTimeframeId: name => {
+      const list = opts.timeframes || [
+        { id: 1, name: '0-3 Months' }, { id: 2, name: '3-6 Months' },
+        { id: 3, name: '7-12 Months' }, { id: 4, name: '12+ Months' }
+      ];
+      const hit = list.find(t => t.name === name);
+      return hit ? hit.id : null;
+    },
+    applyQaTestPersonMarking_: p => {
+      if (!qa.active) return p;
+      p.tags = (p.tags || []).slice();
+      if (p.tags.indexOf('QA Test — Safe to Delete') === -1) p.tags.push('QA Test — Safe to Delete');
+      return p;
+    },
     safeJsonForScript_: v => JSON.stringify(v),
     CONSENT_CUSTOM_FIELD: 'customConsentCapturedDate',
     // The project's existing QA test-mode surface, stubbed. `qaMode` is what a
@@ -185,7 +239,8 @@ function makeSandbox(opts) {
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../RaffleCode.gs'), 'utf8'), sandbox);
-  sandbox.__sent = sent; sandbox.__fetches = fetches;
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../RaffleReferral.gs'), 'utf8'), sandbox);
+  sandbox.__sent = sent; sandbox.__fetches = fetches; sandbox.__templates = templates;
   sandbox.__props = props; sandbox.__tabs = tabs; sandbox.__alerts = alerts;
   sandbox.__shared = shared;
   // Data rows only -- the header is row 1 and is never an entry.
@@ -211,21 +266,57 @@ const entry = o => Object.assign({ fullName: 'Dana Reid', email: 'dana@mail-test
 // Unwrap a ContentService TextOutput the way real calling code must.
 const J = r => (r && typeof r.getContent === 'function') ? JSON.parse(r.getContent()) : r;
 
-function enterFull(s, d, when) {
+// Step 1+2 only: details -> emailed code -> verified session. Returns the verify
+// response, which now carries a vid instead of entering anybody.
+function verifySession(s, d, when) {
   const r1 = J(at(when, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, d))));
   if (!r1 || !r1.ok || !r1.needsCode) return r1;
   const mail = s.__sent[s.__sent.length - 1];      // the code email just sent
   if (!mail) throw new Error('needsCode but no email sent; result=' + JSON.stringify(r1));
   const m = String(mail.subject).match(/(\d{6})/);
   if (!m) throw new Error('no 6-digit code in subject: ' + mail.subject);
-  const code = m[1];
-  return J(at(when, () => s.raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code })));
+  return J(at(when, () => s.raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: m[1] })));
+}
+
+const referral = o => Object.assign({
+  referralName: 'Robin Vale', referralEmail: 'robin@mail-test.co',
+  referralPhone: '(215) 555-9001', referralRole: 'Buyer',
+  referralTimeframe: '7-12 Months', consent: 'Yes'
+}, o);
+
+// The whole thing, end to end, the way a real entrant plus a real referral drive
+// it: verify -> submit the referral -> send the invite -> the referred person
+// consents. Only after that last step does a row count as an entry, so any test
+// that wants an eligible entry has to go all the way through.
+//
+// `opts.skipConsent` stops before the referral consents, which is how you build
+// the pending-but-not-yet-an-entry state.
+function enterFull(s, d, when, opts) {
+  opts = opts || {};
+  const v = verifySession(s, d, when);
+  if (!v || !v.ok || !v.verified) return v;
+
+  const ref = referral(opts.referral || {});
+  const staged = J(at(when, () => s.raffleHandleSubmission_(
+    Object.assign({ step: 'referral', vid: v.vid }, ref))));
+  if (!staged || !staged.ok || !staged.staged) return staged;
+
+  const invited = J(at(when, () => s.raffleHandleSubmission_(
+    { step: 'invite', vid: v.vid, token: staged.token })));
+  if (opts.skipConsent) return Object.assign({ token: staged.token }, invited);
+
+  const consented = J(at(when, () => s.raffleHandleSubmission_(Object.assign(
+    { step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes' },
+    { referralName: ref.referralName, referralEmail: ref.referralEmail,
+      referralPhone: ref.referralPhone, referralRole: ref.referralRole,
+      referralTimeframe: ref.referralTimeframe }))));
+  return Object.assign({ token: staged.token, vid: v.vid }, consented);
 }
 // Draw-result emails only -- the inbox also holds verification codes now.
 const drawMail = s => s.__sent.filter(m => /Winner/i.test(m.subject));
 
 module.exports = {
-  makeSandbox, at, entry, enterFull, drawMail, J, check, eq,
+  makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J, check, eq,
   HEADERS, DURING, BEFORE, AFTER,
   counts: () => ({ passes, fails })
 };

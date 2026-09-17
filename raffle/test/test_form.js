@@ -34,7 +34,16 @@ function page(opts) {
     openTime: '3:00 PM',
     openAtMs: String(opts.openAt),
     closeAtMs: String(opts.closeAt),
-    serverNowMs: String(opts.now)
+    serverNowMs: String(opts.now),
+    // The Buyer/Seller timeframe dropdown, fed live from FUB via
+    // getFubTimeframes() in Code.gs. These are this account's real labels.
+    timeframeList: JSON.stringify(opts.timeframes || [
+      { id: 1, name: '0-3 Months' }, { id: 2, name: '3-6 Months' },
+      { id: 3, name: '7-12 Months' }, { id: 4, name: '12+ Months' }
+    ]),
+    defaultTimeframe: opts.defaultTimeframe === undefined ? '7-12 Months' : opts.defaultTimeframe,
+    prizeShort: '$300 toward any Ticketmaster purchase',
+    announceAt: '6:30 PM'
   }, opts.vals || {});
   // Model Apps Script's templating faithfully, including its escaping, because
   // getting that wrong is exactly how the countdown broke live: <?= ?> ESCAPES
@@ -256,7 +265,12 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
     const b = JSON.parse(r.request().postData());
     if (b.step === 'request') { step1 = b; return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, needsCode: true, vid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }) }); }
     step2 = b;
-    if (b.code === '654321') return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, verified: true }) });
+    // Faithful to what raffleVerifyCode_ actually returns: a session id and the
+    // entrant's first name, NOT an entry. A fake that returned a bare {ok:true}
+    // would let the page's referral step regress unnoticed.
+    if (b.code === '654321') return r.fulfill({ status: 200, body: JSON.stringify({
+      ok: true, verified: true, vid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      firstName: 'Dana', message: 'Thanks Dana — now tell us who you are referring.' }) });
     return r.fulfill({ status: 200, body: JSON.stringify({ ok: false, error: 'That code is not right. Check your email and try again.' }) });
   });
 
@@ -295,7 +309,29 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   check('verify: step 2 carries the server-issued vid',
     step2 && step2.vid === 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
   check('verify: step 2 is a "verify"', step2 && step2.step === 'verify');
-  check('verify: correct code enters them', await p.locator('#successPanel').isVisible());
+  // Verifying no longer enters anyone: it opens the referral step, because under
+  // the referral rules an entry does not exist until a referred person consents.
+  check('verify: correct code opens the referral step',
+    await p.locator('#referPanel').isVisible());
+  check('verify: it does NOT claim they are entered',
+    !(await p.locator('#successPanel').isVisible()));
+  check('verify: the referral step greets them by first name',
+    (await p.locator('#entrantFirst').textContent()).trim().length > 0);
+
+  // The Buyer/Seller radios and the live FUB timeframe dropdown.
+  check('referral step offers a Buy option',
+    await p.locator('input[name="refRole"][value="Buyer"]').count() === 1);
+  check('referral step offers a Sell option',
+    await p.locator('input[name="refRole"][value="Seller"]').count() === 1);
+  check('neither role is preselected',
+    await p.locator('input[name="refRole"]:checked').count() === 0);
+  const tfOptions = await p.locator('#refTimeframe option').allTextContents();
+  check('timeframe dropdown is populated from the live FUB list',
+    tfOptions.indexOf('0-3 Months') !== -1 && tfOptions.indexOf('12+ Months') !== -1,
+    tfOptions.join(','));
+  check('timeframe defaults to the 1-year bucket',
+    (await p.locator('#refTimeframe').inputValue()) === '7-12 Months',
+    await p.locator('#refTimeframe').inputValue());
 
   // "Wrong email? Start over" returns to a clean form.
   await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000 }));

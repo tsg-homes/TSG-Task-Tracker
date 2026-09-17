@@ -5,7 +5,7 @@
  *
  *   node test/test_raffle.js
  */
-const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURING, BEFORE, AFTER, counts } = require('./harness');
+const { makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J, check, eq, HEADERS, DURING, BEFORE, AFTER, counts } = require('./harness');
 
 // ---- Identity normalization ------------------------------------------------
 {
@@ -19,19 +19,24 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
 
 // ---- Entry window ----------------------------------------------------------
 {
+  // 2026-09-17: entries open AHEAD of the party, not just during it. Entry now
+  // depends on a third party replying to an email, and a three-hour Saturday
+  // window was not enough time for that to happen. The CLOSE is still hard --
+  // it has to be, or the draw would be from a pool that is still moving.
   const s = makeSandbox();
-  eq('state before the party',  at(BEFORE, () => s.raffleEntryState_()), 'before');
+  eq('entries are open days before the party', at(BEFORE, () => s.raffleEntryState_()), 'open');
   eq('state during the party',  at(DURING, () => s.raffleEntryState_()), 'open');
   eq('state after the 6:15 draw', at(AFTER, () => s.raffleEntryState_()), 'closed');
 
   const early = enterFull(s, entry(), BEFORE);
-  check('entry rejected before 3:00 PM on 9/19', early.ok === false);
-  check('no row written before open', s.__data().length === 0);
+  check('an entry days before the party is accepted', early.ok === true, JSON.stringify(early));
+  eq('and it is written', s.__data().length, 1);
 
-  const late = enterFull(s, entry(), AFTER);
+  const s2 = makeSandbox();
+  const late = enterFull(s2, entry(), AFTER);
   check('entry rejected after 6:15 PM', late.ok === false);
   check('late rejection names the 6:30 announcement', /6:30 PM/.test(late.error));
-  check('no row written after close', s.__data().length === 0);
+  check('no row written after close', s2.__data().length === 0);
 }
 
 // ---- Required fields + consent ---------------------------------------------
@@ -70,9 +75,15 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
 
   eq('still exactly one row after 3 duplicate attempts', s.__data().length, 1);
 
-  const other = enterFull(s, 
-    entry({ fullName: 'Sam Ortiz', email: 'sam@mail-test.co', phone: '(267) 555-8100' }), DURING);
-  check('a genuinely different person is accepted', other.ok === true && !other.already);
+  // A different entrant AND a different referral: one entry per referred person
+  // is the rule now, so reusing the default referral here would be refused --
+  // which is itself asserted in the referral section below.
+  const other = enterFull(s,
+    entry({ fullName: 'Sam Ortiz', email: 'sam@mail-test.co', phone: '(267) 555-8100' }),
+    DURING,
+    { referral: { referralName: 'Casey Wren', referralEmail: 'casey@mail-test.co',
+                  referralPhone: '(215) 555-9002' } });
+  check('a genuinely different person is accepted', other.ok === true, JSON.stringify(other));
   eq('two rows now', s.__data().length, 2);
 }
 
@@ -95,8 +106,11 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
   // the actual create.
   const people = s.__fetches.filter(f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post');
   const notes  = s.__fetches.filter(f => /\/v1\/notes/.test(f.url));
-  eq('one person created in FUB', people.length, 1);
-  eq('one note written in FUB', notes.length, 1);
+  // Two creates now: the entrant and the person they referred. And more notes --
+  // both records get one at referral time, and the referral gets a second when
+  // they consent.
+  eq('two people created in FUB (entrant + referral)', people.length, 2);
+  check('at least three notes written in FUB', notes.length >= 3, 'got ' + notes.length);
   const body = JSON.parse(people[0].o.payload);
   eq('first name split', body.firstName, 'Dana');
   eq('last name split', body.lastName, 'Reid');
@@ -107,6 +121,25 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
   check('source names the event', /Block Party 2026/.test(body.source));
   check('structured consent date captured', !!body.customConsentCapturedDate);
   check('background records block party attendance', /ATTENDED/.test(body.background));
+
+  // The referral's own record, created from the same submission.
+  const refBody = JSON.parse(people[1].o.payload);
+  eq('referral first name split', refBody.firstName, 'Robin');
+  check('referral tagged with the role they were referred for',
+    refBody.tags.indexOf('Buyer') !== -1, JSON.stringify(refBody.tags));
+  check('referral tagged as a referred lead', refBody.tags.indexOf('Referred Lead') !== -1);
+  check('referral carries the live FUB timeframe id', refBody.timeframeId === 3,
+    JSON.stringify(refBody.timeframeId));
+  check('referral background says consent is NOT yet given',
+    /NOT YET GIVEN/.test(refBody.background));
+  check('referral background names the referrer', /Dana Reid/.test(refBody.background));
+
+  // Both directions of the relationship, so the link is visible from either record.
+  const links = s.__fetches.filter(f => /peopleRelationships/.test(f.url));
+  eq('two relationship links written', links.length, 2);
+  const types = links.map(l => JSON.parse(l.o.payload).type).sort();
+  check('linked as Referred / Referred by', types.join(',') === 'Referred,Referred by',
+    types.join(','));
   const note = JSON.parse(notes[0].o.payload);
   check('note mentions the block party', /Block Party/.test(note.subject));
   check('note carries the date and address', /9\/19\/2026/.test(note.body));
@@ -117,7 +150,11 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
   const s = makeSandbox();
   ['a', 'b', 'c', 'd'].forEach((n, i) => enterFull(s, entry({
     fullName: 'Person ' + n, email: n + '@mail-test.co', phone: '(215) 555-810' + i
-  }), DURING));
+  }), DURING, {
+    referral: { referralName: 'Ref ' + n.toUpperCase() + ' Person',
+                referralEmail: 'ref' + n + '@mail-test.co',
+                referralPhone: '(215) 555-91' + (10 + i) }
+  }));
   eq('four entrants', s.__data().length, 4);
 
   const first = at(AFTER, () => s.raffleDrawWinner_());
@@ -161,7 +198,9 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
   const s = makeSandbox();
   enterFull(s, entry(), DURING);
   enterFull(s, entry({
-    fullName: 'Sam Ortiz', email: 'sam@mail-test.co', phone: '(267) 555-8100' }), DURING);
+    fullName: 'Sam Ortiz', email: 'sam@mail-test.co', phone: '(267) 555-8100' }), DURING,
+    { referral: { referralName: 'Casey Wren', referralEmail: 'casey@mail-test.co',
+                  referralPhone: '(215) 555-9002' } });
   s.__tabs['Entries'].rows[1][9] = 'No';        // Durand marks a row ineligible by hand
   const res = at(AFTER, () => s.raffleDrawWinner_());
   eq('disqualified row excluded from the draw', res.result.totalEligible, 1);
@@ -192,8 +231,11 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
   const early = enterFull(s, entry(), BEFORE);
   check('test mode: entry accepted OUTSIDE the Sat 3:00-6:15 window', early.ok === true);
   const late = enterFull(s, entry({
-    fullName: 'Late Tester', email: 'late@mail-test.co', phone: '(267) 555-8111' }), AFTER);
-  check('test mode: entry accepted after the 6:15 close too', late.ok === true);
+    fullName: 'Late Tester', email: 'late@mail-test.co', phone: '(267) 555-8111' }), AFTER,
+    { referral: { referralName: 'Late Referral', referralEmail: 'lateref@mail-test.co',
+                  referralPhone: '(215) 555-9099' } });
+  check('test mode: entry accepted after the 6:15 close too', late.ok === true,
+    JSON.stringify(late));
 
   // 2. Test entries are in their own tab, and the live tab is empty.
   check('test mode: wrote to the "Test Entries" tab', !!s.__tabs['Test Entries']);
@@ -316,12 +358,15 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
   check('a wrong code is rejected', bad.ok === false);
   eq('a wrong code writes nothing', s.__data().length, 0);
 
-  // Right code enters them.
+  // The right code no longer enters anyone -- it opens a verified session. Under
+  // the referral rules an entry does not exist until a referred person consents,
+  // so a row appears at the REFERRAL step, not here.
   const good = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code })));
-  check('the right code enters them', good.ok === true && good.verified === true);
-  eq('now one row exists', s.__data().length, 1);
-  check('the row records the email as verified',
-    /Yes/.test(String(s.__data()[0][10])));
+  check('the right code verifies them', good.ok === true && good.verified === true);
+  check('verification hands back a session id', /^[0-9a-fA-F-]{36}$/.test(String(good.vid)));
+  eq('verification alone still writes no row', s.__data().length, 0);
+  check('the response says nothing about whether they were already in FUB',
+    !/found|existing|already a|welcome back/i.test(JSON.stringify(good)), JSON.stringify(good));
   const created = JSON.parse(s.__fetches.find(
     f => /\/v1\/people$/.test(f.url) && f.o && f.o.method === 'post').o.payload);
   check('FUB background states the email was verified',
@@ -332,7 +377,7 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
   // The id is single-use.
   const replay = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: req.vid, code: code })));
   check('the same code cannot be replayed', replay.ok === false);
-  eq('replay adds no second row', s.__data().length, 1);
+  eq('replay still writes nothing', s.__data().length, 0);
 }
 
 // You cannot verify one address and enter a different one.
@@ -340,12 +385,19 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
   const s = makeSandbox();
   const req = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));
   const code = String(s.__sent[0].subject).match(/(\d{6})/)[1];
-  // Step 2 smuggles different details alongside the valid code.
-  J(at(DURING, () => s.raffleHandleSubmission_({
+  // Step 2 smuggles different details alongside the valid code...
+  const v = J(at(DURING, () => s.raffleHandleSubmission_({
     step: 'verify', vid: req.vid, code: code,
     fullName: 'Someone Else', email: 'attacker@mail-test.co', phone: '(267) 555-8777'
   })));
-  eq('entry written from the VERIFIED values, not the second request', s.__data()[0][2], 'dana@mail-test.co');
+  // ...and step 3 tries again, since the row is written there now.
+  J(at(DURING, () => s.raffleHandleSubmission_({
+    step: 'referral', vid: v.vid, consent: 'Yes',
+    fullName: 'Someone Else', email: 'attacker@mail-test.co', phone: '(267) 555-8777',
+    referralName: 'Robin Vale', referralEmail: 'robin@mail-test.co',
+    referralPhone: '(215) 555-9001', referralRole: 'Buyer', referralTimeframe: '7-12 Months'
+  })));
+  eq('entry written from the VERIFIED values, not a later request', s.__data()[0][2], 'dana@mail-test.co');
   eq('smuggled name ignored', s.__data()[0][1], 'Dana Reid');
   check('smuggled phone ignored', String(s.__data()[0][3]).indexOf('8777') === -1);
 }
@@ -408,6 +460,12 @@ const { makeSandbox, at, entry, enterFull, drawMail, J, check, eq, HEADERS, DURI
 
 
 // ---- ALREADY-IN-FUB: confident match -> update, never a duplicate -----------
+//
+// These two sections are about the ENTRANT's match-or-create only, so they drive
+// verifySession rather than the whole referral flow: the entrant is resolved
+// against FUB the moment they verify their email, and going further would add the
+// referral's own create and consent-update to every count below and make the
+// assertions say nothing about the thing they are testing.
 const fubPerson = o => Object.assign({
   id: 501, firstName: 'Dana', lastName: 'Reid',
   emails: [{ value: 'dana@mail-test.co' }], phones: [{ value: '2155558123' }],
@@ -421,7 +479,7 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
 // email + last name + phone all agree -> update, and NOT a second record.
 {
   const s = makeSandbox({ fubPeople: [fubPerson()] });
-  enterFull(s, entry(), DURING);
+  verifySession(s, entry(), DURING);
   eq('confident match updates the existing contact', puts(s).length, 1);
   eq('confident match creates NO duplicate', creates(s).length, 0);
   check('updated the right person', /\/v1\/people\/501$/.test(puts(s)[0].url));
@@ -448,7 +506,7 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
 // New information is ADDED, never swapped in over the old.
 {
   const s = makeSandbox({ fubPeople: [fubPerson({ phones: [{ value: '2679990000' }] })] });
-  enterFull(s, entry(), DURING);   // same email + same surname, a new mobile
+  verifySession(s, entry(), DURING);   // same email + same surname, a new mobile
   const body = JSON.parse(puts(s)[0].o.payload);
   eq('both phones now on the record', body.phones.length, 2);
   check('the old number survives', body.phones.some(p => p.value === '2679990000'));
@@ -459,7 +517,7 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
 // A blank name gets filled in; a populated one does not.
 {
   const s = makeSandbox({ fubPeople: [fubPerson({ firstName: '', lastName: '' , emails:[{value:'dana@mail-test.co'}], phones:[{value:'2155558123'}]})] });
-  enterFull(s, entry(), DURING);
+  verifySession(s, entry(), DURING);
   const body = JSON.parse(puts(s)[0].o.payload);
   eq('blank first name filled from the entry', body.firstName, 'Dana');
   eq('blank last name filled from the entry', body.lastName, 'Reid');
@@ -470,7 +528,7 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   // Shared household email, different surname and different phone.
   const s = makeSandbox({ fubPeople: [fubPerson({
     firstName: 'Chris', lastName: 'Alvarez', phones: [{ value: '2679990000' }] })] });
-  enterFull(s, entry(), DURING);
+  verifySession(s, entry(), DURING);
   eq('email alone does NOT merge two people', puts(s).length, 0);
   eq('a new contact is created instead', creates(s).length, 1);
   check('note says no confident match', /no existing FUB record matched confidently/.test(noteBody(s)));
@@ -479,7 +537,7 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   // Shared household phone, different name and different email.
   const s = makeSandbox({ fubPeople: [fubPerson({
     firstName: 'Chris', lastName: 'Alvarez', emails: [{ value: 'chris@mail-test.co' }] })] });
-  enterFull(s, entry(), DURING);
+  verifySession(s, entry(), DURING);
   eq('phone alone does NOT merge two people', puts(s).length, 0);
   eq('a new contact is created instead', creates(s).length, 1);
 }
@@ -487,14 +545,14 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   // Phone + first name only (a father and son sharing a landline).
   const s = makeSandbox({ fubPeople: [fubPerson({
     lastName: 'Alvarez', emails: [{ value: 'other@mail-test.co' }] })] });
-  enterFull(s, entry(), DURING);
+  verifySession(s, entry(), DURING);
   eq('phone + first name alone is not enough', puts(s).length, 0);
 }
 
 // Ambiguous: two records clear the bar -> update nothing, tell Durand.
 {
   const s = makeSandbox({ fubPeople: [fubPerson({ id: 501 }), fubPerson({ id: 502 })] });
-  enterFull(s, entry(), DURING);
+  verifySession(s, entry(), DURING);
   eq('ambiguity updates nothing', puts(s).length, 0);
   eq('ambiguity still captures the lead', creates(s).length, 1);
   const alerts = s.__alerts || [];

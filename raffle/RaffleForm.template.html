@@ -117,6 +117,11 @@ body.qa-test{padding-top:62px;}
 #beforePanel .unit .n{font-family:'Playfair Display',serif;font-weight:700;font-size:28px;line-height:1;}
 #beforePanel .unit .l{font-size:9.5px;letter-spacing:1.5px;text-transform:uppercase;opacity:.75;margin-top:4px;}
 #beforePanel .soon{font-family:'Playfair Display',serif;font-size:30px;color:var(--eagles-green);font-weight:700;margin:16px 0 4px;}
+  .roles { display:flex; gap:10px; margin-top:6px; }
+  .roles .radio { flex:1; display:flex; align-items:center; justify-content:center; gap:8px;
+                  border:1px solid var(--line,#dfe6e6); border-radius:8px; padding:13px 10px;
+                  background:#fff; font-weight:700; cursor:pointer; }
+  .roles .radio input { margin:0; width:18px; height:18px; accent-color:#15464A; }
 </style>
 </head>
 <body>
@@ -185,13 +190,71 @@ body.qa-test{padding-top:62px;}
     <button type="button" class="linkish" id="startOverBtn">Wrong email? Start over</button>
   </div>
 
+  <!-- Step 3: who are you referring -->
+  <div class="panel" id="referPanel">
+    <h2>Who are you referring?</h2>
+    <p class="sent">Thanks <span class="addr" id="entrantFirst"></span> &mdash; you&rsquo;re verified.
+      Now tell us about <b>one person</b> you know who is thinking of buying or selling in the
+      next year. Your entry counts as soon as <b>they</b> confirm.</p>
+
+    <div class="field">
+      <label for="refName">Their full name <span class="req">*</span></label>
+      <input type="text" id="refName" autocapitalize="words">
+      <div class="errmsg" id="refNameErr"></div>
+    </div>
+    <div class="field">
+      <label for="refPhone">Their phone <span class="req">*</span></label>
+      <input type="tel" id="refPhone" inputmode="tel" placeholder="(215) 555-8123">
+      <div class="errmsg" id="refPhoneErr"></div>
+    </div>
+    <div class="field">
+      <label for="refEmail">Their email <span class="req">*</span></label>
+      <input type="email" id="refEmail" inputmode="email" autocapitalize="off"
+             placeholder="them@email.com">
+      <div class="errmsg" id="refEmailErr"></div>
+    </div>
+    <div class="field">
+      <label>Are they looking to buy or sell? <span class="req">*</span></label>
+      <div class="roles">
+        <label class="radio"><input type="radio" name="refRole" value="Buyer"><span>Buy</span></label>
+        <label class="radio"><input type="radio" name="refRole" value="Seller"><span>Sell</span></label>
+      </div>
+      <div class="errmsg" id="refRoleErr"></div>
+    </div>
+    <div class="field">
+      <label for="refTimeframe">When are they thinking of moving?</label>
+      <select id="refTimeframe"><option value="">Select&hellip;</option></select>
+    </div>
+
+    <div class="hint" style="text-align:left;margin:0 0 14px">
+      We&rsquo;ll email them to confirm their details and ask their permission &mdash; and we&rsquo;ll
+      copy you on it. Please only refer someone who would be glad to hear from us.
+    </div>
+
+    <div id="referErr" role="alert"></div>
+    <button type="button" id="referBtn">Continue</button>
+    <button type="button" class="linkish" id="startOverBtn2">Start over</button>
+  </div>
+
+  <!-- Step 4: send the confirmation email -->
+  <div class="panel" id="invitePanel">
+    <h2>One last step</h2>
+    <p class="sent">We&rsquo;re ready to email <span class="addr" id="inviteName"></span>.
+      They&rsquo;ll be asked to confirm their details and give permission for us to contact them.
+      <b>Your entry counts the moment they confirm.</b> You&rsquo;ll be copied on the email.</p>
+    <div id="inviteErr" role="alert"></div>
+    <button type="button" id="inviteBtn">Send it &amp; enter me</button>
+    <div class="hint">Nothing is sent until you tap the button.</div>
+  </div>
+
   <!-- Success -->
   <div class="panel" id="successPanel">
-    <h2 id="successTitle">You&rsquo;re entered!</h2>
+    <h2 id="successTitle">You&rsquo;re in the running</h2>
     <p id="successMsg">Good luck.</p>
     <div class="big">Winner announced at 6:30 PM</div>
-    <p style="margin-top:6px"><?= eventDateShort ?></p>
-    <p style="margin-top:14px">You must be present at 6:30 to claim on the spot &mdash; if you&rsquo;ve left, we&rsquo;ll call you.</p>
+    <p style="margin-top:6px"><?= eventDateShort ?>, at the Block Party</p>
+    <p style="margin-top:14px">You do <b>not</b> need to be there to win &mdash; if you&rsquo;re not
+      with us at 6:30, we&rsquo;ll call you.</p>
   </div>
 
   <div id="formWrap">
@@ -246,19 +309,36 @@ body.qa-test{padding-top:62px;}
 
             <h4>3. Eligibility</h4>
             <p>Open to legal residents of the United States who are 18 years of age or older at the
-               time of entry and who attend the TSG Block Party on September 19, 2026. Employees,
+               time of entry. Attendance at the TSG Block Party is not required to enter or to win.
+               Employees,
                agents and independent contractors of Sponsor and of Keller Williams Empower, and
                their immediate family and household members, are not eligible to win.</p>
 
             <h4>4. Entry period</h4>
-            <p>Entries are accepted only between 3:00 PM and 6:15 PM Eastern Time on Saturday,
-               September 19, 2026. Entries submitted outside that window are not accepted.</p>
+            <p>Entries are accepted from the time this form is published until <b>6:15 PM Eastern
+               Time on Saturday, September 19, 2026</b>, when the winner is drawn. An entry is
+               complete only when the referred person confirms (see section 5); a confirmation
+               received after 6:15 PM does not enter the drawing.</p>
 
-            <h4>5. How to enter &mdash; one entry per person</h4>
-            <p>Submit this form with your full name, phone number and email address, and accept these
-               Official Rules. <b>LIMIT ONE (1) ENTRY PER PERSON.</b> Duplicate entries, matched by
-               email address or phone number, are disregarded. Automated, robotic, scripted or bulk
-               entries are void.</p>
+            <h4>5. How to enter &mdash; one entry per referral</h4>
+            <p>To enter, submit this form with your full name, phone number and email address, accept
+               these Official Rules, and verify your email address using the code we send you. You
+               must then refer one (1) person &mdash; a friend or family member who is considering
+               buying or selling a home within the next year &mdash; by giving their name, phone
+               number and email address.</p>
+            <p>We will email that person and ask them to confirm their details and give their own
+               consent to be contacted. <b>YOUR ENTRY IS NOT COMPLETE, AND DOES NOT ENTER THE
+               DRAWING, UNTIL THAT PERSON CONFIRMS.</b> If they decline, or do not respond before
+               6:15 PM on September 19, 2026, the entry does not count. Both your consent and
+               theirs are required.</p>
+            <p><b>LIMIT ONE (1) ENTRY PER REFERRED PERSON.</b> A given person can be referred only
+               once: if two people refer the same person, the entry goes to whichever referral that
+               person confirms first, and the other does not count. A person who is already a
+               contact of Sponsor cannot be referred and does not create an entry. You may enter
+               more than once by referring different people, but each referral must be a different
+               person, and you may not refer yourself.</p>
+            <p>Duplicate or conflicting referrals are matched by email address and by phone number.
+               Automated, robotic, scripted or bulk entries are void.</p>
 
             <h4>6. Prize</h4>
             <p>One (1) prize: a $300 Ticketmaster gift card, redeemable toward any Ticketmaster
@@ -373,10 +453,17 @@ body.qa-test{padding-top:62px;}
   var btn          = document.getElementById('submitBtn');
 
   var codePanel = document.getElementById('codePanel');
-  var panels = [beforePanel, closedPanel, successPanel, codePanel];
+  var referPanel  = document.getElementById('referPanel');
+  var invitePanel = document.getElementById('invitePanel');
+  var referBtn    = document.getElementById('referBtn');
+  var inviteBtn   = document.getElementById('inviteBtn');
+  var panels = [beforePanel, closedPanel, successPanel, codePanel, referPanel, invitePanel];
   // Server-issued id for this pending entry. Nothing is written until the
   // emailed code comes back against it.
   var pendingVid = null;
+  // Server-issued id for a staged referral, held between the referral step and
+  // the send-the-email step.
+  var pendingToken = null;
   // Once someone has entered, their confirmation stays put. The ticker below
   // must not yank it away mid-read just because the clock moved on.
   var holdingSuccess = false;
@@ -437,10 +524,11 @@ body.qa-test{padding-top:62px;}
     // A held confirmation -- or a half-finished code step -- is only ever
     // replaced by the 6:15 close, never by a phase change the entrant does not
     // care about.
-    if ((holdingSuccess || pendingVid) && p !== 'closed') { lastPhase = p; return; }
+    if ((holdingSuccess || pendingVid || pendingToken) && p !== 'closed') { lastPhase = p; return; }
     if (p !== lastPhase || holdingSuccess) {
       holdingSuccess = false;
       pendingVid = null;
+      pendingToken = null;
       if (p === 'before')      show(beforePanel);
       else if (p === 'closed') show(closedPanel);
       else                     showForm();
@@ -497,18 +585,43 @@ body.qa-test{padding-top:62px;}
     }).then(function(r){ return r.json(); });
   }
 
+
+  // The timeframe list comes from FUB, live, via getFubTimeframes() in Code.gs —
+  // the same source the Open House form uses, so there is no second hardcoded
+  // copy of FUB's labels to drift out of date. DEFAULT_TIMEFRAME is matched
+  // server-side against that same list, so a renamed bucket in FUB changes the
+  // preselection here with no code change.
+  var TIMEFRAMES = <?!= timeframeList ?>;
+  var DEFAULT_TIMEFRAME = "<?!= defaultTimeframe ?>";
+  (function(){
+    var sel = document.getElementById('refTimeframe');
+    if (!sel) return;
+    TIMEFRAMES.forEach(function(t){
+      var o = document.createElement('option');
+      o.value = t.name; o.textContent = t.name;
+      if (t.name === DEFAULT_TIMEFRAME) o.selected = true;
+      sel.appendChild(o);
+    });
+  })();
+
   function enteredOk(res){
     document.getElementById('successTitle').textContent =
-      res.already ? 'You’re already in!' : 'You’re entered!';
+      res.already ? 'You’re already in!' : 'You’re in the running';
     document.getElementById('successMsg').textContent =
-      res.already ? 'We already have your entry — one per person.' : 'Good luck.';
+      (res && res.message) || 'Good luck.';
     holdingSuccess = true;
     pendingVid = null;
+    pendingToken = null;
     show(successPanel);
     form.reset();
     if (KIOSK) setTimeout(function(){
       holdingSuccess = false; lastPhase = null; render();
-    }, 6000);
+    }, 8000);
+  }
+
+  function refRole(){
+    var picked = document.querySelector('input[name="refRole"]:checked');
+    return picked ? picked.value : '';
   }
 
   // ---- Step 1: details -> emailed code ----
@@ -574,8 +687,16 @@ body.qa-test{padding-top:62px;}
     }).then(function(res){
       codeBtn.disabled = false;
       codeBtn.textContent = 'Confirm & Enter';
-      if (res && res.ok) enteredOk(res);
-      else codeErr.textContent = (res && res.error) || 'That did not work. Try again.';
+      if (res && res.ok && res.verified) {
+        pendingVid = res.vid || pendingVid;
+        document.getElementById('entrantFirst').textContent = res.firstName || '';
+        document.getElementById('referErr').textContent = '';
+        show(referPanel);
+      } else if (res && res.ok) {
+        enteredOk(res);
+      } else {
+        codeErr.textContent = (res && res.error) || 'That did not work. Try again.';
+      }
     }).catch(function(){
       codeBtn.disabled = false;
       codeBtn.textContent = 'Confirm & Enter';
@@ -588,8 +709,81 @@ body.qa-test{padding-top:62px;}
 
   document.getElementById('startOverBtn').addEventListener('click', function(){
     pendingVid = null;
+    pendingToken = null;
     lastPhase = null;
     render();
+  });
+  document.getElementById('startOverBtn2').addEventListener('click', function(){
+    pendingVid = null;
+    pendingToken = null;
+    lastPhase = null;
+    render();
+  });
+
+  // ---- Step 3: the referral ----
+  referBtn.addEventListener('click', function(){
+    ['refNameErr','refPhoneErr','refEmailErr','refRoleErr'].forEach(function(id){ setErr(id,''); });
+    document.getElementById('referErr').textContent = '';
+
+    var name  = document.getElementById('refName').value.replace(/\s+/g,' ').trim();
+    var phone = document.getElementById('refPhone').value.trim();
+    var email = document.getElementById('refEmail').value.trim().toLowerCase();
+    var role  = refRole();
+    var ok = true;
+    if (!name || name.indexOf(' ') === -1) { setErr('refNameErr','Enter their first and last name.'); ok = false; }
+    if (phone.replace(/\D/g,'').length < 10) { setErr('refPhoneErr','Enter a 10-digit phone number.'); ok = false; }
+    if (!/^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(email)) { setErr('refEmailErr','Enter a valid email address.'); ok = false; }
+    if (!role) { setErr('refRoleErr','Pick buy or sell.'); ok = false; }
+    if (!ok) return;
+
+    referBtn.disabled = true;
+    referBtn.textContent = 'Checking…';
+    post({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'referral', vid: pendingVid, consent: 'Yes',
+      referralName: name, referralPhone: phone, referralEmail: email,
+      referralRole: role,
+      referralTimeframe: document.getElementById('refTimeframe').value
+    }).then(function(res){
+      referBtn.disabled = false;
+      referBtn.textContent = 'Continue';
+      if (res && res.ok && res.staged) {
+        pendingToken = res.token;
+        document.getElementById('inviteName').textContent = res.referralEmail || res.referralName;
+        document.getElementById('inviteErr').textContent = '';
+        show(invitePanel);
+      } else {
+        document.getElementById('referErr').textContent =
+          (res && res.error) || 'That did not work. Try again.';
+      }
+    }).catch(function(){
+      referBtn.disabled = false;
+      referBtn.textContent = 'Continue';
+      document.getElementById('referErr').textContent =
+        'Could not reach us — check your signal and try again.';
+    });
+  });
+
+  // ---- Step 4: send the confirmation email ----
+  inviteBtn.addEventListener('click', function(){
+    document.getElementById('inviteErr').textContent = '';
+    inviteBtn.disabled = true;
+    inviteBtn.textContent = 'Sending…';
+    post({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'invite', vid: pendingVid, token: pendingToken
+    }).then(function(res){
+      inviteBtn.disabled = false;
+      inviteBtn.textContent = 'Send it & enter me';
+      if (res && res.ok) enteredOk(res);
+      else document.getElementById('inviteErr').textContent =
+        (res && res.error) || 'That did not work. Try again.';
+    }).catch(function(){
+      inviteBtn.disabled = false;
+      inviteBtn.textContent = 'Send it & enter me';
+      document.getElementById('inviteErr').textContent =
+        'Could not reach us — check your signal and try again.';
+    });
   });
 
 })();
