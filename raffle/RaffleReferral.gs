@@ -2126,16 +2126,13 @@ function raffleResultHtml_(result, test, consoleUrl) {
 // ---------- The console page ----------
 function raffleWinnerConsolePage_(test, key) {
   var stored = raffleStoredWinner_(test);
-  if (!stored) {
-    return HtmlService.createHtmlOutput(
-      '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:560px">' +
-      '<h2>No draw yet</h2><p>Nothing has been drawn' + (test ? ' on the test tab' : '') +
-      ', so there is nobody to send to. The draw runs automatically at 6:15 PM.</p></div>');
-  }
   var props = PropertiesService.getScriptProperties();
-  var sentAt = props.getProperty(raffleWinnerEmailedProp_(test));
-  var picks = rafflePicks_(stored);
   var e = raffleEsc_;
+  // Before the draw the console used to be a dead end ("No draw yet"). It now
+  // renders the same page with the picks section replaced by a note, so the
+  // Email budget panel and its button are reachable during the party.
+  var sentAt = stored ? props.getProperty(raffleWinnerEmailedProp_(test)) : '';
+  var picks = stored ? rafflePicks_(stored) : [];
 
   var cards = picks.map(function (p, i) {
     var fub = raffleFubLink_(p.fubId), refFub = raffleFubLink_(p.referralFubId);
@@ -2163,6 +2160,13 @@ function raffleWinnerConsolePage_(test, key) {
 
   var tmpl = HtmlService.createTemplateFromFile('RaffleConsole');
   tmpl.cards      = cards;
+  // Two flags rather than an else: the template stays flat (no nesting, no
+  // negation), which is what both the real compiler and the test harness's
+  // scriptlet model handle without surprises.
+  tmpl.hasDraw    = !!stored;
+  tmpl.noDraw     = !stored;
+  tmpl.hasDrawJson = safeJsonForScript_(stored ? '1' : '');
+  tmpl.budget     = raffleBudgetPanelHtml_(test);
   tmpl.isTest     = test ? '1' : '';
   // JSON-encoded, not concatenated. These land inside a <script> block, and a
   // value carrying a double quote would otherwise close the string literal and
@@ -2174,16 +2178,50 @@ function raffleWinnerConsolePage_(test, key) {
   tmpl.isTestJson      = safeJsonForScript_(test ? '1' : '');
   tmpl.adminKey   = key || '';
   tmpl.submitToken = getSubmitToken();
-  tmpl.drawnAt    = e(stored.drawnAt);
-  tmpl.totalEligible = String(stored.totalEligible);
-  tmpl.totalPeople = String(stored.totalPeople === undefined ? '?' : stored.totalPeople);
-  tmpl.totalTickets = String(stored.totalTickets === undefined ? '?' : stored.totalTickets);
+  tmpl.drawnAt    = stored ? e(stored.drawnAt) : '';
+  tmpl.drawArmedAt = e(raffleFmt_(new Date(RAFFLE_DRAW_AT)));
+  tmpl.totalEligible = stored ? String(stored.totalEligible) : '';
+  tmpl.totalPeople = stored ? String(stored.totalPeople === undefined ? '?' : stored.totalPeople) : '';
+  tmpl.totalTickets = stored ? String(stored.totalTickets === undefined ? '?' : stored.totalTickets) : '';
   tmpl.sentAt     = sentAt ? e(sentAt) : '';
   tmpl.sentAtJson = safeJsonForScript_(sentAt || '');
   tmpl.announceAt = RAFFLE_ANNOUNCE_AT;
   return tmpl.evaluate()
     .setTitle((test ? QA_TEST_PREFIX : '') + 'Draw console | TSG Block Party')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+// The Email budget panel: the day's quota, our own ceiling, and the button.
+// Numbers only -- the button's JS lives in the template with the others.
+function raffleBudgetPanelHtml_(test) {
+  var b = raffleBudgetSnapshot_(test);
+  var e = raffleEsc_;
+  var proj = '';
+  if (b.projection) {
+    proj = b.projection.alert
+      ? '<div class="bq-warn">At the current pace (~' + Math.round(b.projection.ratePerHour) +
+        '/hour) this runs out around ' + e(raffleFmt_(new Date(b.projection.runsOutAt))) +
+        ' ET, before entries close.</div>'
+      : '<div class="bq-ok">On pace: ~' + Math.round(b.projection.ratePerHour) +
+        '/hour, about ' + b.projection.projectedLeft + ' left at close.</div>';
+  }
+  return [
+    '<div class="bq">',
+    '<div class="bq-row"><span>Google\'s daily quota, left today</span><b>' +
+      (b.left >= 0 ? b.left : 'unreadable') + '</b></div>',
+    '<div class="bq-row"><span>Kept back for the result and winner emails</span><b>' +
+      b.reserve + '</b></div>',
+    '<div class="bq-row"><span>Our six-hour ceiling (used so far)</span><b><span id="ceilingNow">' +
+      b.ceiling + '</span> (' + b.used + ')</b></div>',
+    proj,
+    '<p class="bq-help">Codes, invitations and reminders stop when either limit is reached and ',
+    'the guest is told to find someone from TSG. The button raises <i>our</i> ceiling by ' +
+      RAFFLE_CEILING_STEP + '; nothing raises Google\'s 1,500 a day.</p>',
+    '<button type="button" class="ghost" id="raiseBtn">Raise the ceiling by ' +
+      RAFFLE_CEILING_STEP + '</button>',
+    '<div id="raiseMsg"></div>',
+    '</div>'
+  ].join('');
 }
 
 // Renders the winner email exactly as it would be sent, for the preview step.
@@ -2228,6 +2266,10 @@ function raffleConsoleAction_(d) {
     var res = raffleSendWinnerEmail_(test, pick, reason);
     if (!res.ok) throw makeValidationError(res.message);
     return jsonOut({ ok: true, message: res.message });
+  }
+
+  if (action === 'raiseceiling') {
+    return jsonOut(raffleRaiseCeiling_(test));
   }
 
   if (action === 'redraw') {

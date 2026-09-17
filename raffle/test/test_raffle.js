@@ -1513,7 +1513,11 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
     eq('suite reports zero failures', Number(m[2]), 0);
   }
   check('suite asserts the live raffle is untouched', /LIVE raffle is untouched/.test(report));
-  check('suite tells you how to clean up FUB', /FUB CLEANUP/.test(report));
+  // A normal run cleans up in section 7 and says so there; the footer that
+  // tells you to delete the contacts by hand belongs ONLY to a KeepData run
+  // (it printed on every run once, contradicting the cleanup line above it).
+  check('suite reports its own FUB cleanup', /FUB cleanup: .*deleted/.test(report));
+  check('and does not tell you to clean up by hand when it already did', !/FUB CLEANUP/.test(report));
   check('suite cleaned up after itself', s.__data('Test Entries').length === 0);
   eq('suite left the live tab empty', s.__data('Entries').length, 0);
   check('suite left no live winner', s.__props.RAFFLE_WINNER_JSON === undefined);
@@ -1652,6 +1656,70 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   check('it prints the quota and the rate',
     /Email quota: 800 recipients left today, burning ~200\/hour, on track to close with ~350 left/.test(digest[0].body),
     digest[0].body.split('\n')[2]);
+}
+
+// ---- The console's "Raise the ceiling" button and the pre-draw console -------
+// Durand, 2026-09-17: "in the console there should also be a button for me to
+// increase the quota just in case". What it raises is OUR six-hour ceiling; the
+// daily 1,500 is Google's. Before this the console was a dead end until 6:15.
+{
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key', RAFFLE_ADMIN_KEY: 'secret' } });
+  const base = s.RAFFLE_CODE_MAX_GLOBAL;
+  eq('the ceiling in force starts at the constant', s.raffleCodeCeiling_(), base);
+
+  // Pre-draw: a real page, with the panel and the button, and no picks.
+  const pre = String(at(DURING, () => s.raffleWinnerConsolePage_(false, 'secret')));
+  check('the console renders before the draw', /Nothing has been drawn yet/.test(pre) && pre.length > 1500, pre.slice(0, 200));
+  check('with the Email budget panel', /Email budget/.test(pre) && /id="raiseBtn"/.test(pre));
+  check('and no pick cards or send button', !/<input type="radio" name="pick"/.test(pre) && !/id="sendBtn"/.test(pre));
+  check('no raw scriptlet survives', pre.indexOf('<?') === -1);
+  check('it shows Google\'s remaining quota', /left today<\/span><b>1500<\/b>/.test(pre), (pre.match(/left today[^\n]{0,60}/) || [''])[0]);
+  check('and the ceiling in force', new RegExp('id="ceilingNow">' + base + '<').test(pre));
+
+  // The button, live.
+  const raised = J(s.raffleHandleSubmission_({ step: 'console', consoleAction: 'raiseceiling', key: 'secret' }));
+  check('the button raises the ceiling by 500', raised.ok === true && raised.ceiling === base + 500, JSON.stringify(raised));
+  eq('and the guard now uses it', s.raffleCodeCeiling_(), base + 500);
+  check('the message says Google\'s quota is unchanged', /1,500 a day is unchanged/.test(raised.message), raised.message);
+  J(s.raffleHandleSubmission_({ step: 'console', consoleAction: 'raiseceiling', key: 'secret' }));
+  eq('pressing again adds another 500', s.raffleCodeCeiling_(), base + 1000);
+  const wrong = J(s.raffleHandleSubmission_({ step: 'console', consoleAction: 'raiseceiling', key: 'nope' }));
+  check('the wrong key is refused', wrong.ok !== true && /Not found/.test(wrong.error), JSON.stringify(wrong));
+  eq('and changed nothing', s.raffleCodeCeiling_(), base + 1000);
+
+  // The raised ceiling really admits more sends.
+  const g = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key', RAFFLE_ADMIN_KEY: 'secret' } });
+  g.RAFFLE_CODE_MAX_GLOBAL = 3;
+  let threw = null;
+  try { g.raffleCheckCodeSendQuota_('a@mail-test.co', 4); } catch (e) { threw = e; }
+  check('4 recipients are refused under a ceiling of 3', !!(threw && threw.isValidation));
+  g.__props.RAFFLE_CEILING_OVERRIDE = '6';
+  threw = null;
+  try { g.raffleCheckCodeSendQuota_('b@mail-test.co', 4); } catch (e) { threw = e; }
+  check('and admitted once the override is 6', threw === null, String(threw));
+  g.__props.RAFFLE_CEILING_OVERRIDE = '1';
+  eq('an override below the constant never lowers it', g.raffleCodeCeiling_(), 3);
+
+  // Rehearsal: reports, changes nothing, and Ryan's real setting is untouched.
+  const t = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key', RAFFLE_ADMIN_KEY: 'secret' } });
+  const reh = J(t.raffleHandleSubmission_({ step: 'console', consoleAction: 'raiseceiling', key: 'secret', test: '1' }));
+  check('in test mode the button only reports', reh.ok === true && reh.changed === false && /Rehearsal/.test(reh.message), JSON.stringify(reh));
+  eq('and the live ceiling is untouched', t.raffleCodeCeiling_(), t.RAFFLE_CODE_MAX_GLOBAL);
+  eq('no override property was written', t.__props.RAFFLE_CEILING_OVERRIDE, undefined);
+
+  // Post-draw the panel is still there, folded under the picks.
+  const d = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key', RAFFLE_ADMIN_KEY: 'secret' } });
+  enterFull(d, entry(), DURING);
+  at(AFTER, () => d.raffleDrawWinner_(false, true));
+  const post = String(at(AFTER, () => d.raffleWinnerConsolePage_(false, 'secret')));
+  check('after the draw the console shows the picks', /name="pick"/.test(post) && /id="sendBtn"/.test(post));
+  check('and still carries the budget panel and button', /Email budget/.test(post) && /id="raiseBtn"/.test(post));
+  check('the ceiling alert points at the button, not a redeploy', (() => {
+    const c = makeSandbox(); c.RAFFLE_CODE_MAX_GLOBAL = 1;
+    try { c.raffleCheckCodeSendQuota_('x@mail-test.co', 2); } catch (e) {}
+    const a = c.__alerts.find(x => /ceiling/.test(x.context));
+    return !!a && /Raise the ceiling/.test(a.detail) && !/RaffleCode\.gs/.test(a.detail);
+  })());
 }
 
 const { passes, fails } = counts();

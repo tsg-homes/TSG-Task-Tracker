@@ -51,6 +51,17 @@
   .preview iframe { width:100%; height:520px; border:0; display:block; background:#f4f6f6; }
   details { margin-top:18px; border-top:1px solid var(--line); padding-top:14px; }
   summary { cursor:pointer; font-weight:600; font-size:14px; color:var(--muted); }
+  .nodraw { background:#f2f7f7; border:1px solid #cfe0e0; border-radius:8px; padding:14px;
+            font-size:14px; margin:0 0 16px; }
+  .bq { font-size:14px; }
+  .bq-row { display:flex; justify-content:space-between; gap:12px; padding:8px 0;
+            border-bottom:1px solid #e7eded; }
+  .bq-row span { color:var(--muted); }
+  .bq-warn { background:#fbe9e7; border:1px solid #f0c4c0; color:var(--red); border-radius:8px;
+             padding:10px 12px; margin-top:10px; font-weight:600; }
+  .bq-ok { background:#e8f3ec; border:1px solid #bcd9c6; color:#1e7a45; border-radius:8px;
+           padding:10px 12px; margin-top:10px; font-weight:600; }
+  .bq-help { font-size:13px; color:var(--muted); margin:10px 0 0; }
 </style>
 </head>
 <body>
@@ -60,15 +71,27 @@
   <div class="hd">
     <div class="ey">TSG BLOCK PARTY 2026</div>
     <h1>Draw console</h1>
+    <? if (hasDraw) { ?>
     <div class="sub">Drawn <?= drawnAt ?> ET from <?= totalEligible ?> eligible entries
       &middot; <?= totalPeople ?> people &middot; <?= totalTickets ?> tickets</div>
+    <? } ?>
+    <? if (noDraw) { ?>
+    <div class="sub">No draw yet &middot; armed for <?= drawArmedAt ?> ET</div>
+    <? } ?>
   </div>
 
   <div class="card" id="card">
+    <? if (noDraw) { ?>
+    <div class="nodraw"><b>Nothing has been drawn yet</b>, so there is nobody to send to.
+      The draw runs by itself at 6:15 PM; reload this page after it.</div>
+    <h3 style="font-size:15px;margin:0 0 6px">Email budget</h3>
+    <?!= budget ?>
+    <? } ?>
     <? if (sentAt) { ?>
       <div class="sent"><b>The winner has already been emailed</b> at <?= sentAt ?> ET.
         Nothing below will send a second one.</div>
     <? } ?>
+    <? if (hasDraw) { ?>
 
     <div class="note">
       The alternates are a fallback if pick 1 is ineligible or cannot be reached — not a
@@ -103,6 +126,12 @@
       <input type="text" id="redrawReason" placeholder="Why are you redrawing?">
       <button type="button" class="danger" id="redrawBtn">Redraw</button>
     </details>
+
+    <details>
+      <summary>Email budget</summary>
+      <?!= budget ?>
+    </details>
+    <? } ?>
   </div>
 </div>
 
@@ -122,7 +151,41 @@ var KEY     = <?!= adminKeyJson ?>;
 var FORMTK  = <?!= submitTokenJson ?>;
 var IS_TEST = <?!= isTestJson ?>;
 var ALREADY_SENT = <?!= sentAtJson ?> !== '';
+var HAS_DRAW = <?!= hasDrawJson ?> !== '';
 
+function post(payload) {
+  return fetch(window.location.href.split('?')[0] + '?form=raffle', {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(Object.assign({
+      formType: 'raffle', formToken: FORMTK, website: '',
+      step: 'console', key: KEY, test: IS_TEST
+    }, payload))
+  }).then(function (r) { return r.json(); });
+}
+
+// The Email budget button is on the page whether or not there has been a draw.
+var raiseBtn = document.getElementById('raiseBtn');
+if (raiseBtn) {
+  raiseBtn.addEventListener('click', function () {
+    var rm = document.getElementById('raiseMsg');
+    rm.className = 'err'; rm.textContent = '';
+    if (!window.confirm('Raise our six-hour send ceiling by 500?\n\nThis loosens the abuse cap; it cannot raise Google\'s 1,500 a day.')) return;
+    raiseBtn.disabled = true;
+    post({ consoleAction: 'raiseceiling' }).then(function (res) {
+      raiseBtn.disabled = false;
+      if (res && res.ok) {
+        rm.className = 'ok'; rm.textContent = res.message;
+        var c = document.getElementById('ceilingNow');
+        if (c && res.ceiling) c.textContent = res.ceiling;
+      } else {
+        rm.textContent = (res && res.error) || 'That did not work.';
+      }
+    }).catch(function () { raiseBtn.disabled = false; rm.textContent = 'Could not reach the server.'; });
+  });
+}
+
+if (HAS_DRAW) {
 var sendBtn    = document.getElementById('sendBtn');
 var previewBtn = document.getElementById('previewBtn');
 var redrawBtn  = document.getElementById('redrawBtn');
@@ -136,16 +199,6 @@ function pick() {
 }
 function say(text, cls) { msg.className = cls || 'err'; msg.textContent = text || ''; }
 
-function post(payload) {
-  return fetch(window.location.href.split('?')[0] + '?form=raffle', {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(Object.assign({
-      formType: 'raffle', formToken: FORMTK, website: '',
-      step: 'console', key: KEY, test: IS_TEST
-    }, payload))
-  }).then(function (r) { return r.json(); });
-}
 
 // Changing the pick invalidates the preview: the send button must never be armed
 // for a name other than the one on screen.
@@ -234,6 +287,7 @@ redrawBtn.addEventListener('click', function () {
 
 onPickChange();
 if (ALREADY_SENT) armSend(false, 'Already sent');
+}
 </script>
 </body>
 </html>

@@ -153,6 +153,12 @@ var RAFFLE_CODE_ADDRESS_WINDOW_SECONDS = 3600;   // 1 hour
 var RAFFLE_CODE_GLOBAL_PREFIX = 'raffle_codes_all_';
 var RAFFLE_CODE_MAX_GLOBAL = 750;                // recipients per 6-hour bucket
 var RAFFLE_CODE_GLOBAL_WINDOW_SECONDS = 21600;   // 6 hours (cache maximum)
+// The ceiling can be raised from the draw console without a redeploy (Durand,
+// 2026-09-17: "a button for me to increase the quota just in case"). It is the
+// only limit that CAN be raised: Google's 1,500 a day is Google's. The override
+// is a script property, in steps of RAFFLE_CEILING_STEP, and never lowers it.
+var RAFFLE_CEILING_OVERRIDE_PROP = 'RAFFLE_CEILING_OVERRIDE';
+var RAFFLE_CEILING_STEP = 500;
 
 // ---------- Daily send-quota reserve ----------
 // The account's real limit is 1,500 recipients a day, shared with the Open
@@ -989,16 +995,19 @@ function raffleCheckCodeSendQuota_(emailKey, recipients) {
     var bucket = Math.floor(Date.now() / (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000));
     var globalKey = RAFFLE_CODE_GLOBAL_PREFIX + bucket;
     var globalCount = Number(cache.get(globalKey) || 0);
-    if (globalCount + recipients > RAFFLE_CODE_MAX_GLOBAL) {
-      Logger.log('Raffle: GLOBAL send ceiling hit (' + globalCount + ' recipients). Possible abuse.');
+    var ceiling = raffleCodeCeiling_();
+    if (globalCount + recipients > ceiling) {
+      Logger.log('Raffle: GLOBAL send ceiling hit (' + globalCount + ' of ' + ceiling +
+                 ' recipients). Possible abuse.');
       try {
         sendErrorAlert('Raffle: verification-email ceiling hit',
           'The ' + (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS / 3600) + '-hour ceiling of ' +
-          RAFFLE_CODE_MAX_GLOBAL + ' email recipients (codes, invites and reminders) has ' +
-          'been reached, so further codes are being refused to protect the daily send quota ' +
-          '(which the Open House form and these alerts also rely on).\n\nIf this is a real ' +
-          'crowd and not abuse, raise RAFFLE_CODE_MAX_GLOBAL in RaffleCode.gs and redeploy. ' +
-          'If it is abuse, entries can be taken on paper and typed in afterwards.');
+          ceiling + ' email recipients (codes, invites and reminders) has been reached, so ' +
+          'further codes are being refused to protect the daily send quota (which the Open ' +
+          'House form and these alerts also rely on).\n\nIf this is a real crowd and not ' +
+          'abuse, open the draw console and press "Raise the ceiling" under Email budget -- ' +
+          'it adds ' + RAFFLE_CEILING_STEP + ' without a redeploy. If it is abuse, entries can ' +
+          'be taken on paper and typed in afterwards.');
       } catch (alertErr) { /* the alert must never swallow the response */ }
       throw makeValidationError('We cannot send codes right now. Grab someone from TSG and ' +
         'we will get you entered.');
@@ -1037,6 +1046,52 @@ function raffleCheckCodeSendQuota_(emailKey, recipients) {
   } finally {
     try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
   }
+}
+
+// The ceiling in force: the constant, or the console's override if higher.
+function raffleCodeCeiling_() {
+  var o = 0;
+  try { o = Number(PropertiesService.getScriptProperties().getProperty(RAFFLE_CEILING_OVERRIDE_PROP)) || 0; }
+  catch (err) { o = 0; }
+  return Math.max(RAFFLE_CODE_MAX_GLOBAL, o);
+}
+
+// The console's button. Live only: a rehearsal must not change a live setting,
+// so in test mode it reports what it would do and changes nothing.
+function raffleRaiseCeiling_(test) {
+  var cur = raffleCodeCeiling_();
+  var next = cur + RAFFLE_CEILING_STEP;
+  if (test) {
+    return { ok: true, ceiling: cur, changed: false,
+      message: 'Rehearsal: nothing changed. Live, this would raise the six-hour ceiling from ' +
+               cur + ' to ' + next + ' recipients.' };
+  }
+  PropertiesService.getScriptProperties().setProperty(RAFFLE_CEILING_OVERRIDE_PROP, String(next));
+  Logger.log('Raffle: six-hour send ceiling raised from the console: ' + cur + ' -> ' + next);
+  return { ok: true, ceiling: next, changed: true,
+    message: 'Ceiling raised to ' + next + ' recipients per six hours (was ' + cur + '). ' +
+             'Google\'s own 1,500 a day is unchanged -- nothing can raise that.' };
+}
+
+// Everything the console's Email budget panel shows, in one read.
+function raffleBudgetSnapshot_(test) {
+  var out = { left: -1, reserve: RAFFLE_MAIL_RESERVE, base: RAFFLE_CODE_MAX_GLOBAL,
+              ceiling: raffleCodeCeiling_(), used: 0, projection: null };
+  try { out.left = Number(MailApp.getRemainingDailyQuota()); } catch (err) { out.left = -1; }
+  if (isNaN(out.left)) out.left = -1;
+  try {
+    out.used = Number(CacheService.getScriptCache().get(RAFFLE_CODE_GLOBAL_PREFIX +
+      Math.floor(Date.now() / (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000))) || 0);
+  } catch (err2) { out.used = 0; }
+  if (!test) {
+    try {
+      var readings = JSON.parse(PropertiesService.getScriptProperties()
+                                  .getProperty(RAFFLE_QUOTA_READINGS_PROP) || '[]');
+      out.projection = raffleQuotaProjection_(readings, Date.now(),
+        new Date(RAFFLE_CLOSE_AT).getTime(), RAFFLE_MAIL_RESERVE);
+    } catch (err3) { out.projection = null; }
+  }
+  return out;
 }
 
 // Records a quota reading during the event and raises the one run-out alert.
@@ -1083,7 +1138,9 @@ function raffleWatchMailQuota_(left, nowMs) {
           'record. The 6:15 draw still runs and records the winner; only its email could fail.',
           '',
           'What you can do now: take entries on paper for the last stretch, and skip any',
-          'QA runs or Open House emails from this account for the rest of the day.',
+          'QA runs or Open House emails from this account for the rest of the day. The',
+          'console\'s "Raise the ceiling" button does NOT help here -- that is our own',
+          'six-hour cap; this is Google\'s daily one.',
           'This alert is sent once.'
         ].join('\n')
       });
@@ -2803,6 +2860,32 @@ function raffleQaRun_(cleanUp) {
                                        t0 + 60000, closeMs, RAFFLE_MAIL_RESERVE);
     check('one minute of readings is not a rate', early === null, JSON.stringify(early));
 
+    // The console button, live: raises the real ceiling, then is put back.
+    var base = RAFFLE_CODE_MAX_GLOBAL;
+    props.deleteProperty(RAFFLE_CEILING_OVERRIDE_PROP);
+    check('the ceiling in force is the constant when nothing is overridden',
+          raffleCodeCeiling_() === base, String(raffleCodeCeiling_()));
+    var rehearsal = json(raffleHandleSubmission_({ step: 'console', consoleAction: 'raiseceiling',
+                                                   key: adminKey, test: '1' }));
+    check('in rehearsal the button changes nothing', rehearsal.ok === true &&
+          raffleCodeCeiling_() === base, JSON.stringify(rehearsal));
+    var raised = json(raffleHandleSubmission_({ step: 'console', consoleAction: 'raiseceiling',
+                                                key: adminKey }));
+    check('live, the button raises the ceiling by ' + RAFFLE_CEILING_STEP,
+          raised.ok === true && raffleCodeCeiling_() === base + RAFFLE_CEILING_STEP,
+          JSON.stringify(raised));
+    var noKey = json(raffleHandleSubmission_({ step: 'console', consoleAction: 'raiseceiling',
+                                               key: 'not-the-key' }));
+    check('without the key it is refused', noKey.ok !== true, JSON.stringify(noKey));
+    props.deleteProperty(RAFFLE_CEILING_OVERRIDE_PROP);
+    check('and the override is cleared again for Saturday', raffleCodeCeiling_() === base);
+    var preDraw = raffleWinnerConsolePage_(false, adminKey);
+    var preHtml = String(typeof preDraw.getContent === 'function' ? preDraw.getContent() : preDraw);
+    check('the LIVE console renders before the draw (no dead end)',
+          preHtml.indexOf('Email budget') !== -1 && preHtml.indexOf('raiseBtn') !== -1,
+          'got ' + preHtml.length + ' chars');
+    check('and it leaks no raw scriptlet', preHtml.indexOf('<?') === -1);
+
     var idle = raffleWatchMailQuota_(1200, t0 - 24 * H);
     check('the watcher is idle the day before', idle === null, JSON.stringify(idle));
     var closed = raffleWatchMailQuota_(1200, closeMs + 60000);
@@ -2856,8 +2939,10 @@ function raffleQaRun_(cleanUp) {
   log.push('', '================================',
            pass + ' passed, ' + fail + ' failed',
            '================================');
-  log.push('', 'FUB CLEANUP: this run kept its FUB contacts (KeepData). They carry the tag',
-           '"' + QA_TEST_TAG + '"; raffleDeleteQaContactsFromFub removes them when you are done.');
+  if (!cleanUp) {
+    log.push('', 'FUB CLEANUP: this run kept its FUB contacts (KeepData). They carry the tag',
+             '"' + QA_TEST_TAG + '"; raffleDeleteQaContactsFromFub removes them when you are done.');
+  }
   log.push('Verification-code emails were sent to ' + RAFFLE_QA_ADDRESS_BASE + stamp +
            '-N' + RAFFLE_QA_DOMAIN + ' — they deliver to Durand.');
 
