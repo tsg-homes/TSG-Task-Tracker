@@ -2206,8 +2206,9 @@ function raffleQaRun_(cleanUp) {
   //
   // WHY NOT READ THE INBOX. The obvious version of this searches Gmail for the
   // delivered message and verifies with the code out of the real subject. It was
-  // written that way first and then backed out: GmailApp anywhere in this project
-  // makes Apps Script request full mailbox access at the next authorization, and
+  // written that way first and then backed out: any reference to the Gmail
+  // service in this project makes Apps Script request full mailbox access at
+  // the next authorization, and
   // this project is a web app with access ANYONE_ANONYMOUS whose mailbox is the
   // shared info@ five people use. Granting a public endpoint's project full read
   // and write over that inbox to improve one assertion is the wrong trade.

@@ -1740,7 +1740,9 @@ var RAFFLE_WINNER_REPLY_TO = 'ryan@tsg.homes';
 // address. RFC 5322 allows several and mail clients generally honour a
 // comma-separated list, but this is the one thing here that cannot be proved from
 // a sandbox -- it needs a real send. If only the first address survives, the fix
-// is to swap these calls to GmailApp with an explicit Reply-To header. Flagged for
+// is to swap these calls to the Gmail service with an explicit Reply-To header,
+// which would also pull in a full-mailbox scope on a project whose web app is
+// anonymous -- so it is a decision, not a tidy-up. Flagged for
 // the live QA run rather than assumed.
 var RAFFLE_SHARED_INBOX = 'info@tsg.homes';
 
