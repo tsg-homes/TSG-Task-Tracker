@@ -577,6 +577,27 @@ const cell = (s, row, name) => {
 }
 
 {
+  // setupRaffle has to REPORT the migration it just did. Measuring the width
+  // through raffleSheet_ reported "up to date" in the same call that added
+  // fourteen columns, because raffleSheet_ migrates before it returns.
+  const ELEVEN = ['Timestamp (ET)', 'Full Name', 'Email', 'Phone', 'Consent',
+                  'Consent Version', 'Entry Source', 'FUB Status', 'FUB Person ID',
+                  'Eligible', 'Email Verified'];
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' },
+                          rows: [ELEVEN.slice()] });
+  const msg = String(at(BEFORE, () => s.setupRaffle()));
+  check('setup reports the migration it performed',
+    /Schema migrated: 11 -> 25 columns/.test(msg), msg);
+  check('and not that nothing changed', !/Schema up to date/.test(msg), msg);
+
+  // A sheet already on the current schema reports the truth too.
+  const s2 = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  const msg2 = String(at(BEFORE, () => s2.setupRaffle()));
+  check('a current sheet reports up to date', /Schema up to date \(25 columns\)/.test(msg2), msg2);
+  check('and claims no migration', !/Schema migrated/.test(msg2), msg2);
+}
+
+{
   // A tab whose columns were RENAMED must be refused, not silently reindexed:
   // the reader addresses columns by position, so a shifted sheet would attribute
   // one person's consent to another.

@@ -468,9 +468,18 @@ function setupRaffle() {
   // schema change on the critical path of a real entry. setupRaffle is the
   // function whose job is to leave this ready, so it should do it and report it.
   try {
-    var beforeCols = raffleSheet_(false).getLastColumn();
+    // The width has to be read WITHOUT raffleSheet_, which migrates on the way
+    // out: measuring through it reported "up to date" in the very call that
+    // added fourteen columns, because the widening had already happened by the
+    // time getLastColumn was asked. (Shipped 2026-09-17, caught the same hour
+    // by Durand's run: the log showed the columns being added and the summary
+    // said nothing had changed.)
+    var ssSchema = SpreadsheetApp.openById(sheetId);
+    var liveTab = ssSchema.getSheetByName(RAFFLE_LIVE_SHEET_NAME) || ssSchema.getSheets()[0];
+    var beforeCols = liveTab.getLastColumn();
+    raffleSheet_(false);
     raffleSheet_(true);                                  // creates + migrates the test tab too
-    var afterCols = raffleSheet_(false).getLastColumn();
+    var afterCols = liveTab.getLastColumn();
     out.push(afterCols > beforeCols
       ? 'Schema migrated: ' + beforeCols + ' -> ' + afterCols + ' columns on both tabs.'
       : 'Schema up to date (' + afterCols + ' columns).');
