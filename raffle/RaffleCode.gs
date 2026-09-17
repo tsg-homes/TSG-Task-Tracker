@@ -638,6 +638,10 @@ function raffleAdminLinks() {
     '  so drawing early has to be asked for twice — add &force=1 only if you really',
     '  mean to close entries now:',
     '  ' + base + '?form=raffle&action=draw&key=' + key + '&force=1',
+    '',
+    'DRAW CONSOLE (private) — email budget and the ceiling button before the draw;',
+    '  pick, preview and send the winner email after it:',
+    '  ' + base + '?form=raffle&action=console&key=' + key,
     ''
   ];
 
@@ -656,7 +660,12 @@ function raffleAdminLinks() {
              'TEST DRAW — rehearses the real thing, emails ' + QA_TEST_NOTIFY_EMAIL + ' only:',
              '  ' + base + '?form=raffle&action=draw&key=' + key + '&test=1',
              '',
-             'Run raffleResetTest() to wipe test data and rehearse again.');
+             'REHEARSAL CONSOLE — the full 6:30 walk-through on the test draw; the winner',
+             '  email goes to ' + QA_TEST_NOTIFY_EMAIL + ' only, the ceiling button only reports:',
+             '  ' + base + '?form=raffle&action=console&key=' + key + '&test=1',
+             '',
+             'Rehearse in this order: test form (enter two people) -> test draw -> rehearsal',
+             'console (preview, send). Run raffleResetTest() to wipe test data and go again.');
   } else {
     out.push('NOT AVAILABLE: the "' + QA_TEST_SECRET_PROPERTY + '" script property is not set,',
              'so ?qatest= does nothing and every test URL would just serve the live page.',
