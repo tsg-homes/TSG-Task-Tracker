@@ -722,7 +722,11 @@ const cell = (s, row, name) => {
   eq('the hourly digest sends during the party', digest.length, 1);
   check('it reports the valid count', /valid entries/.test(digest[0].body), digest[0].body.slice(0, 120));
   check('it counts down to the draw', /minutes \(6:15 PM\)/.test(digest[0].body));
-  check('it goes to Durand only', digest[0].to === 'durand@thestawaszgroup.com');
+  // Durand, 2026-09-17: "bcc ryan and i on all". The digest was Durand-only by
+  // an earlier decision ("operational nudges, not results"); it is both now.
+  check('it goes to Durand and Ryan',
+    /durand@thestawaszgroup\.com/.test(digest[0].to) && /ryan@/.test(digest[0].to),
+    digest[0].to);
 
   // Outside the window it must stay silent, so a surviving trigger does not mail
   // anybody on Monday.

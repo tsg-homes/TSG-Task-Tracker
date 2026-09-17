@@ -48,6 +48,7 @@ function makeSandbox(opts) {
   // opts.relationshipField overrides the accepted name, so a test can reproduce
   // the live 400 by pretending FUB wants something else.
   const relationships = [];
+  const notes = [];
   const RELATIONSHIP_RELATED_KEY = opts.relationshipField || 'relatedPersonId';
   const RELATIONSHIP_FIELDS = ['personId', 'type', RELATIONSHIP_RELATED_KEY];
 
@@ -202,6 +203,21 @@ function makeSandbox(opts) {
         // sandbox could never have noticed. Now the POST validates the field
         // name the same way FUB does and the GET reads back what was stored,
         // which is what makes the suite's "is the entrant LINKED" check real.
+        // Notes as a real store too, so the suite's "is the email logged on the
+        // timeline" check reads back what was actually posted instead of the
+        // catch-all 200 that made it unfalsifiable.
+        if (/\/v1\/notes/.test(url)) {
+          if (o && o.method === 'post') {
+            const body = JSON.parse(o.payload || '{}');
+            const n = { id: notes.length + 1, personId: body.personId,
+                        subject: body.subject, body: body.body };
+            notes.push(n);
+            return json(n);
+          }
+          const q = (url.match(/personId=(\d+)/) || [])[1];
+          return json({ notes: q ? notes.filter(n => String(n.personId) === q)
+                                 : notes.slice() });
+        }
         if (/\/v1\/peopleRelationships/.test(url)) {
           if (o && o.method === 'post') {
             const body = JSON.parse(o.payload || '{}');

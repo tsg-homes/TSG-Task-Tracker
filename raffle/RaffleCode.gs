@@ -2037,6 +2037,28 @@ function raffleQaRun_(cleanUp) {
         !!entrantRow && !/fail/i.test(String(entrantRow.fubStatus || '')),
         entrantRow && entrantRow.fubStatus);
 
+  // EMAIL LOGGING. Durand asked for every email to be logged to the contact's
+  // comms, so the timeline should now carry "Email sent: ..." notes. Asserted
+  // against FUB itself rather than against the fact that we called the helper.
+  if (entrantRow && entrantRow.fubId) {
+    var relKey0 = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+    var notes = raffleFubCall_('https://api.followupboss.com/v1/notes?personId=' +
+                               encodeURIComponent(entrantRow.fubId) + '&limit=25',
+                               'get', null, relKey0);
+    check('FUB can be asked for the entrant\'s notes', notes.ok === true,
+          notes.code + ': ' + String(notes.text).slice(0, 160));
+    var noteArr = (notes.ok && notes.body &&
+                   (notes.body.notes || notes.body.Notes)) || [];
+    var logged = noteArr.filter(function (n) {
+      return /Email sent:/.test(String(n.subject || '')); });
+    check('the emails we sent are logged on the contact timeline',
+          logged.length > 0,
+          'no "Email sent:" note on person ' + entrantRow.fubId +
+          ' — the timeline will not show what this contact was told');
+    log.push('      timeline: ' + noteArr.length + ' note(s), ' + logged.length +
+             ' of them logged emails.');
+  }
+
   // The relationship, which is the part that had never once worked.
   if (entrantRow && refRow && entrantRow.fubId && refRow.referralFubId) {
     var relApiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');

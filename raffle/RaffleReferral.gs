@@ -605,6 +605,90 @@ function raffleLinkPeople_(personId, relatedId, type, apiKey) {
 //      them and reports which one FUB accepts.
 // Pass two ids from a "[QA TEST]" pair to get step 3 -- never a real pair.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// LOGGING OUTBOUND EMAIL TO THE CONTACT'S FUB TIMELINE
+//
+// Durand, 2026-09-17: "all emails should be sent through fub so they're logged
+// to the contact's comms."
+//
+// WHY THIS LOGS RATHER THAN SENDS. Routing delivery through FUB would make FUB
+// the mail transport for the verification code -- the one email on the critical
+// path of entering at all. The API key was returning 401 for every call earlier
+// this same afternoon; had delivery depended on it, nobody could have entered
+// for as long as that lasted, and the form would have sat saying "check your
+// email" to every guest at the table. MailApp is the account's own mail and has
+// no such coupling, so it keeps the delivery and FUB gets the record.
+//
+// Best-effort and silent on failure, always: a timeline entry is bookkeeping,
+// and it must never be the reason an email fails to go or an entry fails to
+// record. Called AFTER the send, never before.
+//
+// The note is the mechanism because notes demonstrably work on this account.
+// If FUB turns out to expose a real email-activity endpoint,
+// raffleInspectFubEmailLogging() will say so and this is the single place to
+// point at it.
+function raffleLogEmailToFub_(personId, subject, bodyText, test) {
+  if (!personId) return false;
+  try {
+    var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+    if (!apiKey) return false;
+    var body = String(bodyText || '').replace(/\r/g, '');
+    if (body.length > 4000) body = body.slice(0, 4000) + '\n[truncated]';
+    var res = raffleFubCall_('https://api.followupboss.com/v1/notes', 'post', {
+      personId: personId,
+      subject: (test ? QA_TEST_PREFIX : '') + 'Email sent: ' + subject,
+      body: 'This is the email the raffle sent to this contact, logged here so the\n' +
+            'timeline shows what they were told.\n\n' +
+            '----------------------------------------\n' + body,
+      isHtml: false
+    }, apiKey);
+    if (!res.ok) {
+      Logger.log('raffleLogEmailToFub_: ' + res.code + ': ' + String(res.text).slice(0, 160));
+    }
+    return res.ok;
+  } catch (err) {
+    Logger.log('raffleLogEmailToFub_ threw (non-fatal): ' + err);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DIAGNOSTIC, editor-only: does FUB expose a way to LOG or SEND an email?
+//
+// Durand, 2026-09-17: "all emails should be sent through fub so they're logged
+// to the contact's comms". Two different things are possible and only FUB can
+// say which:
+//   * LOGGING an email we sent ourselves, so it appears on the contact timeline;
+//   * SENDING through FUB, so FUB is the mail transport.
+// FUB's docs domain is blocked from the build environment, so this asks the API
+// which endpoints answer at all rather than guessing a payload. Read the log.
+// ---------------------------------------------------------------------------
+function raffleInspectFubEmailLogging() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+  say('Probing FUB for an email endpoint. 200/201 = exists, 404 = does not, ' +
+      '405 = exists but not for this verb.');
+  ['emails', 'textMessages', 'calls', 'events', 'notes'].forEach(function (path) {
+    var r = raffleFubCall_('https://api.followupboss.com/v1/' + path + '?limit=1',
+                           'get', null, apiKey);
+    var keys = '';
+    if (r.ok && r.body) {
+      var arrKey = Object.keys(r.body).filter(function (k) {
+        return Object.prototype.toString.call(r.body[k]) === '[object Array]'; })[0];
+      var arr = arrKey ? r.body[arrKey] : [];
+      keys = arr.length ? '  record keys: ' + Object.keys(arr[0]).join(', ')
+                        : '  (no records to read keys from)';
+    }
+    say('GET /v1/' + path + ' -> ' + r.code + (keys ? '\n' + keys : ''));
+  });
+  say('');
+  say('If /v1/emails exists, its record keys name the fields an email log needs ' +
+      'and raffleLogEmailToFub_ can be pointed at it. If it does not, the note ' +
+      'fallback already in place is the whole of what is available.');
+  return out.join('\n');
+}
+
 function raffleInspectFubRelationships(qaPersonId, qaRelatedId) {
   var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
   var out = [];
@@ -822,6 +906,11 @@ function raffleSendReferralInvite_(d, test) {
   raffleSheet_(found.test).getRange(found.row, RAFFLE_COL['Referral Emailed At'] + 1)
     .setValue(raffleFmt_(raffleNow_()));
 
+  // The referral has no FUB contact yet -- referrals only reach FUB on consent --
+  // so this lands on the ENTRANT's timeline, which is whose behalf it went out on.
+  raffleLogEmailToFub_(entrant.personId, subject,
+    raffleInvitePlain_(entrant, found.entry, url), test);
+
   // Best-effort, and deliberately after the row is marked: the invite is the
   // thing that had to happen, and a failed receipt must not make the entrant
   // press the button again and re-mail their friend.
@@ -838,6 +927,8 @@ function raffleSendReferralInvite_(d, test) {
       htmlBody: raffleInviteReceiptHtml_(entrant, found.entry, test),
       body: raffleInviteReceiptPlain_(entrant, found.entry)
     });
+    raffleLogEmailToFub_(entrant.personId, 'Your copy of the referral invitation',
+      raffleInviteReceiptPlain_(entrant, found.entry), test);
   } catch (receiptErr) {
     Logger.log('Invite receipt to the entrant failed (non-fatal): ' + receiptErr);
   }
@@ -1320,6 +1411,9 @@ function raffleConsentSubmit_(d) {
     if (!closed) {
       var chainToken = entry.chainToken || Utilities.getUuid();
       sh.getRange(found.row, RAFFLE_COL['Chain Token'] + 1).setValue(chainToken);
+      raffleLogEmailToFub_(entry.referralFubId || newPersonId,
+        'You are in - refer someone', 'We invited them to refer somebody in turn, ' +
+        'which enters them with one ticket of their own.', found.test);
       if (raffleSendChainInvite_(entry, { name: name, email: email }, chainToken, found.test)) {
         sh.getRange(found.row, RAFFLE_COL['Chain Emailed At'] + 1)
           .setValue(raffleFmt_(raffleNow_()));
@@ -1589,6 +1683,13 @@ function raffleNotifyEntrantEntered_(entry, referralName, test, closed) {
   } catch (err) {
     Logger.log('raffleNotifyEntrantEntered_ failed: ' + err);
   }
+  try {
+    raffleLogEmailToFub_(entry.fubId,
+      referralName + ' confirmed', 'We told them their referral confirmed and that ' +
+      'they gained ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries.', test);
+  } catch (logErr) {
+    Logger.log('raffleNotifyEntrantEntered_ FUB log failed: ' + logErr);
+  }
 }
 
 // ---------- Telling the winner ----------
@@ -1843,11 +1944,23 @@ var RAFFLE_SHARED_INBOX = 'info@tsg.homes';
 // routing every entrant's code to a second inbox turns a one-time secret into a
 // standing collection of them. The exception is enforced in code, not left to
 // whoever edits this next.
-var RAFFLE_OVERSIGHT_BCC = 'durand@thestawaszgroup.com';
+// Durand, 2026-09-17: "bcc ryan and i on all". Both, on every outbound email --
+// with ONE deliberate exception, the verification code, for the reason spelled
+// out at that send site: the six-digit code is a credential, and copying every
+// entrant's code to two more mailboxes turns a one-time secret into a standing
+// collection of them. It is the same reasoning that took the consent link out of
+// the entrant's copy of the invite earlier today. Say the word and it goes on
+// that one too, but it should be a decision rather than a side effect of "all".
+//
+// NOTE ON QUOTA: Apps Script's daily limit counts RECIPIENTS, not messages, so
+// two oversight copies make every email cost three. The suite prints the
+// remaining quota on each run (section 5c) precisely so this stays visible.
+var RAFFLE_OVERSIGHT_BCC = 'durand@thestawaszgroup.com,ryan@tsg.homes';
 
 function raffleOversightBcc_(test) {
   // In test mode qaTestRecipients_ already collapses everything to Durand, so a
-  // BCC would just duplicate the message to him.
+  // BCC would just duplicate the message to him -- and Ryan is never paged about
+  // a rehearsal, which is a rule the red-team suite enforces.
   return test ? '' : RAFFLE_OVERSIGHT_BCC;
 }
 
@@ -2149,7 +2262,12 @@ function raffleRedraw_(test, reason) {
 var RAFFLE_MILESTONE_EVERY = 10;
 var RAFFLE_MILESTONE_PROP = 'RAFFLE_LAST_MILESTONE';
 var RAFFLE_TEST_MILESTONE_PROP = 'RAFFLE_TEST_LAST_MILESTONE';
-var RAFFLE_NOTIFY_EMAIL = 'durand@thestawaszgroup.com';
+// Durand, 2026-09-17: "bcc ryan and i on all". These two are the internal
+// operational notes rather than client mail, and the original decision was
+// deliberately Durand-only ("operational nudges, not results"). Ryan is on them
+// now because "all" was explicit -- but this is the line to trim if an hourly
+// counter during the party turns out to be noise he does not want.
+var RAFFLE_NOTIFY_EMAIL = 'durand@thestawaszgroup.com,ryan@tsg.homes';
 
 function raffleMilestoneProp_(test) {
   return test ? RAFFLE_TEST_MILESTONE_PROP : RAFFLE_MILESTONE_PROP;
@@ -2751,6 +2869,8 @@ function raffleSendConsentReminders_(test, ignoreWindow) {
         body: raffleReminderPlain_(r, url, minsLeft)
       });
       sh.getRange(r.row, RAFFLE_COL['Reminder Sent At'] + 1).setValue(raffleFmt_(raffleNow_()));
+      raffleLogEmailToFub_(r.referralFubId, 'Last chance to confirm',
+        raffleReminderPlain_(r, url, minsLeft), test);
       sent++;
     } catch (mailErr) {
       Logger.log('Reminder send failed for ' + r.referralEmail + ': ' + mailErr);
