@@ -38,6 +38,8 @@
   .ghost { background:#fff; color:var(--muted); border-color:var(--line); font-weight:600;
            font-size:14px; margin-top:10px; }
   .err { color:#b3271e; font-size:14px; font-weight:600; margin:0 0 10px; min-height:1px; }
+  .locknote { margin:-8px 0 14px; font-size:13px; color:var(--muted); font-weight:400; line-height:1.45; }
+  input[readonly] { cursor:not-allowed; }
   .done { text-align:center; padding:8px 0 4px; }
   .done .tick { font-size:42px; line-height:1; }
   .foot { text-align:center; padding:18px 6px 0; font-size:12px; color:#7d8f90; }
@@ -126,7 +128,8 @@ if (go) {
       decision: 'confirm',
       consent: 'Yes',
       referralName: el('rName').value,
-      referralEmail: el('rEmail').value,
+      // No referralEmail: the field is locked and the server reads the address
+      // from the row regardless. Sending it would imply it still counts.
       referralPhone: el('rPhone').value,
       referralRole: role(),
       referralTimeframe: el('rTimeframe').value

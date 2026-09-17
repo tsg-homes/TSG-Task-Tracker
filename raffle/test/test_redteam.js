@@ -758,19 +758,14 @@ section('T10  The console as an attack surface');
 }
 
 // ---------------------------------------------------------------------------
-section('T11  Consent-page substitution');
+section('T11  The consent page email is locked');
 // ---------------------------------------------------------------------------
-// The consent page deliberately lets the referred person CORRECT their details --
-// that is most of its value. But it means whoever holds the token can replace the
-// email with a third party's and tick the consent box on their behalf. The
-// address is never re-verified, so a record can end up in FUB marked "consented"
-// for somebody who never saw the page.
-//
-// This cannot be closed without re-verifying the new address, which would mean a
-// second code round-trip for a cold referral and would cost more entries than it
-// saves. So it is made VISIBLE instead: a substituted address is recorded on the
-// row and stated in the FUB note, so nobody on the team reads "consented" and
-// assumes that person typed it.
+// The consent link is a bearer credential sitting in an inbox. While the email
+// field was editable, whoever held the link could point it at a third party and
+// tick the consent box on their behalf, and the substituted address was never
+// re-verified -- a FUB record marked "consented" for somebody who never saw the
+// page. As of 2026-09-17 the address is read from the ROW and the field is
+// read-only, so the request cannot move it at all.
 {
   const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
   const v = verifySession(s, entry(), DURING);
@@ -778,39 +773,56 @@ section('T11  Consent-page substitution');
     { step: 'referral', vid: v.vid }, referral({})))));
   check('referral staged (setup)', !!staged.staged, JSON.stringify(staged));
 
-  // The referral consents, but swaps in an address nobody offered.
+  // The consent POST carries a different address. It must be ignored outright.
   const res = J(at(DURING, () => s.raffleHandleSubmission_({
     step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
-    referralName: 'Robin Vale', referralEmail: 'someone.else@mail-test.co',
+    referralName: 'Robin Vale', referralEmail: 'attacker@mail-test.co',
     referralPhone: '(215) 555-9001', referralRole: 'Buyer',
     referralTimeframe: '7-12 Months' })));
-  check('the substitution is accepted (correcting a typo is the normal case)',
-    res.ok === true, JSON.stringify(res));
+  check('consent still succeeds', res.ok === true, JSON.stringify(res));
 
-  const note = s.__fetches.filter(f => /\/v1\/notes/.test(f.url))
-    .map(f => JSON.parse(f.o.payload)).pop();
-  check('a consent note was written (setup)', !!note);
-  check('the note flags that the address was changed at consent time',
-    /different address|changed|substitut/i.test(String(note.body)),
-    String(note.body).slice(0, 300));
-  check('and names the address it was referred under',
-    String(note.body).indexOf('robin@mail-test.co') !== -1, String(note.body).slice(0, 300));
+  const row = s.__data('Entries')[0].map(String);
+  check('the row keeps the address the referral was SENT to',
+    row.indexOf('robin@mail-test.co') !== -1, JSON.stringify(row));
+  check('and the substituted address is nowhere on the row',
+    row.join('|').indexOf('attacker@mail-test.co') === -1, JSON.stringify(row));
 
-  // An UNCHANGED address must not be flagged, or the warning becomes noise that
-  // gets ignored on the one record where it matters.
+  const writes = JSON.stringify(s.__fetches.map(f => (f.o && f.o.payload) || ''));
+  check('and it never reached FUB either',
+    writes.indexOf('attacker@mail-test.co') === -1);
+
+  // Everything the person CAN legitimately correct about themselves still works.
   const s2 = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
   const v2 = verifySession(s2, entry(), DURING);
   const st2 = J(at(DURING, () => s2.raffleHandleSubmission_(Object.assign(
     { step: 'referral', vid: v2.vid }, referral({})))));
+
+  // Render the page BEFORE consenting: once the row is eligible the page shows
+  // "you are all set" and there is no form to inspect.
+  const page = String(at(DURING, () => s2.raffleConsentPage_(
+    { parameter: { t: st2.token } })));
+
   J(at(DURING, () => s2.raffleHandleSubmission_({
     step: 'consent', decision: 'confirm', token: st2.token, consent: 'Yes',
-    referralName: 'Robin Vale', referralEmail: 'robin@mail-test.co',
-    referralPhone: '(215) 555-9001', referralRole: 'Buyer',
-    referralTimeframe: '7-12 Months' })));
-  const note2 = s2.__fetches.filter(f => /\/v1\/notes/.test(f.url))
-    .map(f => JSON.parse(f.o.payload)).pop();
-  check('an unchanged address is NOT flagged',
-    !/different address|substitut/i.test(String(note2.body)), String(note2.body).slice(0, 200));
+    referralName: 'Robin Vale-Smith', referralPhone: '(267) 555-4321',
+    referralRole: 'Seller', referralTimeframe: '0-3 Months' })));
+  const row2 = s2.__data('Entries')[0].map(String);
+  check('a corrected name is saved', row2.indexOf('Robin Vale-Smith') !== -1, JSON.stringify(row2));
+  check('a corrected phone is saved', row2.join('|').indexOf('4321') !== -1, JSON.stringify(row2));
+  check('a corrected role is saved', row2.indexOf('Seller') !== -1, JSON.stringify(row2));
+  check('a corrected timeframe is saved', row2.indexOf('0-3 Months') !== -1, JSON.stringify(row2));
+
+  // The page must render the field read-only, or the lock is only server-deep and
+  // the visitor gets a box that silently discards what they type.
+  const emailField = (page.match(/<input id="rEmail"[^>]*>/) || [''])[0];
+  check('the consent page renders an email field (guards a vacuous test)',
+    emailField.length > 0, 'no email field found');
+  check('and it is read-only', /\breadonly\b/.test(emailField), emailField);
+  check('the page explains why it cannot be changed',
+    /cannot be changed here/.test(page));
+  // Name and phone must NOT be locked -- correcting those is the page's purpose.
+  const nameField = (page.match(/<input id="rName"[^>]*>/) || [''])[0];
+  check('the name field is still editable', !/\breadonly\b/.test(nameField), nameField);
 }
 
 console.log('\n' + passes + ' passed, ' + fails + ' failed');

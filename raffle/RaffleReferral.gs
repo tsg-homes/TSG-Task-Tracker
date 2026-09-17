@@ -875,7 +875,14 @@ function raffleConsentPage_(e) {
     'is not, and confirm at the bottom. It takes about twenty seconds.</p>',
     '<form id="f" onsubmit="return false">',
     '<label>Full name<input id="rName" value="' + esc(entry.referralName) + '"></label>',
-    '<label>Email<input id="rEmail" type="email" value="' + esc(entry.referralEmail) + '"></label>',
+    // Shown, but not editable: see the note in raffleConsentSubmit_. `readonly`
+    // rather than `disabled` so it still renders as their address rather than
+    // greying out to look broken, and a line underneath says why, because a field
+    // you cannot type in with no explanation reads as a bug.
+    '<label>Email<input id="rEmail" type="email" value="' + esc(entry.referralEmail) + '" ',
+    'readonly style="background:#f4f6f6; color:#55696a"></label>',
+    '<p class="locknote">This is the address we emailed, so it cannot be changed here. ',
+    'If it is wrong, reply to that email or call us on (215) 760-6291.</p>',
     '<label>Phone<input id="rPhone" type="tel" value="' + esc(entry.referralPhone) + '"></label>',
     '<label>Are you looking to buy or sell?</label>',
     '<div class="roles">',
@@ -965,9 +972,28 @@ function raffleConsentSubmit_(d) {
     if (!name || name.indexOf(' ') === -1) {
       throw makeValidationError('Please give your first and last name.');
     }
-    var email  = raffleRejectJunkEmail_(d.referralEmail);
+
+    // THE EMAIL IS LOCKED. Per Durand, 2026-09-17.
+    //
+    // It is read from the ROW, never from this request, and the page renders it
+    // read-only. The consent link is a bearer credential sitting in an inbox:
+    // while the address was editable, whoever held the link could point it at a
+    // third party and tick the consent box on their behalf, and the substituted
+    // address was never re-verified. Flagging that afterwards (the previous
+    // mitigation) told the team about it; locking the field means it cannot
+    // happen. The cost is that a genuine typo in the address now has to be fixed
+    // by a person -- which is the right trade, because an address typed by
+    // somebody else is exactly the case we cannot tell apart from an attack.
+    //
+    // Everything else on the page stays editable: name, phone, buying or selling,
+    // and timeframe are all things this person can correct about themselves.
+    var email = entry.referralEmail;
+    if (!email) {
+      throw makeValidationError('We cannot find the email address for this referral. ' +
+        'Please call us on (215) 760-6291 and we will sort it out.');
+    }
     var phone  = collapseSpaces(d.referralPhone);
-    var digits = raffleRejectJunkPhone_(d.referralPhone);
+    var digits = raffleRejectJunkPhone_(d.referralPhone);   // the row's email already passed the junk check at referral time
     var role   = String(d.referralRole || '').trim();
     if (RAFFLE_ROLES.indexOf(role) === -1) {
       throw makeValidationError('Let us know whether you are looking to buy or to sell.');
@@ -1039,12 +1065,13 @@ function raffleConsentSubmit_(d) {
 // The referral record already exists (created at submit time, with consent
 // recorded as NOT GIVEN). This is the update that turns it into a contact the
 // team is actually allowed to work.
-// True when the person who opened the link consented under a DIFFERENT address
-// from the one they were referred under. Usually a typo being corrected, which is
-// the whole point of the page. Occasionally it is somebody substituting a third
-// party -- the token is a bearer credential and the new address is never
-// re-verified, so this cannot be prevented without a second code round-trip that
-// a cold referral would mostly abandon. It is surfaced instead.
+// True when the consented address differs from the referred one.
+//
+// As of 2026-09-17 the email field is LOCKED (see raffleConsentSubmit_), so this
+// cannot fire through the page. It is kept deliberately, as a tripwire: if the
+// field is ever re-opened, or a future path starts taking the address from the
+// request again, the FUB note goes back to warning the team instead of failing
+// silently. A guard that costs nothing while it is unreachable is worth keeping.
 function raffleAddressWasSubstituted_(entry, edited) {
   var was = raffleEmailKey_(entry.referralEmail);
   var now = raffleEmailKey_(edited.email);
