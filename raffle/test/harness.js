@@ -188,6 +188,14 @@ function makeSandbox(opts) {
           const q = norm(decodeURIComponent(url.split('email=')[1]));
           return json({ people: people.filter(p => (p.emails || []).some(e => norm(e.value) === q)) });
         }
+        // The paged people LISTING, which the QA-contact finder walks. Without
+        // it the finder returned nothing and the no-argument path could not be
+        // exercised at all.
+        if (/\/v1\/people\?limit=/.test(url)) {
+          const off = Number((url.match(/offset=(\d+)/) || [])[1] || 0);
+          const all = people.concat(created);
+          return json({ people: all.slice(off, off + 100) });
+        }
         if (/\/v1\/people\?phone=/.test(url)) {
           const q = dig(decodeURIComponent(url.split('phone=')[1]));
           return json({ people: people.filter(p => (p.phones || []).some(x => dig(x.value) === q)) });

@@ -1755,14 +1755,19 @@ function raffleResetTest() {
 // The backlog: every QA contact left behind by a run that predates the cleanup
 // above. Editor-only. Same double gate, so it can only ever remove QA records.
 // Scans newest-first and stops after `maxScan` contacts (default 500).
-function raffleDeleteQaContactsFromFub(maxScan) {
+// Finds the QA contacts this project has left in FUB: tagged, or carrying the
+// QA name prefix (the stray the tags-PUT bug produced). Newest first, capped.
+// Shared by the purge and the relationship probe, so neither has to be handed
+// ids by a caller -- which matters because the Apps Script Run button cannot
+// pass arguments at all.
+function raffleFindQaContactIds_(maxScan) {
   var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
   var cap = maxScan || 500, offset = 0, ids = [], scanned = 0;
   while (scanned < cap) {
     var page = raffleFubCall_('https://api.followupboss.com/v1/people?limit=100&offset=' +
                               offset + '&sort=-created', 'get', null, apiKey);
     if (!page.ok || !page.body) {
-      Logger.log('raffleDeleteQaContactsFromFub: list failed ' + page.code + ': ' +
+      Logger.log('raffleFindQaContactIds_: list failed ' + page.code + ': ' +
                  String(page.text).slice(0, 200));
       break;
     }
@@ -1772,10 +1777,9 @@ function raffleDeleteQaContactsFromFub(maxScan) {
       scanned++;
       var tags = p.tags || [];
       var nm = String(p.firstName || '') + ' ' + String(p.lastName || '');
-      // Tagged OR name-prefixed. The prefix-only case is the stray the tags-PUT
-      // bug left behind; raffleDeleteFubContactsById_ still applies its own
-      // double gate to every id collected here, so a false positive cannot
-      // delete anything.
+      // Tagged OR name-prefixed. Every id collected here still goes through
+      // raffleDeleteFubContactsById_'s own double gate before anything is
+      // deleted, so a false positive cannot remove a real contact.
       if (tags.some(function (t) { return String(t) === QA_TEST_TAG; }) ||
           nm.indexOf(QA_TEST_PREFIX.trim()) !== -1) {
         ids.push(p.id);
@@ -1784,11 +1788,15 @@ function raffleDeleteQaContactsFromFub(maxScan) {
     if (people.length < 100) break;
     offset += 100;
   }
-  Logger.log('raffleDeleteQaContactsFromFub: scanned ' + scanned + ', found ' +
-             ids.length + ' QA-tagged.');
-  var res = raffleDeleteFubContactsById_(ids);
-  return 'Scanned ' + scanned + ' contacts, found ' + ids.length +
-         ' tagged "' + QA_TEST_TAG + '": ' + res.summary;
+  Logger.log('raffleFindQaContactIds_: scanned ' + scanned + ', found ' + ids.length + '.');
+  return { ids: ids, scanned: scanned };
+}
+
+function raffleDeleteQaContactsFromFub(maxScan) {
+  var found = raffleFindQaContactIds_(maxScan);
+  var res = raffleDeleteFubContactsById_(found.ids);
+  return 'Scanned ' + found.scanned + ' contacts, found ' + found.ids.length +
+         ' QA record(s): ' + res.summary;
 }
 
 // ---------------------------------------------------------------------------
@@ -1833,6 +1841,24 @@ function raffleInspectFubRelationships(qaPersonId, qaRelatedId) {
   var out = [];
   function say(line) { out.push(line); Logger.log(line); }
 
+  // NO ARGUMENTS NEEDED. The Apps Script Run button calls a function with none,
+  // so asking somebody to "run raffleInspectFubRelationships(33252, 33255)" was
+  // asking for something the editor cannot do. When no pair is passed it finds
+  // two QA contacts itself -- they are the only records safe to write a throwaway
+  // relationship onto, and every run of the QA suite creates plenty.
+  if (!qaPersonId || !qaRelatedId) {
+    var found = raffleFindQaContactIds_(300);
+    if (found.ids.length >= 2) {
+      qaPersonId = found.ids[0];
+      qaRelatedId = found.ids[1];
+      say('Using two QA contacts found in FUB: ' + qaPersonId + ' and ' + qaRelatedId + '.');
+    } else {
+      say('Found only ' + found.ids.length + ' QA contact(s) in the newest ' +
+          found.scanned + '. Run raffleRunQaSuiteAndKeepData() first -- it makes ' +
+          'several and does NOT delete them -- then run this again.');
+    }
+  }
+
   var list = raffleFubCall_(
     'https://api.followupboss.com/v1/peopleRelationships?limit=3', 'get', null, apiKey);
   say('GET /peopleRelationships -> ' + list.code);
@@ -1862,8 +1888,8 @@ function raffleInspectFubRelationships(qaPersonId, qaRelatedId) {
                   : String(t.text).slice(0, 140)));
       });
   } else {
-    say('Pass two [QA TEST] contact ids to probe field names: ' +
-        'raffleInspectFubRelationships(33228, 33241)');
+    say('No QA pair to probe with, so the field-name test was skipped. Run ' +
+        'raffleRunQaSuiteAndKeepData() and then this again.');
   }
   return out.join('\n');
 }
@@ -2251,8 +2277,9 @@ function raffleQaRun_(cleanUp) {
           'every relationship GET failed');
     check('an entrant is LINKED to the person they referred', anyLinked,
           'NO pair is linked across ' + pairs.length + ' consented referral(s) — ' +
-          'linking is failing silently; run raffleInspectFubRelationships(' + probe +
-          ') to have FUB name the field it wants');
+          'linking is failing silently. Run raffleRunQaSuiteAndKeepData() then ' +
+          'raffleInspectFubRelationships (no arguments) to have FUB name the ' +
+          'field it wants. Pair seen here: ' + probe);
   }
 
   // And the timeline check, on an entrant who actually had mail sent about them.
