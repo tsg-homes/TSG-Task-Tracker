@@ -891,7 +891,8 @@ function raffleSendReferralInvite_(d, test) {
       message: 'Already sent to ' + found.entry.referralEmail + '. ' +
                'Ask them to check spam if it has not turned up.' });
   }
-  raffleCheckCodeSendQuota_(raffleEmailKey_(found.entry.referralEmail));
+  raffleCheckCodeSendQuota_(raffleEmailKey_(found.entry.referralEmail),
+                            raffleSendWeight_(test));
 
   var url = raffleConsentUrl_(token);
   // Lead with what THEY get. "X referred you" is the referrer's news; a referral
@@ -2003,6 +2004,14 @@ function raffleOversightBcc_(test) {
   return test ? '' : RAFFLE_OVERSIGHT_BCC;
 }
 
+// What one guarded send with oversight copies costs against the daily quota:
+// the recipient plus each bcc. Passed to raffleCheckCodeSendQuota_ so the
+// 6-hour ceiling and the reserve are counted in the unit Google charges.
+function raffleSendWeight_(test) {
+  var bcc = raffleOversightBcc_(test);
+  return 1 + (bcc ? bcc.split(',').filter(function (a) { return a.trim(); }).length : 0);
+}
+
 function raffleReplyTo_(referrerEmail) {
   var who = String(referrerEmail || '').trim();
   if (!who || raffleEmailKey_(who) === raffleEmailKey_(RAFFLE_SHARED_INBOX)) {
@@ -2400,6 +2409,19 @@ function raffleEventDigest() {
     props.setProperty('RAFFLE_LAST_DIGEST_COUNT', String(eligible.length));
     var added = eligible.length - lastCount;
 
+    // A quota reading every hour regardless of traffic, and the numbers in the
+    // digest so the projection is visible before it ever has to alert.
+    var quotaLine = '';
+    try {
+      var left = Number(MailApp.getRemainingDailyQuota());
+      var proj = raffleWatchMailQuota_(left, now);
+      quotaLine = 'Email quota: ' + left + ' recipients left today' +
+        (proj ? ', burning ~' + Math.round(proj.ratePerHour) + '/hour, ' +
+                (proj.alert ? 'RUNS OUT around ' + raffleFmt_(new Date(proj.runsOutAt)) + ' ET'
+                            : 'on track to close with ~' + proj.projectedLeft + ' left')
+              : '');
+    } catch (qErr) { quotaLine = 'Email quota: could not be read (' + qErr + ')'; }
+
     MailApp.sendEmail({
       to: RAFFLE_NOTIFY_EMAIL,
       name: 'TSG Block Party Raffle',
@@ -2408,6 +2430,7 @@ function raffleEventDigest() {
       body: [
         eligible.length + ' valid entries' + (added > 0 ? ' (+' + added + ' since the last note)' : ''),
         pending.length + ' still waiting on a referral to confirm',
+        quotaLine,
         '',
         minsLeft > 0
           ? 'Entries close and the draw runs in ' + minsLeft + ' minutes (6:15 PM).'
@@ -2595,7 +2618,7 @@ function raffleSendChainInvite_(entry, edited, chainToken, test) {
     return false;
   }
   try {
-    raffleCheckCodeSendQuota_(raffleEmailKey_(edited.email));
+    raffleCheckCodeSendQuota_(raffleEmailKey_(edited.email), raffleSendWeight_(test));
   } catch (quotaErr) {
     Logger.log('Raffle: chain invite skipped (send quota): ' + quotaErr);
     return false;
@@ -2884,7 +2907,7 @@ function raffleSendConsentReminders_(test, ignoreWindow) {
     if (!r.consentToken) { skipped++; return; }
 
     try {
-      raffleCheckCodeSendQuota_(raffleEmailKey_(r.referralEmail));
+      raffleCheckCodeSendQuota_(raffleEmailKey_(r.referralEmail), raffleSendWeight_(test));
     } catch (quotaErr) {
       Logger.log('Reminder skipped (send quota) for ' + r.referralEmail + ': ' + quotaErr);
       skipped++;

@@ -138,16 +138,46 @@ var RAFFLE_VERIFIED_TTL_SECONDS = 3600;
 //     sendErrorAlert down with it, silently.
 //
 // So: at most 3 codes to one address per hour, and a hard ceiling on total
-// codes per rolling 6-hour window (CacheService's maximum TTL). The party is
-// three hours with about 125 people expected, so the global ceiling is roughly
-// 4x the realistic peak -- it only bites during an attack.
-// Added 2026-09-16 after test/test_redteam.js (T3).
+// RECIPIENTS per 6-hour window (CacheService's maximum TTL). Recipients, not
+// messages: the quota is charged per address, and an invite carries two
+// oversight copies, so it costs three where a code costs one. The ceiling was
+// 500 messages when the invite had no copies; at three recipients each, 500
+// invites was the whole day's quota, which is the opposite of a guard. The
+// party is three hours with about 125 people expected -- a strong day is ~350
+// guarded recipients -- so 750 is about 2x the realistic peak and only bites
+// during an attack. The daily quota itself is protected by the reserve below.
+// Added 2026-09-16 after test/test_redteam.js (T3); weighted 2026-09-17.
 var RAFFLE_CODE_SEND_PREFIX = 'raffle_codes_';
 var RAFFLE_CODE_MAX_PER_ADDRESS = 3;
 var RAFFLE_CODE_ADDRESS_WINDOW_SECONDS = 3600;   // 1 hour
 var RAFFLE_CODE_GLOBAL_PREFIX = 'raffle_codes_all_';
-var RAFFLE_CODE_MAX_GLOBAL = 500;
+var RAFFLE_CODE_MAX_GLOBAL = 750;                // recipients per 6-hour bucket
 var RAFFLE_CODE_GLOBAL_WINDOW_SECONDS = 21600;   // 6 hours (cache maximum)
+
+// ---------- Daily send-quota reserve ----------
+// The account's real limit is 1,500 recipients a day, shared with the Open
+// House form and every alert. Nothing above watches it: when it hits zero,
+// MailApp throws, the entrant sees "Something went wrong", and the alert that
+// would have said so cannot be sent either. So every guarded send first reads
+// the remaining quota and refuses once fewer than RAFFLE_MAIL_RESERVE would be
+// left -- enough for the 6:15 result, the winner email, the hourly digest and a
+// handful of alerts, which are the sends that matter more than one more code.
+// The refusal alerts once per 6-hour bucket, while it still can.
+var RAFFLE_MAIL_RESERVE = 40;
+var RAFFLE_MAIL_RESERVE_ALERT_PREFIX = 'raffle_mail_reserve_alert_';
+
+// ---------- Day-of run-out projection ----------
+// Between the doors opening and entries closing, every guarded send also records
+// the remaining quota. From those readings, raffleQuotaProjection_ works out the
+// burn rate -- the faster of "since the party started" and "the last hour", so a
+// late surge is caught -- and asks whether the quota lasts to 6:15 with the
+// reserve intact. If not, ONE email goes to RAFFLE_NOTIFY_EMAIL naming the
+// rate and the projected run-out time. The hourly digest takes a reading too,
+// so a quiet stretch still produces a datapoint, and prints the same numbers.
+var RAFFLE_QUOTA_READINGS_PROP = 'RAFFLE_QUOTA_READINGS';
+var RAFFLE_QUOTA_ALERT_PROP    = 'RAFFLE_QUOTA_ALERT_SENT_AT';
+var RAFFLE_QUOTA_RATE_MIN_MS   = 10 * 60000;   // need 10 minutes of readings before projecting
+var RAFFLE_QUOTA_RECENT_MS     = 60 * 60000;   // the "recent" rate window
 
 // Junk rejection, applied to BOTH steps. This is not politeness -- FUB already
 // carries "test@me.com / 1234567899" and "asdf@asdf.caf" from earlier form
@@ -938,7 +968,9 @@ function raffleRequestCode_(d, test) {
 // a shared cache key is otherwise not atomic, and a concurrent burst is exactly
 // the case the cap exists for. Failing to get the lock counts as over-cap
 // (fail closed), matching checkRateLimit()'s behaviour in Code.gs.
-function raffleCheckCodeSendQuota_(emailKey) {
+function raffleCheckCodeSendQuota_(emailKey, recipients) {
+  // How many addresses this send will be charged for (to + oversight copies).
+  recipients = Math.max(1, Math.round(Number(recipients) || 1));
   var cache = CacheService.getScriptCache();
   var lock = LockService.getScriptLock();
   var haveLock = false;
@@ -954,28 +986,142 @@ function raffleCheckCodeSendQuota_(emailKey) {
       throw makeValidationError('We have already emailed several codes to that address. ' +
         'Check your inbox and spam folder, or grab someone from TSG and we will enter you.');
     }
-    var globalKey = RAFFLE_CODE_GLOBAL_PREFIX +
-      Math.floor(Date.now() / (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000));
+    var bucket = Math.floor(Date.now() / (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000));
+    var globalKey = RAFFLE_CODE_GLOBAL_PREFIX + bucket;
     var globalCount = Number(cache.get(globalKey) || 0);
-    if (globalCount >= RAFFLE_CODE_MAX_GLOBAL) {
-      Logger.log('Raffle: GLOBAL code-send ceiling hit (' + globalCount + '). Possible abuse.');
+    if (globalCount + recipients > RAFFLE_CODE_MAX_GLOBAL) {
+      Logger.log('Raffle: GLOBAL send ceiling hit (' + globalCount + ' recipients). Possible abuse.');
       try {
         sendErrorAlert('Raffle: verification-email ceiling hit',
-          'The rolling ' + (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS / 3600) + '-hour ceiling of ' +
-          RAFFLE_CODE_MAX_GLOBAL + ' verification emails has been reached, so further codes ' +
-          'are being refused to protect the daily send quota (which the Open House form and ' +
-          'these alerts also rely on).\n\nIf this is a real crowd and not abuse, raise ' +
-          'RAFFLE_CODE_MAX_GLOBAL in RaffleCode.gs and redeploy. If it is abuse, entries can ' +
-          'be taken on paper and typed in afterwards.');
+          'The ' + (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS / 3600) + '-hour ceiling of ' +
+          RAFFLE_CODE_MAX_GLOBAL + ' email recipients (codes, invites and reminders) has ' +
+          'been reached, so further codes are being refused to protect the daily send quota ' +
+          '(which the Open House form and these alerts also rely on).\n\nIf this is a real ' +
+          'crowd and not abuse, raise RAFFLE_CODE_MAX_GLOBAL in RaffleCode.gs and redeploy. ' +
+          'If it is abuse, entries can be taken on paper and typed in afterwards.');
       } catch (alertErr) { /* the alert must never swallow the response */ }
       throw makeValidationError('We cannot send codes right now. Grab someone from TSG and ' +
         'we will get you entered.');
     }
+
+    // The daily quota itself. -1 means the reading failed; never refuse on a
+    // reading we do not have, because a broken meter is not an empty tank.
+    var left = -1;
+    try { left = Number(MailApp.getRemainingDailyQuota()); } catch (qErr) { left = -1; }
+    if (isNaN(left)) left = -1;
+    if (left >= 0 && left - recipients < RAFFLE_MAIL_RESERVE) {
+      Logger.log('Raffle: daily send quota at the reserve (' + left + ' left, ' +
+                 recipients + ' wanted, reserve ' + RAFFLE_MAIL_RESERVE + ').');
+      var reserveKey = RAFFLE_MAIL_RESERVE_ALERT_PREFIX + bucket;
+      if (!cache.get(reserveKey)) {
+        cache.put(reserveKey, '1', RAFFLE_CODE_GLOBAL_WINDOW_SECONDS);
+        try {
+          sendErrorAlert('Raffle: daily email quota exhausted',
+            'The account has ' + left + ' email recipients left today and the raffle keeps ' +
+            RAFFLE_MAIL_RESERVE + ' back for the result, the winner email and alerts, so ' +
+            'verification codes, invites and reminders are now being REFUSED. Entrants see ' +
+            '"grab someone from TSG". Take entries on paper and type them in after the quota ' +
+            'resets (Google refreshes it at the end of a rolling 24-hour window).\n\n' +
+            'Every email this account sends counts against the same 1,500 -- the Open House ' +
+            'form and QA runs included.');
+        } catch (alertErr) { /* the alert must never swallow the response */ }
+      }
+      throw makeValidationError('We cannot send codes right now. Grab someone from TSG and ' +
+        'we will get you entered.');
+    }
+
     cache.put(addrKey, String(addrCount + 1), RAFFLE_CODE_ADDRESS_WINDOW_SECONDS);
-    cache.put(globalKey, String(globalCount + 1), RAFFLE_CODE_GLOBAL_WINDOW_SECONDS);
+    cache.put(globalKey, String(globalCount + recipients), RAFFLE_CODE_GLOBAL_WINDOW_SECONDS);
+    // Inside the lock on purpose: the readings list is a read-modify-write.
+    raffleWatchMailQuota_(left);
   } finally {
     try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
   }
+}
+
+// Records a quota reading during the event and raises the one run-out alert.
+// Pure arithmetic lives in raffleQuotaProjection_ so it can be tested without a
+// clock. Returns the projection (or null when idle) for the digest to print.
+function raffleWatchMailQuota_(left, nowMs) {
+  try {
+    var now = nowMs || Date.now();
+    var start = new Date(RAFFLE_EVENT_AT).getTime();
+    var close = new Date(RAFFLE_CLOSE_AT).getTime();
+    if (!(left >= 0) || now < start || now >= close) return null;
+
+    var props = PropertiesService.getScriptProperties();
+    var readings = [];
+    try { readings = JSON.parse(props.getProperty(RAFFLE_QUOTA_READINGS_PROP) || '[]'); }
+    catch (parseErr) { readings = []; }
+    if (!Array.isArray(readings)) readings = [];
+    readings.push({ t: now, left: left });
+    // Keep the party's first reading (the "since the start" rate) plus the last
+    // hour (the "recent" rate); everything in between has done its job.
+    readings = [readings[0]].concat(readings.slice(1).filter(function (r) {
+      return r && (now - Number(r.t)) <= RAFFLE_QUOTA_RECENT_MS; }));
+    props.setProperty(RAFFLE_QUOTA_READINGS_PROP, JSON.stringify(readings));
+
+    var p = raffleQuotaProjection_(readings, now, close, RAFFLE_MAIL_RESERVE);
+    if (p && p.alert && !props.getProperty(RAFFLE_QUOTA_ALERT_PROP)) {
+      props.setProperty(RAFFLE_QUOTA_ALERT_PROP, raffleFmt_(raffleNow_()));
+      MailApp.sendEmail({
+        to: RAFFLE_NOTIFY_EMAIL,
+        name: 'TSG Block Party Raffle',
+        subject: '⚠️ Raffle email may run out before 6:15 (' + left + ' left)',
+        body: [
+          'At the current rate the account runs out of email before entries close.',
+          '',
+          '  Left now:        ' + left + ' recipients',
+          '  Burning:         ~' + Math.round(p.ratePerHour) + ' per hour',
+          '  Runs out around: ' + raffleFmt_(new Date(p.runsOutAt)) + ' ET (reserve of ' +
+            RAFFLE_MAIL_RESERVE + ' kept back for the result and winner emails)',
+          '  Entries close:   ' + raffleFmt_(new Date(close)) + ' ET',
+          '  Projected left at close: ' + p.projectedLeft,
+          '',
+          'What happens if it does run out: codes, invites and reminders are refused and',
+          'the entrant is told to grab someone from TSG. Consents already given still',
+          'record. The 6:15 draw still runs and records the winner; only its email could fail.',
+          '',
+          'What you can do now: take entries on paper for the last stretch, and skip any',
+          'QA runs or Open House emails from this account for the rest of the day.',
+          'This alert is sent once.'
+        ].join('\n')
+      });
+      Logger.log('Raffle: quota run-out alert sent (' + left + ' left, ~' +
+                 Math.round(p.ratePerHour) + '/h).');
+    }
+    return p;
+  } catch (err) {
+    Logger.log('raffleWatchMailQuota_ failed (non-fatal): ' + err);
+    return null;
+  }
+}
+
+// readings: [{t, left}] oldest first, the first being the party's first reading.
+// Returns null until ten minutes of readings exist; otherwise the burn rate
+// (the faster of overall and recent), the projected remainder at close, when the
+// reserve would be reached, and whether that is before close.
+function raffleQuotaProjection_(readings, nowMs, closeMs, reserve) {
+  if (!readings || readings.length < 2) return null;
+  var latest = readings[readings.length - 1];
+  function rate(a, b) {
+    var dt = Number(b.t) - Number(a.t);
+    if (!(dt >= RAFFLE_QUOTA_RATE_MIN_MS)) return null;
+    return Math.max(0, Number(a.left) - Number(b.left)) / dt;   // recipients per ms
+  }
+  var overall = rate(readings[0], latest);
+  var recent  = readings.length >= 3 ? rate(readings[1], latest) : null;
+  if (overall === null && recent === null) return null;
+  var r = Math.max(overall || 0, recent || 0);
+  var left = Number(latest.left);
+  var projectedLeft = Math.round(left - r * (closeMs - nowMs));
+  var runsOutAt = r > 0 ? nowMs + Math.max(0, left - reserve) / r : Infinity;
+  return {
+    ratePerHour: r * 3600000,
+    projectedLeft: projectedLeft,
+    runsOutAt: runsOutAt,
+    alert: projectedLeft < reserve
+  };
 }
 
 // ---------- Step 2: confirm the code, then actually enter them ----------
@@ -2618,6 +2764,53 @@ function raffleQaRun_(cleanUp) {
              '-deliver@thestawaszgroup.com for the code email.');
   })();
 
+  // ---- 5e. The quota guard and the run-out projection ----------------------
+  // The reserve cannot be reached live without burning the day's quota, so this
+  // proves the parts that can be proved on the deployed code: the ceiling is
+  // charged per recipient, the projection arithmetic is right, and the watcher
+  // is idle outside the event window (it must never alert during a rehearsal).
+  section('5e. Send-quota guard (weighted ceiling, reserve, run-out projection)');
+  (function () {
+    var cache = CacheService.getScriptCache();
+    var bucketKey = RAFFLE_CODE_GLOBAL_PREFIX +
+      Math.floor(Date.now() / (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000));
+    var g0 = Number(cache.get(bucketKey) || 0);
+    var weight = raffleSendWeight_(false);
+    check('a live invite is charged as ' + weight + ' recipients (to + oversight copies)',
+          weight === 1 + RAFFLE_OVERSIGHT_BCC.split(',').length, String(weight));
+    raffleCheckCodeSendQuota_('qa-weight-' + stamp + '@example.invalid', weight);
+    var g1 = Number(cache.get(bucketKey) || 0);
+    check('the 6-hour ceiling counted ' + weight + ', not 1', g1 - g0 === weight, g0 + ' -> ' + g1);
+    check('the reserve is below the ceiling and above the sends that must succeed',
+          RAFFLE_MAIL_RESERVE >= 10 && RAFFLE_MAIL_RESERVE < RAFFLE_CODE_MAX_GLOBAL,
+          String(RAFFLE_MAIL_RESERVE));
+
+    var H = 3600000, t0 = new Date(RAFFLE_EVENT_AT).getTime();
+    var closeMs = new Date(RAFFLE_CLOSE_AT).getTime();
+    var fast = raffleQuotaProjection_([{ t: t0, left: 1000 }, { t: t0 + H / 2, left: 700 }],
+                                      t0 + H / 2, closeMs, RAFFLE_MAIL_RESERVE);
+    check('600/hour with 2h45m to go projects a run-out', fast && fast.alert === true &&
+          Math.round(fast.ratePerHour) === 600, JSON.stringify(fast));
+    var slow = raffleQuotaProjection_([{ t: t0, left: 1000 }, { t: t0 + H / 2, left: 990 }],
+                                      t0 + H / 2, closeMs, RAFFLE_MAIL_RESERVE);
+    check('20/hour does not', slow && slow.alert === false, JSON.stringify(slow));
+    var surge = raffleQuotaProjection_([{ t: t0, left: 1000 }, { t: t0 + H, left: 950 },
+                                        { t: t0 + H + H / 4, left: 600 }],
+                                       t0 + H + H / 4, closeMs, RAFFLE_MAIL_RESERVE);
+    check('a late surge is caught by the recent rate', surge && surge.alert === true &&
+          surge.ratePerHour > 1000, JSON.stringify(surge));
+    var early = raffleQuotaProjection_([{ t: t0, left: 1000 }, { t: t0 + 60000, left: 900 }],
+                                       t0 + 60000, closeMs, RAFFLE_MAIL_RESERVE);
+    check('one minute of readings is not a rate', early === null, JSON.stringify(early));
+
+    var idle = raffleWatchMailQuota_(1200, t0 - 24 * H);
+    check('the watcher is idle the day before', idle === null, JSON.stringify(idle));
+    var closed = raffleWatchMailQuota_(1200, closeMs + 60000);
+    check('and after entries close', closed === null, JSON.stringify(closed));
+    check('no run-out alert has been recorded', !props.getProperty(RAFFLE_QUOTA_ALERT_PROP),
+          String(props.getProperty(RAFFLE_QUOTA_ALERT_PROP)));
+  })();
+
   // ---- 6. The live raffle must be untouched -------------------------------
   section('6. The LIVE raffle is untouched');
   check('live entries unchanged', raffleReadEntries_(false).length === liveBefore,
@@ -2663,8 +2856,8 @@ function raffleQaRun_(cleanUp) {
   log.push('', '================================',
            pass + ' passed, ' + fail + ' failed',
            '================================');
-  log.push('', 'FUB CLEANUP: this run created real FUB contacts. Filter FUB on the tag',
-           '"' + QA_TEST_TAG + '" and delete them.');
+  log.push('', 'FUB CLEANUP: this run kept its FUB contacts (KeepData). They carry the tag',
+           '"' + QA_TEST_TAG + '"; raffleDeleteQaContactsFromFub removes them when you are done.');
   log.push('Verification-code emails were sent to ' + RAFFLE_QA_ADDRESS_BASE + stamp +
            '-N' + RAFFLE_QA_DOMAIN + ' — they deliver to Durand.');
 

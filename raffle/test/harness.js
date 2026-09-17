@@ -149,8 +149,15 @@ function makeSandbox(opts) {
     // The live suite proves the mail service ACCEPTED a message by watching the
     // account's own remaining quota fall, so the fake models a real decrementing
     // counter. A constant here would let that assertion ship unexercised.
+    // Charged per RECIPIENT, as Google does: to + cc + bcc, comma-separated.
+    // The positional form sendEmail(to, subject, body) is one recipient string.
     MailApp: {
-      sendEmail: m => { sent.push(m); quota.left = Math.max(0, quota.left - 1); },
+      sendEmail: m => {
+        sent.push(m);
+        const n = typeof m === 'string' ? 1 : ['to', 'cc', 'bcc'].reduce((acc, k) =>
+          acc + String(m[k] || '').split(',').filter(a => a.trim()).length, 0);
+        quota.left = Math.max(0, quota.left - Math.max(1, n));
+      },
       getRemainingDailyQuota: () => quota.left
     },
     Session: { getEffectiveUser: () => ({ getEmail: () => opts.runAs || 'info@tsg.homes' }) },
@@ -419,7 +426,7 @@ function makeSandbox(opts) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../RaffleReferral.gs'), 'utf8'), sandbox);
   sandbox.__sent = sent; sandbox.__fetches = fetches; sandbox.__templates = templates;
   sandbox.__props = props; sandbox.__tabs = tabs; sandbox.__alerts = alerts;
-  sandbox.__shared = shared;
+  sandbox.__shared = shared; sandbox.__quota = quota;
   // Data rows only -- the header is row 1 and is never an entry.
   sandbox.__data = name => (tabs[name || 'Entries'] ? tabs[name || 'Entries'].rows.slice(1) : []);
   return sandbox;

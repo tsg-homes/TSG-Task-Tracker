@@ -192,7 +192,9 @@ section('T3  Using the endpoint as a mailer / burning the send quota');
 // which bounds the RATE but not the DAILY TOTAL: 15/min sustained is 21,600/day,
 // so the quota dies in under two hours. The rate cap is also global, so it
 // cannot distinguish "one attacker hammering one victim" from a real queue at
-// the table. A per-address cap is the missing control.
+// the table. A per-address cap is the missing control. (2026-09-17: the global
+// ceiling is charged per RECIPIENT, and a reserve against the real daily quota
+// sits under both -- see test_raffle.js, "send-quota reserve".)
 {
   const s = makeSandbox();
   const victim = 'victim@mail-test.co';

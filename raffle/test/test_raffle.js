@@ -1519,6 +1519,141 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   check('suite left no live winner', s.__props.RAFFLE_WINNER_JSON === undefined);
 }
 
+// ---- The send-quota reserve, weighted ceiling and run-out projection ----------
+// Added 2026-09-17. The daily quota (1,500 recipients) had no guard in the
+// production path: at zero, MailApp threw, the entrant saw "Something went
+// wrong" and the alert could not be sent either. And the 6-hour ceiling counted
+// messages while Google charges recipients, so 500 invites with two bcc copies
+// was the whole day's quota.
+{
+  const H = 3600000;
+  const T0 = new Date('2026-09-19T15:00:00-04:00').getTime();
+  const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
+
+  // Reserve: a nearly-empty account refuses codes, once, with an alert.
+  const low = makeSandbox({ quota: 30 });
+  const r1 = J(at(DURING, () => low.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));
+  check('below the reserve a code request is refused, not thrown',
+    r1.ok === false && /cannot send codes/.test(r1.error), JSON.stringify(r1));
+  eq('and no code email went out', low.__sent.length, 0);
+  eq('the refusal alerted once', low.__alerts.filter(a => /quota exhausted/.test(a.context)).length, 1);
+  J(at(DURING, () => low.raffleHandleSubmission_(Object.assign({ step: 'request' },
+    entry({ email: 'second@mail-test.co', phone: '(215) 555-8124' })))));
+  eq('a second refusal does not alert again', low.__alerts.filter(a => /quota exhausted/.test(a.context)).length, 1);
+
+  // The reserve is counted in recipients: with 42 left a 1-recipient code fits
+  // but a 3-recipient invite does not.
+  const edge = makeSandbox({ quota: 42 });
+  let threw = null;
+  try { edge.raffleCheckCodeSendQuota_('a@mail-test.co', 1); } catch (e) { threw = e; }
+  check('one recipient is allowed with 42 left (reserve 40)', threw === null, String(threw));
+  threw = null;
+  try { edge.raffleCheckCodeSendQuota_('b@mail-test.co', 3); } catch (e) { threw = e; }
+  check('three recipients are refused with 42 left', !!(threw && threw.isValidation), String(threw));
+  eq('the reserve is 40', edge.RAFFLE_MAIL_RESERVE, 40);
+
+  // A failed meter must not refuse anyone.
+  const blind = makeSandbox();
+  blind.MailApp.getRemainingDailyQuota = () => { throw new Error('meter down'); };
+  const rb = J(at(DURING, () => blind.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));
+  check('an unreadable quota does not block a code', rb.ok === true && rb.needsCode === true, JSON.stringify(rb));
+
+  // Weighted ceiling: charged per recipient, refused when the send would cross it.
+  const cap = makeSandbox();
+  cap.RAFFLE_CODE_MAX_GLOBAL = 5;
+  threw = null;
+  try { cap.raffleCheckCodeSendQuota_('c@mail-test.co', 3); } catch (e) { threw = e; }
+  check('3 of 5 fits', threw === null, String(threw));
+  threw = null;
+  try { cap.raffleCheckCodeSendQuota_('d@mail-test.co', 3); } catch (e) { threw = e; }
+  check('another 3 would make 6 of 5 and is refused', !!(threw && threw.isValidation), String(threw));
+  threw = null;
+  try { cap.raffleCheckCodeSendQuota_('e@mail-test.co', 1); } catch (e) { threw = e; }
+  check('but a 1-recipient code still fits in the remaining 2', threw === null, String(threw));
+  eq('the ceiling alerted', cap.__alerts.filter(a => /ceiling/.test(a.context)).length, 1);
+
+  // The live paths pass their real weight: an invite costs 3 with oversight
+  // copies, 1 in test mode where the copies are dropped.
+  eq('a live invite weighs 3', cap.raffleSendWeight_(false), 3);
+  eq('a test-mode invite weighs 1', cap.raffleSendWeight_(true), 1);
+  const w = makeSandbox();
+  const bucket = () => Number(w.CacheService.getScriptCache().get(
+    w.RAFFLE_CODE_GLOBAL_PREFIX + Math.floor(Date.now() / (w.RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000))) || 0);
+  const b0 = at(DURING, bucket);
+  enterFull(w, entry(), DURING, { skipConsent: true });
+  const b1 = at(DURING, bucket);
+  eq('a code (1) plus an invite (3) charge the bucket 4', b1 - b0, 4);
+  eq('and the fake charged the quota per recipient too',
+    1500 - w.__quota.left, w.__sent.reduce((n, m) => n + ['to', 'cc', 'bcc'].reduce((a, k) =>
+      a + String(m[k] || '').split(',').filter(x => x.trim()).length, 0), 0));
+
+  // Projection arithmetic.
+  const s = makeSandbox();
+  const proj = (rs, now) => s.raffleQuotaProjection_(rs, now, CLOSE, 40);
+  const fast = proj([{ t: T0, left: 1000 }, { t: T0 + H / 2, left: 700 }], T0 + H / 2);
+  check('600/h with 2h45 to go alerts', fast && fast.alert === true && Math.round(fast.ratePerHour) === 600, JSON.stringify(fast));
+  eq('and says when the reserve is reached', Math.round((fast.runsOutAt - (T0 + H / 2)) / 60000), 66);
+  const slow = proj([{ t: T0, left: 1000 }, { t: T0 + H / 2, left: 990 }], T0 + H / 2);
+  check('20/h does not', slow && slow.alert === false && slow.projectedLeft === 935, JSON.stringify(slow));
+  const surge = proj([{ t: T0, left: 1000 }, { t: T0 + H, left: 950 }, { t: T0 + H + H / 4, left: 600 }], T0 + H + H / 4);
+  check('a late surge is caught by the recent rate, not averaged away',
+    surge && surge.alert === true && surge.ratePerHour > 1000, JSON.stringify(surge));
+  eq('under ten minutes of readings is no rate', proj([{ t: T0, left: 1000 }, { t: T0 + 60000, left: 900 }], T0 + 60000), null);
+  eq('one reading is no rate', proj([{ t: T0, left: 1000 }], T0), null);
+  check('a refill (quota reset mid-party) is a zero rate, not negative',
+    proj([{ t: T0, left: 100 }, { t: T0 + H, left: 1500 }], T0 + H).ratePerHour === 0);
+
+  // The watcher end to end: readings accumulate under guarded sends during the
+  // party, one alert goes to Durand and Ryan, and it never fires again.
+  const wsb = makeSandbox({ quota: 1000 });
+  const guard = (t, who) => at(t, () => wsb.raffleCheckCodeSendQuota_(who + '@mail-test.co', 1));
+  guard(T0, 'p1');
+  wsb.__quota.left = 700;
+  guard(T0 + H / 2, 'p2');
+  const alerts = () => wsb.__sent.filter(m => /run out before 6:15/.test(m.subject));
+  eq('a run-out alert went out', alerts().length, 1);
+  check('to Durand and Ryan', /durand@thestawaszgroup\.com/.test(alerts()[0].to) && /ryan@/.test(alerts()[0].to), alerts()[0].to);
+  check('it names the rate and the run-out time',
+    /~600 per hour/.test(alerts()[0].body) &&
+    alerts()[0].body.indexOf('Runs out around: ' + wsb.raffleFmt_(new Date(T0 + H / 2 + 66 * 60000))) !== -1,
+    alerts()[0].body);
+  check('and it is recorded', !!wsb.__props.RAFFLE_QUOTA_ALERT_SENT_AT);
+  wsb.__quota.left = 300;
+  guard(T0 + H, 'p3');
+  eq('a second projection does not send a second alert', alerts().length, 1);
+  const readings = JSON.parse(wsb.__props.RAFFLE_QUOTA_READINGS);
+  check('readings keep the first plus the recent hour',
+    readings.length === 3 && readings[0].left === 1000 && readings[2].left === 300, JSON.stringify(readings));
+
+  // Idle outside the window: a rehearsal on Friday, or the suite at 10am, must
+  // never page anyone about a projection.
+  const idle = makeSandbox({ quota: 1000 });
+  at(BEFORE, () => idle.raffleCheckCodeSendQuota_('x@mail-test.co', 1));
+  idle.__quota.left = 100;
+  at(BEFORE + H / 2, () => idle.raffleCheckCodeSendQuota_('y@mail-test.co', 1));
+  eq('no readings before the party', idle.__props.RAFFLE_QUOTA_READINGS, undefined);
+  eq('no alert before the party', idle.__sent.filter(m => /run out/.test(m.subject)).length, 0);
+  eq('idle after close', idle.raffleWatchMailQuota_(50, CLOSE + 1), null);
+  eq('a slow party never alerts', (() => {
+    const q = makeSandbox({ quota: 1000 });
+    at(T0, () => q.raffleCheckCodeSendQuota_('a1@mail-test.co', 1));
+    q.__quota.left = 990;
+    at(T0 + H, () => q.raffleCheckCodeSendQuota_('a2@mail-test.co', 1));
+    return q.__sent.filter(m => /run out/.test(m.subject)).length;
+  })(), 0);
+
+  // The hourly digest takes a reading and prints the numbers.
+  const dg = makeSandbox({ quota: 1000 });
+  at(T0, () => dg.raffleCheckCodeSendQuota_('d1@mail-test.co', 1));
+  dg.__quota.left = 800;
+  at(T0 + H, () => dg.raffleEventDigest());
+  const digest = dg.__sent.filter(m => /min to the draw/.test(m.subject));
+  eq('digest sent', digest.length, 1);
+  check('it prints the quota and the rate',
+    /Email quota: 800 recipients left today, burning ~200\/hour, on track to close with ~350 left/.test(digest[0].body),
+    digest[0].body.split('\n')[2]);
+}
+
 const { passes, fails } = counts();
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
 process.exit(fails ? 1 : 0);
