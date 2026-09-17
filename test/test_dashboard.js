@@ -649,6 +649,45 @@ setTimeout(async () => {
     w.noteOverflows_ = (el) => el.scrollHeight > el.clientHeight + 1;
   });
 
+  // New Task modal: type and links (2026-09-17)
+  tryCall('New Task modal has a Type select and a Links row', () => {
+    w.openNewTaskModal({ group: 'Ops' });
+    if (!doc.getElementById('ntType')) throw new Error('no type select');
+    if (!doc.getElementById('ntDocs')) throw new Error('no links row');
+    if (!doc.getElementById('ntDocs').textContent.includes('No links yet')) throw new Error('links row not empty on open');
+  });
+  tryCall('the link picker collects Drive/pasted links for the pending task', () => {
+    w.addManualDoc('__new__');
+    if (!doc.getElementById('linkModal').classList.contains('open')) throw new Error('picker not open');
+    w.addDocToTarget_('https://docs.google.com/document/d/FLYER/edit', 'Fall Flyer Draft');
+    if (doc.getElementById('linkModal').classList.contains('open')) throw new Error('picker still open');
+    if (!doc.getElementById('ntDocs').textContent.includes('Fall Flyer Draft')) throw new Error('chip missing');
+  });
+  tryCall('a picked meeting stamps the meeting fields and defaults the type to Meeting', () => {
+    w.addManualDoc('__new__');
+    w.eval("LINK_MEETINGS = [{ id: 'ev1', title: 'Team Meeting', htmlLink: 'https://calendar.google.com/event?eid=ev1', start: '2026-09-22T14:00:00Z', end: '2026-09-22T14:30:00Z', dateLabel: 'Tue 9/22' }]");
+    w.addLinkMeeting_(0);
+    if (doc.getElementById('ntType').value !== 'Meeting') throw new Error('type not defaulted: ' + doc.getElementById('ntType').value);
+    if (!doc.getElementById('ntDocs').textContent.includes('Team Meeting')) throw new Error('meeting chip missing');
+  });
+  tryCall('Create sends taskType, docs and the meeting stamp', () => {
+    doc.getElementById('ntTitle').value = 'Prep for the team meeting';
+    const fields = w.newTaskFieldsFromModal_();
+    if (fields.taskType !== 'Meeting') throw new Error('taskType missing');
+    if (!fields.docs || fields.docs.length !== 2) throw new Error('docs count ' + (fields.docs || []).length);
+    if (!fields.meetingDate || !fields.meetingStart) throw new Error('meeting stamp missing');
+    doc.getElementById('ntType').value = 'Call';
+    if (w.newTaskFieldsFromModal_().taskType !== 'Call') throw new Error('explicit type not sent');
+  });
+  tryCall('removing a chip drops the link; a fresh open starts empty', () => {
+    w.ntRemoveDoc_(1);
+    if (w.newTaskFieldsFromModal_().meetingDate) throw new Error('meeting stamp not cleared');
+    w.closeNewTaskModal();
+    w.openNewTaskModal({});
+    if (w.newTaskFieldsFromModal_().docs) throw new Error('links leaked into the next open');
+    w.closeNewTaskModal();
+  });
+
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

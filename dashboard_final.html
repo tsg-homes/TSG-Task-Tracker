@@ -1543,7 +1543,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-17.1';
+  const UI_VERSION = '2026-09-17.2';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2097,7 +2097,7 @@
   let LINK_TARGET = null;
   let linkSearchDebounce = null;
   function addManualDoc(taskId, subIdx) {
-    LINK_TARGET = { taskId: taskId, subIdx: (subIdx == null ? null : subIdx) };
+    LINK_TARGET = taskId === '__new__' ? { pending: true } : { taskId: taskId, subIdx: (subIdx == null ? null : subIdx) };
     document.getElementById('linkModalBody').innerHTML = `
       <div class="meeting-form">
         <label>Search your Drive<input type="text" class="text-input" id="linkSearch" placeholder="Type a few words from the file name or contents" oninput="onLinkSearchInput_()"></label>
@@ -2163,6 +2163,11 @@
   }
   function addDocToTarget_(url, label) {
     if (!LINK_TARGET) return;
+    if (LINK_TARGET.pending) {
+      if (!NT_DOCS.some(d => d.url === url)) NT_DOCS.push({ url: url, label: label || url, type: 'link' });
+      closeLinkPicker(); renderNtDocs_();
+      return;
+    }
     const ctx = docsItem_(LINK_TARGET.taskId, LINK_TARGET.subIdx);
     if (!ctx) return;
     if (!Array.isArray(ctx.item.docs)) ctx.item.docs = [];
@@ -2190,6 +2195,20 @@
   async function addLinkMeeting_(i) {
     const ev = LINK_MEETINGS[i];
     if (!ev || !LINK_TARGET) return;
+    if (LINK_TARGET.pending) {
+      // Same stamp linkMeetingToTarget puts on an existing task; the calendar write-back
+      // (target=linkMeeting) needs a saved task and is skipped for a pending one.
+      const label = ev.title + (ev.dateLabel ? ' — ' + ev.dateLabel : '');
+      NT_DOCS = NT_DOCS.filter(d => d.type !== 'meeting');
+      NT_DOCS.push({ url: ev.htmlLink, label: label, type: 'meeting' });
+      NT_MEETING = {};
+      if (ev.start) { const dt = isoToLocalDateHm_(ev.start); if (dt) { NT_MEETING.meetingDate = dt.date; NT_MEETING.meetingStart = dt.hm; } }
+      if (ev.end) { const dtEnd = isoToLocalDateHm_(ev.end); if (dtEnd) NT_MEETING.meetingEnd = dtEnd.hm; }
+      const typeEl = document.getElementById('ntType');
+      if (typeEl && !typeEl.value) typeEl.value = 'Meeting';
+      closeLinkPicker(); renderNtDocs_();
+      return;
+    }
     MEETING_PICKER_TARGET = { taskId: LINK_TARGET.taskId, subIdx: LINK_TARGET.subIdx };
     closeLinkPicker();
     await linkMeetingToTarget(ev);
@@ -5874,7 +5893,9 @@
         <div class="meeting-form-row">
           <label>Delegate<select class="due-input" id="ntDelegate" title="Who is doing it; it appears on their page">${personOptions(p.delegate || '', true)}</select></label>
           <label>Tags<input type="text" class="text-input" id="ntTags" list="tagOptions" placeholder="comma-separated" value="${escapeHtml((p.tags || []).join(', '))}"></label>
+          <label>Type<select class="due-input" id="ntType" title="Leave blank and Claude decides from the note"><option value="" ${p.taskType ? '' : 'selected'}>Let Claude decide</option>${TASK_TYPES.map(o => `<option value="${escapeHtml(o)}" ${o === p.taskType ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select></label>
         </div>
+        <label>Links<span class="link-paste-row nt-docs-row"><span id="ntDocs" class="modal-tags"></span><button type="button" class="btn small" onclick="addManualDoc('__new__')" title="Search your Drive, pick a meeting, or paste a link">+ link</button></span></label>
         <label>Location<span class="link-paste-row"><input type="text" class="text-input" id="ntLocation" placeholder="Address or place — travel time is added to the task" value="${escapeHtml(p.location || '')}"><button type="button" class="btn small" onclick="ntPickLocation()" title="Search an address">Search</button></span></label>
         <label>Notes<textarea class="text-input" id="ntNotes" rows="4" placeholder="Just write what's on your mind. Claude derives the title, estimate, type, priority, group, tags, steps, place and deadline from it, and polishes the note.">${escapeHtml(p.notes || '')}</textarea></label>
         <div class="meeting-modal-footer">
@@ -5893,8 +5914,27 @@
     el.insertBefore(opt, el.lastElementChild);
     el.value = custom.trim();
   }
+  // Links on a task that does not exist yet (2026-09-17, per Durand: "task type and linkage
+  // are missing from the new task module"): the link picker runs in pending mode
+  // (LINK_TARGET.pending) and collects into NT_DOCS / NT_MEETING until Create sends them.
+  let NT_DOCS = [];
+  let NT_MEETING = null;
+  function renderNtDocs_() {
+    const host = document.getElementById('ntDocs');
+    if (!host) return;
+    host.innerHTML = NT_DOCS.length
+      ? NT_DOCS.map((d, i) => `<span class="doc-chip"><a href="${escapeHtml(safeUrl(d.url))}" target="_blank" rel="noopener" title="${escapeHtml(d.url)}">${d.type === 'meeting' ? '&#128197;' : '&#128279;'} ${escapeHtml(d.label || d.url)}</a><span class="rm" onclick="ntRemoveDoc_(${i})" title="Remove link">&#10005;</span></span>`).join('')
+      : '<span class="modal-empty">No links yet</span>';
+  }
+  function ntRemoveDoc_(i) {
+    const removed = NT_DOCS.splice(i, 1)[0];
+    if (removed && removed.type === 'meeting') NT_MEETING = null;
+    renderNtDocs_();
+  }
   function openNewTaskModal(prefill) {
+    NT_DOCS = []; NT_MEETING = null;
     renderNewTaskModalBody(prefill);
+    renderNtDocs_();
     document.getElementById('newTaskModal').classList.add('open');
     const titleInput = document.getElementById('ntTitle');
     if (titleInput) titleInput.focus();
@@ -5926,6 +5966,10 @@
     const locEl = document.getElementById('ntLocation');
     const location = locEl ? locEl.value.trim() : '';
     if (location) fields.location = location;
+    const typeEl = document.getElementById('ntType');
+    if (typeEl && typeEl.value) fields.taskType = typeEl.value;
+    if (NT_DOCS.length) fields.docs = NT_DOCS.map(d => Object.assign({}, d));
+    if (NT_MEETING) { Object.assign(fields, NT_MEETING); if (!fields.taskType) fields.taskType = 'Meeting'; }
     return fields;
   }
   // Free-flow (2026-09-16): a note alone is enough; the working title is its first line and
