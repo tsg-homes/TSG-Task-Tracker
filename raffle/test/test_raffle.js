@@ -207,6 +207,61 @@ const { makeSandbox, at, entry, enterFull, verifySession, referral, drawMail, J,
   eq('the remaining entrant wins', res.result.winner.name, 'Sam Ortiz');
 }
 
+// ---- Telling the winner ------------------------------------------------------
+// The one thing that must NOT happen automatically: the draw runs at 6:15 and the
+// announcement is at 6:30, so a winner email fired by the draw would reach them
+// before Durand says the name out loud.
+{
+  const s = makeSandbox();
+  enterFull(s, entry(), DURING);
+  const noWinnerYet = at(AFTER, () => s.raffleSendWinnerEmail_(false));
+  check('refuses to email a winner before one is drawn', noWinnerYet.ok === false);
+  check('and says why', /No winner has been drawn/.test(noWinnerYet.message));
+
+  at(AFTER, () => s.raffleDrawWinner_(false));
+  const winnerMail = () => s.__sent.filter(m => /You won/i.test(m.subject));
+  eq('the draw does NOT email the winner', winnerMail().length, 0);
+  eq('the draw DOES email Durand and Ryan', drawMail(s).length, 1);
+
+  const sent = at(AFTER, () => s.raffleSendWinnerEmail_(false));
+  check('the winner email sends when explicitly asked', sent.ok === true, sent.message);
+  eq('exactly one winner email', winnerMail().length, 1);
+  const m = winnerMail()[0];
+  eq('addressed to the winner', m.to, 'dana@mail-test.co');
+  check('Durand and Ryan are copied', String(m.cc).indexOf('durand@thestawaszgroup.com') !== -1 &&
+    String(m.cc).indexOf('ryan@') !== -1, String(m.cc));
+  check('replies go to info@', String(m.replyTo) === 'info@tsg.homes');
+  check('the subject says they won', /You won/.test(m.subject));
+  check('it is an HTML email', !!m.htmlBody && m.htmlBody.indexOf('<div') === 0);
+  check('with a plain-text alternative for text-only clients', !!m.body && m.body.length > 100);
+  check('the HTML names the prize', /\$300/.test(m.htmlBody));
+  check('the HTML says how to claim it', /\(215\) 760-6291/.test(m.htmlBody));
+  check('the HTML carries the non-affiliation disclaimer',
+    /not sponsored, endorsed by, or associated with Ticketmaster/.test(m.htmlBody));
+  check('the plain text carries it too',
+    /not sponsored, endorsed by, or associated/.test(m.body));
+
+  const again = at(AFTER, () => s.raffleSendWinnerEmail_(false));
+  check('it cannot be sent twice by accident', again.ok === false && again.alreadySent === true);
+  eq('still exactly one winner email', winnerMail().length, 1);
+  check('and it says how to deliberately resend', /script property/.test(again.message));
+}
+
+// The winner's name came from a public text box like everything else.
+{
+  const s = makeSandbox();
+  const payload = '<img src=x onerror=alert(1)>';
+  enterFull(s, entry({ fullName: payload + ' Winner' }), DURING);
+  at(AFTER, () => s.raffleDrawWinner_(false));
+  at(AFTER, () => s.raffleSendWinnerEmail_(false));
+  const m = s.__sent.filter(x => /You won/i.test(x.subject)).pop();
+  check('winner email produced (setup)', !!m);
+  check('the winner email does not carry the raw payload',
+    !!m && m.htmlBody.indexOf(payload) === -1, 'raw payload in the winner email');
+  check('and emits no injected tag',
+    !!m && !/<(script|img|svg|iframe|object|embed)\b/i.test(m.htmlBody));
+}
+
 // ---- Admin endpoints are key-gated -----------------------------------------
 {
   const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'secret' } });

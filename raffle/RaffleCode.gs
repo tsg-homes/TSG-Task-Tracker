@@ -535,6 +535,15 @@ function raffleAdminLinks() {
              'property, so if they have test mode working it is already set.');
   }
 
+  out.push('EMAIL THE WINNER — press this AFTER you announce at ' + RAFFLE_ANNOUNCE_AT + ':',
+           '  ' + base + '?form=raffle&action=notifywinner&key=' + key,
+           '',
+           '  Deliberately not automatic. The draw runs at 6:15 and you announce at ' +
+           RAFFLE_ANNOUNCE_AT + ', so an',
+           '  automatic email would reach the winner before you say their name. It sends once;',
+           '  you and Ryan are copied. The test version is &test=1.',
+           '');
+
   if (sheetId) {
     out.push('', 'ENTRIES SHEET:',
              '  https://docs.google.com/spreadsheets/d/' + sheetId + '/edit');
@@ -569,6 +578,13 @@ function raffleServeForm_(e, baseUrl) {
     // token, so a rehearsal draw can be fired straight from a bookmark.
     var adminTest = String(e.parameter.test || '') === '1';
     if (action === 'status') return raffleStatusPage_(adminTest);
+    if (action === 'notifywinner') {
+      var sent = raffleSendWinnerEmail_(adminTest);
+      return HtmlService.createHtmlOutput(
+        '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:520px">' +
+        '<h2 style="margin:0 0 10px">' + (sent.ok ? 'Winner emailed' : 'Not sent') + '</h2>' +
+        '<p>' + raffleEsc_(sent.message) + '</p></div>');
+    }
     return raffleDrawPage_(adminTest, String(e.parameter.force || '') === '1');
   }
 

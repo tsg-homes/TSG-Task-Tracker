@@ -1146,3 +1146,156 @@ function raffleNotifyEntrantEntered_(entry, referralName, test, closed) {
     Logger.log('raffleNotifyEntrantEntered_ failed: ' + err);
   }
 }
+
+// ---------- Telling the winner ----------
+// DELIBERATELY NOT AUTOMATIC. The draw runs at 6:15 and Durand announces at 6:30,
+// so an email fired by the draw would land in the winner's pocket fifteen minutes
+// before he says the name out loud -- which spoils the one moment the whole thing
+// is built around. This is a separate, explicit action: raffleNotifyWinner() from
+// the editor, or the admin URL raffleAdminLinks() prints, pressed AFTER the
+// announcement.
+var RAFFLE_WINNER_EMAILED_PROP = 'RAFFLE_WINNER_EMAILED_AT';
+var RAFFLE_TEST_WINNER_EMAILED_PROP = 'RAFFLE_TEST_WINNER_EMAILED_AT';
+
+function raffleWinnerEmailedProp_(test) {
+  return test ? RAFFLE_TEST_WINNER_EMAILED_PROP : RAFFLE_WINNER_EMAILED_PROP;
+}
+
+// Editor-callable. Returns a human-readable string, the same way raffleAdminLinks
+// does, so running it from the Apps Script editor tells you what happened.
+function raffleNotifyWinner() { return raffleSendWinnerEmail_(false).message; }
+function raffleNotifyWinnerTEST() { return raffleSendWinnerEmail_(true).message; }
+
+function raffleSendWinnerEmail_(test) {
+  var props = PropertiesService.getScriptProperties();
+  var stored = raffleStoredWinner_(test);
+  if (!stored) {
+    return { ok: false, message: 'No winner has been drawn yet' +
+      (test ? ' on the test tab' : '') + ', so there is nobody to email.' };
+  }
+  var already = props.getProperty(raffleWinnerEmailedProp_(test));
+  if (already) {
+    return { ok: false, alreadySent: true,
+      message: 'The winner was already emailed at ' + already + '. ' +
+               'Not sending a second one — if you need to resend, clear the "' +
+               raffleWinnerEmailedProp_(test) + '" script property first.' };
+  }
+
+  var w = stored.winner;
+  if (!w || !w.email) {
+    return { ok: false, message: 'The stored winner has no email address on it. ' +
+      'Something is wrong with the draw record — tell Claude before doing anything else.' };
+  }
+
+  MailApp.sendEmail({
+    to: w.email,
+    cc: RAFFLE_RESULT_EMAIL,
+    replyTo: 'info@tsg.homes',
+    name: 'The Stawasz Group',
+    subject: (test ? QA_TEST_PREFIX : '🎉 ') + 'You won! ' + RAFFLE_PRIZE_SHORT +
+             ' — TSG Block Party',
+    htmlBody: raffleWinnerHtml_(w, stored, test),
+    body: raffleWinnerPlain_(w, stored)
+  });
+
+  var when = raffleFmt_(raffleNow_());
+  props.setProperty(raffleWinnerEmailedProp_(test), when);
+  Logger.log('Raffle: winner email sent to ' + w.email + ' at ' + when + ' (test=' + !!test + ').');
+  return { ok: true, when: when,
+    message: 'Sent to ' + w.name + ' <' + w.email + '> at ' + when + ' ET, copied to ' +
+             RAFFLE_RESULT_EMAIL + '.' };
+}
+
+// Same construction rules as the referral invite: inline styles only (Gmail strips
+// <style> blocks), a plain-text alternative alongside, and EVERY value escaped --
+// the winner's own name came from a public text box like everything else.
+function raffleWinnerHtml_(w, result, test) {
+  var e = raffleEsc_;
+  var first = String(w.name || '').split(' ')[0];
+  return [
+    '<div style="margin:0;padding:0;background:#f4f6f6;">',
+    '<div style="max-width:560px;margin:0 auto;padding:24px 16px;',
+    'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;',
+    'color:#1d2b2c;line-height:1.55;">',
+
+    test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
+           'border-radius:6px;margin-bottom:16px;">QA TEST — this is a rehearsal, not a real win</div>' : '',
+
+    // Header
+    '<div style="background:#15464A;color:#fff;border-radius:10px 10px 0 0;',
+    'padding:30px 24px;text-align:center;">',
+    '<div style="font-size:11px;letter-spacing:2.5px;opacity:.8;">THE STAWASZ GROUP</div>',
+    '<div style="font-size:13px;letter-spacing:1.5px;opacity:.75;margin-top:4px;">',
+    'BLOCK PARTY 2026</div>',
+    '<div style="font-size:30px;font-weight:700;margin-top:14px;line-height:1.2;">',
+    'You won, ' + e(first) + '!</div>',
+    '</div>',
+
+    // Prize
+    '<div style="background:#0f3336;color:#fff;padding:26px 24px;text-align:center;">',
+    '<div style="font-size:11px;letter-spacing:2px;opacity:.75;">YOUR PRIZE</div>',
+    '<div style="font-size:46px;font-weight:700;margin:6px 0 2px;letter-spacing:-1px;">$300</div>',
+    '<div style="font-size:15px;font-weight:600;opacity:.92;">toward any Ticketmaster purchase</div>',
+    '</div>',
+
+    // Body
+    '<div style="background:#fff;border-radius:0 0 10px 10px;padding:24px;">',
+    '<p style="margin:0 0 14px;">Your name came out of the hat at 6:15 PM and we announced it ',
+    'at the party at 6:30. Congratulations &mdash; and thank you for the referral, which is ',
+    'what put you in the drawing in the first place.</p>',
+
+    '<div style="background:#f4f6f6;border-radius:8px;padding:16px;margin:0 0 20px;font-size:15px;">',
+    '<div style="font-weight:700;margin-bottom:8px;">How to claim it</div>',
+    '<div>Just reply to this email, or call us on ',
+    '<a href="tel:+12157606291" style="color:#15464A;font-weight:600;">(215) 760-6291</a>. ',
+    'We will arrange the $300 Ticketmaster gift card with you directly &mdash; there is ',
+    'nothing to fill in and nothing to pay.</div>',
+    '</div>',
+
+    '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">',
+    'Drawn from ' + e(result.totalEligible) + ' eligible ',
+    (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' at ' + e(result.drawnAt) + ' ET. ',
+    'The prize is a gift card redeemable toward any Ticketmaster purchase, subject to ',
+    'Ticketmaster&rsquo;s own terms. Approximate retail value ' + e(RAFFLE_PRIZE_ARV) + '. ',
+    'Any taxes on the prize are the winner&rsquo;s responsibility.</p>',
+
+    '<p style="margin:0;font-size:14px;color:#55696a;">',
+    'This promotion is not sponsored, endorsed by, or associated with Ticketmaster, ',
+    'Live Nation, the Philadelphia Eagles or the NFL. All trademarks are the property of ',
+    'their respective owners.</p>',
+    '</div>',
+
+    // Footer
+    '<div style="text-align:center;padding:18px 8px;font-size:12px;color:#7d8f90;">',
+    'The Stawasz Group &middot; Keller Williams Empower<br>',
+    '728 S Broad St, Philadelphia, PA 19146 &middot; (215) 760-6291 &middot; info@tsg.homes',
+    '</div></div></div>'
+  ].join('');
+}
+
+function raffleWinnerPlain_(w, result) {
+  var first = String(w.name || '').split(' ')[0];
+  return [
+    'You won, ' + first + '!',
+    '',
+    'Your prize: ' + RAFFLE_PRIZE_SHORT + '.',
+    '',
+    'Your name came out of the hat at 6:15 PM and we announced it at the party at 6:30.',
+    'Congratulations - and thank you for the referral, which is what put you in the',
+    'drawing in the first place.',
+    '',
+    'HOW TO CLAIM IT',
+    'Just reply to this email, or call us on (215) 760-6291. We will arrange the $300',
+    'Ticketmaster gift card with you directly - there is nothing to fill in and nothing',
+    'to pay.',
+    '',
+    'Drawn from ' + result.totalEligible + ' eligible ' +
+      (Number(result.totalEligible) === 1 ? 'entry' : 'entries') + ' at ' + result.drawnAt + ' ET.',
+    'Approximate retail value ' + RAFFLE_PRIZE_ARV + '. Any taxes on the prize are the',
+    "winner's responsibility. This promotion is not sponsored, endorsed by, or associated",
+    'with Ticketmaster, Live Nation, the Philadelphia Eagles or the NFL.',
+    '',
+    'The Stawasz Group - Keller Williams Empower',
+    '728 S Broad St, Philadelphia, PA 19146 - (215) 760-6291 - info@tsg.homes'
+  ].join('\n');
+}
