@@ -4,12 +4,13 @@
   "private": true,
   "description": "TSG Task Tracker \u2014 Apps Script backend (Code.gs) + dashboard (dashboard_final.html).",
   "scripts": {
-    "test": "node test/test_codegs.js && node test/test_dashboard.js && node raffle/test/test_raffle.js && node raffle/test/test_redteam.js",
+    "test": "node test/test_codegs.js && node test/test_dashboard.js && node raffle/test/test_templates.js && node raffle/test/test_raffle.js && node raffle/test/test_redteam.js",
     "test:backend": "node test/test_codegs.js",
     "test:dashboard": "node test/test_dashboard.js",
     "test:raffle": "node raffle/test/test_raffle.js",
     "test:redteam": "node raffle/test/test_redteam.js",
     "test:form": "node raffle/test/test_form.js",
+    "test:templates": "node raffle/test/test_templates.js",
     "push": "clasp push",
     "deploy": "node scripts/deploy.js"
   },

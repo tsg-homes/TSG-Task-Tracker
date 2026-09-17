@@ -69,11 +69,20 @@
 </div>
 
 <script>
-// Force-print tags (<?!= ?>) everywhere a value lands in JavaScript. A plain
-// <?= ?> HTML-escapes, which turns a quoted string into &quot;...&quot; and
-// yields a syntax error or a silently wrong value. That exact mistake shipped
-// once on the entry form (2026-09-16, the countdown that never appeared), so it
-// is called out here rather than left to be rediscovered.
+// Force-print tags everywhere a value lands in JavaScript: the bang form, not
+// the plain one. The plain form HTML-escapes, which turns a quoted string into
+// &quot;...&quot; and yields a syntax error or a silently wrong value. That
+// mistake shipped once on the entry form (2026-09-16, the countdown that never
+// appeared).
+//
+// AND THE TAGS ARE NOT SPELLED OUT IN THIS COMMENT ON PURPOSE. They used to be,
+// as examples, and it broke this entire page: the template compiler does not
+// know a scriptlet is inside a JS comment, so it read the example tags as
+// force-print expressions that were EMPTY, compiled `output += ;` and threw
+// "SyntaxError: Unexpected token ';'" on every render. The consent page -- the
+// one page every referred stranger sees -- never rendered once in the real
+// runtime until 2026-09-17. test_templates.js now fails on an empty scriptlet
+// anywhere in any template, so this cannot come back.
 var TOKEN  = "<?!= token ?>";
 var FORMTK = "<?!= submitToken ?>";
 var IS_TEST = "<?!= isTest ?>" === '1';

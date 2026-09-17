@@ -107,9 +107,14 @@
 </div>
 
 <script>
-// Force-print tags everywhere a value reaches JavaScript. A plain <?= ?> escapes,
-// which turns a quoted string into &quot; and yields a syntax error or a silently
-// wrong value — that exact bug shipped once on the entry form (2026-09-16).
+// Force-print tags everywhere a value reaches JavaScript: the bang form, not the
+// plain one, which escapes and turns a quoted string into &quot; — a syntax error
+// or a silently wrong value. That bug shipped once on the entry form
+// (2026-09-16). The tags are not spelled out here on purpose: written literally
+// in a comment, the template compiler reads them as EMPTY scriptlets and throws
+// "SyntaxError: Unexpected token ';'" on every render. That is exactly what was
+// wrong with this console and with the consent page until 2026-09-17, so neither
+// page had ever rendered live. See test_templates.js.
 // JSON-encoded server-side (safeJsonForScript_), NOT quoted here. Pasting a raw
 // value between quotes means any value containing a double quote closes the
 // string and the rest runs as code.
