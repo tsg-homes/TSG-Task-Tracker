@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-16.8';
+const TSG_CODE_VERSION = '2026-09-17.1';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -352,12 +352,13 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
     }
     var need = req.need || ['title', 'notes', 'priority', 'taskType', 'group', 'estHours', 'tags'];
     var est = tsgEstimateParse_(JSON.stringify(answer), need, target.title, {
-      driveCandidateCount: (req.driveCandidates || []).length, calendarCandidateCount: (req.calendarCandidates || []).length });
+      driveCandidateCount: (req.driveCandidates || []).length, calendarCandidateCount: (req.calendarCandidates || []).length, mailCandidateCount: (req.mailCandidates || []).length });
     if (est.source === 'none') return;
     tsgApplyEstimateToTask_(doc, target, est, need, {
       now: now, source: source, personCreated: !!req.personCreated, batchSiblings: req.batchSiblings || [],
       driveCands: req.driveCandidates ? { files: req.driveCandidates } : null,
       calCands: req.calendarCandidates ? { events: req.calendarCandidates } : null,
+      mailCands: req.mailCandidates ? { threads: req.mailCandidates } : null,
       deferred: true, sinceTs: req.ts || null, reqNotes: req.notes, force: !!req.force,
       subitem: req.subIdx != null, parent: t
     });
@@ -578,9 +579,14 @@ function applyDataPatch_(doc, patch) {
       // Calendar candidates are offered whenever the type is Meeting or still unknown; the
       // link is applied below only once the resolved type is Meeting.
       if (!Array.isArray(task.docs)) task.docs = [];
-      var driveCands = null, calCands = null;
+      var driveCands = null, calCands = null, mailCands = null;
       if (!patch.skipEnrich) {
-        if (!task.doc && !task.docs.length) { driveCands = tsgDriveCandidates_(task.title); if (driveCands) need.push('driveMatch'); }
+        // 2026-09-17 per Durand: "still perform link match searches even if links are added
+        // manually" — Drive and Gmail candidates are gathered whatever is already linked
+        // (an already-linked url is skipped on apply), plus named sites (webLinks).
+        driveCands = tsgDriveCandidates_(task.title); if (driveCands) need.push('driveMatch');
+        mailCands = tsgMailCandidates_(task.title); if (mailCands) need.push('mailMatch');
+        need.push('webLinks');
         if (!task.meetingDate && (task.taskType === 'Meeting' || !task.taskType)) { calCands = tsgCalendarCandidates_(task.timelineEnd); if (calCands) need.push('meetingMatch'); }
       }
       var est = null;
@@ -601,11 +607,14 @@ function applyDataPatch_(doc, patch) {
           calendarCandidates: calCands ? calCands.listText : '',
           calendarCandidateCount: calCands ? calCands.events.length : 0,
           driveList: driveCands ? driveCands.files : null,
-          calendarList: calCands ? calCands.events : null
+          calendarList: calCands ? calCands.events : null,
+          mailCandidates: mailCands ? mailCands.listText : '',
+          mailCandidateCount: mailCands ? mailCands.threads.length : 0,
+          mailList: mailCands ? mailCands.threads : null
         };
         est = tsgEstimateTask_(task.title, task.notes, task.priority, need, context);
         tsgApplyEstimateToTask_(doc, task, est, need, { now: now, source: patch.source || 'unknown', personCreated: !!patch.personCreated,
-          batchSiblings: batchSiblings, driveCands: driveCands, calCands: calCands });
+          batchSiblings: batchSiblings, driveCands: driveCands, calCands: calCands, mailCands: mailCands });
       }
 
       // 2026-09-09 per Durand: nothing should be SET BY DEFAULT if it can instead be
@@ -1394,6 +1403,16 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify(tsgDriveSearch_(e.parameter.q)))
       .setMimeType(ContentService.MimeType.JSON);
   }
+  if (e.parameter.api === 'mailSearch') {
+    if (!tsgCheckToken_(e)) return tsgUnauthorized_();
+    return ContentService.createTextOutput(JSON.stringify(tsgMailSearch_(e.parameter.q)))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  if (e.parameter.api === 'meetingSlots') {
+    if (!tsgCheckToken_(e)) return tsgUnauthorized_();
+    return ContentService.createTextOutput(JSON.stringify(tsgMeetingSlots_(e.parameter.guest, e.parameter.start, e.parameter.end, e.parameter.minutes)))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
   if (e.parameter.api === 'geocode') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
     return ContentService.createTextOutput(JSON.stringify(tsgGeocode_(e.parameter.q)))
@@ -1804,6 +1823,33 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
     }
   }
 
+  // Gmail thread auto-link (2026-09-17, per Durand: "can you also search emails too?"). A
+  // confident match is linked as an 'email' doc; a weaker one is noted, not Triage-flagged.
+  if (o.mailCands) {
+    var mailMatch = tsgMailFromCandidates_(o.mailCands, est.mailMatch);
+    if (mailMatch && task.docs.some(function(d) { return d && d.url === mailMatch.url; })) mailMatch = null;
+    if (mailMatch) {
+      if (mailMatch.confident) {
+        task.docs.push({ url: mailMatch.url, label: mailMatch.label, type: 'email' });
+        task.history.push({ ts: now, field: 'email-auto-linked', from: null,
+          to: mailMatch.label + (mailMatch.rationale ? ' — ' + mailMatch.rationale : '') });
+      } else {
+        task.history.push({ ts: now, field: 'email-candidate', from: null,
+          to: 'Possible related email thread not auto-linked: "' + mailMatch.label + '" ' + mailMatch.url +
+              (mailMatch.rationale ? ' (' + mailMatch.rationale + ')' : '') });
+      }
+    }
+  }
+  // Named sites (2026-09-17, per Durand: "web searches for named or recommended sites"):
+  // every returned link the item does not already carry is added as a 'web' doc.
+  if (Array.isArray(est.webLinks) && est.webLinks.length) {
+    est.webLinks.forEach(function(w) {
+      if (!w || !w.url || task.doc === w.url || task.docs.some(function(d) { return d && d.url === w.url; })) return;
+      task.docs.push({ url: w.url, label: w.label || w.url, type: 'web' });
+      task.history.push({ ts: now, field: 'web-auto-linked', from: null, to: (w.label || w.url) + ' — ' + w.url });
+    });
+  }
+
   // Calendar meeting auto-search-and-link (2026-09-10, matching revised same day per
   // Durand) per Durand: "search the calendar for related meetings, link them too."
   // FUTURE EVENTS ONLY (never links a task to a meeting that already happened) — same
@@ -1901,10 +1947,13 @@ function tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts) {
   var need = opts.need || tsgEnrichNeedFor_(item, Object.assign({ subitem: sub }, opts));
   if (!need.length) return null;
   var board = tsgBoardContext_(doc);
-  var driveCands = null, calCands = null;
+  var driveCands = null, calCands = null, mailCands = null;
   if (!opts.skipLinks) {
     driveCands = tsgDriveCandidates_(item.title);
     if (driveCands) need.push('driveMatch');
+    mailCands = tsgMailCandidates_(item.title);
+    if (mailCands) need.push('mailMatch');
+    if (need.indexOf('webLinks') === -1) need.push('webLinks');
     if (!item.meetingDate && (item.taskType === 'Meeting' || !item.taskType || need.indexOf('taskType') !== -1)) { calCands = tsgCalendarCandidates_(item.timelineEnd); if (calCands) need.push('meetingMatch'); }
   }
   var current = tsgCurrentSnapshot_(item);
@@ -1913,7 +1962,8 @@ function tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts) {
     current: current, target: { taskId: parent.id, subIdx: sub ? subIdx : undefined }, subTitle: sub ? item.title : undefined,
     driveCandidates: driveCands ? driveCands.listText : '', driveCandidateCount: driveCands ? driveCands.files.length : 0,
     calendarCandidates: calCands ? calCands.listText : '', calendarCandidateCount: calCands ? calCands.events.length : 0,
-    driveList: driveCands ? driveCands.files : null, calendarList: calCands ? calCands.events : null };
+    driveList: driveCands ? driveCands.files : null, calendarList: calCands ? calCands.events : null,
+    mailCandidates: mailCands ? mailCands.listText : '', mailCandidateCount: mailCands ? mailCands.threads.length : 0, mailList: mailCands ? mailCands.threads : null };
   var est = tsgEstimateTask_(item.title, item.notes, item.priority, need, context);
   if (est.source === 'queued' || est.source === 'none') {
     if (est.source === 'queued' && opts.force && doc.meta && doc.meta.judgments) {
@@ -1923,7 +1973,7 @@ function tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts) {
     return est;
   }
   tsgApplyEstimateToTask_(doc, item, est, need, { now: now, source: source || 'Claude', force: !!opts.force, reqNotes: String(item.notes || '').trim(),
-    subitem: sub, parent: parent, driveCands: driveCands, calCands: calCands });
+    subitem: sub, parent: parent, driveCands: driveCands, calCands: calCands, mailCands: mailCands });
   return est;
 }
 
@@ -2056,6 +2106,9 @@ function tsgLabelForUrl_(url) {
     return { ok: true, label: 'Google Drive file', kind: 'drive' };
   }
   if (/calendar\.google\.com/.test(u)) return { ok: true, label: 'Calendar event', kind: 'calendar' };
+  if (/mail\.google\.com/.test(u)) return { ok: true, label: 'Gmail thread', kind: 'email' };
+  if (/claude\.ai\/code\//.test(u)) return { ok: true, label: 'Claude Code session', kind: 'claude' };
+  if (/claude\.ai\//.test(u)) return { ok: true, label: 'Claude chat', kind: 'claude' };
   var host = /^https?:\/\/([^\/?#]+)/i.exec(u);
   return { ok: true, label: host ? host[1].replace(/^www\./, '') : u, kind: 'web' };
 }
@@ -2091,6 +2144,145 @@ function tsgDocFromCandidates_(cands, match) {
   var f = (cands.files || [])[match.idx];
   if (!f) return null;
   return { url: f.url, label: f.label, confident: match.confident, rationale: match.rationale };
+}
+
+// Gmail candidates (2026-09-17, per Durand: "can you also search emails too?"). READ-ONLY on
+// the signed-in owner's mailbox (the script runs as Durand): recent threads whose subject or
+// body carry the task's significant words, judged by the estimator as mailMatch exactly like
+// Drive candidates. Bounded: 6 threads, 300-char excerpt of the latest message, 180 days.
+var TSG_MAIL_EXCERPT_CHARS = 300;
+function tsgMailThreadUrl_(thread) { return 'https://mail.google.com/mail/u/0/#all/' + thread.getId(); }
+function tsgMailThreadPlain_(thread) {
+  var msgs = thread.getMessages() || [];
+  var last = msgs[msgs.length - 1];
+  var body = '';
+  try { body = last ? String(last.getPlainBody() || '') : ''; } catch (e0) { body = ''; }
+  body = body.replace(/\s+/g, ' ').trim().slice(0, TSG_MAIL_EXCERPT_CHARS);
+  var from = ''; try { from = last ? String(last.getFrom() || '') : ''; } catch (e1) {}
+  var date = ''; try { date = Utilities.formatDate(thread.getLastMessageDate(), Session.getScriptTimeZone(), 'yyyy-MM-dd'); } catch (e2) {}
+  return { url: tsgMailThreadUrl_(thread), label: String(thread.getFirstMessageSubject() || '(no subject)'), from: from, date: date, excerpt: body, count: msgs.length };
+}
+function tsgMailCandidates_(title) {
+  var words = tsgDriveSearchWords_(title);
+  if (words.length < 2) return null;
+  try {
+    var q = 'newer_than:180d ' + words.map(function(w) { return '"' + w.replace(/"/g, '') + '"'; }).join(' ');
+    var threads = GmailApp.search(q, 0, 6) || [];
+    if (!threads.length && words.length > 2) {
+      // Every word is a strict AND in Gmail; fall back to the two longest words.
+      var top = words.slice().sort(function(a, b) { return b.length - a.length; }).slice(0, 2);
+      threads = GmailApp.search('newer_than:180d "' + top[0] + '" "' + top[1] + '"', 0, 6) || [];
+    }
+    if (!threads.length) return null;
+    var plain = threads.map(tsgMailThreadPlain_);
+    var listText = plain.map(function(m, i) {
+      return (i + 1) + '. "' + m.label + '" — from ' + m.from + ', ' + m.date + (m.excerpt ? '\n   Excerpt: "' + m.excerpt + '"' : '');
+    }).join('\n');
+    return { threads: plain, listText: listText };
+  } catch (err) {
+    Logger.log('[mailSearch] failed for "' + title + '": ' + err.message);
+    return null;
+  }
+}
+/** The estimator's mailMatch pick resolved against the gathered candidates. Null = no link. */
+function tsgMailFromCandidates_(cands, match) {
+  if (!cands || !match) return null;
+  var m = (cands.threads || [])[match.idx];
+  if (!m) return null;
+  return { url: m.url, label: m.label, confident: match.confident, rationale: match.rationale };
+}
+/** Link picker: recent threads matching the words typed (api=mailSearch&q=). Up to 10. */
+function tsgMailSearch_(q) {
+  var words = String(q || '').trim().split(/\s+/).filter(function(w) { return w.length >= 2; }).slice(0, 6);
+  if (!words.length) return { ok: true, threads: [] };
+  try {
+    var threads = GmailApp.search(words.map(function(w) { return '"' + w.replace(/"/g, '') + '"'; }).join(' '), 0, 10) || [];
+    return { ok: true, threads: threads.map(function(t) { var p = tsgMailThreadPlain_(t); delete p.excerpt; return p; }) };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message || err), threads: [] };
+  }
+}
+
+// Meeting slot finder (2026-09-17, per Durand: "the option to create one between owner and
+// delegate with recommended dates/times when both are available before the deadline, duration
+// based on est., keeping to Google's duration buckets"). Work window 07:30-16:00 (the 07:00 /
+// 16:30 admin half-hours excluded), lunch 12:00-13:00 skipped, weekdays only, never within the
+// next hour. The guest's calendar is read through CalendarApp.getCalendarById (it must be shared
+// with Durand, SOP 09); when it is not readable the slots are Durand-only and guestCalendar:false
+// says so. At most 2 slots per day, 10 in total, in date order.
+var TSG_MEETING_BUCKETS = [15, 30, 45, 60, 90, 120];
+function tsgDurationBucket_(minutes) {
+  var m = Number(minutes);
+  if (!m || !isFinite(m) || m <= 0) return 30;
+  for (var i = 0; i < TSG_MEETING_BUCKETS.length; i++) if (TSG_MEETING_BUCKETS[i] >= m) return TSG_MEETING_BUCKETS[i];
+  return TSG_MEETING_BUCKETS[TSG_MEETING_BUCKETS.length - 1];
+}
+function tsgMeetingSlots_(guestEmail, startStr, endStr, minutes) {
+  var cal = CalendarApp.getDefaultCalendar();
+  var tz = cal.getTimeZone();
+  var todayIso = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+  var startIso = (startStr && /^\d{4}-\d{2}-\d{2}$/.test(startStr) && startStr > todayIso) ? startStr : todayIso;
+  var endIso = (endStr && /^\d{4}-\d{2}-\d{2}$/.test(endStr) && endStr >= startIso) ? endStr : tsgAddDays_(startIso, 14);
+  if (endIso > tsgAddDays_(startIso, 42)) endIso = tsgAddDays_(startIso, 42);
+  var dur = tsgDurationBucket_(minutes);
+  var start = new Date(startIso + 'T00:00:00'), end = new Date(endIso + 'T23:59:59');
+  var busy = [];
+  function collect(c, mine) {
+    c.getEvents(start, end).forEach(function(ev) {
+      if (ev.isAllDayEvent()) return;
+      if (mine && ev.getMyStatus && ev.getMyStatus() === CalendarApp.GuestStatus.NO) return;
+      busy.push([ev.getStartTime().getTime(), ev.getEndTime().getTime()]);
+    });
+  }
+  collect(cal, true);
+  var guestOk = false;
+  guestEmail = String(guestEmail || '').trim().toLowerCase();
+  if (guestEmail && guestEmail !== OWNER_EMAIL.toLowerCase()) {
+    try { var gcal = CalendarApp.getCalendarById(guestEmail); if (gcal) { collect(gcal, false); guestOk = true; } }
+    catch (err) { Logger.log('[meetingSlots] guest calendar unreadable for ' + guestEmail + ': ' + err.message); guestOk = false; }
+  }
+  var notBefore = Date.now() + 3600000;
+  var slots = [];
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  for (var d = startIso; d <= endIso && slots.length < 10; d = tsgAddDays_(d, 1)) {
+    var dow = new Date(d + 'T12:00:00').getDay();
+    if (dow === 0 || dow === 6) continue;
+    var perDay = 0;
+    for (var hm = 7 * 60 + 30; hm + dur <= 16 * 60 && perDay < 2; hm += 30) {
+      if (hm < 13 * 60 && hm + dur > 12 * 60) continue; // lunch
+      var sDate = new Date(d + 'T' + pad(Math.floor(hm / 60)) + ':' + pad(hm % 60) + ':00');
+      var sMs = sDate.getTime(), eMs = sMs + dur * 60000;
+      if (sMs < notBefore) continue;
+      if (busy.some(function(b) { return b[0] < eMs && b[1] > sMs; })) continue;
+      slots.push({ startISO: sDate.toISOString(), endISO: new Date(eMs).toISOString(),
+        dateLabel: Utilities.formatDate(sDate, tz, 'EEE, MMM d'),
+        timeLabel: Utilities.formatDate(sDate, tz, 'h:mm a') + '–' + Utilities.formatDate(new Date(eMs), tz, 'h:mm a') });
+      perDay++;
+    }
+  }
+  return { ok: true, minutes: dur, guestEmail: guestEmail, guestCalendar: guestOk, start: startIso, end: endIso, slots: slots };
+}
+
+// Send directions to the phone (2026-09-17, per Durand: "a send to phone button for
+// directions"): a Google Maps directions link from the home base to the task's location,
+// emailed to the owner's own address so it lands on the phone in Gmail. Nothing goes to any
+// third party; the link itself is also returned so the dashboard can show / copy it.
+function tsgDirectionsUrl_(homeBase, location, method) {
+  var mode = { walk: 'walking', transit: 'transit', drive: 'driving' }[String(method || 'drive')] || 'driving';
+  return 'https://www.google.com/maps/dir/?api=1' + (homeBase ? '&origin=' + encodeURIComponent(homeBase) : '') +
+    '&destination=' + encodeURIComponent(location) + '&travelmode=' + mode;
+}
+function tsgSendDirections_(fields) {
+  var location = String(fields && fields.location || '').trim();
+  if (!location) return { ok: false, error: 'No location on this task' };
+  var homeBase = '';
+  try { homeBase = PropertiesService.getScriptProperties().getProperty('TSG_HOME_BASE') || ''; } catch (e0) {}
+  var url = tsgDirectionsUrl_(homeBase, location, fields.method);
+  var subject = 'Directions: ' + location;
+  var body = (fields.taskTitle ? fields.taskTitle + '\n\n' : '') + 'Open in Google Maps:\n' + url + '\n\n' +
+    (homeBase ? 'From: ' + homeBase + '\n' : '') + 'To: ' + location + '\n\n— TSG Task Tracker';
+  MailApp.sendEmail(OWNER_EMAIL, subject, body);
+  return { ok: true, url: url, sentTo: OWNER_EMAIL };
 }
 
 // FUB team roster sync (2026-09-01) — backs the dashboard's Team Roster sync, so Owner/
@@ -2389,6 +2581,14 @@ function doPost(e) {
     catch (createErr) { createResult = { ok: false, error: 'Could not create meeting: ' + createErr.message }; }
     return ContentService.createTextOutput(JSON.stringify(createResult)).setMimeType(ContentService.MimeType.JSON);
   }
+  if (requested === 'sendDirections') {
+    var dirFields;
+    try { dirFields = JSON.parse(body || '{}'); } catch (err) { dirFields = {}; }
+    var dirResult;
+    try { dirResult = tsgSendDirections_(dirFields); }
+    catch (dirErr) { dirResult = { ok: false, error: 'Could not send directions: ' + dirErr.message }; }
+    return ContentService.createTextOutput(JSON.stringify(dirResult)).setMimeType(ContentService.MimeType.JSON);
+  }
   if (requested === 'linkMeeting') {
     var linkFields;
     try { linkFields = JSON.parse(body); } catch (err) { linkFields = null; }
@@ -2415,7 +2615,7 @@ function doPost(e) {
   }
   if (['data', 'rulesets'].indexOf(requested) === -1) {
     return ContentService.createTextOutput(JSON.stringify({
-      ok: false, error: 'Unknown target: ' + requested + '. Expected data, rulesets, claude, tidy, createMeeting or linkMeeting.'
+      ok: false, error: 'Unknown target: ' + requested + '. Expected data, rulesets, claude, tidy, createMeeting, linkMeeting or sendDirections.'
     })).setMimeType(ContentService.MimeType.JSON);
   }
 
@@ -3472,6 +3672,17 @@ var TSG_ESTIMATE_SYSTEM =
   'task\'s title, notes, and due date against each candidate\'s title and date/time. If more than ' +
   'one candidate could plausibly be it, or none clearly is, return null — linking the wrong meeting ' +
   'is worse than linking none. Same shape and confidence rule as driveMatch.\n\n' +
+  'mailMatch — ONLY when MAIL_CANDIDATES is given: the ONE Gmail thread that is unambiguously the ' +
+  'correspondence this task is about (the vendor\'s quote, the client\'s request, the invoice ' +
+  'thread) — judged on subject, sender and the excerpt against the task\'s title and notes. A ' +
+  'shared word is not enough. Same shape and confidence rule as driveMatch; null when unsure.\n\n' +
+  'webLinks — ONLY when requested: up to 3 {"url": "...", "label": "..."} for the named tool, ' +
+  'service, vendor, form page, article or reference the task explicitly involves and the reader ' +
+  'would need to open (e.g. a product\'s official site, a government form page, a research ' +
+  'source). Official or canonical pages only, https, real URLs you are sure exist (search the ' +
+  'web when you can). Never a Google Drive, Gmail or Calendar link (those are matched separately), ' +
+  'never a search-results page, never a guess. null when the task names nothing external — ' +
+  'that is the usual answer.\n\n' +
   'title — ONLY when requested: the task title rewritten as one imperative line, at most 80 ' +
   'characters, specific (who/what), keeping names, addresses and numbers. When the notes are a ' +
   'free-flow thought and the title is a placeholder, derive the title from the notes. Return the ' +
@@ -3572,7 +3783,7 @@ function tsgHoldForReview_(item, historyArr, now, why) {
 var TSG_TASK_TYPE_VALUES = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Actionable Task'];
 var TSG_PRIORITY_VALUES = ['Critical', 'High', 'Medium', 'Low'];
 // Fields that are pure classification: a call asking for nothing else runs at effort 'low'.
-var TSG_ESTIMATE_LOW_EFFORT_FIELDS = ['progress', 'driveMatch', 'meetingMatch'];
+var TSG_ESTIMATE_LOW_EFFORT_FIELDS = ['progress', 'driveMatch', 'meetingMatch', 'mailMatch'];
 
 /** JSON schema for one estimator answer, built from the fields actually requested. */
 function tsgEstimateSchema_(need) {
@@ -3590,6 +3801,9 @@ function tsgEstimateSchema_(need) {
     progress: { type: 'integer' },
     driveMatch: match,
     meetingMatch: match,
+    mailMatch: match,
+    webLinks: nullable({ type: 'array', items: { type: 'object', additionalProperties: false, required: ['url', 'label'],
+      properties: { url: { type: 'string' }, label: { type: 'string' } } } }),
     title: { type: 'string' },
     notes: { type: 'string' },
     location: nullable({ type: 'string' }),
@@ -3643,6 +3857,9 @@ function tsgEstimatePrompt_(title, notes, priority, need, context) {
   if (need.indexOf('meetingMatch') !== -1) {
     userParts.push('CALENDAR_CANDIDATES (future events only):\n' + (context.calendarCandidates || '(none)'));
   }
+  if (need.indexOf('mailMatch') !== -1) {
+    userParts.push('MAIL_CANDIDATES (recent Gmail threads in the Director of Operations\' mailbox):\n' + (context.mailCandidates || '(none)'));
+  }
   blocks.push({ type: 'text', text: userParts.join('\n\n') });
 
   var opts = { schema: tsgEstimateSchema_(need) };
@@ -3660,7 +3877,7 @@ function tsgEstimateParse_(raw, need, title, context) {
     return {
       estHours: null, taskType: null, subitems: [],
       priority: null, group: null, dependsOnTitle: null, progress: null,
-      driveMatch: null, meetingMatch: null, title: null, notes: null, location: null, due: null,
+      driveMatch: null, meetingMatch: null, mailMatch: null, webLinks: null, title: null, notes: null, location: null, due: null,
       tags: ['needs-estimate'], source: 'none', rationale: null, needsConfirmation: false
     };
   }
@@ -3668,7 +3885,7 @@ function tsgEstimateParse_(raw, need, title, context) {
   var out = {
     estHours: null, taskType: null, subitems: [],
     priority: null, group: null, dependsOnTitle: null, progress: null,
-    driveMatch: null, meetingMatch: null, title: null, notes: null, location: null, due: null,
+    driveMatch: null, meetingMatch: null, mailMatch: null, webLinks: null, title: null, notes: null, location: null, due: null,
     tags: [], source: 'claude', rationale: parsed.rationale || null,
     // Only meaningful when estHours was actually requested/returned this call — see the
     // "Triage" tag repurpose (2026-08-26): a self-assessed low-confidence estimate gets
@@ -3715,6 +3932,16 @@ function tsgEstimateParse_(raw, need, title, context) {
   if (need.indexOf('meetingMatch') !== -1) {
     out.meetingMatch = tsgMatchFromParsed_(parsed.meetingMatch, context.calendarCandidateCount || 0);
   }
+  if (need.indexOf('mailMatch') !== -1) {
+    out.mailMatch = tsgMatchFromParsed_(parsed.mailMatch, context.mailCandidateCount || 0);
+  }
+  if (need.indexOf('webLinks') !== -1 && Array.isArray(parsed.webLinks)) {
+    var seenWeb = {};
+    out.webLinks = parsed.webLinks.filter(function(w) {
+      return w && typeof w.url === 'string' && /^https?:\/\/[^\s"'<>]+$/i.test(w.url.trim()) && !seenWeb[w.url.trim()] && (seenWeb[w.url.trim()] = true);
+    }).map(function(w) { return { url: w.url.trim(), label: String(w.label || '').trim().slice(0, 80) || w.url.trim() }; }).slice(0, 3);
+    if (!out.webLinks.length) out.webLinks = null;
+  }
   if (need.indexOf('title') !== -1 && typeof parsed.title === 'string' && parsed.title.trim()) out.title = parsed.title.trim().slice(0, 120);
   if (need.indexOf('notes') !== -1 && typeof parsed.notes === 'string' && parsed.notes.trim()) out.notes = parsed.notes.trim();
   if (need.indexOf('location') !== -1 && typeof parsed.location === 'string' && parsed.location.trim()) out.location = parsed.location.trim().slice(0, 200);
@@ -3732,7 +3959,7 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
     // (add_task queues it once the task has an id). The result is the "none" shape with
     // source 'queued' so callers fall back exactly as for an unreachable Claude.
     var req = { kind: 'enrich', need: p.need, title: String(title || ''), notes: String(notes || '').trim(), priority: priority || '',
-      current: context.current || null, subTitle: context.subTitle, batchSiblings: context.batchSiblings || [], driveCandidates: context.driveList || null, calendarCandidates: context.calendarList || null };
+      current: context.current || null, subTitle: context.subTitle, batchSiblings: context.batchSiblings || [], driveCandidates: context.driveList || null, calendarCandidates: context.calendarList || null, mailCandidates: context.mailList || null };
     var out = tsgEstimateParse_(null, p.need, title, context);
     out.source = 'queued';
     if (context.target && context.target.taskId != null) {

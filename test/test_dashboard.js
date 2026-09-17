@@ -63,6 +63,7 @@ const dom = new JSDOM(html, {
       const u = String(url);
       if (opts && opts.method === 'POST') {
         window.__posts = window.__posts || []; window.__posts.push({ url: u, body: opts.body });
+        if (u.includes('target=sendDirections')) return { ok: true, status: 200, json: async () => ({ ok: true, url: 'https://www.google.com/maps/dir/?api=1', sentTo: 'durand@thestawaszgroup.com' }) };
         if (u.includes('target=tidy')) return { ok: true, status: 200, json: async () => ({ ok: true, taskId: 2, before: { title: 'Text Marj About The Flyer Proof', notes: '', priority: 'Medium', taskType: 'Text/Chat', group: 'Marketing', estHours: 0.25, tags: [] }, proposal: { title: 'Text Marj: confirm the flyer proof is approved', notes: 'Current state: waiting on Marj.', priority: 'Medium', taskType: 'Text/Chat', group: 'Marketing', estHours: 0.25, tags: ['Flyers'], rationale: 'Sharpened the ask.' } }) };
         return { ok: true, status: 200, json: async () => ({ ok: true, serverVersion: 1 }) };
       }
@@ -70,6 +71,8 @@ const dom = new JSDOM(html, {
       if (u.includes('api=calendar')) return { ok: true, status: 200, json: async () => [] };
       if (u.includes('api=meetings')) { window.__meetingsFetchUrls.push(u); return { ok: true, status: 200, json: async () => ({ events: window.__pickerEvents || [], bestGuessId: null }) }; }
       if (u.includes('api=geocode')) return { ok: true, status: 200, json: async () => ({ ok: true, places: [{ label: '45 Baltimore Pike, Media, PA 19063, USA', name: '' }] }) };
+      if (u.includes('api=mailSearch')) return { ok: true, status: 200, json: async () => ({ ok: true, threads: [{ url: 'https://mail.google.com/mail/u/0/#all/t9', label: 'Flyer proof thread', from: 'marj@thestawaszgroup.com', date: '2026-09-10', count: 2 }] }) };
+      if (u.includes('api=meetingSlots')) { window.__slotsUrl = u; return { ok: true, status: 200, json: async () => ({ ok: true, minutes: 60, guestCalendar: false, slots: [{ startISO: '2026-09-22T14:00:00.000Z', endISO: '2026-09-22T15:00:00.000Z', dateLabel: 'Tue, Sep 22', timeLabel: '10:00 AM–11:00 AM' }] }) }; }
       if (u.includes('api=driveSearch')) return { ok: true, status: 200, json: async () => ({ ok: true, files: [{ name: 'Fall Flyer Draft', url: 'https://docs.google.com/document/d/FLYER/edit', mime: 'application/vnd.google-apps.document', modified: '2026-09-14' }] }) };
       if (u.includes('api=linkLabel')) return { ok: true, status: 200, json: async () => ({ ok: true, label: 'Resolved Title', kind: 'drive' }) };
       return { ok: true, status: 200, json: async () => ({ ok: true, users: [], events: [], meetings: [] }) };
@@ -686,6 +689,82 @@ setTimeout(async () => {
     w.openNewTaskModal({});
     if (w.newTaskFieldsFromModal_().docs) throw new Error('links leaked into the next open');
     w.closeNewTaskModal();
+  });
+
+  // Links every update (2026-09-17): mail search in the picker, Claude prompt, directions, meeting slots
+  tryCall('link picker searches email and a picked thread becomes an email link', () => {
+    w.openNewTaskModal({});
+    w.addManualDoc('__new__');
+    if (!doc.getElementById('linkMailSearch')) throw new Error('no mail search box');
+    doc.getElementById('linkMailSearch').value = 'flyer proof';
+  });
+  await w.runLinkMailSearch_();
+  tryCall('mail results render and pick as type email', () => {
+    if (!doc.getElementById('linkMailResults').textContent.includes('Flyer proof thread')) throw new Error('no thread row');
+    w.addLinkMailResult_(0);
+    const fields = w.newTaskFieldsFromModal_();
+    if (!fields.docs || fields.docs[0].type !== 'email') throw new Error('not typed email: ' + JSON.stringify(fields.docs));
+    if (!doc.getElementById('ntDocs').innerHTML.includes('&#9993;') && !doc.getElementById('ntDocs').innerHTML.includes('✉')) throw new Error('no email icon');
+    w.closeNewTaskModal();
+  });
+  tryCall('the Claude prompt carries the task, its steps, links and the write-back instruction', () => {
+    const t = w.findTask(1);
+    const p = w.claudePromptFor_(t);
+    if (!p.includes('task #1') || !p.includes(t.title)) throw new Error('missing head');
+    if (!p.includes('Steps:') || !p.includes(t.subitems[0].title)) throw new Error('missing steps');
+    if (!p.includes('tsg-task-tracker-protocol')) throw new Error('missing write-back instruction');
+    if (!w.claudeUrlFor_(t).startsWith('https://claude.ai/new?q=TSG')) throw new Error('bad url: ' + w.claudeUrlFor_(t).slice(0, 40));
+  });
+  tryCall('a Claude-typed task shows the Open in Claude row; a task with a claude.ai link too', () => {
+    const t = w.findTask(1);
+    const prevType = t.taskType;
+    t.taskType = 'Claude';
+    w.openTaskCard(1);
+    if (!doc.getElementById('modalMeta').innerHTML.includes('Open in Claude with this task')) throw new Error('no Claude row');
+    t.taskType = prevType;
+    t.docs = (t.docs || []).concat([{ url: 'https://claude.ai/code/session_01XYZ', label: 'Claude Code session', type: 'claude' }]);
+    w.openTaskCard(1);
+    if (!doc.getElementById('modalMeta').innerHTML.includes('Open linked thread')) throw new Error('no linked-thread button');
+    t.docs = t.docs.filter(x => x.type !== 'claude');
+    w.closeTaskCard();
+  });
+  tryCall('a located task shows Directions and Send to phone; sending posts the location', () => {
+    const t = w.findTask(1);
+    t.location = '45 Baltimore Pike, Media, PA';
+    w.openTaskCard(1);
+    const html = doc.getElementById('modalMeta').innerHTML;
+    if (!html.includes('Send to phone') || !html.includes('google.com/maps/dir/')) throw new Error('buttons missing');
+    w.__posts = [];
+    w.sendDirections(1, null);
+  });
+  await new Promise(r => setTimeout(r, 30));
+  tryCall('sendDirections posted to target=sendDirections with the location', () => {
+    const p = (w.__posts || []).find(x => x.url.includes('target=sendDirections'));
+    if (!p) throw new Error('no post');
+    if (!JSON.parse(p.body).location.includes('Baltimore')) throw new Error('location missing');
+    w.findTask(1).location = '';
+    w.closeTaskCard();
+  });
+  tryCall('meeting buckets follow Google durations', () => {
+    if (w.meetingBucket_(0.2) !== 15 || w.meetingBucket_(0.5) !== 30 || w.meetingBucket_(0.6) !== 45 || w.meetingBucket_(1) !== 60 || w.meetingBucket_(1.25) !== 90 || w.meetingBucket_(3) !== 120 || w.meetingBucket_(null) !== 30) throw new Error('bucket mismatch');
+  });
+  tryCall('the new-meeting form asks for suggested slots sized from the estimate', () => {
+    const t = w.findTask(3);
+    t.estHours = 1; t.delegate = 'Marj'; t.timelineEnd = '2026-12-01';
+    w.openMeetingPicker(3, null);
+    w.startNewMeetingForm();
+  });
+  await new Promise(r => setTimeout(r, 80));
+  tryCall('slots render and picking one fills date, start and duration', () => {
+    if (!w.__slotsUrl || !w.__slotsUrl.includes('minutes=60')) throw new Error('slots url: ' + w.__slotsUrl);
+    if (!w.__slotsUrl.includes('end=2026-12-01')) throw new Error('window not bounded by the due date');
+    if (!doc.getElementById('mfSlots').textContent.includes('Tue, Sep 22')) throw new Error('slot row missing');
+    if (!doc.getElementById('mfSlots').textContent.includes('not shared')) throw new Error('unshared-calendar hint missing');
+    w.useMeetingSlot_(0);
+    if (doc.getElementById('mfDate').value !== '2026-09-22') throw new Error('date not filled: ' + doc.getElementById('mfDate').value);
+    if (!/^\d\d:\d\d$/.test(doc.getElementById('mfStart').value)) throw new Error('start not filled');
+    if (doc.getElementById('mfDuration').value !== '60') throw new Error('duration not filled');
+    w.closeMeetingPicker();
   });
 
   tryCall('setView(table)', () => w.setView('table'));

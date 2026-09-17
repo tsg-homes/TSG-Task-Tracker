@@ -456,3 +456,40 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   "SOPs 01–10 Live by the Dec 18 Review (Bonus)" (29 steps derived from the Ops Manual working
   copy) was created. Both Critical, due 2026-12-18, tag `Bonus`. The FUB go-live date stays
   PENDING (first step of the FUB task). Never split these back out or unpin them without Durand.
+
+## Links every update, round 2 (2026-09-17, backend 2026-09-17.1, dashboard UI 2026-09-17.3)
+
+Per Durand: "still perform link match searches even if links are added manually; search emails
+too; linking to Claude sessions; for Claude tasks a link to open the thread with a preloaded
+prompt; web searches for named or recommended sites; a send to phone button for directions;
+for meeting tasks without a meeting, create one between owner and delegate with recommended
+times when both are free before the deadline, duration from the estimate in Google's buckets".
+- Candidates are gathered on every add/enrich pass whatever is already linked (the
+  already-linked url is skipped on apply). NEW: `tsgMailCandidates_` (GmailApp.search, read-only,
+  6 threads, 180 days, 300-char excerpt) judged as `mailMatch` (low-effort field); a confident
+  match becomes a `type: 'email'` doc (`https://mail.google.com/mail/u/0/#all/<threadId>`,
+  history `email-auto-linked`), a weaker one only a history line. NEW need `webLinks`: up to 3
+  `{url,label}` named sites the task involves, applied as `type: 'web'` docs
+  (`web-auto-linked`); the README tells the Routine to web-search them. Queue requests carry
+  `mailCandidates`. Schema/prompt/parse in `tsgEstimateSchema_` / `tsgEstimatePrompt_` /
+  `tsgEstimateParse_` (`MAIL_CANDIDATES` block).
+- Link picker: "Search your email" (`api=mailSearch&q=` -> `tsgMailSearch_`, 10 threads).
+  `addDocToTarget_(url, label, type)`; `linkTypeFor_` / `docIcon_` (meeting, email, claude, web,
+  link). `tsgLabelForUrl_` labels claude.ai (chat / Code session) and Gmail links.
+- Claude: task modal row (Claude-typed task or any task with a claude.ai link):
+  "Open in Claude with this task" opens `https://claude.ai/new?q=<prompt>` (`claudePromptFor_`:
+  id, title, fields, notes capped at 4000 chars, steps, links, write-back instruction naming the
+  tsg-task-tracker-protocol skill). An existing thread cannot take a prompt by URL, so with a
+  claude.ai link the button opens that link and copies the prompt. "Copy prompt" always.
+- Directions: Location row gets "Directions" (Maps directions URL, home base -> location, in the
+  task's travel method, `directionsUrl_`) and "Send to phone" (POST `target=sendDirections` ->
+  `tsgSendDirections_`: MailApp.sendEmail to OWNER_EMAIL with the link; no third party).
+- Meeting slots: `api=meetingSlots&guest=&start=&end=&minutes=` -> `tsgMeetingSlots_`: weekdays
+  07:30-16:00 minus lunch 12-13, never within the next hour, Durand's calendar (declined events
+  ignored) plus the guest's via `CalendarApp.getCalendarById` (must be shared, SOP 09; else
+  `guestCalendar:false` and Durand-only slots), 2 per day, 10 max, window capped at 42 days.
+  `tsgDurationBucket_` / dashboard `meetingBucket_`: 15/30/45/60/90/120 from estHours (30 when
+  none). The picker's "+ New meeting" form lists "Suggested times" up to the item's due date
+  (`loadMeetingSlots_`, `useMeetingSlot_` fills date/start/duration; guest email change reloads).
+- Scopes: GmailApp (read) and MailApp were already in use (verifyEmail, write-failure mail), so no
+  new authorization was needed.

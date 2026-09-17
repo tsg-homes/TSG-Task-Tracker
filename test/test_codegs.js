@@ -8,7 +8,10 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8');
 // tsgCleanTitle_ to run without touching real Drive/Calendar/Gmail.
 let claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 let driveFilesFixture = [];      // [{ name, getUrl }] consumed by DriveApp.searchFiles stub
-let calendarEventsFixture = [];  // [{ id, title, start: Date, end: Date, allDay, location }] consumed by CalendarApp stub
+let calendarEventsFixture = [];
+let gmailThreadsFixture = [];    // [{ id, subject, from, body, date }] consumed by GmailApp.search stub
+let sentMail = [];               // MailApp.sendEmail captures
+let guestCalendarEvents = null;  // null = guest calendar unreadable; [] or events = readable  // [{ id, title, start: Date, end: Date, allDay, location }] consumed by CalendarApp stub
 let driveDocTextById = {};       // { fileId: text } consumed by the DocumentApp.openById stub (tsgGetFileSnippet_)
 let driveSheetValuesById = {};   // { fileId: [[...]] } consumed by the SpreadsheetApp.openById stub
 let projectDashboardHtml = '';   // what HtmlService.createHtmlOutputFromFile('dashboard_final') returns
@@ -79,6 +82,7 @@ const sandbox = {
         }))
     }),
     getCalendarsByName: () => [],
+    getCalendarById: () => guestCalendarEvents ? ({ getEvents: (start, end) => guestCalendarEvents.filter(e => e.start < end && e.end > start).map(e => ({ isAllDayEvent: () => !!e.allDay, getStartTime: () => e.start, getEndTime: () => e.end })) }) : null,
     GuestStatus: { YES: 'yes', OWNER: 'owner', NO: 'no' }
   },
   Utilities: {
@@ -93,8 +97,11 @@ const sandbox = {
     sleep: () => {},
     getUuid: () => 'uuid-' + (++uuidCounter)
   },
-  GmailApp: { search: () => [] },
-  MailApp: { sendEmail: () => {} },
+  GmailApp: { search: (q, start, n) => gmailThreadsFixture.slice(0, n || 10).map(th => ({
+    getId: () => th.id, getFirstMessageSubject: () => th.subject, getLastMessageDate: () => th.date || new Date('2026-09-10T12:00:00Z'),
+    getMessages: () => [{ getPlainBody: () => th.body || '', getFrom: () => th.from || 'someone@example.com' }]
+  })) },
+  MailApp: { sendEmail: (to, subject, body) => { sentMail.push({ to, subject, body }); } },
   LockService: { getScriptLock: () => ({ waitLock: () => {}, releaseLock: () => {} }) },
   // Both stubs echo what they were given back on the returned object (.text / .html) so
   // doGet's responses can be inspected; the chained setters return the same object.
@@ -1352,6 +1359,85 @@ section('Pinned tasks (2026-09-16)');
   const before = JSON.parse(JSON.stringify(d));
   sandbox.applyDataPatch_(d, { op: 'replace_all', doc: { tasks: before.tasks.map(t => Object.assign({}, t, { notes: t.notes })) }, baseVersion: d.meta.docVersion, source: 'Durand' });
   check('replace_all round-trips pinned', d.tasks.every(t => t.pinned === true));
+}
+
+section('Links every update: Gmail candidates, web links, meeting slots, directions (2026-09-17)');
+{
+  const d = freshDoc();
+  driveFilesFixture = [{ getName: () => 'Photography Invoice Sept.pdf', getUrl: () => 'https://drive.google.com/file/d/PHOTO/view', getMimeType: () => 'application/pdf', getId: () => 'PHOTO', getBlob: () => ({ getDataAsString: () => '' }) }];
+  gmailThreadsFixture = [{ id: 'abc123', subject: 'Photography invoice for 45 Baltimore Pike', from: 'photos@vendor.com', body: 'Attached is the invoice for the shoot.' }];
+  let seenNeed = null, seenUser = '';
+  claudeResponder = (system, user) => {
+    seenUser = user;
+    seenNeed = JSON.parse((user.match(/NEEDED_FIELDS: (\[.*\])/) || [])[1] || '[]');
+    const out = { rationale: 'test', estHours: 1, taskType: 'Actionable Task', subitems: [], priority: 'Medium', group: 'Ops', tags: [], dependsOnTitle: null, progress: 10, title: 'Confirm the photography invoice', notes: 'Current state: waiting.', location: null, due: null };
+    if (seenNeed.includes('driveMatch')) out.driveMatch = { index: 1, confident: true, rationale: 'same invoice' };
+    if (seenNeed.includes('mailMatch')) out.mailMatch = { index: 1, confident: true, rationale: 'the vendor thread' };
+    if (seenNeed.includes('webLinks')) out.webLinks = [{ url: 'https://www.usps.com/', label: 'USPS' }, { url: 'not a url', label: 'bad' }, { url: 'https://www.usps.com/', label: 'dup' }];
+    return out;
+  };
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Confirm photography invoice payment', owner: 'Durand', priority: 'Medium', group: 'Ops', notes: 'Vendor sent the invoice by email.', tags: [],
+    docs: [{ url: 'https://docs.google.com/document/d/ALREADY/edit', label: 'Already linked', type: 'doc' }, { url: 'https://www.usps.com/', label: 'USPS (hand-added)', type: 'web' }] }, source: 'Claude', skipDedup: true });
+  const t = d.tasks[d.tasks.length - 1];
+  check('Drive candidates are gathered even though the task came with a link', seenNeed && seenNeed.includes('driveMatch') && t.docs.some(x => x.url === 'https://drive.google.com/file/d/PHOTO/view'));
+  check('Gmail candidates ride in the same call (MAIL_CANDIDATES) and a confident match is linked as email', seenUser.includes('MAIL_CANDIDATES') && t.docs.some(x => x.type === 'email' && x.url === 'https://mail.google.com/mail/u/0/#all/abc123' && x.label === 'Photography invoice for 45 Baltimore Pike') && t.history.some(h => h.field === 'email-auto-linked'));
+  check('webLinks: a hand-added url is never re-added, junk and duplicates dropped', t.docs.filter(x => x.type === 'web').length === 1 && t.docs.some(x => x.type === 'web' && x.url === 'https://www.usps.com/' && x.label === 'USPS (hand-added)') && !t.history.some(h => h.field === 'web-auto-linked'));
+  check('a Drive link already on the task is kept once and Drive search still ran', t.docs.filter(x => x.url === 'https://docs.google.com/document/d/ALREADY/edit').length === 1 && t.history.some(h => h.field === 'doc-auto-linked'));
+  const req = sandbox.tsgEstimatePrompt_('x', '', '', ['mailMatch', 'progress'], {});
+  check('a mailMatch-only call runs at low effort', req.opts.effort === 'low');
+  check('schema carries mailMatch and webLinks', JSON.stringify(sandbox.tsgEstimateSchema_(['mailMatch', 'webLinks'])).includes('"mailMatch"') && JSON.stringify(sandbox.tsgEstimateSchema_(['webLinks'])).includes('"webLinks"'));
+  // Queue mode: the request carries the mail candidates and the answer applies them
+  const origProps = sandbox.PropertiesService.getScriptProperties;
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (k === 'ANTHROPIC_API_KEY' ? null : (scriptProps[k] == null ? null : scriptProps[k])), setProperty: (k, v) => { scriptProps[k] = v; } });
+  const q = freshDoc();
+  sandbox.applyDataPatch_(q, { op: 'add_task', task: { title: 'Confirm photography invoice payment', owner: 'Durand', priority: 'Medium', group: 'Ops', notes: 'Vendor sent the invoice by email.', tags: [] }, source: 'Claude', skipDedup: true });
+  const j = q.meta.judgments[q.meta.judgments.length - 1];
+  check('queued enrich request carries mailCandidates and asks for mailMatch + webLinks', j && Array.isArray(j.mailCandidates) && j.mailCandidates[0].url.includes('abc123') && j.need.includes('mailMatch') && j.need.includes('webLinks'));
+  sandbox.applyDataPatch_(q, { op: 'judgment', id: j.id, answer: { rationale: 'r', estHours: 1, taskType: 'Actionable Task', subitems: [], priority: 'Medium', group: 'Ops', tags: [], dependsOnTitle: null, progress: 0, title: 'Confirm the photography invoice', notes: 'Current state: waiting.', location: null, due: null, driveMatch: null, meetingMatch: null, mailMatch: { index: 1, confident: true, rationale: 'thread' }, webLinks: [{ url: 'https://www.usps.com/', label: 'USPS' }] }, source: 'Claude (queue)' });
+  const qt = q.tasks[q.tasks.length - 1];
+  check('a queued answer links the email thread and the web link', qt.docs.some(x => x.type === 'email') && qt.docs.some(x => x.type === 'web'));
+  sandbox.PropertiesService.getScriptProperties = origProps;
+  driveFilesFixture = []; gmailThreadsFixture = [];
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+
+  // Link picker mail search
+  gmailThreadsFixture = [{ id: 't1', subject: 'Flyer proof', from: 'marj@thestawaszgroup.com', body: 'proof attached' }];
+  const ms = sandbox.tsgMailSearch_('flyer proof');
+  check('tsgMailSearch_ returns threads with a Gmail permalink and no excerpt', ms.ok && ms.threads.length === 1 && ms.threads[0].url === 'https://mail.google.com/mail/u/0/#all/t1' && ms.threads[0].excerpt === undefined);
+  gmailThreadsFixture = [];
+
+  // Labels
+  check('claude.ai links are labelled', sandbox.tsgLabelForUrl_('https://claude.ai/code/session_01ABC').label === 'Claude Code session' && sandbox.tsgLabelForUrl_('https://claude.ai/chat/xyz').kind === 'claude');
+  check('Gmail links are labelled', sandbox.tsgLabelForUrl_('https://mail.google.com/mail/u/0/#all/abc').kind === 'email');
+
+  // Duration buckets and slots
+  check('duration buckets follow Google: 0.2h->15, 0.5h->30, 0.6h->45, 1h->60, 1.25h->90, 3h->120, none->30',
+    sandbox.tsgDurationBucket_(12) === 15 && sandbox.tsgDurationBucket_(30) === 30 && sandbox.tsgDurationBucket_(36) === 45 && sandbox.tsgDurationBucket_(60) === 60 && sandbox.tsgDurationBucket_(75) === 90 && sandbox.tsgDurationBucket_(180) === 120 && sandbox.tsgDurationBucket_(null) === 30);
+  const day = new Date(); day.setDate(day.getDate() + 7); while (day.getDay() === 0 || day.getDay() === 6) day.setDate(day.getDate() + 1);
+  const pad = n => String(n).padStart(2, '0');
+  const dIso = day.getFullYear() + '-' + pad(day.getMonth() + 1) + '-' + pad(day.getDate());
+  calendarEventsFixture = [{ id: 'busy1', title: 'Durand busy', start: new Date(dIso + 'T07:30:00'), end: new Date(dIso + 'T09:00:00') }];
+  guestCalendarEvents = [{ start: new Date(dIso + 'T09:00:00'), end: new Date(dIso + 'T10:00:00') }];
+  const slots = sandbox.tsgMeetingSlots_('marj@thestawaszgroup.com', dIso, dIso, 60);
+  check('slots avoid both calendars, start after the guest is free, at most 2 per day', slots.ok && slots.guestCalendar === true && slots.minutes === 60 && slots.slots.length === 2 && new Date(slots.slots[0].startISO).getHours() === 10 && slots.slots.every(sl => sl.dateLabel && sl.timeLabel));
+  const lunchFree = slots.slots.every(sl => { const h = new Date(sl.startISO).getHours(); return !(h === 12); });
+  check('no slot starts inside lunch', lunchFree);
+  guestCalendarEvents = null;
+  const slots2 = sandbox.tsgMeetingSlots_('nobody@thestawaszgroup.com', dIso, dIso, 30);
+  check('an unshared guest calendar is reported and slots fall back to Durand-only', slots2.ok && slots2.guestCalendar === false && slots2.slots.length === 2);
+  const wk = new Date(dIso + 'T12:00:00'); const sat = new Date(wk); sat.setDate(sat.getDate() + (6 - sat.getDay()));
+  const satIso = sat.getFullYear() + '-' + pad(sat.getMonth() + 1) + '-' + pad(sat.getDate());
+  check('weekends yield no slots', sandbox.tsgMeetingSlots_('', satIso, satIso, 30).slots.length === 0);
+  calendarEventsFixture = [];
+
+  // Directions
+  const origProps2 = sandbox.PropertiesService.getScriptProperties;
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (k === 'TSG_HOME_BASE' ? '728 S Broad St, Philadelphia' : null), setProperty: () => {} });
+  sentMail = [];
+  const dir = sandbox.tsgSendDirections_({ location: '45 Baltimore Pike, Media PA', taskTitle: 'Drop off keys', method: 'transit' });
+  check('directions are emailed to the owner with a Maps link in the chosen mode', dir.ok && sentMail.length === 1 && sentMail[0].to === 'durand@thestawaszgroup.com' && dir.url.includes('travelmode=transit') && dir.url.includes('origin=728') && sentMail[0].body.includes(dir.url));
+  check('directions refuse without a location', sandbox.tsgSendDirections_({ location: '' }).ok === false);
+  sandbox.PropertiesService.getScriptProperties = origProps2;
 }
 
 section('No secrets in tracked files (repo is public)');

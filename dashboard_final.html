@@ -1543,7 +1543,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-17.2';
+  const UI_VERSION = '2026-09-17.3';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2077,11 +2077,25 @@
   // `doc` is touched or migrated; docs[] is purely for additional links (meeting links, extra
   // reference docs, attached files) added from here on. Each entry: {url, label, type} where
   // type is 'meeting' (linked via the meeting picker) or 'link' (added manually).
+  // Link kinds (2026-09-17): meeting, email (Gmail thread), claude (claude.ai chat / Code
+  // session), web (a named site), doc/link (Drive or anything else).
+  function linkTypeFor_(url, kind) {
+    const u = String(url || '');
+    if (kind === 'email' || /mail\.google\.com/.test(u)) return 'email';
+    if (kind === 'claude' || /claude\.ai\//.test(u)) return 'claude';
+    if (kind === 'calendar' || /calendar\.google\.com/.test(u)) return 'meeting';
+    if (kind === 'web') return 'web';
+    return 'link';
+  }
+  function docIcon_(d) {
+    const type = d.type === 'link' ? linkTypeFor_(d.url) : (d.type || linkTypeFor_(d.url));
+    return type === 'meeting' ? '&#128197;' : type === 'email' ? '&#9993;' : type === 'claude' ? '&#10022;' : type === 'web' ? '&#127760;' : '&#128279;';
+  }
   function docsListHtml(docs, taskId, subIdx) {
     const list = Array.isArray(docs) ? docs : [];
     if (!list.length) return '<span class="modal-empty">No additional links</span>';
     return list.map(function(d, di) {
-      const icon = d.type === 'meeting' ? '&#128197;' : '&#128279;';
+      const icon = docIcon_(d);
       return `<span class="doc-chip"><a href="${escapeHtml(safeUrl(d.url))}" target="_blank" rel="noopener" title="${escapeHtml(d.url)}">${icon} ${escapeHtml(d.label || d.url)}</a><span class="rm" onclick="removeDoc(${taskId}, ${subIdx == null ? 'null' : subIdx}, ${di})" title="Remove link">&#10005;</span></span>`;
     }).join('');
   }
@@ -2102,6 +2116,8 @@
       <div class="meeting-form">
         <label>Search your Drive<input type="text" class="text-input" id="linkSearch" placeholder="Type a few words from the file name or contents" oninput="onLinkSearchInput_()"></label>
         <div class="meeting-list" id="linkResults"><div class="history-empty">Results appear here.</div></div>
+        <label>Search your email<input type="text" class="text-input" id="linkMailSearch" placeholder="Words from the subject or the message" oninput="onLinkMailSearchInput_()"></label>
+        <div class="meeting-list" id="linkMailResults"><div class="history-empty">Threads appear here.</div></div>
         <label>Or paste a link<span class="link-paste-row"><input type="text" class="text-input" id="linkPaste" placeholder="https://…" onkeydown="if(event.key==='Enter'){event.preventDefault();addPastedLink_();}"><button type="button" class="btn small primary" onclick="addPastedLink_()">Add</button></span></label>
         <div class="sched-detail-note">Upcoming meetings</div>
         <div class="meeting-list" id="linkMeetings"><div class="history-empty">Loading…</div></div>
@@ -2134,6 +2150,31 @@
     }
   }
   let LINK_RESULTS = [];
+  let LINK_MAIL_RESULTS = [];
+  let linkMailDebounce = null;
+  function onLinkMailSearchInput_() { clearTimeout(linkMailDebounce); linkMailDebounce = setTimeout(runLinkMailSearch_, 300); }
+  async function runLinkMailSearch_() {
+    const q = (document.getElementById('linkMailSearch') || {}).value || '';
+    const host = document.getElementById('linkMailResults');
+    if (!host) return;
+    if (q.trim().length < 2) { host.innerHTML = '<div class="history-empty">Threads appear here.</div>'; return; }
+    host.innerHTML = '<div class="history-empty">Searching…</div>';
+    try {
+      const res = await apiFetch('api=mailSearch&q=' + encodeURIComponent(q.trim()));
+      const data = await res.json();
+      LINK_MAIL_RESULTS = (data && data.threads) || [];
+      host.innerHTML = LINK_MAIL_RESULTS.length
+        ? LINK_MAIL_RESULTS.map((m, i) => `<div class="meeting-row" onclick="addLinkMailResult_(${i})"><div class="meeting-row-main"><b>${escapeHtml(m.label)}</b></div><div class="meeting-row-sub">${escapeHtml(m.from || '')}${m.date ? ' · ' + escapeHtml(m.date) : ''}${m.count > 1 ? ' · ' + m.count + ' messages' : ''}</div></div>`).join('')
+        : '<div class="history-empty">No threads match that.</div>';
+    } catch (err) {
+      host.innerHTML = '<div class="history-empty">Search failed: ' + escapeHtml(err.message || String(err)) + '</div>';
+    }
+  }
+  function addLinkMailResult_(i) {
+    const m = LINK_MAIL_RESULTS[i];
+    if (!m) return;
+    addDocToTarget_(m.url, m.label, 'email');
+  }
   function linkKindLabel_(mime) {
     const m = String(mime || '');
     if (m.indexOf('document') !== -1) return 'Google Doc';
@@ -2152,26 +2193,27 @@
     const inp = document.getElementById('linkPaste');
     const url = (inp && inp.value || '').trim();
     if (!url) return;
-    let label = '';
+    let label = '', kind = '';
     try {
       const res = await apiFetch('api=linkLabel&url=' + encodeURIComponent(url));
       const data = await res.json();
-      if (data && data.ok && data.label) label = data.label;
+      if (data && data.ok && data.label) { label = data.label; kind = data.kind || ''; }
     } catch (err) { /* fall through to the hostname */ }
     if (!label) { const m = /^https?:\/\/([^\/?#]+)/i.exec(url); label = m ? m[1].replace(/^www\./, '') : url; }
-    addDocToTarget_(url, label);
+    addDocToTarget_(url, label, linkTypeFor_(url, kind));
   }
-  function addDocToTarget_(url, label) {
+  function addDocToTarget_(url, label, type) {
     if (!LINK_TARGET) return;
+    type = type || linkTypeFor_(url);
     if (LINK_TARGET.pending) {
-      if (!NT_DOCS.some(d => d.url === url)) NT_DOCS.push({ url: url, label: label || url, type: 'link' });
+      if (!NT_DOCS.some(d => d.url === url)) NT_DOCS.push({ url: url, label: label || url, type: type });
       closeLinkPicker(); renderNtDocs_();
       return;
     }
     const ctx = docsItem_(LINK_TARGET.taskId, LINK_TARGET.subIdx);
     if (!ctx) return;
     if (!Array.isArray(ctx.item.docs)) ctx.item.docs = [];
-    if (!ctx.item.docs.some(d => d.url === url)) ctx.item.docs.push({ url: url, label: label || url, type: 'link' });
+    if (!ctx.item.docs.some(d => d.url === url)) ctx.item.docs.push({ url: url, label: label || url, type: type });
     logHistory(ctx.t, LINK_TARGET.subIdx == null ? 'doc' : 'subitem-doc', null, label || url);
     const taskId = LINK_TARGET.taskId;
     closeLinkPicker();
@@ -2701,6 +2743,84 @@
     if (before) delete t.pinned; else t.pinned = true;
     logHistory(t, 'pinned', before, !before);
     renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+  // Open in Claude (2026-09-17, per Durand: "for Claude tasks it would be cool to have a link
+  // to open the appropriate thread with a preloaded prompt"). claude.ai/new?q= preloads a NEW
+  // chat; an existing thread cannot take a prompt by URL, so when the task already links a
+  // claude.ai chat or Code session that link is opened and the prompt goes to the clipboard.
+  function hasClaudeLink_(t) { return (t.docs || []).some(d => d && /claude\.ai\//.test(String(d.url || ''))); }
+  function claudeLinkOf_(t) { const d = (t.docs || []).find(d => d && /claude\.ai\//.test(String(d.url || ''))); return d ? d.url : ''; }
+  function claudePromptFor_(t) {
+    const lines = [];
+    lines.push('TSG Task Tracker — task #' + t.id + ': ' + (t.title || ''));
+    const meta = [];
+    if (t.group) meta.push('Group: ' + t.group);
+    if (t.priority) meta.push('Priority: ' + t.priority);
+    meta.push('Status: ' + rollupStatus(t));
+    if (t.timelineEnd) meta.push('Due: ' + t.timelineEnd);
+    if (t.estHours != null) meta.push('Estimate: ' + t.estHours + ' h');
+    if (taskDelegate(t)) meta.push('Delegate: ' + taskDelegate(t));
+    if (t.location) meta.push('Location: ' + t.location);
+    lines.push(meta.join(' · '));
+    const notes = String(t.notes || '').trim();
+    if (notes) lines.push('', 'Notes:', notes.length > 4000 ? notes.slice(0, 4000) + '\n[… notes truncated; the full note is on the task]' : notes);
+    if ((t.subitems || []).length) {
+      lines.push('', 'Steps:');
+      t.subitems.forEach(s => lines.push('- [' + (s.done ? 'x' : ' ') + '] ' + s.title + (s.delegate ? ' (' + s.delegate + ')' : '') + (s.timelineEnd ? ' due ' + s.timelineEnd : '')));
+    }
+    const docs = (t.docs || []).filter(d => d && d.url);
+    if (t.doc || docs.length) {
+      lines.push('', 'Links:');
+      if (t.doc) lines.push('- ' + t.doc);
+      docs.forEach(d => lines.push('- ' + (d.label ? d.label + ': ' : '') + d.url));
+    }
+    lines.push('', 'Work this task. When you make progress or finish, update task #' + t.id + ' in the TSG Task Tracker through the tsg-task-tracker-protocol skill (an _Inbox patch: update_task / update_subitem, source "Claude"), and log what changed in its notes. Never write to the Data file directly.');
+    return lines.join('\n');
+  }
+  function claudeUrlFor_(t) { return 'https://claude.ai/new?q=' + encodeURIComponent(claudePromptFor_(t)); }
+  async function copyClaudePrompt(id, btn) {
+    const t = findTask(id);
+    if (!t) return;
+    try { await navigator.clipboard.writeText(claudePromptFor_(t)); if (btn) { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy prompt'; }, 1500); } }
+    catch (err) { prompt('Copy this prompt:', claudePromptFor_(t)); }
+  }
+  async function openInClaude(id, btn) {
+    const t = findTask(id);
+    if (!t) return;
+    const existing = claudeLinkOf_(t);
+    if (existing) { await copyClaudePrompt(id, btn); window.open(safeUrl(existing), '_blank', 'noopener'); return; }
+    window.open(claudeUrlFor_(t), '_blank', 'noopener');
+  }
+  function claudeRowHtml_(t) {
+    if (t.taskType !== 'Claude' && !hasClaudeLink_(t)) return '';
+    const existing = claudeLinkOf_(t);
+    return `<div class="modal-row"><b>Claude</b><span class="modal-source">
+      <button type="button" class="btn small" onclick="openInClaude(${t.id}, this)" title="${existing ? 'Opens the linked Claude thread; the task prompt is copied so you can paste it there' : 'Opens a new Claude chat with this task as the prompt'}">&#10022; ${existing ? 'Open linked thread (prompt copied)' : 'Open in Claude with this task'}</button>
+      <button type="button" class="btn small" onclick="copyClaudePrompt(${t.id}, this)" title="Copy the task prompt">Copy prompt</button>
+    </span></div>`;
+  }
+  // Directions to the phone (2026-09-17, per Durand: "a send to phone button for directions"):
+  // the Maps link (home base -> location, in the task's travel method) is emailed to Durand's
+  // own address by the backend; nothing goes to a third party.
+  function directionsUrl_(t) {
+    const method = travelMethodUsed_(t);
+    const mode = method === 'walk' ? 'walking' : method === 'transit' ? 'transit' : 'driving';
+    return 'https://www.google.com/maps/dir/?api=1' + (HOME_BASE ? '&origin=' + encodeURIComponent(HOME_BASE) : '') + '&destination=' + encodeURIComponent(t.location || '') + '&travelmode=' + mode;
+  }
+  async function sendDirections(id, btn) {
+    const t = findTask(id);
+    if (!t || !t.location) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+    try {
+      const res = await apiFetch('target=sendDirections', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ location: t.location, taskTitle: t.title, method: travelMethodUsed_(t), taskId: id }) });
+      const data = await res.json();
+      if (!data || data.ok === false) throw new Error((data && data.error) || 'Send failed');
+      if (btn) { btn.textContent = 'Sent to ' + (data.sentTo || 'your email'); setTimeout(() => { btn.textContent = '&#128241; Send to phone'; btn.innerHTML = '&#128241; Send to phone'; btn.disabled = false; }, 2500); }
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.innerHTML = '&#128241; Send to phone'; }
+      alert('Could not send directions: ' + (err.message || err));
+    }
   }
   let triageOnly = false;
   function toggleTriageFilter() {
@@ -5419,14 +5539,16 @@
         <div class="meeting-form-row">
           <label>Date<input type="date" class="due-input" id="mfDate" value="${defaultDate}"></label>
           <label>Start<input type="time" class="due-input" id="mfStart" value="10:00"></label>
-          <label>Duration (min)<input type="number" class="due-input" id="mfDuration" value="30" min="15" step="15"></label>
+          <label>Duration (min)<input type="number" class="due-input" id="mfDuration" value="${meetingBucket_(item.estHours)}" min="15" step="15"></label>
         </div>
+        <div class="sched-detail-note">Suggested times — free for both of you, before the due date, ${meetingBucket_(item.estHours)} min from the estimate</div>
+        <div class="meeting-list" id="mfSlots"><div class="history-empty">Finding times…</div></div>
         <label>Location / video link<input type="text" class="text-input" id="mfLocation" value=""></label>
         <label>Description<textarea class="text-input" id="mfDescription" rows="3">${escapeHtml(item.notes || '')}</textarea></label>
         <label class="meeting-form-guest">
           <input type="checkbox" id="mfInvite" ${inviteChecked ? 'checked' : ''}>
           Invite ${escapeHtml(item.delegate || 'delegate')}
-          <input type="email" class="text-input" id="mfGuestEmail" value="${escapeHtml(guest.email)}" placeholder="delegate@thestawaszgroup.com">
+          <input type="email" class="text-input" id="mfGuestEmail" value="${escapeHtml(guest.email)}" placeholder="delegate@thestawaszgroup.com" onchange="onMfGuestChange_()">
         </label>
         ${hintHtml}
         <div class="meeting-modal-footer">
@@ -5435,6 +5557,50 @@
         </div>
       </div>
     `;
+    MF_ITEM = item;
+    loadMeetingSlots_(item, guest.email);
+  }
+  // Suggested times (2026-09-17): both calendars free (the guest's must be shared with Durand),
+  // weekdays 07:30-16:00 minus lunch, before the item's due date, in Google's duration buckets.
+  const MEETING_BUCKETS = [15, 30, 45, 60, 90, 120];
+  function meetingBucket_(estHours) {
+    const m = Number(estHours) * 60;
+    if (!m || !isFinite(m) || m <= 0) return 30;
+    for (const b of MEETING_BUCKETS) if (b >= m) return b;
+    return MEETING_BUCKETS[MEETING_BUCKETS.length - 1];
+  }
+  let MF_SLOTS = [], MF_ITEM = null;
+  async function loadMeetingSlots_(item, guestEmail) {
+    const host = document.getElementById('mfSlots');
+    if (!host) return;
+    const minutes = Number((document.getElementById('mfDuration') || {}).value) || meetingBucket_(item.estHours);
+    const end = item.timelineEnd && item.timelineEnd > todayISO() ? item.timelineEnd : addDays(todayISO(), 14);
+    try {
+      const res = await apiFetch('api=meetingSlots&guest=' + encodeURIComponent(guestEmail || '') + '&start=' + todayISO() + '&end=' + end + '&minutes=' + minutes);
+      const data = await res.json();
+      if (!data || data.ok === false) throw new Error((data && data.error) || 'No answer');
+      MF_SLOTS = data.slots || [];
+      const note = guestEmail && !data.guestCalendar ? '<div class="meeting-form-hint">' + escapeHtml(guestEmail) + '\'s calendar is not shared with you, so these are only your own free times.</div>' : '';
+      host.innerHTML = note + (MF_SLOTS.length
+        ? MF_SLOTS.map((sl, i) => `<div class="meeting-row" onclick="useMeetingSlot_(${i})"><div class="meeting-row-main"><b>${escapeHtml(sl.dateLabel)}</b></div><div class="meeting-row-sub">${escapeHtml(sl.timeLabel)}</div></div>`).join('')
+        : '<div class="history-empty">No shared free time before ' + escapeHtml(end) + ' — pick a time by hand or move the due date.</div>');
+    } catch (err) {
+      host.innerHTML = '<div class="history-empty">Could not suggest times: ' + escapeHtml(err.message || String(err)) + '</div>';
+    }
+  }
+  function useMeetingSlot_(i) {
+    const sl = MF_SLOTS[i];
+    if (!sl) return;
+    const dt = isoToLocalDateHm_(sl.startISO), dtEnd = isoToLocalDateHm_(sl.endISO);
+    if (!dt) return;
+    document.getElementById('mfDate').value = dt.date;
+    document.getElementById('mfStart').value = dt.hm;
+    if (dtEnd) document.getElementById('mfDuration').value = Math.round((new Date(sl.endISO) - new Date(sl.startISO)) / 60000);
+    document.querySelectorAll('#mfSlots .meeting-row').forEach((row, j) => row.classList.toggle('meeting-row-guess', j === i));
+  }
+  function onMfGuestChange_() {
+    if (!MF_ITEM) return;
+    loadMeetingSlots_(MF_ITEM, (document.getElementById('mfGuestEmail') || {}).value || '');
   }
   async function confirmCreateMeeting(btn) {
     const target = currentMeetingTarget_();
@@ -5711,12 +5877,13 @@
       `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Actionable Task')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,
       `<div class="modal-row"><b>Due</b><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)"></div>`,
       (t.timelineEnd ? `<div class="modal-row"><b>Countdown</b>${bonusCountdownHtml_(t)}</div>` : ''),
-      `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button></span></div>`,
+      `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button>${t.location ? `<a class="btn small" href="${escapeHtml(directionsUrl_(t))}" target="_blank" rel="noopener" title="Open directions in Google Maps">&#128506; Directions</a><button type="button" class="btn small" onclick="sendDirections(${id}, this)" title="Email the Maps directions link to your phone">&#128241; Send to phone</button>` : ''}</span></div>`,
       `<div class="modal-row"><b>Estimate</b><span class="modal-est-wrap"><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs${(pendingJudgment_(id, 'enrich') || pendingJudgment_(id, 'estimate')) ? ' <span class="hist-time" title="Queued for the hourly Claude Routine: the title, notes and fields update when it answers">· queued for Claude</span>' : ''}${travelRowHtml_(t)}</span></div>`,
       `<div class="modal-row"><b>Progress</b><span>${pct}%</span></div>`,
       `<div class="modal-row"><b>Tags</b><span class="modal-tags">${tagsChips}<input type="text" class="text-input tag-input" list="tagOptions" placeholder="+ tag" spellcheck="true" onkeydown="if(event.key==='Enter'){event.preventDefault();modalAddTagFrom(${id}, this);}" onchange="modalAddTagFrom(${id}, this)"></span></div>`,
       `<div class="modal-row"><b>Source</b><span class="modal-source">${t.doc ? `<a href="${escapeHtml(safeUrl(t.doc))}" target="_blank" rel="noopener" class="doc-link-text">${escapeHtml(t.doc)}</a>` : '<span class="modal-empty">Not linked — add the email or meeting doc this came from</span>'}<button type="button" class="icon-btn" onclick="modalEditDoc(${id})" title="${t.doc ? 'Edit source link' : 'Add source link'}">${t.doc ? '&#9998;' : '+ link'}</button></span></div>`,
       `<div class="modal-row"><b>Links</b><span class="modal-source">${docsListHtml(t.docs, id, null)}<button type="button" class="icon-btn" onclick="addManualDoc(${id}, null)" title="Add a link or file">+ link</button></span></div>`,
+      claudeRowHtml_(t),
       (t.taskType === 'Meeting' ? `<div class="modal-row"><b>Meeting</b><span class="modal-source"><button type="button" class="icon-btn" onclick="openMeetingPicker(${id}, null)" title="Link a calendar meeting">${(t.docs || []).some(d => d.type === 'meeting') ? '&#128197; Change linked meeting' : '+ Link a meeting'}</button></span></div>` : ''),
       // Call/Email type-specific fields (2026-09-03, per Durand: "call tasks should get a
       // number to call and email tasks should have the email address to send and a draft
@@ -5923,7 +6090,7 @@
     const host = document.getElementById('ntDocs');
     if (!host) return;
     host.innerHTML = NT_DOCS.length
-      ? NT_DOCS.map((d, i) => `<span class="doc-chip"><a href="${escapeHtml(safeUrl(d.url))}" target="_blank" rel="noopener" title="${escapeHtml(d.url)}">${d.type === 'meeting' ? '&#128197;' : '&#128279;'} ${escapeHtml(d.label || d.url)}</a><span class="rm" onclick="ntRemoveDoc_(${i})" title="Remove link">&#10005;</span></span>`).join('')
+      ? NT_DOCS.map((d, i) => `<span class="doc-chip"><a href="${escapeHtml(safeUrl(d.url))}" target="_blank" rel="noopener" title="${escapeHtml(d.url)}">${docIcon_(d)} ${escapeHtml(d.label || d.url)}</a><span class="rm" onclick="ntRemoveDoc_(${i})" title="Remove link">&#10005;</span></span>`).join('')
       : '<span class="modal-empty">No links yet</span>';
   }
   function ntRemoveDoc_(i) {

@@ -174,10 +174,12 @@ judgment, and writes the answers back as inbox ops. Until an answer lands a new 
   `dependsOnTitle` or `subitems`), or a Tidy re-run (`force: true`). Polish the notes FIRST
   and derive every other field from the polished text. Fields: `need` (subset of `title`, `notes`, `estHours`, `taskType`, `subitems`, `priority`,
   `group`, `dependsOnTitle`, `tags`, `progress`, `location`, `due`, `driveMatch`,
-  `meetingMatch`), `title`, `notes` (free-flow text as typed), `priority`, `current` (the
+  `meetingMatch`, `mailMatch`, `webLinks`), `title`, `notes` (free-flow text as typed), `priority`, `current` (the
   task's current fields: return them unchanged unless the title/notes clearly justify a
   change), `batchSiblings`, `driveCandidates` (`[{url, label, excerpt}]` or null),
-  `calendarCandidates` (`[{date, start, end, htmlLink, label}]` or null), `personCreated`.
+  `calendarCandidates` (`[{date, start, end, htmlLink, label}]` or null), `mailCandidates`
+  (`[{url, label, from, date, excerpt}]` recent Gmail threads, or null), `personCreated`.
+  Candidates are gathered on EVERY pass, whatever is already linked (2026-09-17).
   Read `EXISTING_GROUPS` / `OPEN_TASK_TITLES` / `EXISTING_TAGS` from the data file itself.
 - `kind: "progress"` — legacy; answer `{progress}` from the notes only.
 
@@ -189,7 +191,9 @@ judgment, and writes the answers back as inbox ops. Until an answer lands a new 
    "notes":"Current state: …\n\nLog:\n- 2026-09-16: …","estHours":0.5,"taskType":"Email",
    "subitems":[],"priority":"High","group":"Ops","dependsOnTitle":null,"tags":["Listings"],
    "progress":25,"location":"Farina Di Vita, Media PA","due":"2026-09-19","needsConfirmation":false,
-   "driveMatch":{"index":1,"confident":true,"rationale":"…"},"meetingMatch":null,"rationale":"…"}},
+   "driveMatch":{"index":1,"confident":true,"rationale":"…"},"meetingMatch":null,
+   "mailMatch":{"index":2,"confident":true,"rationale":"…"},
+   "webLinks":[{"url":"https://www.usps.com/business/web-tools-apis/address-information-api.htm","label":"USPS Address API"}],"rationale":"…"}},
   {"op":"judgment","id":"J18","answer":{"progress":60}}
 ]}
 ```
@@ -202,8 +206,11 @@ Text/Chat | Meeting | Claude | Actionable Task; `priority` one of Critical | Hig
 Low; `group` an existing group unless nothing fits; `dependsOnTitle` an exact open title or
 null; 0-3 topical tags, never a system tag; `progress` 0-100 from evidence in the notes;
 `location` a stated place or null; `due` a stated deadline as YYYY-MM-DD or null;
-`driveMatch` / `meetingMatch` `{index (1-based into the stored candidates), confident,
-rationale}` or null. `answer: null` drops a request; an unknown id is ignored.
+`driveMatch` / `meetingMatch` / `mailMatch` `{index (1-based into the stored candidates), confident,
+rationale}` or null; `webLinks` up to 3 `{url, label}` for the named tool / service / vendor /
+form page / reference the task explicitly involves (official pages only, real URLs — RUN A WEB
+SEARCH to confirm each one; never a Drive, Gmail or Calendar link, never a search-results page)
+or null, the usual answer. `answer: null` drops a request; an unknown id is ignored.
 
 **What the server does with an answer** (`tsgApplyEstimateToTask_`, tasks and subtasks
 alike): the notes polish lands first, then the title, then a stated `location` / `due`
@@ -212,7 +219,8 @@ field Durand set by hand (a history line with a person's source) is kept unless 
 was a Tidy re-run; title / notes / progress are skipped when Durand edited them after the
 request was queued, and the notes polish is skipped when the notes moved on; new steps are
 appended to a task, existing ones kept, a subtask never mints steps; tags merge; a confident
-Drive / calendar match is linked on every pass unless that link is already on the item;
+Drive / calendar / Gmail match and every returned web link is added on every pass unless that
+url is already on the item (Gmail as type `email`, sites as type `web`);
 every change gets its own history line with the answer's source. Verify by re-reading the data
 file after a minute: the answered ids are gone from `meta.judgments`.
 
