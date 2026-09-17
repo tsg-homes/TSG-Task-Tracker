@@ -101,9 +101,17 @@ var RAFFLE_LOOKUP_GLOBAL_WINDOW_SECONDS = 21600;
 // and reported once, never invented.
 var RAFFLE_CUSTOM_FIELD_CACHE_KEY = 'raffle_fub_customfields_v1';
 var RAFFLE_CUSTOM_FIELD_CACHE_SECONDS = 1800;
-var RAFFLE_REFERRAL_COUNT_LABELS = ['referral count', 'referrals', 'number of referrals',
-                                    '# of referrals', 'total referrals'];
-var RAFFLE_REFERRED_BY_LABELS    = ['referred by', 'referral source', 'referrer'];
+// Custom-field labels this account might plausibly use, matched case- and
+// punctuation-insensitively. "referrals sent" is FIRST because it is what the
+// TSG account actually calls it: the 2026-09-17 rehearsal alerted that no
+// Referral Count field existed and advised creating one, when the field was
+// there all along under a name this list did not know. Nothing needed creating;
+// the matcher needed widening.
+var RAFFLE_REFERRAL_COUNT_LABELS = ['referrals sent', 'referral count', 'referrals',
+                                    'number of referrals', '# of referrals',
+                                    'total referrals', 'referrals made'];
+var RAFFLE_REFERRED_BY_LABELS    = ['referred by', 'referral source', 'referrer',
+                                    'referred by name'];
 
 // ---------- FUB plumbing ----------
 function raffleFubKey_() {
@@ -656,36 +664,6 @@ function raffleDeleteFubContactsById_(ids) {
   return { deleted: deleted, failed: failed, skipped: skipped, summary: summary };
 }
 
-// The backlog: every QA contact left behind by a run that predates the cleanup
-// above. Editor-only. Same double gate, so it can only ever remove QA records.
-// Scans newest-first and stops after `maxScan` contacts (default 500).
-function raffleDeleteQaContactsFromFub(maxScan) {
-  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
-  var cap = maxScan || 500, offset = 0, ids = [], scanned = 0;
-  while (scanned < cap) {
-    var page = raffleFubCall_('https://api.followupboss.com/v1/people?limit=100&offset=' +
-                              offset + '&sort=-created', 'get', null, apiKey);
-    if (!page.ok || !page.body) {
-      Logger.log('raffleDeleteQaContactsFromFub: list failed ' + page.code + ': ' +
-                 String(page.text).slice(0, 200));
-      break;
-    }
-    var people = page.body.people || [];
-    if (!people.length) break;
-    people.forEach(function (p) {
-      scanned++;
-      var tags = p.tags || [];
-      if (tags.some(function (t) { return String(t) === QA_TEST_TAG; })) ids.push(p.id);
-    });
-    if (people.length < 100) break;
-    offset += 100;
-  }
-  Logger.log('raffleDeleteQaContactsFromFub: scanned ' + scanned + ', found ' +
-             ids.length + ' QA-tagged.');
-  var res = raffleDeleteFubContactsById_(ids);
-  return 'Scanned ' + scanned + ' contacts, found ' + ids.length +
-         ' tagged "' + QA_TEST_TAG + '": ' + res.summary;
-}
 
 // ---------------------------------------------------------------------------
 // LOGGING OUTBOUND EMAIL TO THE CONTACT'S FUB TIMELINE
@@ -734,82 +712,7 @@ function raffleLogEmailToFub_(personId, subject, bodyText, test) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// DIAGNOSTIC, editor-only: does FUB expose a way to LOG or SEND an email?
-//
-// Durand, 2026-09-17: "all emails should be sent through fub so they're logged
-// to the contact's comms". Two different things are possible and only FUB can
-// say which:
-//   * LOGGING an email we sent ourselves, so it appears on the contact timeline;
-//   * SENDING through FUB, so FUB is the mail transport.
-// FUB's docs domain is blocked from the build environment, so this asks the API
-// which endpoints answer at all rather than guessing a payload. Read the log.
-// ---------------------------------------------------------------------------
-function raffleInspectFubEmailLogging() {
-  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
-  var out = [];
-  function say(line) { out.push(line); Logger.log(line); }
-  say('Probing FUB for an email endpoint. 200/201 = exists, 404 = does not, ' +
-      '405 = exists but not for this verb.');
-  ['emails', 'textMessages', 'calls', 'events', 'notes'].forEach(function (path) {
-    var r = raffleFubCall_('https://api.followupboss.com/v1/' + path + '?limit=1',
-                           'get', null, apiKey);
-    var keys = '';
-    if (r.ok && r.body) {
-      var arrKey = Object.keys(r.body).filter(function (k) {
-        return Object.prototype.toString.call(r.body[k]) === '[object Array]'; })[0];
-      var arr = arrKey ? r.body[arrKey] : [];
-      keys = arr.length ? '  record keys: ' + Object.keys(arr[0]).join(', ')
-                        : '  (no records to read keys from)';
-    }
-    say('GET /v1/' + path + ' -> ' + r.code + (keys ? '\n' + keys : ''));
-  });
-  say('');
-  say('If /v1/emails exists, its record keys name the fields an email log needs ' +
-      'and raffleLogEmailToFub_ can be pointed at it. If it does not, the note ' +
-      'fallback already in place is the whole of what is available.');
-  return out.join('\n');
-}
 
-function raffleInspectFubRelationships(qaPersonId, qaRelatedId) {
-  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
-  var out = [];
-  function say(line) { out.push(line); Logger.log(line); }
-
-  var list = raffleFubCall_(
-    'https://api.followupboss.com/v1/peopleRelationships?limit=3', 'get', null, apiKey);
-  say('GET /peopleRelationships -> ' + list.code);
-  if (list.ok && list.body) {
-    say('  top-level keys: ' + Object.keys(list.body).join(', '));
-    var arr = list.body.peoplerelationships || list.body.peopleRelationships ||
-              list.body.relationships || [];
-    if (arr.length) {
-      say('  A RECORD\'S KEYS (this is the answer): ' + Object.keys(arr[0]).join(', '));
-      say('  sample: ' + JSON.stringify(arr[0]).slice(0, 400));
-    } else {
-      say('  no relationships exist yet, so no record to read keys from.');
-    }
-  } else {
-    say('  body: ' + String(list.text).slice(0, 300));
-  }
-
-  if (qaPersonId && qaRelatedId) {
-    ['relatedPersonId', 'relatedId', 'toPersonId', 'personIdTo', 'relatedPerson']
-      .forEach(function (field) {
-        var payload = { personId: qaPersonId, type: 'Referred' };
-        payload[field] = qaRelatedId;
-        var t = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships',
-                               'post', payload, apiKey);
-        say('  POST with "' + field + '" -> ' + t.code + ' ' +
-            (t.ok ? 'ACCEPTED — set RAFFLE_LINK_FIELD to this'
-                  : String(t.text).slice(0, 140)));
-      });
-  } else {
-    say('Pass two [QA TEST] contact ids to probe field names: ' +
-        'raffleInspectFubRelationships(33228, 33241)');
-  }
-  return out.join('\n');
-}
 
 // Reads the current value and writes value+1. Skipped entirely, with one log
 // line, if this account has no such field -- never created on the fly.

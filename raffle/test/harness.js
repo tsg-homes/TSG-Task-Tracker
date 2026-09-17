@@ -233,6 +233,17 @@ function makeSandbox(opts) {
         // Notes as a real store too, so the suite's "is the email logged on the
         // timeline" check reads back what was actually posted instead of the
         // catch-all 200 that made it unfalsifiable.
+        // The account's real custom fields, so the suite's "does this account's
+        // field resolve" check runs against the names FUB actually returns.
+        // opts.customFields overrides, so a test can rename them and watch the
+        // check fail the way it did live.
+        if (/\/v1\/customFields/.test(url)) {
+          return json({ customfields: opts.customFields || [
+            { label: 'Referrals Sent', name: 'customReferralsSent' },
+            { label: 'Referred By',    name: 'customReferredBy' },
+            { label: 'Client Tier',    name: 'customClientTier' }
+          ] });
+        }
         if (/\/v1\/notes/.test(url)) {
           if (o && o.method === 'post') {
             const body = JSON.parse(o.payload || '{}');

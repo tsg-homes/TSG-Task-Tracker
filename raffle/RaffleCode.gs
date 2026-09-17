@@ -1743,6 +1743,123 @@ function raffleResetTest() {
   return msg;
 }
 
+// ---------------------------------------------------------------------------
+// FUB HOUSEKEEPING AND DIAGNOSTICS -- run by hand from the editor.
+//
+// These live in THIS file on purpose. The Apps Script Run dropdown only lists
+// functions from the file that is OPEN, so sitting in RaffleReferral they were
+// invisible next to setupRaffle and raffleRunQaSuite -- which is where somebody
+// looking for them actually looks. (2026-09-17: Durand could not find them.)
+// ---------------------------------------------------------------------------
+
+// The backlog: every QA contact left behind by a run that predates the cleanup
+// above. Editor-only. Same double gate, so it can only ever remove QA records.
+// Scans newest-first and stops after `maxScan` contacts (default 500).
+function raffleDeleteQaContactsFromFub(maxScan) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var cap = maxScan || 500, offset = 0, ids = [], scanned = 0;
+  while (scanned < cap) {
+    var page = raffleFubCall_('https://api.followupboss.com/v1/people?limit=100&offset=' +
+                              offset + '&sort=-created', 'get', null, apiKey);
+    if (!page.ok || !page.body) {
+      Logger.log('raffleDeleteQaContactsFromFub: list failed ' + page.code + ': ' +
+                 String(page.text).slice(0, 200));
+      break;
+    }
+    var people = page.body.people || [];
+    if (!people.length) break;
+    people.forEach(function (p) {
+      scanned++;
+      var tags = p.tags || [];
+      if (tags.some(function (t) { return String(t) === QA_TEST_TAG; })) ids.push(p.id);
+    });
+    if (people.length < 100) break;
+    offset += 100;
+  }
+  Logger.log('raffleDeleteQaContactsFromFub: scanned ' + scanned + ', found ' +
+             ids.length + ' QA-tagged.');
+  var res = raffleDeleteFubContactsById_(ids);
+  return 'Scanned ' + scanned + ' contacts, found ' + ids.length +
+         ' tagged "' + QA_TEST_TAG + '": ' + res.summary;
+}
+
+// ---------------------------------------------------------------------------
+// DIAGNOSTIC, editor-only: does FUB expose a way to LOG or SEND an email?
+//
+// Durand, 2026-09-17: "all emails should be sent through fub so they're logged
+// to the contact's comms". Two different things are possible and only FUB can
+// say which:
+//   * LOGGING an email we sent ourselves, so it appears on the contact timeline;
+//   * SENDING through FUB, so FUB is the mail transport.
+// FUB's docs domain is blocked from the build environment, so this asks the API
+// which endpoints answer at all rather than guessing a payload. Read the log.
+// ---------------------------------------------------------------------------
+function raffleInspectFubEmailLogging() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+  say('Probing FUB for an email endpoint. 200/201 = exists, 404 = does not, ' +
+      '405 = exists but not for this verb.');
+  ['emails', 'textMessages', 'calls', 'events', 'notes'].forEach(function (path) {
+    var r = raffleFubCall_('https://api.followupboss.com/v1/' + path + '?limit=1',
+                           'get', null, apiKey);
+    var keys = '';
+    if (r.ok && r.body) {
+      var arrKey = Object.keys(r.body).filter(function (k) {
+        return Object.prototype.toString.call(r.body[k]) === '[object Array]'; })[0];
+      var arr = arrKey ? r.body[arrKey] : [];
+      keys = arr.length ? '  record keys: ' + Object.keys(arr[0]).join(', ')
+                        : '  (no records to read keys from)';
+    }
+    say('GET /v1/' + path + ' -> ' + r.code + (keys ? '\n' + keys : ''));
+  });
+  say('');
+  say('If /v1/emails exists, its record keys name the fields an email log needs ' +
+      'and raffleLogEmailToFub_ can be pointed at it. If it does not, the note ' +
+      'fallback already in place is the whole of what is available.');
+  return out.join('\n');
+}
+
+function raffleInspectFubRelationships(qaPersonId, qaRelatedId) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+
+  var list = raffleFubCall_(
+    'https://api.followupboss.com/v1/peopleRelationships?limit=3', 'get', null, apiKey);
+  say('GET /peopleRelationships -> ' + list.code);
+  if (list.ok && list.body) {
+    say('  top-level keys: ' + Object.keys(list.body).join(', '));
+    var arr = list.body.peoplerelationships || list.body.peopleRelationships ||
+              list.body.relationships || [];
+    if (arr.length) {
+      say('  A RECORD\'S KEYS (this is the answer): ' + Object.keys(arr[0]).join(', '));
+      say('  sample: ' + JSON.stringify(arr[0]).slice(0, 400));
+    } else {
+      say('  no relationships exist yet, so no record to read keys from.');
+    }
+  } else {
+    say('  body: ' + String(list.text).slice(0, 300));
+  }
+
+  if (qaPersonId && qaRelatedId) {
+    ['relatedPersonId', 'relatedId', 'toPersonId', 'personIdTo', 'relatedPerson']
+      .forEach(function (field) {
+        var payload = { personId: qaPersonId, type: 'Referred' };
+        payload[field] = qaRelatedId;
+        var t = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships',
+                               'post', payload, apiKey);
+        say('  POST with "' + field + '" -> ' + t.code + ' ' +
+            (t.ok ? 'ACCEPTED — set RAFFLE_LINK_FIELD to this'
+                  : String(t.text).slice(0, 140)));
+      });
+  } else {
+    say('Pass two [QA TEST] contact ids to probe field names: ' +
+        'raffleInspectFubRelationships(33228, 33241)');
+  }
+  return out.join('\n');
+}
+
 // ---------- Live QA suite ----------
 // Run raffleRunQaSuite() from the editor. It drives the REAL code paths end to
 // end -- the same raffleHandleSubmission_ the web form calls, real sheet writes,
@@ -2083,6 +2200,23 @@ function raffleQaRun_(cleanUp) {
   // the referral's. Reading the entrant from "the first self row" instead picked
   // an entrant who happened not to have a consented referral, so the check asked
   // FUB about the wrong person and failed for the wrong reason.
+  // THE CUSTOM FIELDS. The 2026-09-17 rehearsal alerted that no "Referral Count"
+  // field existed and told Durand to create one; the field was there all along,
+  // called "Referrals Sent", which the label list did not know. So the thing to
+  // assert is not "a field exists" but "this account's field RESOLVES", or the
+  // next rename goes quiet again.
+  var countKey = raffleCustomFieldKey_(RAFFLE_REFERRAL_COUNT_LABELS);
+  check('the referral-count custom field resolves on this account',
+        !!countKey,
+        'no FUB field matched ' + JSON.stringify(RAFFLE_REFERRAL_COUNT_LABELS) +
+        ' — the count will be skipped on every referral');
+  var byKey = raffleCustomFieldKey_(RAFFLE_REFERRED_BY_LABELS);
+  check('the referred-by custom field resolves on this account',
+        !!byKey,
+        'no FUB field matched ' + JSON.stringify(RAFFLE_REFERRED_BY_LABELS));
+  log.push('      custom fields: count -> ' + (countKey || 'NOT FOUND') +
+           ', referred-by -> ' + (byKey || 'NOT FOUND'));
+
   // Ask about EVERY consented pair and require at least one to be linked. The
   // requirement is "linking works", not "the first row happens to be linked":
   // picking one row asked FUB about a pair whose link had legitimately not been
