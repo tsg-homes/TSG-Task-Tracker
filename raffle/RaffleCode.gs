@@ -1912,17 +1912,22 @@ function raffleQaRun_(cleanUp) {
         JSON.stringify(consented));
   var eligibleRows = raffleReadEntries_(true).filter(function (r) {
     return r.status === RAFFLE_STATUS_ELIGIBLE; });
-  check('and only NOW is the referral worth its bonus', eligibleRows.length === 2);
+  // Three eligible rows now: the entrant's own entry, the referral (worth its
+  // bonus at last), and the referred person's OWN entry -- consenting enters
+  // them too, off the same box.
+  check('and only NOW is the referral worth its bonus', eligibleRows.length === 3,
+        'got ' + eligibleRows.length);
   var tix = eligibleRows.reduce(function (n, r) { return n + (Number(r.tickets) || 1); }, 0);
-  check('which is 1 + ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' tickets',
-        tix === 1 + RAFFLE_BONUS_TICKETS_PER_REFERRAL, 'got ' + tix);
+  check('which is 1 + ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' + 1 tickets',
+        tix === 2 + RAFFLE_BONUS_TICKETS_PER_REFERRAL, 'got ' + tix);
   var reConsent = json(raffleHandleSubmission_({
     step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
     referralName: refA.referralName, referralEmail: refA.referralEmail,
     referralPhone: refA.referralPhone, referralRole: refA.referralRole,
     referralTimeframe: refA.referralTimeframe }));
   check('consenting twice changes nothing', reConsent.already === true, JSON.stringify(reConsent));
-  check('still exactly two rows', raffleReadEntries_(true).length === 2);
+  check('still exactly three rows', raffleReadEntries_(true).length === 3,
+        'got ' + raffleReadEntries_(true).length);
 
   // ---- 3b. One BONUS per REFERRED PERSON ---------------------------------
   section('3b. One bonus per referred person');
@@ -1953,9 +1958,10 @@ function raffleQaRun_(cleanUp) {
     return r.status === RAFFLE_STATUS_ELIGIBLE; }).forEach(function (r) {
       people[r.emailKey] = true; });
   var n = Object.keys(people).length;
-  // FIVE, not four: section 3b verified a second entrant to test that a person
-  // already referred cannot be referred again, and verifying now enters them.
-  check('five distinct entrants on the test tab', n === 5, 'got ' + n);
+  // NINE, not four. Four journeys above, each of which enters the entrant AND
+  // the referral who consented, plus the extra entrant section 3b verified to
+  // prove a person already referred cannot be referred again.
+  check('nine distinct entrants on the test tab', n === 9, 'got ' + n);
   var statusOut = raffleStatusPage_(true);
   var statusHtml = String(typeof statusOut.getContent === 'function' ? statusOut.getContent() : statusOut);
   check('status page shows a count', /\b\d+\b/.test(statusHtml), 'count page showed no number');
@@ -1967,12 +1973,14 @@ function raffleQaRun_(cleanUp) {
   check('draw succeeds', draw.ok === true, JSON.stringify(draw));
   if (draw.ok) {
     check('result is flagged as a test', draw.result.test === true);
-    check('drew from all five people', draw.result.totalPeople === 5,
+    check('drew from all nine people', draw.result.totalPeople === 9,
           'got ' + draw.result.totalPeople);
     check('with more tickets than people (the referral bonus applied)',
           draw.result.totalTickets > draw.result.totalPeople,
           draw.result.totalTickets + ' tickets / ' + draw.result.totalPeople + ' people');
-    check('winner is one of the entrants', /QA Tester/.test(draw.result.winner.name), draw.result.winner.name);
+    // Either an entrant or one of the referrals who consented -- both are in it.
+    check('winner is one of the QA people', /^QA /.test(draw.result.winner.name),
+          draw.result.winner.name);
     check('the ticket count is reported', draw.result.totalTickets > 0,
           String(draw.result.totalTickets));
     check('two backups named', draw.result.backups.length === 2);
@@ -2010,9 +2018,16 @@ function raffleQaRun_(cleanUp) {
     phone: '(215) 555-8106', consent: 'Yes' }, 'csv', '(215) 555-9106');
   check('an entry with a formula in the name is accepted (it is only text)', fRes.ok === true,
         JSON.stringify(fRes));
+  // Find the row by NAME, not getLastRow(): a journey now ends with the
+  // referral's own entry, so the last row belongs to somebody else.
   var fSheet = raffleSheet_(true);
-  var fRow = fSheet.getLastRow();
-  var nameCell = fSheet.getRange(fRow, 2);
+  var fRow = 0;
+  var fNames = fSheet.getRange(1, 2, fSheet.getLastRow(), 1).getValues();
+  for (var fi = fNames.length - 1; fi >= 0; fi--) {
+    if (String(fNames[fi][0]).indexOf('IMPORTXML') !== -1) { fRow = fi + 1; break; }
+  }
+  check('the formula-name row is findable', fRow > 0, 'no row carried the formula name');
+  var nameCell = fSheet.getRange(fRow || fSheet.getLastRow(), 2);
   check('the formula cell holds NO formula',
         String(nameCell.getFormula() || '') === '',
         'LIVE FORMULA IN THE SHEET: ' + nameCell.getFormula());

@@ -231,25 +231,32 @@ section('T4  Ballot stuffing');
   // the raffle exists to produce. What must not happen is a second FREE entry: one
   // self-entry ticket per person, however many times they come back.
   const s = makeSandbox();
-  const selfCount = () => s.__data('Entries')
-    .filter(r => String(r[12] || '') === '').length;   // no Referral Name = self entry
+  // Count ONE person's free entries. A referral who consents is entered too, so
+  // a bare count of self rows would include them and say nothing about stuffing.
+  const selfCount = (sb, email) => sb.__data('Entries')
+    .filter(r => String(r[12] || '') === '' &&               // no Referral Name = self entry
+                 String(r[2] || '').toLowerCase() === email).length;
   enterFull(s, entry({ fullName: 'Dana Reid', email: 'dana@mail-test.co',
                        phone: '(215) 555-8123' }), DURING);
-  eq('one free entry after the first journey', selfCount(), 1);
+  eq('one free entry after the first journey', selfCount(s, 'dana@mail-test.co'), 1);
 
   // Same email, different phone.
   verifySession(s, entry({ fullName: 'Dana Reid', email: 'dana@mail-test.co',
                            phone: '(267) 555-9999' }), DURING);
-  eq('same email + new phone mints no second free entry', selfCount(), 1);
+  eq('same email + new phone mints no second free entry', selfCount(s, 'dana@mail-test.co'), 1);
   // Same phone, different email.
   verifySession(s, entry({ fullName: 'Dana Reid', email: 'dana2@mail-test.co',
                            phone: '(215) 555-8123' }), DURING);
-  eq('same phone + new email mints no second free entry', selfCount(), 1);
+  eq('same phone + new email mints no second free entry',
+     selfCount(s, 'dana@mail-test.co') + selfCount(s, 'dana2@mail-test.co'), 1);
   // Case and formatting games.
   verifySession(s, entry({ fullName: 'dana reid', email: 'DANA@Mail-Test.CO',
                            phone: '2155558123' }), DURING);
-  eq('case and formatting games mint no second free entry', selfCount(), 1);
-  eq('so still exactly two rows after four attempts', s.__data('Entries').length, 2);
+  eq('case and formatting games mint no second free entry',
+     selfCount(s, 'dana@mail-test.co') + selfCount(s, 'dana2@mail-test.co'), 1);
+  // Three rows, not five: Dana's own entry, the referral, and the referral's own
+  // entry from consenting. Four repeat attempts added nothing.
+  eq('so still exactly three rows after four attempts', s.__data('Entries').length, 3);
 
   // Gmail's dot and +tag aliases all deliver to ONE inbox, so they are one
   // person for raffle purposes. This is the cheapest stuffing attack there is:
@@ -259,7 +266,9 @@ section('T4  Ballot stuffing');
   // whether an alias can mint a SECOND FREE ENTRY, which is the thing worth
   // stealing now.
   const g = makeSandbox();
-  const gSelf = () => g.__data('Entries').filter(r => String(r[12] || '') === '').length;
+  // Every row that is NOT the referral's is Sam's, whichever alias wrote it.
+  const gSelf = () => g.__data('Entries').filter(r => String(r[12] || '') === '' &&
+    String(r[2] || '').indexOf('gmail.com') !== -1).length;
   enterFull(g, entry({ fullName: 'Sam Vance', email: 'sam.vance@gmail.com',
                        phone: '(215) 555-8401' }), DURING);
   eq('one free entry to start', gSelf(), 1);
@@ -275,7 +284,8 @@ section('T4  Ballot stuffing');
   const o = makeSandbox();
   enterFull(o, entry({ fullName: 'Pat Lee', email: 'pat.lee@somecorp.co',
                        phone: '(215) 555-8501' }), DURING);
-  const oSelf = () => o.__data('Entries').filter(r => String(r[12] || '') === '').length;
+  const oSelf = () => o.__data('Entries').filter(r => String(r[12] || '') === '' &&
+    String(r[2] || '').indexOf('somecorp.co') !== -1).length;
   verifySession(o, entry({ fullName: 'Pat Lee', email: 'patlee@somecorp.co',
                            phone: '(215) 555-8502' }), DURING);
   eq('a dot is NOT stripped on a non-Gmail domain — two distinct people, two entries',
@@ -523,13 +533,14 @@ const stage = (s, who, ref, when) => {
   check('exactly one eligible REFERRAL row for that person', eligibleRefs.length === 1,
     'got ' + eligibleRefs.length);
 
-  // And the draw must agree: two people with their own entries, and only ONE of
-  // them holding the referral bonus.
+  // And the draw must agree. Three people: both entrants, plus Robin, who was
+  // entered by consenting to A's referral. Eight tickets: A's own 1 plus the 5
+  // bonus, Robin's 1, B's 1 -- and nothing at all for B's stolen claim.
   const drawn = at(AFTER_CLOSE, () => s.raffleDrawWinner_(false, true));
-  check('the draw sees both people', drawn.ok && drawn.result.totalPeople === 2,
+  check('the draw sees all three people', drawn.ok && drawn.result.totalPeople === 3,
     JSON.stringify(drawn && drawn.result && drawn.result.totalPeople));
   check('and the bonus was awarded exactly once',
-    drawn.ok && drawn.result.totalTickets === 2 + 5,
+    drawn.ok && drawn.result.totalTickets === 3 + 5,
     JSON.stringify(drawn && drawn.result && drawn.result.totalTickets));
 }
 
@@ -688,9 +699,11 @@ section('T9  Rehearsal bleed: can a TEST run touch a real person?');
     referral: { referralName: 'QA Ref ' + n, referralEmail: 'qaref' + n + '@mail-test.co',
                 referralPhone: '(215) 555-97' + (10 + i) }
   }));
-  check('test entries went to the test tab', s.__data('Test Entries').length === 6,
+  // Three journeys, three rows each: the entrant's own entry, the referral, and
+  // the referral's own entry from consenting.
+  check('test entries went to the test tab', s.__data('Test Entries').length === 9,
     'got ' + s.__data('Test Entries').length);
-  eq('three own-entry rows on the test tab', selfRows(s, 'Test Entries').length, 3);
+  eq('six own-entry rows on the test tab', selfRows(s, 'Test Entries').length, 6);
   eq('three referral rows on the test tab', refRows(s, 'Test Entries').length, 3);
   eq('the live tab is untouched', s.__data('Entries').length, 0);
 
@@ -727,10 +740,16 @@ section('T9  Rehearsal bleed: can a TEST run touch a real person?');
                   referralPhone: '(215) 555-98' + (10 + i) } });
   }
   const notes = s.__sent.filter(m => /(entries|people) in the Block Party raffle/.test(m.subject));
-  check('a rehearsal milestone email is labelled', notes.length === 1 && /QA TEST/.test(notes[0].subject),
-    notes.length + ' | ' + (notes[0] || {}).subject);
-  check('and goes only to the QA address',
-    !!notes.length && String(notes[0].to).indexOf('ryan@') === -1, (notes[0] || {}).to);
+  // Twenty people (ten entrants and their ten confirmed referrals), so two
+  // milestones are crossed. Every one of them must be labelled and collapsed.
+  check('rehearsal milestone emails were produced (setup)', notes.length === 2,
+    'got ' + notes.length + ' | ' + notes.map(m => m.subject).join(' / '));
+  check('every rehearsal milestone email is labelled',
+    notes.length > 0 && notes.every(m => /QA TEST/.test(m.subject)),
+    notes.map(m => m.subject).join(' / '));
+  check('and they go only to the QA address',
+    notes.length > 0 && notes.every(m => String(m.to).indexOf('ryan@') === -1),
+    notes.map(m => m.to).join(' / '));
 }
 
 // ---------------------------------------------------------------------------

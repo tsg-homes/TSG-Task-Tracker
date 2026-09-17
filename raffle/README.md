@@ -115,6 +115,15 @@ The sheet carries **one row per thing worth tickets**:
 | Own entry | the 6-digit code is confirmed | `eligible` at once | 1 |
 | Referral | the entrant submits a referral | `pending-consent` | 0 |
 | ″ | that person confirms | `eligible` | 5 |
+| Their own entry | that same confirmation | `eligible` at once | 1 |
+
+**Confirming enters the referred person too.** That is deliberate, and it is the
+only thing that gives a cold referral a reason of their own to click: confirming
+used to buy them nothing but somebody else's five entries. The consent box carries
+the 18+/US-resident attestation and agreement to the Official Rules whenever the
+drawing is still open, which is what makes entering them legitimate — after 6:15
+the box asks for neither and nobody is entered. The invite subject line leads with
+it, and so does the 5:00 PM reminder.
 
 The draw expands every eligible row into that many tickets, shuffles the tickets
 and picks one, then de-dupes by person for the two backups. A referral that never

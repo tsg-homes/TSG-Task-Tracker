@@ -704,8 +704,11 @@ function raffleSendReferralInvite_(d, test) {
   raffleCheckCodeSendQuota_(raffleEmailKey_(found.entry.referralEmail));
 
   var url = raffleConsentUrl_(token);
+  // Lead with what THEY get. "X referred you" is the referrer's news; a referral
+  // who has no reason of their own to open this is a referral who does not, and
+  // an unconfirmed referral is worth nothing to anybody.
   var subject = (test ? QA_TEST_PREFIX : '') + entrant.name +
-    ' referred you to The Stawasz Group';
+    ' referred you — confirm and you are in the $300 drawing too';
 
   MailApp.sendEmail({
     to: found.entry.referralEmail,
@@ -779,6 +782,13 @@ function raffleInviteHtml_(entrant, entry, url, test) {
     e(raffleRoleVerb_(entry.referralRole)) + ' in the next year.</p>',
     '<p style="margin:0 0 18px;">Here is what they gave us. If it is right, confirm below. ',
     'If something is wrong, you can fix it on the same page.</p>',
+    '<div style="background:#FFF8E6;border:1px solid #F0DFAE;border-radius:8px;',
+    'padding:16px 18px;margin:0 0 20px;font-size:15px;color:#6B5720;line-height:1.5;">',
+    '<b>Confirming enters you in the drawing too.</b> $300 toward any Ticketmaster ',
+    'purchase, drawn 6:15 PM Saturday. One entry for you, and ' +
+      RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' extra for ' +
+      e(String(entrant.name).split(' ')[0]) + '. No purchase necessary, and you do not ',
+    'need to be at the party to win.</div>',
     '<div style="background:#f4f6f6;border-radius:8px;padding:16px;margin:0 0 20px;font-size:15px;">',
     '<div><strong>Name</strong><br>' + e(entry.referralName) + '</div>',
     '<div style="margin-top:10px;"><strong>Email</strong><br>' + e(entry.referralEmail) + '</div>',
@@ -796,10 +806,9 @@ function raffleInviteHtml_(entrant, entry, url, test) {
     'Confirming also gives us your permission to get in touch. Nothing happens until you do — ',
     'and if you would rather we did not, simply ignore this email and we will not contact you.</p>',
     '<p style="margin:0 0 14px;font-size:14px;color:#55696a;">',
-    'One more thing: ' + e(String(entrant.name).split(' ')[0]) + ' is entered in our ',
-    e(RAFFLE_PRIZE_SHORT) + ' drawing, and confirming gives them ' +
-      RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' extra entries. ',
-    'No pressure — but that is why they are copied on this.</p>',
+    e(String(entrant.name).split(' ')[0]) + ' is copied on this, which is why: ',
+    'confirming is worth ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' extra entries to them ',
+    'as well as one to you. No pressure either way.</p>',
     '<p style="margin:0 0 4px;font-size:14px;color:#55696a;">If the button does not work, ',
     'paste this into your browser:<br><span style="word-break:break-all;">' + e(url) + '</span></p>',
     '</div>',
@@ -827,12 +836,13 @@ function raffleInvitePlain_(entrant, entry, url) {
     'Confirm (or correct) your details here:',
     url,
     '',
+    'CONFIRMING ENTERS YOU IN THE DRAWING TOO: ' + RAFFLE_PRIZE_SHORT + ', drawn 6:15 PM',
+    'Saturday. One entry for you, and ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' extra for ' +
+      String(entrant.name).split(' ')[0] + '. No purchase necessary,',
+    'and you do not need to be at the party to win.',
+    '',
     'Confirming also gives us your permission to get in touch. Nothing happens until',
     'you do -- if you would rather we did not, just ignore this email.',
-    '',
-    String(entrant.name).split(' ')[0] + ' is entered in our ' + RAFFLE_PRIZE_SHORT +
-      ' drawing, and confirming gives them ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
-      ' extra entries.',
     '',
     'The Stawasz Group - Keller Williams Empower',
     '728 S Broad St, Philadelphia, PA 19146 - (215) 760-6291 - info@tsg.homes'
@@ -879,10 +889,23 @@ function raffleConsentPage_(e) {
     return '<option value="' + esc(t.name) + '"' + sel + '>' + esc(t.name) + '</option>';
   }).join('');
 
+  // Whether confirming also ENTERS them is a question of the clock, and the page
+  // must not promise an entry it cannot give: after 6:15 the consent page still
+  // works (we want the contact record) but there is no drawing left to join.
+  var stillOpen = !!found.test || raffleEntryState_() === 'open';
+  var rulesUrl = '';
+  try { rulesUrl = ScriptApp.getService().getUrl() + '?form=raffle'; } catch (urlErr) { rulesUrl = ''; }
+
   var body = [
     '<h2 style="margin:0 0 6px">' + esc(entry.name) + ' referred you to us</h2>',
     '<p style="color:#55696a;margin:0 0 20px">Check that this is right, fix anything that ',
     'is not, and confirm at the bottom. It takes about twenty seconds.</p>',
+    stillOpen ? '<div style="background:#FFF8E6;border:1px solid #F0DFAE;border-radius:8px;' +
+      'padding:14px 16px;margin:0 0 18px;font-size:14px;color:#6B5720;line-height:1.5;">' +
+      '<b>Confirming enters you in the drawing too.</b> One entry for you, and ' +
+      RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' extra for ' +
+      esc(String(entry.name).split(' ')[0]) + ' for introducing us. $300 toward any ' +
+      'Ticketmaster purchase, drawn 6:15 PM Saturday. No purchase necessary.</div>' : '',
     '<form id="f" onsubmit="return false">',
     '<label>Full name<input id="rName" value="' + esc(entry.referralName) + '"></label>',
     // Shown, but not editable: see the note in raffleConsentSubmit_. `readonly`
@@ -905,12 +928,21 @@ function raffleConsentPage_(e) {
     '<label>When are you thinking of moving?<select id="rTimeframe">',
     '<option value="">Select…</option>' + opts,
     '</select></label>',
+    // ONE box, covering both things, because confirming now does two things: it
+    // gives consent AND it enters them. A box that only mentioned consent while
+    // the server entered them in a prize drawing would be entering somebody who
+    // never accepted the Official Rules.
     '<label class="check"><input type="checkbox" id="consent">',
     '<span>I confirm these details are mine, and I give The Stawasz Group ',
     '(Keller Williams Empower) permission to contact me by phone, text and email — ',
     'including autodialed or prerecorded calls and texts — about real estate services. ',
     'Consent is not a condition of any purchase. Message and data rates may apply. ',
-    'I can opt out at any time by replying STOP or emailing info@tsg.homes.</span></label>',
+    'I can opt out at any time by replying STOP or emailing info@tsg.homes.',
+    stillOpen ? ' I am 18 or over and a legal U.S. resident, and I have read and agree to the ' +
+      (rulesUrl ? '<a href="' + esc(rulesUrl) + '" target="_blank" ' +
+                  'style="color:#15464A">Official Rules</a>' : 'Official Rules') +
+      ' of the prize drawing.' : '',
+    '</span></label>',
     '<div id="err" class="err"></div>',
     '<button id="go" class="primary">Confirm my details</button>',
     '<button id="no" class="ghost">No thanks — do not contact me</button>',
@@ -1066,6 +1098,23 @@ function raffleConsentSubmit_(d) {
       sh.getRange(found.row, RAFFLE_COL['Referral FUB ID'] + 1).setValue(newPersonId);
       entry.referralFubId = newPersonId;
     }
+    // AND ENTER THEM, here, on the strength of the same box they just ticked.
+    //
+    // This is the answer to the one thing that can sink the whole design: a
+    // referral has no reason of their own to click. Confirming used to buy them
+    // nothing but somebody else's five entries, and then an email inviting them
+    // to go and refer a third person. Now the box says "confirming enters you in
+    // the drawing too" and it is true the moment they press it -- no second
+    // click, no form, one ticket.
+    //
+    // The consent box carries the 18+/US-resident attestation and agreement to
+    // the Official Rules whenever the drawing is still open (see
+    // raffleConsentPage_), which is what makes entering them legitimate; when it
+    // is closed the box asks for neither, and nobody is entered.
+    if (!closed) {
+      raffleEnsureSelfEntry_(name, email, phone, entry.referralFubId || '', found.test);
+    }
+
     raffleNotifyEntrantEntered_(entry, name, found.test, closed);
     // A row only just became a real entry, so this is the moment the count moved.
     if (!closed) raffleMaybeNotifyMilestone_(found.test);
@@ -2320,12 +2369,13 @@ function raffleChainStart_(e) {
     viaChain: true
   }), RAFFLE_VERIFIED_TTL_SECONDS);
 
-  // And enter them, here, before the form is served. A chain entrant is a
-  // verified entrant -- they proved their inbox by clicking a link only it
-  // received -- so they get the same one ticket everybody else gets for
-  // verifying, whether or not they go on to refer anybody. Entries are only
-  // written while the raffle is open, which raffleEnsureSelfEntry_ does not
-  // check, so the gate is here.
+  // A BACKSTOP, not the entry point. They were entered when they consented
+  // (raffleConsentSubmit_), which is where the box they ticked lives. This
+  // catches the one case that misses: a row that reached 'eligible' before
+  // consent started entering people, or a consent whose self-entry write failed.
+  // raffleEnsureSelfEntry_ is idempotent, so on the normal path it does nothing.
+  // Entries are only written while the raffle is open, which it does not check,
+  // so the gate is here.
   if (raffleEntryState_() === 'open' || found.test) {
     raffleEnsureSelfEntry_(r.referralName, r.referralEmail, r.referralPhone,
                            r.referralFubId || '', !!found.test);
@@ -2643,17 +2693,17 @@ function raffleReminderHtml_(r, url, minsLeft, test) {
     '<div style="background:#15464A;color:#fff;border-radius:10px 10px 0 0;padding:24px;">',
     '<div style="font-size:12px;letter-spacing:2px;opacity:.8;">THE STAWASZ GROUP</div>',
     '<div style="font-size:21px;font-weight:700;margin-top:6px;">',
-    'One click, and ' + e(String(r.name).split(' ')[0]) + ' gets ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
-      ' more entries</div>',
+    'One click and you are in the $300 drawing</div>',
     '</div>',
 
     '<div style="background:#fff;border-radius:0 0 10px 10px;padding:24px;">',
     '<p style="margin:0 0 14px;">Hi ' + e(first) + ',</p>',
     '<p style="margin:0 0 14px;">A few days ago <strong>' + e(r.name) + '</strong> referred ',
     'you to us, and we asked you to confirm your details. We have not heard back ',
-    '&mdash; which is completely fine, but it does mean the ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' bonus ',
-    'entries you are worth to them in our ' + e(RAFFLE_PRIZE_SHORT) + ' drawing have not ',
-    'been counted.</p>',
+    '&mdash; which is completely fine. It does mean you are not in our ' +
+      e(RAFFLE_PRIZE_SHORT) + ' drawing, though, and neither are the ' +
+      RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' bonus entries you are worth to them. ',
+    'Confirming takes about twenty seconds and enters you both.</p>',
 
     '<div style="background:#FFF8E6;border:1px solid #F0DFAE;border-radius:8px;',
     'padding:16px;margin:0 0 20px;">',
@@ -2691,10 +2741,10 @@ function raffleReminderPlain_(r, url, minsLeft) {
     'Hi ' + first + ',',
     '',
     'A few days ago ' + r.name + ' referred you to us and we asked you to confirm your',
-    'details. We have not heard back - which is completely fine, but it does mean the ' +
-      RAFFLE_BONUS_TICKETS_PER_REFERRAL,
-    'bonus entries you are worth to them in our ' + RAFFLE_PRIZE_SHORT + ' drawing have',
-    'not been counted.',
+    'details. We have not heard back - which is completely fine. It does mean you are',
+    'not in our ' + RAFFLE_PRIZE_SHORT + ' drawing, though, and neither are the ' +
+      RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' bonus entries',
+    'you are worth to them. Confirming takes about twenty seconds and enters you both.',
     '',
     'The winner is drawn at 6:15 PM this Saturday - ' + raffleTimeLeftPhrase_(minsLeft) +
       ' from now.',
