@@ -1926,16 +1926,32 @@ function raffleInspectFubRelationships(qaPersonId, qaRelatedId) {
   }
 
   if (qaPersonId && qaRelatedId) {
-    ['relatedPersonId', 'relatedId', 'toPersonId', 'personIdTo', 'relatedPerson']
-      .forEach(function (field) {
-        var payload = { personId: qaPersonId, type: 'Referred' };
-        payload[field] = qaRelatedId;
-        var t = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships',
-                               'post', payload, apiKey);
-        say('  POST with "' + field + '" -> ' + t.code + ' ' +
-            (t.ok ? 'ACCEPTED — set RAFFLE_LINK_FIELD to this'
-                  : String(t.text).slice(0, 140)));
-      });
+    // The record FUB returns has no second person id: a relationship is an
+    // inline description of the other party. So the one shape worth testing is
+    // that shape. The id-based candidates are kept as a control -- they should
+    // all still be rejected, and if one is ever accepted the model has changed.
+    var other = raffleFubCall_('https://api.followupboss.com/v1/people/' + qaRelatedId,
+                               'get', null, apiKey);
+    var inline = {
+      personId: qaPersonId, type: 'Referred',
+      firstName: (other.body && other.body.firstName) || 'QA',
+      lastName: (other.body && other.body.lastName) || 'Probe',
+      emails: [], phones: []
+    };
+    var t0 = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships',
+                            'post', inline, apiKey);
+    say('  POST inline {personId, type, firstName, lastName, emails, phones} -> ' + t0.code +
+        ' ' + (t0.ok ? 'ACCEPTED — this is the shape raffleLinkPeople_ now sends'
+                     : String(t0.text).slice(0, 140)));
+    ['relatedPersonId', 'relatedId', 'toPersonId'].forEach(function (field) {
+      var payload = { personId: qaPersonId, type: 'Referred' };
+      payload[field] = qaRelatedId;
+      var t = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships',
+                             'post', payload, apiKey);
+      say('  control: POST with "' + field + '" -> ' + t.code + ' ' +
+          (t.ok ? 'ACCEPTED (unexpected — the model has changed)'
+                : String(t.text).slice(0, 100)));
+    });
   } else {
     say('No QA pair to probe with, so the field-name test was skipped. Run ' +
         'raffleRunQaSuiteAndKeepData() and then this again.');

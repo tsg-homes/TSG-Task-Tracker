@@ -160,7 +160,11 @@ function raffleFubCustomFields_() {
   }
   var apiKey = raffleFubKey_();
   if (!apiKey) return {};
-  var res = raffleFubCall_('https://api.followupboss.com/v1/customFields', 'get', null, apiKey);
+  // FUB pages this at TEN by default, with a _metadata block. This account has
+  // twenty-one fields, and "Referrals Sent" and "Referred By" were both on page
+  // two -- which is why both reported NOT FOUND on an account that has them.
+  var res = raffleFubCall_('https://api.followupboss.com/v1/customFields?limit=100',
+                           'get', null, apiKey);
   if (!res.ok) {
     Logger.log('raffleFubCustomFields_: fetch failed ' + res.code + ': ' + String(res.text).slice(0, 200));
     return {};
@@ -537,8 +541,11 @@ function raffleReferralToFub_(x, test) {
 
     // -- link them, both directions, through FUB's own relationships feature.
     if (entrantId && referralId) {
-      raffleLinkPeople_(entrantId, referralId, 'Referred', apiKey);
-      raffleLinkPeople_(referralId, entrantId, 'Referred by', apiKey);
+      raffleLinkPeople_(entrantId,
+        { name: x.refName, email: x.refEmail, phone: x.refPhone }, 'Referred', apiKey);
+      raffleLinkPeople_(referralId,
+        { name: x.entrant.name, email: x.entrant.email, phone: x.entrant.phone },
+        'Referred by', apiKey);
     }
 
     // -- the entrant's referral count, if the field exists.
@@ -572,29 +579,40 @@ function raffleReferralToFub_(x, test) {
 
 // 2026-09-17: EVERY link was failing, silently, and had been from the start:
 //   400 {"errorMessage":"Invalid fields in the request body: relatedPersonId."}
-// So the entrant/referral relationship the deck advertises as "linked both ways"
-// has never once been written. It failed quietly because this logged and
+// The entrant/referral relationship the deck advertises as "linked both ways"
+// had never once been written. It failed quietly because this logged and
 // returned false and nobody read the log, and because the QA suite asserted
-// nothing about FUB at all -- it reported 102 of 102 green over the top of it.
+// nothing about FUB at all.
 //
-// The field name is NOT guessed here. FUB's own docs domain is unreachable from
-// the build environment, so raffleInspectFubRelationships() asks the API which
-// keys it accepts and prints the answer; RAFFLE_LINK_FIELD is set from that.
-// Until it is confirmed, this function still tries, still logs, and now ALERTS
-// once per execution so a silent failure cannot repeat.
-var RAFFLE_LINK_FIELD = 'relatedPersonId';   // pending raffleInspectFubRelationships()
+// WHAT FUB ACTUALLY STORES. raffleInspectFubRelationships asked the API for a
+// real record, and it came back as
+//   {personId: 33147, name, firstName, lastName, type, emails, phones, ...}
+// A FUB "relationship" is not a link between two contacts. It is a sub-record
+// ON one person that describes the other party inline, by name and contact
+// details -- there is no second person id in it at all, which is why every
+// candidate id field was rejected. So this sends the related person's DETAILS,
+// and "both ways" means one such record on each contact.
+//
+// Still alerts once per execution on failure, so a silent regression cannot
+// repeat.
 var raffleLinkAlerted_ = false;
 
-function raffleLinkPeople_(personId, relatedId, type, apiKey) {
-  var payload = { personId: personId, type: type };
-  payload[RAFFLE_LINK_FIELD] = relatedId;
+function raffleLinkPeople_(personId, related, type, apiKey) {
+  related = related || {};
+  var parts = splitName(String(related.name || ''));
+  var payload = {
+    personId: personId,
+    type: type,
+    firstName: parts.first || '',
+    lastName: parts.last || '',
+    emails: related.email ? [{ value: related.email, type: 'home' }] : [],
+    phones: related.phone ? [{ value: related.phone, type: 'mobile' }] : []
+  };
   var res = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships', 'post',
                            payload, apiKey);
   if (!res.ok) {
-    Logger.log('raffleLinkPeople_: ' + personId + ' -> ' + relatedId + ' (' + type + ') ' +
+    Logger.log('raffleLinkPeople_: ' + personId + ' -> ' + related.name + ' (' + type + ') ' +
       'returned ' + res.code + ': ' + String(res.text).slice(0, 200));
-    // One alert per execution, not one per pair: a broken field name breaks
-    // every link, and twelve identical emails would get filtered and ignored.
     if (!raffleLinkAlerted_) {
       raffleLinkAlerted_ = true;
       try {
@@ -604,9 +622,8 @@ function raffleLinkPeople_(personId, relatedId, type, apiKey) {
           'the notes are fine; only the relationship is missing, and the sheet has ' +
           'who referred whom either way.\n\n' +
           'FUB said (' + res.code + '): ' + String(res.text).slice(0, 300) + '\n\n' +
-          'Field being sent: "' + RAFFLE_LINK_FIELD + '". Run ' +
-          'raffleInspectFubRelationships() from the editor to have FUB name the ' +
-          'field it actually wants, then set RAFFLE_LINK_FIELD to it.');
+          'Run raffleInspectFubRelationships() from the editor to see the shape ' +
+          'FUB accepts.');
       } catch (alertErr) { Logger.log('link alert failed: ' + alertErr); }
     }
   }
@@ -638,7 +655,7 @@ function raffleLinkPeople_(personId, relatedId, type, apiKey) {
 // this at a real person's id does nothing.
 function raffleDeleteFubContactsById_(ids) {
   var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
-  var deleted = 0, failed = 0, skipped = 0;
+  var deleted = 0, failed = 0, skipped = 0, missing = 0;
   var seen = {};
   (ids || []).forEach(function (id) {
     if (!id || seen[id]) return;
@@ -646,7 +663,9 @@ function raffleDeleteFubContactsById_(ids) {
     try {
       var who = raffleFubCall_('https://api.followupboss.com/v1/people/' + id,
                                'get', null, apiKey);
-      if (!who.ok || !who.body) { skipped++; return; }
+      // Already gone (a previous run deleted it) is not the same as refused by
+      // the gate, and the two were being reported under one number.
+      if (!who.ok || !who.body) { missing++; return; }
       var tags = who.body.tags || [];
       var name = String(who.body.firstName || '') + ' ' + String(who.body.lastName || '');
       var tagged = tags.some(function (t) { return String(t) === QA_TEST_TAG; });
@@ -676,9 +695,11 @@ function raffleDeleteFubContactsById_(ids) {
       Logger.log('raffleDeleteFubContactsById_ threw for ' + id + ': ' + err);
     }
   });
-  var summary = deleted + ' deleted, ' + failed + ' failed, ' + skipped + ' skipped';
+  var summary = deleted + ' deleted, ' + failed + ' failed, ' + skipped +
+                ' refused by the gate, ' + missing + ' already gone';
   Logger.log('raffleDeleteFubContactsById_: ' + summary);
-  return { deleted: deleted, failed: failed, skipped: skipped, summary: summary };
+  return { deleted: deleted, failed: failed, skipped: skipped, missing: missing,
+           summary: summary };
 }
 
 
@@ -1490,8 +1511,10 @@ function raffleUpdateReferralInFub_(entry, edited, test) {
     // The relationship and the referrer's count belong to a CONFIRMED referral,
     // so they are established here rather than when the name was typed in.
     if (entry.fubId) {
-      raffleLinkPeople_(entry.fubId, personId, 'Referred', apiKey);
-      raffleLinkPeople_(personId, entry.fubId, 'Referred by', apiKey);
+      raffleLinkPeople_(entry.fubId,
+        { name: edited.name, email: edited.email, phone: edited.phone }, 'Referred', apiKey);
+      raffleLinkPeople_(personId,
+        { name: entry.name, email: entry.email, phone: entry.phone }, 'Referred by', apiKey);
       raffleBumpReferralCount_(entry.fubId, apiKey);
       raffleFubCall_('https://api.followupboss.com/v1/notes', 'post', {
         personId: entry.fubId,

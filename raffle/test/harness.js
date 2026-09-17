@@ -51,8 +51,14 @@ function makeSandbox(opts) {
   const notes = [];
   const deleted = [];
   const created = [];
-  const RELATIONSHIP_RELATED_KEY = opts.relationshipField || 'relatedPersonId';
-  const RELATIONSHIP_FIELDS = ['personId', 'type', RELATIONSHIP_RELATED_KEY];
+  // Relationships, modelled the way FUB actually stores them (confirmed against
+  // a real record on 2026-09-17): a sub-record ON one person describing the other
+  // party inline. There is no second person id, and FUB rejects one with
+  // "Invalid fields in the request body". opts.relationshipField, if set, is
+  // an EXTRA accepted key, so a test can reproduce an id-based model.
+  const RELATIONSHIP_FIELDS = ['personId', 'type', 'firstName', 'lastName', 'name',
+                               'emails', 'phones', 'addresses']
+    .concat(opts.relationshipField ? [opts.relationshipField] : []);
 
   // Multi-tab fake: the whole point of the test/live split is that they are
   // different sheets, so the fake has to model that rather than share one array.
@@ -283,9 +289,7 @@ function makeSandbox(opts) {
               return { getResponseCode: () => 400, getContentText: () => JSON.stringify({
                 errorMessage: 'Invalid fields in the request body: ' + bad.join(', ') + '.' }) };
             }
-            const rel = { id: relationships.length + 1, personId: body.personId,
-                          type: body.type };
-            rel[RELATIONSHIP_RELATED_KEY] = body[RELATIONSHIP_RELATED_KEY];
+            const rel = Object.assign({ id: relationships.length + 1 }, body);
             relationships.push(rel);
             return json(rel);
           }
