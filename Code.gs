@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-17.1';
+const TSG_CODE_VERSION = '2026-09-17.2';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -2242,26 +2242,36 @@ function tsgMeetingSlots_(guestEmail, startStr, endStr, minutes) {
     catch (err) { Logger.log('[meetingSlots] guest calendar unreadable for ' + guestEmail + ': ' + err.message); guestOk = false; }
   }
   var notBefore = Date.now() + 3600000;
-  var slots = [];
   function pad(n) { return (n < 10 ? '0' : '') + n; }
-  for (var d = startIso; d <= endIso && slots.length < 10; d = tsgAddDays_(d, 1)) {
-    var dow = new Date(d + 'T12:00:00').getDay();
-    if (dow === 0 || dow === 6) continue;
-    var perDay = 0;
-    for (var hm = 7 * 60 + 30; hm + dur <= 16 * 60 && perDay < 2; hm += 30) {
-      if (hm < 13 * 60 && hm + dur > 12 * 60) continue; // lunch
-      var sDate = new Date(d + 'T' + pad(Math.floor(hm / 60)) + ':' + pad(hm % 60) + ':00');
-      var sMs = sDate.getTime(), eMs = sMs + dur * 60000;
-      if (sMs < notBefore) continue;
-      if (busy.some(function(b) { return b[0] < eMs && b[1] > sMs; })) continue;
-      slots.push({ startISO: sDate.toISOString(), endISO: new Date(eMs).toISOString(),
-        dateLabel: Utilities.formatDate(sDate, tz, 'EEE, MMM d'),
-        timeLabel: Utilities.formatDate(sDate, tz, 'h:mm a') + '–' + Utilities.formatDate(new Date(eMs), tz, 'h:mm a') });
-      perDay++;
+  // Preferred window first (2026-09-17, per Durand: "default the meeting time search to 9-2
+  // mon-thur, show outside that only if there are no matches in that window"), then the wider
+  // work window (07:30-16:00, Mon-Fri) only when the preferred one has nothing.
+  function scan(win) {
+    var out = [];
+    for (var d = startIso; d <= endIso && out.length < 10; d = tsgAddDays_(d, 1)) {
+      var dow = new Date(d + 'T12:00:00').getDay();
+      if (win.days.indexOf(dow) === -1) continue;
+      var perDay = 0;
+      for (var hm = win.from; hm + dur <= win.to && perDay < 2; hm += 30) {
+        if (hm < 13 * 60 && hm + dur > 12 * 60) continue; // lunch
+        var sDate = new Date(d + 'T' + pad(Math.floor(hm / 60)) + ':' + pad(hm % 60) + ':00');
+        var sMs = sDate.getTime(), eMs = sMs + dur * 60000;
+        if (sMs < notBefore) continue;
+        if (busy.some(function(b) { return b[0] < eMs && b[1] > sMs; })) continue;
+        out.push({ startISO: sDate.toISOString(), endISO: new Date(eMs).toISOString(),
+          dateLabel: Utilities.formatDate(sDate, tz, 'EEE, MMM d'),
+          timeLabel: Utilities.formatDate(sDate, tz, 'h:mm a') + '–' + Utilities.formatDate(new Date(eMs), tz, 'h:mm a') });
+        perDay++;
+      }
     }
+    return out;
   }
-  return { ok: true, minutes: dur, guestEmail: guestEmail, guestCalendar: guestOk, start: startIso, end: endIso, slots: slots };
+  var slots = scan(TSG_MEETING_WINDOW_PREFERRED), window = 'preferred';
+  if (!slots.length) { slots = scan(TSG_MEETING_WINDOW_FALLBACK); window = 'fallback'; }
+  return { ok: true, minutes: dur, guestEmail: guestEmail, guestCalendar: guestOk, start: startIso, end: endIso, window: window, slots: slots };
 }
+var TSG_MEETING_WINDOW_PREFERRED = { days: [1, 2, 3, 4], from: 9 * 60, to: 14 * 60 };          // Mon-Thu 9:00-14:00
+var TSG_MEETING_WINDOW_FALLBACK = { days: [1, 2, 3, 4, 5], from: 7 * 60 + 30, to: 16 * 60 };   // Mon-Fri 07:30-16:00
 
 // Send directions to the phone (2026-09-17, per Durand: "a send to phone button for
 // directions"): a Google Maps directions link from the home base to the task's location,

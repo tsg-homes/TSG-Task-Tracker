@@ -72,7 +72,7 @@ const dom = new JSDOM(html, {
       if (u.includes('api=meetings')) { window.__meetingsFetchUrls.push(u); return { ok: true, status: 200, json: async () => ({ events: window.__pickerEvents || [], bestGuessId: null }) }; }
       if (u.includes('api=geocode')) return { ok: true, status: 200, json: async () => ({ ok: true, places: [{ label: '45 Baltimore Pike, Media, PA 19063, USA', name: '' }] }) };
       if (u.includes('api=mailSearch')) return { ok: true, status: 200, json: async () => ({ ok: true, threads: [{ url: 'https://mail.google.com/mail/u/0/#all/t9', label: 'Flyer proof thread', from: 'marj@thestawaszgroup.com', date: '2026-09-10', count: 2 }] }) };
-      if (u.includes('api=meetingSlots')) { window.__slotsUrl = u; return { ok: true, status: 200, json: async () => ({ ok: true, minutes: 60, guestCalendar: false, slots: [{ startISO: '2026-09-22T14:00:00.000Z', endISO: '2026-09-22T15:00:00.000Z', dateLabel: 'Tue, Sep 22', timeLabel: '10:00 AM–11:00 AM' }] }) }; }
+      if (u.includes('api=meetingSlots')) { window.__slotsUrl = u; return { ok: true, status: 200, json: async () => ({ ok: true, minutes: 60, guestCalendar: false, window: 'fallback', slots: [{ startISO: '2026-09-22T14:00:00.000Z', endISO: '2026-09-22T15:00:00.000Z', dateLabel: 'Tue, Sep 22', timeLabel: '10:00 AM–11:00 AM' }] }) }; }
       if (u.includes('api=driveSearch')) return { ok: true, status: 200, json: async () => ({ ok: true, files: [{ name: 'Fall Flyer Draft', url: 'https://docs.google.com/document/d/FLYER/edit', mime: 'application/vnd.google-apps.document', modified: '2026-09-14' }] }) };
       if (u.includes('api=linkLabel')) return { ok: true, status: 200, json: async () => ({ ok: true, label: 'Resolved Title', kind: 'drive' }) };
       return { ok: true, status: 200, json: async () => ({ ok: true, users: [], events: [], meetings: [] }) };
@@ -760,6 +760,7 @@ setTimeout(async () => {
     if (!w.__slotsUrl.includes('end=2026-12-01')) throw new Error('window not bounded by the due date');
     if (!doc.getElementById('mfSlots').textContent.includes('Tue, Sep 22')) throw new Error('slot row missing');
     if (!doc.getElementById('mfSlots').textContent.includes('not shared')) throw new Error('unshared-calendar hint missing');
+    if (!doc.getElementById('mfSlots').textContent.includes('Nothing free Mon–Thu 9–2')) throw new Error('fallback hint missing');
     w.useMeetingSlot_(0);
     if (doc.getElementById('mfDate').value !== '2026-09-22') throw new Error('date not filled: ' + doc.getElementById('mfDate').value);
     if (!/^\d\d:\d\d$/.test(doc.getElementById('mfStart').value)) throw new Error('start not filled');

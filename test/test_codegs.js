@@ -1413,13 +1413,23 @@ section('Links every update: Gmail candidates, web links, meeting slots, directi
   // Duration buckets and slots
   check('duration buckets follow Google: 0.2h->15, 0.5h->30, 0.6h->45, 1h->60, 1.25h->90, 3h->120, none->30',
     sandbox.tsgDurationBucket_(12) === 15 && sandbox.tsgDurationBucket_(30) === 30 && sandbox.tsgDurationBucket_(36) === 45 && sandbox.tsgDurationBucket_(60) === 60 && sandbox.tsgDurationBucket_(75) === 90 && sandbox.tsgDurationBucket_(180) === 120 && sandbox.tsgDurationBucket_(null) === 30);
-  const day = new Date(); day.setDate(day.getDate() + 7); while (day.getDay() === 0 || day.getDay() === 6) day.setDate(day.getDate() + 1);
+  const day = new Date(); day.setDate(day.getDate() + 7); while (day.getDay() === 0 || day.getDay() >= 5) day.setDate(day.getDate() + 1); // a Mon-Thu day
   const pad = n => String(n).padStart(2, '0');
   const dIso = day.getFullYear() + '-' + pad(day.getMonth() + 1) + '-' + pad(day.getDate());
   calendarEventsFixture = [{ id: 'busy1', title: 'Durand busy', start: new Date(dIso + 'T07:30:00'), end: new Date(dIso + 'T09:00:00') }];
   guestCalendarEvents = [{ start: new Date(dIso + 'T09:00:00'), end: new Date(dIso + 'T10:00:00') }];
   const slots = sandbox.tsgMeetingSlots_('marj@thestawaszgroup.com', dIso, dIso, 60);
-  check('slots avoid both calendars, start after the guest is free, at most 2 per day', slots.ok && slots.guestCalendar === true && slots.minutes === 60 && slots.slots.length === 2 && new Date(slots.slots[0].startISO).getHours() === 10 && slots.slots.every(sl => sl.dateLabel && sl.timeLabel));
+  check('preferred window Mon-Thu 9-2: slots avoid both calendars, start after the guest is free, at most 2 per day', slots.ok && slots.window === 'preferred' && slots.guestCalendar === true && slots.minutes === 60 && slots.slots.length === 2 && new Date(slots.slots[0].startISO).getHours() === 10 && slots.slots.every(sl => sl.dateLabel && sl.timeLabel));
+  calendarEventsFixture = [{ id: 'allday', title: 'Blocked 9-2', start: new Date(dIso + 'T09:00:00'), end: new Date(dIso + 'T14:00:00') }];
+  guestCalendarEvents = [];
+  const fb = sandbox.tsgMeetingSlots_('marj@thestawaszgroup.com', dIso, dIso, 30);
+  check('outside 9-2 only when the preferred window has nothing: fallback slots at 7:30 and 8:00', fb.window === 'fallback' && fb.slots.length === 2 && new Date(fb.slots[0].startISO).getHours() === 7 && new Date(fb.slots[1].startISO).getHours() === 8);
+  const fri = new Date(dIso + 'T12:00:00'); fri.setDate(fri.getDate() + (5 - fri.getDay()));
+  const friIso = fri.getFullYear() + '-' + pad(fri.getMonth() + 1) + '-' + pad(fri.getDate());
+  calendarEventsFixture = [];
+  const friSlots = sandbox.tsgMeetingSlots_('', friIso, friIso, 30);
+  check('a Friday only appears through the fallback window', friSlots.window === 'fallback' && friSlots.slots.length === 2);
+  calendarEventsFixture = [{ id: 'busy1', title: 'Durand busy', start: new Date(dIso + 'T07:30:00'), end: new Date(dIso + 'T09:00:00') }];
   const lunchFree = slots.slots.every(sl => { const h = new Date(sl.startISO).getHours(); return !(h === 12); });
   check('no slot starts inside lunch', lunchFree);
   guestCalendarEvents = null;

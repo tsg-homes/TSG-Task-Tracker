@@ -1543,7 +1543,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-17.3';
+  const UI_VERSION = '2026-09-17.4';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -5541,7 +5541,7 @@
           <label>Start<input type="time" class="due-input" id="mfStart" value="10:00"></label>
           <label>Duration (min)<input type="number" class="due-input" id="mfDuration" value="${meetingBucket_(item.estHours)}" min="15" step="15"></label>
         </div>
-        <div class="sched-detail-note">Suggested times — free for both of you, before the due date, ${meetingBucket_(item.estHours)} min from the estimate</div>
+        <div class="sched-detail-note">Suggested times — Mon–Thu 9–2 when free for both of you, before the due date, ${meetingBucket_(item.estHours)} min from the estimate</div>
         <div class="meeting-list" id="mfSlots"><div class="history-empty">Finding times…</div></div>
         <label>Location / video link<input type="text" class="text-input" id="mfLocation" value=""></label>
         <label>Description<textarea class="text-input" id="mfDescription" rows="3">${escapeHtml(item.notes || '')}</textarea></label>
@@ -5580,7 +5580,8 @@
       const data = await res.json();
       if (!data || data.ok === false) throw new Error((data && data.error) || 'No answer');
       MF_SLOTS = data.slots || [];
-      const note = guestEmail && !data.guestCalendar ? '<div class="meeting-form-hint">' + escapeHtml(guestEmail) + '\'s calendar is not shared with you, so these are only your own free times.</div>' : '';
+      let note = guestEmail && !data.guestCalendar ? '<div class="meeting-form-hint">' + escapeHtml(guestEmail) + '\'s calendar is not shared with you, so these are only your own free times.</div>' : '';
+      if (data.window === 'fallback' && MF_SLOTS.length) note += '<div class="meeting-form-hint">Nothing free Mon–Thu 9–2 before the due date — these are other work hours (Mon–Fri 7:30–4).</div>';
       host.innerHTML = note + (MF_SLOTS.length
         ? MF_SLOTS.map((sl, i) => `<div class="meeting-row" onclick="useMeetingSlot_(${i})"><div class="meeting-row-main"><b>${escapeHtml(sl.dateLabel)}</b></div><div class="meeting-row-sub">${escapeHtml(sl.timeLabel)}</div></div>`).join('')
         : '<div class="history-empty">No shared free time before ' + escapeHtml(end) + ' — pick a time by hand or move the due date.</div>');
