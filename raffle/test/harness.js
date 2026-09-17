@@ -19,8 +19,18 @@ function eq(name, actual, expected) {
 }
 
 // ---- Fakes -----------------------------------------------------------------
+// The default fixture's header row. This deliberately matches the CODE's schema
+// rather than an older snapshot of it: it sat at ten columns while the code grew
+// to twenty-five, which meant every test silently ran the header-migration path
+// on its way to doing anything else, and nothing asserted the migration itself.
+// The old-schema case is now one explicit test (test_raffle.js, "Migrating a
+// sheet that predates the referral columns") seeded with the real live shape.
 const HEADERS = ['Timestamp (ET)', 'Full Name', 'Email', 'Phone', 'Consent',
-  'Consent Version', 'Entry Source', 'FUB Status', 'FUB Person ID', 'Eligible'];
+  'Consent Version', 'Entry Source', 'FUB Status', 'FUB Person ID', 'Eligible',
+  'Email Verified', 'Entry Status', 'Referral Name', 'Referral Email',
+  'Referral Phone', 'Referral Role', 'Referral Timeframe', 'Referral FUB ID',
+  'Referral Consent At', 'Referral Emailed At', 'Consent Token',
+  'Referral Logged At', 'Chain Token', 'Chain Emailed At', 'Reminder Sent At'];
 
 function makeSandbox(opts) {
   opts = opts || {};
@@ -82,6 +92,13 @@ function makeSandbox(opts) {
         setFontWeight: () => ({ setFontSize: () => {}, setBackground: () => {} })
       }),
       getName: () => sh.name,
+      // The GRID width, which is not the populated width: a real sheet is 26
+      // columns wide from the moment it is created, however few headers it has.
+      // raffleEnsureHeaders_ checks this before writing past the edge, so the
+      // fake has to carry it or the migration path cannot be exercised at all.
+      maxColumns: Math.max(26, (r[0] ? r[0].length : 0)),
+      getMaxColumns: () => sh.maxColumns,
+      insertColumnsAfter: (after, howMany) => { sh.maxColumns = after + howMany; },
       setName: n => { sh.name = n; }, setFrozenRows: () => {}, clear: () => {},
       deleteRows: (start, n) => { r.splice(start - 1, n); }
     };

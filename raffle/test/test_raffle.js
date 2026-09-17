@@ -541,6 +541,53 @@ const cell = (s, row, name) => {
   eq('but enters nobody', selfRows(s).length, 1);
 }
 
+// ---- Migrating a sheet that predates the referral columns --------------------
+// Not hypothetical: the live sheet on 2026-09-17 still carried the original 11
+// columns, because it was created before the referral work and setupRaffle only
+// reported that it already existed. Every access has to widen it, and setup has
+// to do it up front rather than on the first real entrant's request.
+{
+  const ELEVEN = ['Timestamp (ET)', 'Full Name', 'Email', 'Phone', 'Consent',
+                  'Consent Version', 'Entry Source', 'FUB Status', 'FUB Person ID',
+                  'Eligible', 'Email Verified'];
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' },
+                          rows: [ELEVEN.slice()] });
+  const hdr = () => s.__tabs['Entries'].rows[0];
+  const WIDTH = s.RAFFLE_SHEET_HEADERS.length;
+  // Guards this whole block: the harness fixture now matches the code's schema,
+  // so if the two ever drift the migration test stops meaning anything.
+  eq('the fixture matches the code schema', HEADERS.length, WIDTH);
+  eq('the tab starts on the old schema', hdr().length, 11);
+
+  // Merely touching the sheet migrates it -- reads included.
+  at(DURING, () => s.raffleStatusPage_(false));
+  eq('touching the sheet widens it', hdr().length, WIDTH);
+  check('the original columns are untouched',
+    ELEVEN.every((h, i) => hdr()[i] === h), JSON.stringify(hdr().slice(0, 11)));
+  check('and the referral columns are named',
+    hdr()[11] === 'Entry Status' && hdr().indexOf('Reminder Sent At') !== -1,
+    JSON.stringify(hdr().slice(11)));
+
+  // And a full journey then works on the migrated tab.
+  const res = enterFull(s, entry(), DURING);
+  check('a journey works on a migrated sheet', res.ok === true, JSON.stringify(res));
+  eq('writing three rows as usual', s.__data().length, 3);
+  eq('and the entrant is eligible',
+    selfRows(s).filter(r => cell(s, r, 'Entry Status') === 'eligible').length, 2);
+}
+
+{
+  // A tab whose columns were RENAMED must be refused, not silently reindexed:
+  // the reader addresses columns by position, so a shifted sheet would attribute
+  // one person's consent to another.
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1' },
+                          rows: [['Timestamp (ET)', 'Name', 'Email']] });
+  let err = '';
+  try { at(DURING, () => s.raffleStatusPage_(false)); } catch (e) { err = String(e.message || e); }
+  check('a renamed column refuses to migrate', /Refusing to migrate/.test(err), err);
+  check('and the error names the column', /column 2/.test(err), err);
+}
+
 // ---- The admin status page ----------------------------------------------------
 {
   // raffleReadEntries_ hands back every row, pending ones included, so the

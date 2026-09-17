@@ -294,6 +294,13 @@ function raffleEnsureHeaders_(sh) {
     }
   }
   var missing = RAFFLE_SHEET_HEADERS.slice(lastCol);
+  // A sheet narrower than the header list would make the setValues below throw.
+  // The default grid is 26 columns and the schema is 25, so this is only reached
+  // on a sheet somebody trimmed -- but a loud failure here would refuse an entry.
+  var maxCols = sh.getMaxColumns();
+  if (maxCols < RAFFLE_SHEET_HEADERS.length) {
+    sh.insertColumnsAfter(maxCols, RAFFLE_SHEET_HEADERS.length - maxCols);
+  }
   sh.getRange(1, lastCol + 1, 1, missing.length).setValues([missing])
     .setFontWeight('bold');
   sh.setFrozenRows(1);
@@ -452,6 +459,24 @@ function setupRaffle() {
     out.push('Created entries sheet: ' + ss.getUrl());
   } else {
     out.push('Entries sheet already exists: https://docs.google.com/spreadsheets/d/' + sheetId);
+  }
+
+  // Bring the schema up to date HERE, not on the first visitor's request.
+  // raffleSheet_ calls raffleEnsureHeaders_ on every access, so an old sheet
+  // would migrate itself the moment somebody entered -- but that leaves the tab
+  // looking like it is missing the referral columns until then, and it puts a
+  // schema change on the critical path of a real entry. setupRaffle is the
+  // function whose job is to leave this ready, so it should do it and report it.
+  try {
+    var beforeCols = raffleSheet_(false).getLastColumn();
+    raffleSheet_(true);                                  // creates + migrates the test tab too
+    var afterCols = raffleSheet_(false).getLastColumn();
+    out.push(afterCols > beforeCols
+      ? 'Schema migrated: ' + beforeCols + ' -> ' + afterCols + ' columns on both tabs.'
+      : 'Schema up to date (' + afterCols + ' columns).');
+  } catch (schemaErr) {
+    out.push('WARNING: could not bring the entries sheet schema up to date: ' + schemaErr +
+             '  <-- fix this before Saturday, or entries may be refused');
   }
 
   // Share it, every run, whether the sheet is new or not -- this is also the
