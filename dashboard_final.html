@@ -569,6 +569,9 @@
   .sub-time { width: 84px; margin-left: 4px; }
   .due-time-chip { margin-left: 4px; }
   .mf-blocks { margin-left: 10px; font-weight: normal; cursor: pointer; }
+  #tsgToasts { position: fixed; right: 16px; bottom: 16px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; max-width: 360px; }
+  .tsg-toast { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--brand); border-left-width: 4px; border-radius: 8px; padding: 10px 32px 10px 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.25); position: relative; cursor: pointer; font-size: 13px; }
+  .tsg-toast .icon-btn { position: absolute; top: 6px; right: 6px; }
   .pin-btn.on { opacity: 1; }
   .pin-btn:hover { opacity: 1; }
   .group-section.pinned-group { border-color: var(--brand); }
@@ -1548,7 +1551,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-17.6';
+  const UI_VERSION = '2026-09-17.7';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -4587,8 +4590,44 @@
     const clickable = onclick ? ' clickable' : '';
     return `<div class="today-admin-line kind-${kind}${clickable}"${onclick}><span>${escapeHtml(a.label)}</span>${a.sub ? `<span class="today-admin-sub">${escapeHtml(a.sub)}</span>` : ''}</div>`;
   }
+  // The Today scheduler's slot start becomes the item's due time (2026-09-17, per Durand:
+  // "when the scheduler builds the schedule and assigns timeslots to tasks, that should fill in
+  // the due time field"). Only items due that day; a time Durand typed by hand (no dueTimeAuto
+  // flag) is never overwritten; a preset reminder follows the new time.
+  function minToHm_(m) { const h = Math.floor(m / 60), mm = Math.round(m % 60); return (h < 10 ? '0' : '') + h + ':' + (mm < 10 ? '0' : '') + mm; }
+  function applyScheduledTimes_(agenda, dateISO) {
+    let changed = 0;
+    (agenda.schedule || []).forEach(block => {
+      if (!(block.kind === 'task' || block.kind === 'errand') || !block.items || !block.items.length) return;
+      let cursor = block.start;
+      const share = (block.end - block.start) / block.items.length;
+      // Task blocks hold candidates {task: <work item>, minutes}; errand blocks hold the same
+      // shape (see getTodayErrandItems). Fall back to a bare work item defensively.
+      block.items.forEach(c => {
+        const it = c && c.task ? c.task : c;
+        if (!it || it.id == null) return;
+        const t = findTask(it.id);
+        const target = t ? (it.subIdx != null ? (t.subitems || [])[it.subIdx] : t) : null;
+        const hm = minToHm_(cursor);
+        cursor += (block.items.length === 1) ? (block.end - block.start) : Math.max(5, (c && c.minutes) || share);
+        if (!target || target.timelineEnd !== dateISO) return;
+        if (target.dueTime && !target.dueTimeAuto) return;
+        if (target.dueTime === hm) return;
+        const before = target.dueTime || null;
+        const presetBefore = remindPresetOf_(target);
+        target.dueTime = hm; target.dueTimeAuto = true;
+        t.history = t.history || [];
+        t.history.push({ ts: new Date().toISOString(), field: it.subIdx != null ? 'subitem-dueTime' : 'dueTime', from: before, to: hm, source: 'Scheduler' });
+        followDueReminder_(target, presetBefore);
+        changed++;
+      });
+    });
+    if (changed) scheduleSave();
+    return changed;
+  }
   function renderTodayDayFull(dateISO) {
     const agenda = buildTodayAgenda(dateISO);
+    applyScheduledTimes_(agenda, dateISO);
     // Every block except a bare "Open" gap can be clicked to expand into a bigger, more
     // detailed popout (see openScheduleDetail) — the row-level click is guarded so it
     // never fires when the click actually landed on one of the row's own inner
@@ -5759,8 +5798,75 @@
     const sent = item.reminderSentAt ? ` <span class="hist-time" title="Reminder emailed ${escapeHtml(item.reminderSentAt)}">· sent</span>` : '';
     return `<span class="remind-wrap" title="Email reminder to you">&#128276; <select class="due-input remind-select" onchange="onRemindPreset(${args}, this.value)">${REMIND_PRESETS.map(p => `<option value="${p[0]}" ${p[0] === preset ? 'selected' : ''}>${p[1]}</option>`).join('')}</select>${preset === 'custom' ? `<input type="datetime-local" class="due-input" value="${escapeHtml(item.remindAt || '')}" onchange="onRemindCustom(${args}, this.value)">` : ''}${sent}</span>`;
   }
+  // Native notifications while the tracker is open (2026-09-17, per Durand): a due reminder
+  // also raises a browser Notification (or an in-page toast when permission is missing), once
+  // per remindAt value, remembered in localStorage so a reload never repeats it.
+  const NOTIFY_STORE = 'tsgNotifiedReminders';
+  function notifiedMap_() { try { return JSON.parse(localStorage.getItem(NOTIFY_STORE) || '{}') || {}; } catch (e) { return {}; } }
+  function rememberNotified_(map) { try { localStorage.setItem(NOTIFY_STORE, JSON.stringify(map)); } catch (e) {} }
+  function notifyPermission_() { return (typeof Notification !== 'undefined' && Notification.permission) || 'unsupported'; }
+  async function ensureNotifyPermission_() {
+    if (typeof Notification === 'undefined') return 'unsupported';
+    if (Notification.permission === 'default') { try { return await Notification.requestPermission(); } catch (e) { return Notification.permission; } }
+    return Notification.permission;
+  }
+  function toast_(title, body, onClick) {
+    let host = document.getElementById('tsgToasts');
+    if (!host) { host = document.createElement('div'); host.id = 'tsgToasts'; document.body.appendChild(host); }
+    const el = document.createElement('div');
+    el.className = 'tsg-toast';
+    el.innerHTML = '<b>' + escapeHtml(title) + '</b>' + (body ? '<div>' + escapeHtml(body) + '</div>' : '') + '<button type="button" class="icon-btn" title="Dismiss">&#10005;</button>';
+    el.querySelector('button').onclick = (e) => { e.stopPropagation(); el.remove(); };
+    if (onClick) el.onclick = () => { onClick(); el.remove(); };
+    host.appendChild(el);
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 30000);
+  }
+  function raiseReminder_(r) {
+    const title = 'Reminder: ' + r.item.title;
+    const body = (r.subIdx != null ? 'Step of #' + r.t.id + ' ' + r.t.title + ' · ' : '') + 'due ' + (r.item.timelineEnd || '') + (r.item.dueTime ? ' ' + r.item.dueTime : '');
+    const open = () => { try { window.focus(); } catch (e) {} openTaskCard(r.t.id); };
+    if (notifyPermission_() === 'granted') {
+      try {
+        const n = new Notification(title, { body: body, tag: 'tsg-' + r.key });
+        n.onclick = () => { open(); try { n.close(); } catch (e) {} };
+        return 'native';
+      } catch (e) { /* fall through to the toast */ }
+    }
+    toast_(title, body, open);
+    return 'toast';
+  }
+  function dueReminders_(now) {
+    const out = [];
+    const dayAgo = now - 86400000;
+    (TASKS || []).forEach(t => {
+      const consider = (item, subIdx) => {
+        if (!item || !item.remindAt || item.done || item.status === 'Done') return;
+        const at = new Date(String(item.remindAt).slice(0, 16) + ':00').getTime();
+        if (isNaN(at) || at > now || at < dayAgo) return;
+        out.push({ key: 't' + t.id + (subIdx != null ? 's' + subIdx : ''), t: t, item: item, subIdx: subIdx, remindAt: item.remindAt });
+      };
+      consider(t, null);
+      (t.subitems || []).forEach((s, i) => consider(s, i));
+    });
+    return out;
+  }
+  function checkReminderNotifications_() {
+    const now = Date.now();
+    const map = notifiedMap_();
+    let raised = 0;
+    dueReminders_(now).forEach(r => {
+      if (map[r.key] === r.remindAt) return;
+      raiseReminder_(r);
+      map[r.key] = r.remindAt;
+      raised++;
+    });
+    if (raised) rememberNotified_(map);
+    return raised;
+  }
+  setInterval(checkReminderNotifications_, 30000);
   function itemFor_(id, idx) { const t = findTask(id); if (!t) return null; return { t, item: idx == null ? t : (t.subitems || [])[idx] }; }
   function setRemindAt_(ctx, id, idx, val) {
+    if (val) ensureNotifyPermission_();
     const before = ctx.item.remindAt || '';
     if (val) ctx.item.remindAt = val; else delete ctx.item.remindAt;
     delete ctx.item.reminderSentAt;
@@ -5785,6 +5891,7 @@
     const before = ctx.item.dueTime || '';
     const preset = remindPresetOf_(ctx.item);
     if (val) ctx.item.dueTime = val; else delete ctx.item.dueTime;
+    delete ctx.item.dueTimeAuto; // typed by hand: the scheduler leaves it alone from now on
     if (before !== (val || '')) logHistory(ctx.t, idx == null ? 'dueTime' : 'subitem-dueTime', before || null, val || null);
     // A preset reminder follows the due time.
     if (preset && preset !== 'custom') { ctx.item.remindAt = remindAtFor_(ctx.item, preset); delete ctx.item.reminderSentAt; }
@@ -6616,6 +6723,7 @@
     ERRANDS = (doc.meta && doc.meta.errands) || {};
     HOME_BASE = (doc.meta && doc.meta.homeBase) || '';
     CLAUDE_REPO = (doc.meta && doc.meta.claudeRepo) || '';
+    setTimeout(checkReminderNotifications_, 0);
     STANDING_ITEMS = (doc.meta && doc.meta.standingItems) || [];
     dataLoaded = true;
     document.getElementById('updatedStamp').textContent = 'Last updated ' + formatDate(META.lastUpdated);
@@ -6848,6 +6956,8 @@
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Home base</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">The address every task location's round-trip travel time is driven from (the office, or home). Saved on its own; task travel times refresh on the next write.</div>
+        <div class="ruleset-block-head" style="margin-top:12px;"><h3>Reminder notifications</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b> <button type="button" class="btn small" onclick="ensureNotifyPermission_().then(p => { const el = document.getElementById('notifyState'); if (el) el.textContent = p; })">Enable</button></div>
         <div class="ruleset-block-head" style="margin-top:12px;"><h3>Claude Code repo</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">Optional owner/repo the "Code" and "Code (cloud)" buttons on a Claude task open on (e.g. tsg-homes/task-tracker). Cowork sessions never need one.</div>
         <input type="text" class="text-input" id="claudeRepoInput" placeholder="owner/repo" value="${escapeHtml(CLAUDE_REPO)}" onblur="setClaudeRepo(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">

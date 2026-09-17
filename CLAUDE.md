@@ -528,3 +528,18 @@ times when both are free before the deadline, duration from the estimate in Goog
   follow later date/time changes (`followDueReminder_`, `onDueTimeChange_`); a change clears
   `reminderSentAt`; "· sent" shows once emailed. A preset without a due date is refused (Custom
   still works). The board row shows the time as a chip next to the date.
+- Native notifications (dashboard UI 2026-09-17.7, per Durand "if the tracker is open it
+  should also send a native notification"): `checkReminderNotifications_` (on load and every
+  30 s) raises a browser `Notification` (click opens the task) for every reminder due in the last
+  24 h, or an in-page toast (`#tsgToasts`) when permission is missing; each remindAt value is
+  remembered in localStorage `tsgNotifiedReminders` so nothing repeats. Permission is requested
+  when a reminder is set and from Settings > "Reminder notifications". Whether the Apps Script
+  iframe origin is allowed to show notifications is unverified from a cloud session; the toast
+  is the fallback either way.
+- Scheduler due times (same UI version, per Durand "when the scheduler builds the schedule and
+  assigns timeslots to tasks, that should fill in the due time field"): `applyScheduledTimes_`
+  runs after `buildTodayAgenda` in the day view: every task / subtask in a task or errand block
+  whose due date is that day gets `dueTime` = its slot start (items inside a block advance by
+  estimate + travel), flagged `dueTimeAuto`, history source "Scheduler", and a preset reminder
+  follows. A time typed by hand (any edit through `onDueTimeChange_` clears the flag) is never
+  overwritten.

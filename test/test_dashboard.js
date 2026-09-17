@@ -828,6 +828,58 @@ setTimeout(async () => {
     delete w.findTask(1).subitems[0].remindAt; delete w.findTask(1).subitems[0].dueTime;
   });
 
+  // Native notifications + scheduler-set due times (2026-09-17)
+  tryCall('a due reminder raises a native notification once (remembered across reloads) and opens the task on click', () => {
+    const shown = [];
+    w.Notification = function(title, opts) { shown.push({ title, opts }); this.close = () => {}; };
+    w.Notification.permission = 'granted';
+    w.Notification.requestPermission = async () => 'granted';
+    const t = w.findTask(1);
+    const past = new Date(Date.now() - 60000);
+    const pad = n => (n < 10 ? '0' : '') + n;
+    t.remindAt = past.getFullYear() + '-' + pad(past.getMonth() + 1) + '-' + pad(past.getDate()) + 'T' + pad(past.getHours()) + ':' + pad(past.getMinutes());
+    t.timelineEnd = '2026-09-25'; t.dueTime = '10:00';
+    w.localStorage.removeItem('tsgNotifiedReminders');
+    if (w.checkReminderNotifications_() !== 1) throw new Error('did not raise');
+    if (!shown.length || !shown[0].title.includes(t.title) || !shown[0].opts.body.includes('10:00')) throw new Error('bad notification ' + JSON.stringify(shown));
+    if (w.checkReminderNotifications_() !== 0) throw new Error('raised twice');
+    if (!w.localStorage.getItem('tsgNotifiedReminders').includes(t.remindAt)) throw new Error('not remembered');
+    delete t.remindAt;
+  });
+  tryCall('without permission a toast is shown instead', () => {
+    w.Notification.permission = 'denied';
+    const t = w.findTask(1);
+    const past = new Date(Date.now() - 120000);
+    const pad = n => (n < 10 ? '0' : '') + n;
+    t.remindAt = past.getFullYear() + '-' + pad(past.getMonth() + 1) + '-' + pad(past.getDate()) + 'T' + pad(past.getHours()) + ':' + pad(past.getMinutes());
+    w.checkReminderNotifications_();
+    if (!doc.querySelector('#tsgToasts .tsg-toast')) throw new Error('no toast');
+    delete t.remindAt; delete t.dueTime;
+    doc.getElementById('tsgToasts').innerHTML = '';
+  });
+  tryCall('the Today scheduler fills dueTime from the slot start and never overwrites a hand-typed time', () => {
+    const today = w.todayISO();
+    const a = w.findTask(1), b = w.findTask(2);
+    const prevTypes = [a.taskType, b.taskType], prevDel = [a.delegate, b.delegate];
+    a.timelineEnd = today; a.status = 'In Progress'; a.estHours = 1; delete a.dueTime; delete a.dueTimeAuto; a.subitems = []; a.taskType = 'Actionable Task'; a.owner = 'Durand'; delete a.delegate;
+    b.timelineEnd = today; b.status = 'Not Started'; b.estHours = 0.5; b.dueTime = '15:45'; delete b.dueTimeAuto; b.subitems = b.subitems || []; b.taskType = 'Actionable Task'; b.owner = 'Durand'; delete b.delegate;
+    w.eval("todayViewDate = todayISO(); todayGranularity = 'day'");
+    w.setView('today');
+    if (!/^\d\d:\d\d$/.test(a.dueTime || '')) throw new Error('scheduler did not set dueTime: ' + a.dueTime);
+    if (!a.dueTimeAuto) throw new Error('auto flag missing');
+    if (!a.history.some(h => h.field === 'dueTime' && h.source === 'Scheduler')) throw new Error('no history');
+    if (b.dueTime !== '15:45') throw new Error('hand-typed time overwritten: ' + b.dueTime);
+    const set = a.dueTime;
+    w.renderAll();
+    if (a.dueTime !== set || a.history.filter(h => h.field === 'dueTime' && h.source === 'Scheduler').length !== 1) throw new Error('re-render re-logged the same time');
+    w.modalDueTimeChange(1, '08:15');
+    if (a.dueTimeAuto) throw new Error('manual edit kept the auto flag');
+    w.setView('today');
+    if (a.dueTime !== '08:15') throw new Error('scheduler overwrote the manual time');
+    a.timelineEnd = '2026-09-15'; delete a.dueTime; b.timelineEnd = '2026-09-19'; delete b.dueTime;
+    a.taskType = prevTypes[0]; b.taskType = prevTypes[1]; if (prevDel[0]) a.delegate = prevDel[0]; if (prevDel[1]) b.delegate = prevDel[1];
+  });
+
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));
