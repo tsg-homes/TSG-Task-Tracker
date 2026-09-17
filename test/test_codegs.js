@@ -672,7 +672,7 @@ section('Judgment queue: no API key (2026-09-16, method 2)');
   d.tasks.push({ id: 3, title: 'Quick thought', owner: 'Durand', status: 'Not Started', priority: 'Low', progress: 0, notes: '', tags: [], history: [ { ts: '2026-09-10T10:00:00Z', field: 'priority', from: 'Medium', to: 'Low', source: 'Durand' } ], subitems: [] });
   write(d, { op: 'update_task', id: 3, fields: { notes: 'call the title co about the farina closing, they said friday works, need the deed copy first' }, source: 'Durand' });
   const e3 = d.meta.judgments.find(r => r.kind === 'enrich' && r.taskId === 3);
-  check('a notes change on an existing task queues one enrich request that skips the priority Durand set by hand, asks for everything else, and carries Drive candidates for a link', !!e3 && !e3.need.includes('priority') && e3.need.includes('driveMatch') && e3.driveCandidates && e3.driveCandidates.length === 1 && ['title', 'notes', 'estHours', 'taskType', 'group', 'tags', 'progress', 'location', 'due', 'subitems'].every(f => e3.need.includes(f)) && e3.current.priority === 'Low');
+  check('a notes change on an existing task queues one enrich request that asks for every field (a hand-set priority is protected at apply time) and carries Drive candidates for a link', !!e3 && e3.need.includes('priority') && e3.need.includes('driveMatch') && e3.driveCandidates && e3.driveCandidates.length === 1 && ['title', 'notes', 'estHours', 'taskType', 'group', 'tags', 'progress', 'location', 'due', 'subitems'].every(f => e3.need.includes(f)) && e3.current.priority === 'Low');
   write(d, { op: 'update_task', id: 3, fields: { notes: 'call the title co about the farina closing, they said friday works, need the deed copy first. UPDATE: deed copy received' }, source: 'Durand' });
   check('a second notes edit replaces the pending request', d.meta.judgments.filter(r => r.kind === 'enrich' && r.taskId === 3).length === 1 && d.meta.judgments.find(r => r.taskId === 3).notes.indexOf('UPDATE') !== -1);
   const e3b = d.meta.judgments.find(r => r.taskId === 3);
@@ -1076,6 +1076,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 5, fields: { notes: 'nearly there' } })));
   d = JSON.parse(disk);
   check('update: notes on a task with subitems are still polished in one call, but progress is not asked for; the subitems own the bar', r.ok === true && claudeCalls.length === 1 && !/"progress"/.test(claudeCalls[0]) && d.tasks[4].notes === 'nearly there' && d.tasks[4].progress === 0);
+  check("update: a roll-up history line is automation, not a hand edit, and hours on a task with steps are never a disagreement (no Review tag, no REVIEW paragraph)", !(d.tasks[4].reviewFlags || []).length && !d.tasks[4].tags.includes('Review') && !d.tasks[4].tags.includes('Triage'));
   const savedResponder = claudeResponder;
   claudeResponder = () => ({ rationale: 'no number this time' });
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { notes: 'more notes' } })));
@@ -1498,6 +1499,52 @@ section('Reminders and due time (2026-09-17)');
   check('a sent reminder is no longer pending; a Done item never is', sandbox.tsgPendingReminders_(d).length === 1 && (d.tasks[0].subitems[0].done = true, sandbox.tsgPendingReminders_(d).length === 0));
   sandbox.DriveApp.getFileById = origGetFile2; sandbox.DriveApp.getFolderById = origFolder2;
   sandbox.PropertiesService.getScriptProperties = origProps3; cacheStore = {};
+}
+
+section('Hand edits win, disagreements flagged, dependency clears stick (2026-09-17)');
+{
+  const d = freshDoc();
+  d.tasks[0].history.push({ ts: '2026-09-15T10:00:00Z', field: 'estHours', from: 4, to: 1, source: 'Durand' });
+  d.tasks[0].history.push({ ts: '2026-09-15T10:00:00Z', field: 'priority', from: 'Medium', to: 'Low', source: 'Durand' });
+  d.tasks[0].estHours = 1; d.tasks[0].priority = 'Low';
+  claudeResponder = () => ({ rationale: 'a full vendor reconciliation', title: 'Confirm Vendor Invoice For Photography', notes: 'Current state: waiting on the vendor.', estHours: 5, taskType: 'Actionable Task', priority: 'Critical', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false });
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'vendor says the invoice is wrong, need to reconcile' }, source: 'Durand', ts: '2026-09-17T12:00:00Z' });
+  const t = d.tasks[0];
+  check('every judgment field is asked for on a notes change, hand-set or not', true);
+  check('the hand-set hours and priority stay', t.estHours === 1 && t.priority === 'Low');
+  check('a material disagreement (5h vs 1h, Critical vs Low) is flagged with the Review tag, one flag per field, a disagreement history line, and a REVIEW paragraph in the note', t.tags.includes('Review') && !t.tags.includes('Triage') && (t.reviewFlags || []).length === 2 && t.reviewFlags.some(f => f.field === 'estHours' && f.claude === 5 && f.mine === 1 && /reconciliation/.test(f.rationale)) && t.reviewFlags.some(f => f.field === 'priority') && t.history.filter(h => h.field === 'disagreement').length === 2 && /REVIEW \(2026-09-17\): Claude proposed estHours = 5 because a full vendor reconciliation; your value 1 is kept/.test(t.notes) && t.notes.indexOf('Current state:') === 0);
+  claudeResponder = () => ({ rationale: 'close enough', title: t.title, notes: t.notes, estHours: 1.25, taskType: 'Actionable Task', priority: 'Medium', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false });
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'vendor says the invoice is wrong, need to reconcile. update: got the corrected one' }, source: 'Durand', ts: '2026-09-17T12:05:00Z' });
+  check('a small difference (1.25h vs 1h, Medium vs Low) is not a disagreement; the earlier flags are replaced, not duplicated', t.estHours === 1 && (t.reviewFlags || []).length === 0 && !t.tags.includes('Review') && !/REVIEW \(/.test(t.notes));
+  check('the note keeps its polished body once the flags clear', t.notes === 'Current state: waiting on the vendor.' || t.notes.indexOf('REVIEW') === -1);
+  // forced re-run settles a disagreement with Claude's value
+  claudeResponder = () => ({ rationale: 'big job', title: t.title, notes: t.notes, estHours: 6, taskType: 'Actionable Task', priority: 'Critical', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false });
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'third edit' }, source: 'Durand', ts: '2026-09-17T12:10:00Z' });
+  check('flagged again on a big difference', t.tags.includes('Review') && t.estHours === 1);
+  sandbox.applyDataPatch_(d, { op: 'request_tidy', id: 1, source: 'Durand', ts: '2026-09-17T12:15:00Z' });
+  check("a forced re-run (Tidy) adopts Claude's values and clears the flags, the Review tag and the REVIEW paragraphs", t.estHours === 6 && t.priority === 'Critical' && !t.reviewFlags && !t.tags.includes('Review') && !/REVIEW \(/.test(t.notes));
+  // dependency cleared by hand stays cleared
+  const d2 = freshDoc();
+  d2.tasks.push({ id: 2, title: 'Get Photos From The Photographer', owner: 'Durand', status: 'Not Started', priority: 'Medium', group: 'Ops', tags: [], notes: '', history: [], subitems: [] });
+  let asked = null;
+  claudeResponder = (system, user) => { asked = JSON.parse((user.match(/NEEDED_FIELDS: (\[.*\])/) || [])[1] || '[]'); return { rationale: 'r', title: 'Confirm Vendor Invoice For Photography', notes: 'Current state: x.', estHours: 2, taskType: 'Actionable Task', priority: 'High', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: 'Get Photos From The Photographer', location: null, due: null, progress: 0, needsConfirmation: false }; };
+  sandbox.applyDataPatch_(d2, { op: 'update_task', id: 1, fields: { notes: 'need the photos first' }, source: 'Durand' });
+  check('with no dependency set, one is inferred', d2.tasks[0].depends === '2');
+  sandbox.applyDataPatch_(d2, { op: 'update_task', id: 1, fields: { depends: '', dependsNone: true }, source: 'Durand' });
+  sandbox.applyDataPatch_(d2, { op: 'update_task', id: 1, fields: { notes: 'need the photos first, really' }, source: 'Durand' });
+  check('dependsNone keeps dependsOnTitle out of the request and the dependency stays cleared', asked && !asked.includes('dependsOnTitle') && d2.tasks[0].depends === '');
+  sandbox.applyDataPatch_(d2, { op: 'update_task', id: 1, fields: { depends: '2' }, source: 'Durand' });
+  check('setting a dependency by hand lifts dependsNone', d2.tasks[0].dependsNone === undefined && d2.tasks[0].depends === '2');
+  // dashboard-typed values are hand-set from creation
+  const d3 = freshDoc();
+  claudeResponder = () => ({ rationale: 'r', title: 'Order The Fall Flyers', notes: 'Current state: x.', estHours: 4, taskType: 'Actionable Task', priority: 'Low', group: 'Marketing', tags: [], subitems: [], dependsOnTitle: null, location: null, due: '2026-11-30', progress: 0, needsConfirmation: false });
+  sandbox.applyDataPatch_(d3, { op: 'add_task', task: { title: 'Order the fall flyers', owner: 'Durand', priority: 'Critical', group: 'Marketing', timelineEnd: '2026-09-25', notes: 'print shop needs the order by wednesday', tags: [] }, source: 'Durand', ownerCreated: true, skipDedup: true });
+  const t3 = d3.tasks[d3.tasks.length - 1];
+  check('values typed into the New Task form carry Durand history lines from creation', t3.history.some(h => h.field === 'priority' && h.source === 'Durand') && t3.history.some(h => h.field === 'timelineEnd' && h.source === 'Durand'));
+  claudeResponder = () => ({ rationale: 'no rush', title: t3.title, notes: t3.notes, estHours: 4, taskType: 'Actionable Task', priority: 'Low', group: 'Marketing', tags: [], subitems: [], dependsOnTitle: null, location: null, due: '2026-11-30', progress: 0, needsConfirmation: false });
+  sandbox.applyDataPatch_(d3, { op: 'update_task', id: t3.id, fields: { notes: 'print shop needs the order by wednesday. quote received' }, source: 'Durand' });
+  check('...so a later pass keeps them and flags the disagreement (Critical vs Low, 9/25 vs 11/30)', t3.priority === 'Critical' && t3.timelineEnd === '2026-09-25' && t3.tags.includes('Review') && (t3.reviewFlags || []).some(f => f.field === 'timelineEnd' && f.claude === '2026-11-30'));
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 
 section('No secrets in tracked files (repo is public)');

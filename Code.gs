@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-17.3';
+const TSG_CODE_VERSION = '2026-09-17.4';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -537,6 +537,13 @@ function applyDataPatch_(doc, patch) {
       if (task.doc == null) task.doc = '';
       if (task.notes == null) task.notes = '';
       if (task.timelineEnd == null) task.timelineEnd = '';
+      // A value Durand typed into the New Task form is hand-set from the start (2026-09-17):
+      // a history line with his name is what protects it from later enrichment passes.
+      if (patch.ownerCreated) {
+        ['priority', 'group', 'estHours', 'taskType', 'timelineEnd', 'location', 'delegate'].forEach(function(f) {
+          if (task[f] != null && task[f] !== '') task.history.push({ ts: now, field: f, from: null, to: task[f], source: 'Durand' });
+        });
+      }
       if (originalTitleForCleanup && originalTitleForCleanup !== task.title) {
         task.history.push({ ts: now, field: 'title-cleaned', from: originalTitleForCleanup, to: task.title });
       }
@@ -552,7 +559,7 @@ function applyDataPatch_(doc, patch) {
       if (!Array.isArray(task.subitems) || !task.subitems.length) need.push('subitems');
       if (!task.priority) need.push('priority');
       if (!task.group) need.push('group');
-      if (!task.depends) need.push('dependsOnTitle');
+      if (!task.depends && !task.dependsNone) need.push('dependsOnTitle');
       // 2026-09-09 per Durand: infer topical tags instead of leaving the field blank.
       // There's no formal tags catalog yet (flagged separately as future work) — this
       // reuses whatever's already in use across the board as its de facto vocabulary,
@@ -718,6 +725,7 @@ function applyDataPatch_(doc, patch) {
     }
     Object.assign(t, patch.fields);
     if (Object.prototype.hasOwnProperty.call(t, 'assignee')) { if (!t.delegate && t.assignee) t.delegate = t.assignee; delete t.assignee; }
+    if (patch.fields && patch.fields.depends) delete t.dependsNone;
     var notesChanged = tsgNotesChanged_(t, prevTaskSnapshot.notes);
     t.history = t.history || [];
     tsgLogFieldChanges_(t.history, prevTaskSnapshot, t, TSG_TASK_DIFF_FIELDS, now, patch.source);
@@ -1773,6 +1781,15 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
   // progress additionally give way to anything he touched after the request was queued.
   var keep = function(field) { return !o.force && tsgUserTouched_(task, field, null); };
   var touchedSince = function(field) { return !o.force && o.sinceTs && tsgUserTouched_(task, field, o.sinceTs); };
+  // A hand-set value that Claude would have set materially differently is flagged, never
+  // overwritten (2026-09-17 per Durand: "flag it for manual review and explain everything in
+  // the note too").
+  if (o.force) {
+    // A forced re-run adopts Claude's values, so any open disagreement is settled by it.
+    delete task.reviewFlags;
+    task.tags = task.tags.filter(function(tg) { return tg !== TSG_DISAGREE_TAG; });
+  }
+  tsgFlagDisagreements_(task, est, need, keep, touchedSince, now, o);
   // The note is polished FIRST (per Durand); everything below was derived from that text.
   if (need.indexOf('notes') !== -1 && est.notes && est.notes !== String(task.notes || '').trim() && !touchedSince('notes') &&
       (o.reqNotes == null || tsgStripFallbackNotes_(o.reqNotes) === tsgStripFallbackNotes_(task.notes))) {
@@ -1962,12 +1979,65 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
       }
     }
   }
+  tsgSyncReviewNotes_(task);
   return applied;
+}
+
+// ---- Disagreement review (2026-09-17). One flag per field on task.reviewFlags
+// [{ts, field, mine, claude, rationale, source}]; the note carries a matching "REVIEW (date):"
+// paragraph regenerated after every pass; Triage puts it on the quick list. The dashboard
+// resolves a flag with "Keep mine" or "Use Claude's" (approveReview clears them all).
+var TSG_PRIORITY_RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+var TSG_DISAGREE_TAG = 'Review';
+function tsgMaterialDiff_(field, mine, theirs) {
+  if (theirs == null || theirs === '' || mine == null || mine === '') return false;
+  switch (field) {
+    case 'estHours': { var a = Number(mine), b = Number(theirs); if (isNaN(a) || isNaN(b)) return false; return Math.abs(a - b) > Math.max(1, 0.5 * a); }
+    case 'priority': { var ra = TSG_PRIORITY_RANK[mine], rb = TSG_PRIORITY_RANK[theirs]; if (ra == null || rb == null) return false; return Math.abs(ra - rb) >= 2; }
+    case 'timelineEnd': { var da = new Date(mine + 'T12:00:00'), db = new Date(theirs + 'T12:00:00'); if (isNaN(da.getTime()) || isNaN(db.getTime())) return false; return Math.abs(da - db) / 86400000 > 3; }
+    case 'progress': { var pa = Number(mine), pb = Number(theirs); if (isNaN(pa) || isNaN(pb)) return false; return Math.abs(pa - pb) >= 25; }
+    default: return String(mine).trim().toLowerCase() !== String(theirs).trim().toLowerCase();
+  }
+}
+function tsgFlagDisagreements_(task, est, need, keep, touchedSince, now, o) {
+  // Hours on a task with steps are a roll-up of the steps, never a judgment to disagree with.
+  var hasSteps = !!(task.subitems || []).length;
+  var checks = [['estHours', 'estHours', !hasSteps && keep('estHours')], ['taskType', 'taskType', keep('taskType')], ['priority', 'priority', keep('priority')],
+    ['group', 'group', keep('group')], ['location', 'location', keep('location')], ['due', 'timelineEnd', keep('timelineEnd')],
+    ['progress', 'progress', !!touchedSince('progress')]];
+  var flagged = [];
+  checks.forEach(function(c) {
+    var needKey = c[0], field = c[1];
+    if (!c[2] || need.indexOf(needKey) === -1) return;
+    // A pass that now agrees with the hand-set value settles any earlier flag on that field.
+    task.reviewFlags = (task.reviewFlags || []).filter(function(f) { return f && f.field !== field; });
+    if (!tsgMaterialDiff_(field, task[field], est[needKey])) return;
+    task.reviewFlags.push({ ts: now, field: field, mine: task[field], claude: est[needKey], rationale: est.rationale || '', source: o.source || 'Claude' });
+    task.history.push({ ts: now, field: 'disagreement', from: task[field], to: est[needKey], source: o.source || 'Claude' });
+    flagged.push(field);
+  });
+  // 'Review', not 'Triage': Triage hides an item from the delegate's page, and a disagreement
+  // must never take a task away from the person working it.
+  if (!(task.reviewFlags || []).length) { delete task.reviewFlags; task.tags = (task.tags || []).filter(function(tg) { return tg !== TSG_DISAGREE_TAG; }); }
+  else task.tags = Array.from(new Set((task.tags || []).concat([TSG_DISAGREE_TAG])));
+  return flagged;
+}
+function tsgReviewParagraph_(f) {
+  return 'REVIEW (' + String(f.ts || '').slice(0, 10) + '): Claude proposed ' + f.field + ' = ' + f.claude +
+    (f.rationale ? ' because ' + String(f.rationale).replace(/\s+/g, ' ').trim() : '') + '; your value ' + f.mine +
+    ' is kept. Resolve on the card: keep yours or take Claude\'s.';
+}
+function tsgStripReviewNotes_(notes) { return String(notes || '').replace(/\n*REVIEW \(\d{4}-\d{2}-\d{2}\): Claude proposed [^\n]*/g, '').trim(); }
+function tsgSyncReviewNotes_(task) {
+  var flags = (task.reviewFlags || []).filter(Boolean);
+  var base = tsgStripReviewNotes_(task.notes);
+  if (!flags.length) { if (base !== String(task.notes || '').trim()) task.notes = base; delete task.reviewFlags; return; }
+  task.notes = (base ? base + '\n\n' : '') + flags.map(tsgReviewParagraph_).join('\n');
 }
 
 /** Notes without the add-time "could not be determined ... Please confirm." fallback paragraphs. */
 function tsgStripFallbackNotes_(notes) {
-  return String(notes || '').replace(/\n*(?:Priority|Group) (?:could not be determined by the estimator|inferred from the most similar existing task)[^]*?Please confirm\.\s*/g, '').trim();
+  return tsgStripReviewNotes_(String(notes || '')).replace(/\n*(?:Priority|Group) (?:could not be determined by the estimator|inferred from the most similar existing task)[^]*?Please confirm\.\s*/g, '').trim();
 }
 /** True when a history line for `field` (after sinceTs, if given) came from a person rather than automation. */
 function tsgUserTouched_(task, field, sinceTs) {
@@ -1977,7 +2047,8 @@ function tsgUserTouched_(task, field, sinceTs) {
     var src = String(h.source || '');
     // No source = automation (the scheduler's auto-scheduled stamps, legacy rollups); every
     // hand edit since 2026-09 carries 'Durand' or a roster name.
-    return !!src && !/^(Claude|Maps|system)/i.test(src) && src !== 'unknown';
+    // Automation sources: Claude answers, Maps, the estimate roll-up, the scheduler, reminders.
+    return !!src && !/^(Claude|Maps|system|rollup|Scheduler|Reminder)/i.test(src) && src !== 'unknown';
   });
 }
 /** The fields the estimator is told to keep unless the notes clearly justify a change. */
@@ -1988,19 +2059,19 @@ function tsgCurrentSnapshot_(t) {
     subitems: (t.subitems || []).map(function(s) { return s.title; }) };
 }
 /** Which fields a notes change (or a Tidy re-run) re-judges on an existing task. */
+// 2026-09-17 per Durand ("Claude should be making judgement calls on all fields"): every
+// judgment field is asked for on every pass. A value Durand set by hand still wins at apply
+// time (tsgApplyEstimateToTask_), and a material disagreement is flagged for his review
+// instead of being silently dropped — see tsgFlagDisagreements_.
 function tsgEnrichNeedFor_(item, opts) {
   opts = opts || {};
-  var force = !!opts.force, sub = !!opts.subitem;
-  var keep = function(f) { return !force && tsgUserTouched_(item, f, null); };
-  var need = ['title', 'notes', 'tags'];
-  if (!sub) need.push('subitems');
-  if (!keep('estHours')) need.push('estHours');
-  if (!keep('taskType')) need.push('taskType');
-  if (!keep('priority')) need.push('priority');
-  if (!sub && !keep('group')) need.push('group');
-  if (!sub && !item.depends) need.push('dependsOnTitle');
-  if (!keep('location')) need.push('location');
-  if (!keep('timelineEnd')) need.push('due');
+  var sub = !!opts.subitem;
+  var need = ['title', 'notes', 'tags', 'estHours', 'taskType', 'priority', 'location', 'due'];
+  if (!sub) {
+    need.push('subitems', 'group');
+    // dependsNone: Durand cleared the dependency himself; never re-infer one.
+    if (!item.depends && !item.dependsNone) need.push('dependsOnTitle');
+  }
   if (!opts.progressExplicit && !(item.subitems || []).length && item.status !== 'Done' && !item.done) need.push('progress');
   return need;
 }
@@ -2978,7 +3049,7 @@ function backupTrackerFile_(key, payload) {
 // edits (replace_all) or 'unknown' if a caller genuinely didn't say. tags is diffed as
 // one whole-array entry rather than per-tag; every other field here is a plain scalar.
 var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned', 'dueTime', 'remindAt'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned', 'dueTime', 'remindAt', 'dependsNone'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
   'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done', 'location', 'travelMode', 'travelMethod', 'dueTime', 'remindAt'];
 
@@ -3753,7 +3824,7 @@ var TSG_ESTIMATE_SYSTEM =
   'Reuse an existing tag from EXISTING_TAGS whenever one genuinely fits — a real vocabulary only ' +
   'exists if the same handful of tags get reused, so prefer reuse over inventing a near-duplicate. ' +
   'Only propose a new short, plain tag if nothing existing fits; this should be uncommon. NEVER ' +
-  'return any of: Triage, Aging, Scheduling Stuck, Dependency Issue, needs-estimate, Claude — those ' +
+  'return any of: Triage, Review, Aging, Scheduling Stuck, Dependency Issue, needs-estimate, Claude — those ' +
   'are set by the system itself and mean something specific; returning one yourself would be wrong. ' +
   'Empty array is a completely normal answer — most tasks do not need a topical tag at all.\n\n' +
   TSG_PROGRESS_RULE + '\n\n' +
@@ -3834,7 +3905,7 @@ var TSG_ESTIMATE_SYSTEM =
 // Set by the system itself — never something the estimator should be allowed to hand back,
 // even if it ignores the instruction not to. Filtered out of parsed.tags defensively below.
 var TSG_REVIEW_TAG = 'Triage';
-var TSG_RESERVED_TAGS = ['Triage', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude'];
+var TSG_RESERVED_TAGS = ['Triage', 'Review', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude'];
 
 /**
  * Review gate (2026-09-15, per Durand: "when new tasks are pushed, tag them for review

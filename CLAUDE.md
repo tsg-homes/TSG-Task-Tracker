@@ -543,3 +543,36 @@ times when both are free before the deadline, duration from the estimate in Goog
   estimate + travel), flagged `dueTimeAuto`, history source "Scheduler", and a preset reminder
   follows. A time typed by hand (any edit through `onDueTimeChange_` clears the flag) is never
   overwritten.
+
+## Hand edits win, disagreements flagged (2026-09-17, backend 2026-09-17.4, dashboard UI 2026-09-17.8)
+
+Per Durand: "Claude should be making judgement calls on all fields that aren't calculated from a
+formula or system entered" and "fix the overwrite bug, but if there's a significant difference
+between that hand set value and the Claude generated value, flag it for manual review and
+explain everything in the note too".
+- BUG FIXED: dashboard `logHistory` wrote no `source`, and `tsgUserTouched_` reads a source-less
+  line as automation, so no dashboard edit was ever protected from enrichment. Every dashboard
+  history line now carries `source: 'Durand'` (the page is owner-only). `tsgUserTouched_` also
+  treats `rollup`, `Scheduler` and `Reminder` as automation (a roll-up line on a task with steps
+  used to look like a hand edit). Values typed into the New Task form get `Durand` history lines
+  at creation (`ownerCreated`), so they are hand-set from the start.
+- `tsgEnrichNeedFor_` asks for EVERY judgment field on every pass (title, notes, tags, estHours,
+  taskType, priority, location, due; plus subitems, group, dependsOnTitle on a task). Protection
+  moved to apply time: `keep(field)` still wins, and `tsgFlagDisagreements_` records a material
+  difference (`tsgMaterialDiff_`: hours off by more than max(1h, 50%); priority 2+ ranks; due
+  more than 3 days; progress 25+ points; type/group/location any difference; never hours on a
+  task with steps) as `task.reviewFlags[] {ts, field, mine, claude, rationale, source}`, a
+  `disagreement` history line, the tag `Review` (NOT Triage: Triage hides an item from the
+  delegate's page and a disagreement must never do that; `Review` is reserved, never handed out
+  by Claude) and a "REVIEW (date): Claude proposed …; your value … is kept." paragraph
+  regenerated at the end of the note by `tsgSyncReviewNotes_` (stripped by
+  `tsgStripReviewNotes_` / `tsgStripFallbackNotes_` for stale-notes comparisons). A later pass
+  that agrees clears the flag; a forced re-run (Tidy) adopts Claude's values and clears them all.
+- Dashboard: `Review` renders as a "Claude disagrees" chip that opens the card; the modal's
+  "Claude disagrees" row lists each flag with "Keep mine" / "Use Claude's" (`resolveReviewFlag`:
+  applies the value with a Durand history line or logs `review: kept …`, drops the flag, the tag
+  and the paragraph when none remain). The Triage toolbar filter also shows Review-tagged tasks.
+- Dependencies: removing the last one on the dashboard sets `dependsNone: true` (in
+  `TSG_TASK_DIFF_FIELDS`); add_task and the enricher then never ask for `dependsOnTitle`; adding a
+  dependency by hand (dashboard or an `update_task` with `depends`) lifts it; the Depends row
+  says "none, cleared by you" with a refresh button (`allowDependsInfer`).

@@ -880,6 +880,62 @@ setTimeout(async () => {
     a.taskType = prevTypes[0]; b.taskType = prevTypes[1]; if (prevDel[0]) a.delegate = prevDel[0]; if (prevDel[1]) b.delegate = prevDel[1];
   });
 
+  // Hand edits win (2026-09-17): every dashboard edit is stamped Durand; dependency clears stick; disagreements resolve
+  tryCall('logHistory stamps every dashboard edit with source Durand', () => {
+    const t = w.findTask(1);
+    w.logHistory(t, 'priority', 'Low', 'High');
+    const h = t.history[t.history.length - 1];
+    if (h.source !== 'Durand' || h.field !== 'priority') throw new Error('no source: ' + JSON.stringify(h));
+  });
+  tryCall('removing the last dependency sets dependsNone; adding one lifts it', () => {
+    const t = w.findTask(1);
+    t.depends = '3'; delete t.dependsNone;
+    w.modalRemoveDepends(1, 3);
+    if (t.depends !== '' || t.dependsNone !== true) throw new Error('not marked: ' + t.depends + ' ' + t.dependsNone);
+    if (!doc.getElementById('modalMeta').innerHTML.includes('cleared by you')) throw new Error('no cleared note in the modal');
+    w.allowDependsInfer(1);
+    if (t.dependsNone) throw new Error('allow again did not clear');
+    t.dependsNone = true;
+    doc.querySelector('#modalMeta .modal-depends-select').value = '2';
+    w.modalAddDepends(1, doc.querySelector('#modalMeta .modal-depends-select'));
+    if (t.depends !== '2' || t.dependsNone) throw new Error('add did not lift: ' + t.depends + ' ' + t.dependsNone);
+    t.depends = ''; w.closeTaskCard();
+  });
+  tryCall('a Review tag renders a "Claude disagrees" chip that opens the card with the flag row', () => {
+    const t = w.findTask(1);
+    t.tags.push('Review');
+    t.reviewFlags = [{ ts: '2026-09-17T12:00:00Z', field: 'estHours', mine: 1, claude: 5, rationale: 'a full reconciliation' }];
+    t.notes = 'Current state: waiting.\n\nREVIEW (2026-09-17): Claude proposed estHours = 5 because a full reconciliation; your value 1 is kept. Resolve on the card: keep yours or take Claude\'s.';
+    t.estHours = 1;
+    w.setView('board'); w.renderAll();
+    const chip = doc.querySelector('tr.task-row[data-id="1"] .tag-review');
+    if (!chip || !chip.textContent.includes('Claude disagrees')) throw new Error('no chip');
+    chip.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+    const html = doc.getElementById('modalMeta').innerHTML;
+    if (!html.includes('Claude disagrees') || !html.includes('Keep mine') || !html.includes("Use Claude's")) throw new Error('flag row missing');
+  });
+  tryCall("Use Claude's applies the value, logs it as Durand's decision, clears the flag, the tag and the note paragraph", () => {
+    w.resolveReviewFlag(1, 'estHours', true);
+    const t = w.findTask(1);
+    if (t.estHours !== 5) throw new Error('value not applied: ' + t.estHours);
+    if (t.reviewFlags || t.tags.includes('Review')) throw new Error('flag or tag left behind');
+    if (/REVIEW \(/.test(t.notes)) throw new Error('paragraph left in notes');
+    if (!t.history.some(h => h.field === 'estHours' && h.to === 5 && h.source === 'Durand')) throw new Error('no history');
+    t.estHours = 1;
+  });
+  tryCall('Keep mine leaves the value and records the decision; the Triage filter shows Review-tagged tasks too', () => {
+    const t = w.findTask(1);
+    t.tags.push('Review'); t.reviewFlags = [{ ts: '2026-09-17T12:00:00Z', field: 'priority', mine: 'Low', claude: 'Critical', rationale: 'x' }];
+    t.priority = 'Low';
+    w.toggleTriageFilter();
+    if (!doc.querySelector('tr.task-row[data-id="1"]')) throw new Error('Review task hidden by the Triage filter');
+    w.toggleTriageFilter();
+    w.resolveReviewFlag(1, 'priority', false);
+    if (t.priority !== 'Low' || t.reviewFlags || t.tags.includes('Review')) throw new Error('keep mine misbehaved');
+    if (!t.history.some(h => h.field === 'review' && /kept Low/.test(h.to))) throw new Error('no decision line');
+    w.closeTaskCard();
+  });
+
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

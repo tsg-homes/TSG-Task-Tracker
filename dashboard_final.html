@@ -564,6 +564,10 @@
   :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
   .icon-btn:hover { background: var(--surface-2); color: var(--text-primary); }
   .pin-btn { font-size: 12px; opacity: 0.35; margin-right: 4px; vertical-align: middle; }
+  .tag-chip.tag-review { background: rgba(120, 90, 220, 0.15); color: #7a5cd6; border-color: rgba(120, 90, 220, 0.4); cursor: pointer; }
+  .review-flags { display: flex; flex-direction: column; gap: 6px; }
+  .review-flag { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+  .review-flag code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
   .remind-wrap { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 12px; }
   .remind-select { font-size: 11px; padding: 2px 4px; }
   .sub-time { width: 84px; margin-left: 4px; }
@@ -1551,7 +1555,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-17.7';
+  const UI_VERSION = '2026-09-17.8';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1834,7 +1838,7 @@
     // Anything that depended on the source now depends on the target.
     TASKS.forEach(x => { if (x !== src && dependsList(x).includes(src.id)) { x.depends = [...new Set(dependsList(x).map(d => d === src.id ? dst.id : d))].filter(d => d !== x.id).join(','); } });
     dst.history = dst.history || [];
-    dst.history.push({ ts: new Date().toISOString(), field: 'merged-from', from: null, to: '#' + src.id + ' "' + src.title + '" (notes, ' + (src.subitems || []).length + ' subtasks, ' + (src.docs || []).length + ' links, tags)' });
+    dst.history.push({ ts: new Date().toISOString(), source: 'Durand', field: 'merged-from', from: null, to: '#' + src.id + ' "' + src.title + '" (notes, ' + (src.subitems || []).length + ' subtasks, ' + (src.docs || []).length + ' links, tags)' });
     TASKS = TASKS.filter(x => x.id !== src.id);
     currentFilteredOrder = currentFilteredOrder.filter(x => x !== src.id);
     renderAll(); openTaskCard(dst.id); scheduleSave();
@@ -2650,7 +2654,7 @@
     // renderCompletedCardsGroupHtml_), and Timeline/Workload show Done work items but keep
     // them out of the workload hour totals (computeDailyHours already filters status !==
     // 'Done' there). matchesFilters itself no longer touches Done at all.
-    if (triageOnly && (t.tags || []).indexOf('Triage') === -1) return false;
+    if (triageOnly && (t.tags || []).indexOf('Triage') === -1 && (t.tags || []).indexOf('Review') === -1) return false;
     if (status && t.status !== status) return false;
     if (priority && t.priority !== priority) return false;
     if (group && t.group !== group) return false;
@@ -4906,6 +4910,40 @@
   // filter is the one quick list) and is invisible on their page until the tag is cleared.
   // The row chip is that clear: it strips Triage from the task and every subitem and logs
   // the release. Subitem-level holds also clear through the subitem row's own chip.
+  // Claude disagrees with a hand-set value (2026-09-17): the chip opens the card, where each
+  // flag has "Keep mine" / "Use Claude's". Never hides the task from a delegate's page.
+  function disagreeChipHtml(id) {
+    return `<button type="button" class="tag-chip tag-review review-chip" onclick="event.stopPropagation(); openTaskCard(${id})" title="Claude proposed a materially different value for a field you set by hand. Open the card to keep yours or take Claude's.">Claude disagrees</button>`;
+  }
+  function stripReviewNotes_(notes) { return String(notes || '').replace(/\n*REVIEW \(\d{4}-\d{2}-\d{2}\): Claude proposed [^\n]*/g, '').trim(); }
+  function reviewFlagsRowHtml_(t) {
+    const flags = (t.reviewFlags || []).filter(Boolean);
+    if (!flags.length) return '';
+    const items = flags.map(f => `<div class="review-flag"><b>${escapeHtml(f.field)}</b>: yours <code>${escapeHtml(String(f.mine))}</code> · Claude <code>${escapeHtml(String(f.claude))}</code>${f.rationale ? ' <span class="hist-time">' + escapeHtml(f.rationale) + '</span>' : ''}
+      <button type="button" class="btn small" onclick="resolveReviewFlag(${t.id}, '${jsAttr(f.field)}', false)">Keep mine</button>
+      <button type="button" class="btn small primary" onclick="resolveReviewFlag(${t.id}, '${jsAttr(f.field)}', true)">Use Claude's</button></div>`).join('');
+    return `<div class="modal-row"><b>Claude disagrees</b><span class="modal-source review-flags">${items}</span></div>`;
+  }
+  function resolveReviewFlag(id, field, useClaude) {
+    const t = findTask(id);
+    if (!t) return;
+    const flag = (t.reviewFlags || []).find(f => f && f.field === field);
+    if (!flag) return;
+    if (useClaude) {
+      const before = t[field];
+      let val = flag.claude;
+      if (field === 'estHours' || field === 'progress') val = Number(val);
+      t[field] = val;
+      if (field === 'timelineEnd') t.dueOverride = true;
+      logHistory(t, field === 'timelineEnd' ? 'due' : field, before == null ? null : before, val);
+    } else {
+      logHistory(t, 'review', field, 'kept ' + String(t[field]) + ' over Claude\'s ' + String(flag.claude));
+    }
+    t.reviewFlags = (t.reviewFlags || []).filter(f => f && f.field !== field);
+    if (!t.reviewFlags.length) { delete t.reviewFlags; t.tags = (t.tags || []).filter(x => x !== 'Review'); t.notes = stripReviewNotes_(t.notes); }
+    else { t.notes = stripReviewNotes_(t.notes) + '\n\n' + t.reviewFlags.map(f => 'REVIEW (' + String(f.ts || '').slice(0, 10) + '): Claude proposed ' + f.field + ' = ' + f.claude + (f.rationale ? ' because ' + f.rationale : '') + '; your value ' + f.mine + ' is kept. Resolve on the card: keep yours or take Claude\'s.').join('\n'); }
+    renderAll(); openTaskCard(id); scheduleSave();
+  }
   function reviewChipHtml(id) {
     return `<button type="button" class="tag-chip tag-warn review-chip" onclick="event.stopPropagation(); approveReview(${id})" title="Triage: check the estimate and/or the delegate, then click to clear. Until then it is held off the delegate's view.">Triage &#10003;</button>`;
   }
@@ -4935,7 +4973,7 @@
     const pct = taskProgress(t);
     const hasSubs = t.subitems && t.subitems.length > 0;
     const subOpen = hasSubs && expandedSubtasks.has(t.id);
-    const tagsHtml = (t.tags || []).map(tag => tag === 'Triage' ? reviewChipHtml(t.id) : tagChipHtml(tag)).join('');
+    const tagsHtml = (t.tags || []).map(tag => tag === 'Triage' ? reviewChipHtml(t.id) : tag === 'Review' ? disagreeChipHtml(t.id) : tagChipHtml(tag)).join('');
     let html = `
       <tr class="task-row" data-id="${t.id}" onclick="onRowClick(event, ${t.id})">
         <td>${hasSubs ? `<button class="icon-btn" onclick="toggleSub(${t.id})">${subOpen ? '▾' : '▸'}</button>` : ''}</td>
@@ -4985,9 +5023,11 @@
   // ---- Interaction handlers ----
   function findTask(id) { return TASKS.find(t => t.id === id); }
 
+  // Every dashboard edit is Durand's own (the page is owner-only under DOMAIN access), and
+  // the source is what tells the enricher a value was set by hand (2026-09-17).
   function logHistory(t, field, from, to) {
     if (!t.history) t.history = [];
-    t.history.push({ ts: new Date().toISOString(), field: field, from: from, to: to });
+    t.history.push({ ts: new Date().toISOString(), field: field, from: from, to: to, source: 'Durand' });
   }
 
   function onPillChange(el) {
@@ -5988,6 +6028,7 @@
     list.push(depId);
     const before = t.depends;
     t.depends = list.join(',');
+    delete t.dependsNone;
     logHistory(t, 'depends', before || '—', t.depends);
     cascadeDependents(depId);
     renderAll(); openTaskCard(id); scheduleSave();
@@ -5997,7 +6038,16 @@
     if (!t) return;
     const before = t.depends;
     t.depends = dependsList(t).filter(x => x !== depId).join(',');
+    // Cleared by hand: the enricher must not infer one back (2026-09-17, per Durand).
+    if (!t.depends) t.dependsNone = true;
     if (before !== t.depends) logHistory(t, 'depends', before || '—', t.depends || '—');
+    renderAll(); openTaskCard(id); scheduleSave();
+  }
+  function allowDependsInfer(id) {
+    const t = findTask(id);
+    if (!t) return;
+    delete t.dependsNone;
+    logHistory(t, 'dependsNone', true, false);
     renderAll(); openTaskCard(id); scheduleSave();
   }
   function modalRemoveTag(id, idx) {
@@ -6088,7 +6138,7 @@
     document.getElementById('modalMeta').innerHTML = [
       `<div class="modal-row"><b>Group</b><select class="due-input modal-group-select" onchange="modalGroupChange(${id}, this)">${groupSelectOptions_(t.group)}</select></div>`,
       `<div class="modal-row"><b>Merge</b><span class="modal-tags"><select class="due-input modal-merge-select" id="mergeTarget"><option value="">Merge this task into…</option>${mergeOptionsHtml_(t)}</select><button type="button" class="btn small" onclick="mergeTaskInto(${id})">Merge</button></span></div>`,
-      `<div class="modal-row"><b>Depends on</b><span class="modal-tags">${dependsChipsHtml_(t)}<select class="due-input modal-depends-select" onchange="modalAddDepends(${id}, this)"><option value="">+ add a task this waits on…</option>${dependsOptionsHtml_(t)}</select></span></div>`,
+      `<div class="modal-row"><b>Depends on</b><span class="modal-tags">${dependsChipsHtml_(t)}${t.dependsNone && !dependsList(t).length ? `<span class="hist-time">none, cleared by you (Claude won't infer one) <button type="button" class="icon-btn" onclick="allowDependsInfer(${id})" title="Let Claude infer a dependency again">&#8635;</button></span>` : ''}<select class="due-input modal-depends-select" onchange="modalAddDepends(${id}, this)"><option value="">+ add a task this waits on…</option>${dependsOptionsHtml_(t)}</select></span></div>`,
       `<div class="modal-row"><b>Owner</b><span class="modal-owner-wrap" title="Accountable for this task — confirming delegated subtasks are actually done is the owner's job">${avatarHtml(t.owner, 'lg')}${ownerSelect(id, t.owner)}</span></div>`,
       `<div class="modal-row"><b>Delegate</b><span class="modal-owner-wrap" title="Who is doing this task. It appears on their own page (subtasks can also be delegated one by one below).">${avatarHtml(taskDelegate(t), 'lg')}${taskDelegateSelect(id, taskDelegate(t))}</span></div>`,
       `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}</div>`,
@@ -6099,6 +6149,7 @@
       `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button>${t.location ? `<a class="btn small" href="${escapeHtml(directionsUrl_(t))}" target="_blank" rel="noopener" title="Open directions in Google Maps">&#128506; Directions</a><button type="button" class="btn small" onclick="sendDirections(${id}, this)" title="Email the Maps directions link to your phone">&#128241; Send to phone</button>` : ''}</span></div>`,
       `<div class="modal-row"><b>Estimate</b><span class="modal-est-wrap"><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs${(pendingJudgment_(id, 'enrich') || pendingJudgment_(id, 'estimate')) ? ' <span class="hist-time" title="Queued for the hourly Claude Routine: the title, notes and fields update when it answers">· queued for Claude</span>' : ''}${travelRowHtml_(t)}</span></div>`,
       `<div class="modal-row"><b>Progress</b><span>${pct}%</span></div>`,
+      reviewFlagsRowHtml_(t),
       `<div class="modal-row"><b>Tags</b><span class="modal-tags">${tagsChips}<input type="text" class="text-input tag-input" list="tagOptions" placeholder="+ tag" spellcheck="true" onkeydown="if(event.key==='Enter'){event.preventDefault();modalAddTagFrom(${id}, this);}" onchange="modalAddTagFrom(${id}, this)"></span></div>`,
       `<div class="modal-row"><b>Source</b><span class="modal-source">${t.doc ? `<a href="${escapeHtml(safeUrl(t.doc))}" target="_blank" rel="noopener" class="doc-link-text">${escapeHtml(t.doc)}</a>` : '<span class="modal-empty">Not linked — add the email or meeting doc this came from</span>'}<button type="button" class="icon-btn" onclick="modalEditDoc(${id})" title="${t.doc ? 'Edit source link' : 'Add source link'}">${t.doc ? '&#9998;' : '+ link'}</button></span></div>`,
       `<div class="modal-row"><b>Links</b><span class="modal-source">${docsListHtml(t.docs, id, null)}<button type="button" class="icon-btn" onclick="addManualDoc(${id}, null)" title="Add a link or file">+ link</button></span></div>`,
