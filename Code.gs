@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-17.4';
+const TSG_CODE_VERSION = '2026-09-17.5';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -359,6 +359,7 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
       driveCands: req.driveCandidates ? { files: req.driveCandidates } : null,
       calCands: req.calendarCandidates ? { events: req.calendarCandidates } : null,
       mailCands: req.mailCandidates ? { threads: req.mailCandidates } : null,
+      currentSteps: req.currentSteps || null,
       deferred: true, sinceTs: req.ts || null, reqNotes: req.notes, force: !!req.force,
       subitem: req.subIdx != null, parent: t
     });
@@ -736,6 +737,9 @@ function applyDataPatch_(doc, patch) {
     tsgStampLifecycleTimestamps_(t, now);
     if (patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'subitems')) {
       tsgStampSubitemTouchesForTask_(prevSubitems, t.subitems, now, patch.source);
+      // The parent's own enrich above already carried every open step; otherwise the new or
+      // changed steps get ONE steps-only call between them (2026-09-17).
+      if (!notesChanged) { var changedIdx = tsgChangedStepIndices_(prevSubitems, t.subitems); if (changedIdx.length) tsgEnrichSteps_(doc, t, now, patch.source || 'unknown', changedIdx); }
       (t.subitems || []).forEach(function(s, i) {
         var p = prevSubitems[i];
         var fresh = !p || String(p.title || '') !== String(s.title || '') || String(p.delegate || '') !== String(s.delegate || '');
@@ -812,7 +816,7 @@ function applyDataPatch_(doc, patch) {
     }
     t.subitems = t.subitems || [];
     t.subitems.push(patch.subitem);
-    if (String(patch.subitem.notes || '').trim()) tsgEnrichItem_(doc, t, patch.subitem, t.subitems.length - 1, now, patch.source || 'unknown', {});
+    tsgEnrichItem_(doc, t, patch.subitem, t.subitems.length - 1, now, patch.source || 'unknown', { allowEmptyNotes: true });
     if (tsgIsDelegatePerson_(patch.subitem.delegate)) {
       t.history = t.history || [];
       tsgHoldForReview_(patch.subitem, t.history, now, 'Subitem "' + patch.subitem.title + '" held off ' + patch.subitem.delegate + "'s view until reviewed");
@@ -833,6 +837,13 @@ function applyDataPatch_(doc, patch) {
     }
   } else if (patch.op === 'judgment') {
     tsgApplyJudgmentOp_(doc, patch, now);
+  } else if (patch.op === 'request_steps') {
+    // Backfill (2026-09-17): one steps-only call for the open steps of a task that still have
+    // no estimate (or the given indices). Steps that already carry hours are left alone.
+    const st = doc.tasks.find(function(x) { return x.id === patch.id; });
+    if (!st) throw new Error('request_steps: task id not found: ' + patch.id);
+    var want = Array.isArray(patch.indices) ? patch.indices : (st.subitems || []).map(function(x, i) { return (x && !x.done && x.status !== 'Done' && !(typeof x.estHours === 'number' && x.estHours > 0)) ? i : -1; }).filter(function(i) { return i >= 0; });
+    if (want.length) tsgEnrichSteps_(doc, st, now, patch.source || 'unknown', want);
   } else if (patch.op === 'request_tidy') {
     // The Tidy button (2026-09-16, per Durand: "the tidy should now just be automatic"): a
     // full re-run of the enrichment on one task, applied when the answer lands, no review
@@ -1851,13 +1862,39 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
     var perStep = (o.personCreated && typeof task.estHours === 'number' && task.estHours > 0)
       ? Math.max(0.25, Math.round((task.estHours / est.subitems.length) * 4) / 4) : null;
     task.subitems = (task.subitems || []).concat(est.subitems.map(function(s) {
+      // 2026-09-17: a minted step arrives with its own hours / type / priority from the same
+      // answer, so it never needs a second call to be estimated.
+      var hours = (typeof s.estHours === 'number') ? s.estHours : perStep;
       return { title: s.title, done: false, delegate: tsgDefaultSubitemDelegate_(task), status: 'Not Started',
-        priority: task.priority || 'Medium', tags: [], timelineEnd: '', progress: 0,
-        depends: '', doc: '', notes: '', estHours: perStep, estDays: null,
-        estSource: perStep != null ? 'claude' : 'none', taskType: 'Actionable Task',
+        priority: s.priority || task.priority || 'Medium', tags: [], timelineEnd: '', progress: 0,
+        depends: '', doc: '', notes: '', estHours: hours, estDays: null,
+        estSource: hours != null ? 'claude' : 'none', taskType: s.taskType || 'Actionable Task',
         history: [{ ts: now, field: 'created', from: null, to: null, source: o.source || 'unknown' }] };
     }));
     applied.push('subitems (+' + est.subitems.length + ')');
+  }
+  // Existing open steps answered in the same call (2026-09-17, per Durand: "wait for that
+  // before enriching them on their own so there's only 1 call, not 2"). Each step's answer
+  // goes through the same parse and apply as a task, so hand-set protection and
+  // disagreement flags work per step.
+  if (!o.subitem && need.indexOf('steps') !== -1 && Array.isArray(est.steps) && est.steps.length) {
+    var stepsApplied = 0;
+    est.steps.forEach(function(st) {
+      var guard = (o.currentSteps || []).filter(function(c) { return c && c.index === st.index; })[0] || null;
+      var sub = (task.subitems || [])[st.index] || null;
+      // Deferred answers: the list may have moved; fall back to the step's title at request time.
+      if (guard && (!sub || String(sub.title || '') !== String(guard.title || ''))) {
+        sub = (task.subitems || []).filter(function(x) { return x && String(x.title || '') === String(guard.title || ''); })[0] || null;
+      }
+      if (!sub || sub.done || sub.status === 'Done') return;
+      var stepNeed = tsgEnrichNeedFor_(sub, { subitem: true });
+      var stepEst = tsgEstimateParse_(JSON.stringify(st.answer || {}), stepNeed, sub.title, {});
+      if (!stepEst || stepEst.source === 'none') return;
+      tsgApplyEstimateToTask_(doc, sub, stepEst, stepNeed, { now: now, source: o.source, subitem: true, parent: task, deferred: o.deferred,
+        sinceTs: o.sinceTs, force: o.force, reqNotes: guard ? String(guard.notes || '') : String(sub.notes || '').trim() });
+      stepsApplied++;
+    });
+    if (stepsApplied) applied.push('steps (' + stepsApplied + ' re-judged)');
   }
   var fallbackFixed = false;
   if (need.indexOf('priority') !== -1 && est.priority && !keep('priority')) { if (task.priority !== est.priority) { fallbackFixed = true; task.history.push({ ts: now, field: 'priority', from: task.priority || null, to: est.priority, source: o.source || 'unknown' }); } task.priority = est.priority; applied.push('priority'); }
@@ -2092,12 +2129,17 @@ function tsgEnrichTask_(doc, task, now, source, opts) {
 function tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts) {
   opts = opts || {};
   var sub = subIdx != null;
-  if (!String(item.notes || '').trim() && !opts.force) {
+  // A step's title alone is enough to estimate it (2026-09-17); a task still needs notes or a
+  // forced run, since add_task already judged its blanks from the title.
+  if (!String(item.notes || '').trim() && !opts.force && !opts.allowEmptyNotes && !sub) {
     // Nothing to derive from; an emptied note just resets a notes-driven bar.
     if (!opts.progressExplicit && !(item.subitems || []).length && item.status !== 'Done' && !item.done && item.progress !== 0) tsgSetProgressFromNotes_(item, 0);
     return null;
   }
-  var need = opts.need || tsgEnrichNeedFor_(item, Object.assign({ subitem: sub }, opts));
+  var need = (opts.need || tsgEnrichNeedFor_(item, Object.assign({ subitem: sub }, opts))).slice();
+  var currentSteps = sub ? null : tsgOpenStepsSnapshot_(item, opts.stepIndices || null);
+  if (currentSteps && currentSteps.length) { if (need.indexOf('steps') === -1) need.push('steps'); }
+  else need = need.filter(function(f) { return f !== 'steps'; });
   if (!need.length) return null;
   var board = tsgBoardContext_(doc);
   var driveCands = null, calCands = null, mailCands = null;
@@ -2111,12 +2153,14 @@ function tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts) {
   }
   var current = tsgCurrentSnapshot_(item);
   if (sub) { current.subtask = true; current.parentTitle = parent.title; }
+  if (sub && parent) current.parentNotes = String(parent.notes || '').trim().slice(0, 600);
   var context = { groups: board.groups, openTitles: board.openTitles, existingTags: board.existingTags, batchSiblings: [],
     current: current, target: { taskId: parent.id, subIdx: sub ? subIdx : undefined }, subTitle: sub ? item.title : undefined,
     driveCandidates: driveCands ? driveCands.listText : '', driveCandidateCount: driveCands ? driveCands.files.length : 0,
     calendarCandidates: calCands ? calCands.listText : '', calendarCandidateCount: calCands ? calCands.events.length : 0,
     driveList: driveCands ? driveCands.files : null, calendarList: calCands ? calCands.events : null,
-    mailCandidates: mailCands ? mailCands.listText : '', mailCandidateCount: mailCands ? mailCands.threads.length : 0, mailList: mailCands ? mailCands.threads : null };
+    mailCandidates: mailCands ? mailCands.listText : '', mailCandidateCount: mailCands ? mailCands.threads.length : 0, mailList: mailCands ? mailCands.threads : null,
+    currentSteps: currentSteps };
   var est = tsgEstimateTask_(item.title, item.notes, item.priority, need, context);
   if (est.source === 'queued' || est.source === 'none') {
     if (est.source === 'queued' && opts.force && doc.meta && doc.meta.judgments) {
@@ -2126,8 +2170,39 @@ function tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts) {
     return est;
   }
   tsgApplyEstimateToTask_(doc, item, est, need, { now: now, source: source || 'Claude', force: !!opts.force, reqNotes: String(item.notes || '').trim(),
-    subitem: sub, parent: parent, driveCands: driveCands, calCands: calCands, mailCands: mailCands });
+    subitem: sub, parent: parent, driveCands: driveCands, calCands: calCands, mailCands: mailCands, currentSteps: currentSteps });
   return est;
+}
+/** The open steps of a task as the estimator sees them (index + current values), optionally only some indices. */
+function tsgOpenStepsSnapshot_(task, indices) {
+  var out = [];
+  (task.subitems || []).forEach(function(s, i) {
+    if (!s || s.done || s.status === 'Done') return;
+    if (indices && indices.indexOf(i) === -1) return;
+    if (out.length >= 30) return;
+    out.push({ index: i, title: s.title || '', notes: String(s.notes || '').trim().slice(0, 600),
+      estHours: (typeof s.estHours === 'number') ? s.estHours : null, taskType: s.taskType || '', priority: s.priority || '',
+      progress: (typeof s.progress === 'number') ? s.progress : 0, location: s.location || '', due: s.timelineEnd || '', delegate: s.delegate || '' });
+  });
+  return out;
+}
+/** One steps-only call for a task: re-judge the given open steps (all open when indices is null). */
+function tsgEnrichSteps_(doc, task, now, source, indices) {
+  return tsgEnrichItem_(doc, task, task, null, now, source, { need: ['steps'], stepIndices: indices, skipLinks: true, allowEmptyNotes: true });
+}
+/** Indices of steps that are new since prev (by title) or whose notes changed at the same index. */
+function tsgChangedStepIndices_(prevSubs, nextSubs) {
+  var prevTitles = (prevSubs || []).map(function(s) { return String(s && s.title || '').trim().toLowerCase(); });
+  var out = [];
+  (nextSubs || []).forEach(function(s, i) {
+    if (!s || s.done || s.status === 'Done') return;
+    var title = String(s.title || '').trim().toLowerCase();
+    var isNew = prevTitles.indexOf(title) === -1;
+    var q = (prevSubs || [])[i];
+    var notesMoved = !!q && String(q.title || '').trim().toLowerCase() === title && tsgNotesChanged_(s, q.notes);
+    if (isNew || notesMoved) out.push(i);
+  });
+  return out;
 }
 
 function tsgMatchFromParsed_(parsed, candidateCount) {
@@ -3794,7 +3869,9 @@ var TSG_ESTIMATE_SYSTEM =
   '- Training a group, including prep and materials: 6-12h\n' +
   'Multiply for genuine repetition: a task spanning 12 agents is not a 1-agent task.\n' +
   'Do not pad. Most tasks are small. If the task is one message to one person, say 0.25.\n' +
-  'subitems: only concrete steps that are actually stated or clearly implied by the title/notes. ' +
+  'subitems: NEW steps only — concrete steps actually stated or clearly implied by the title/notes ' +
+  'and not already present in CURRENT_STEPS. Each is {"title", "estHours", "taskType", "priority"} ' +
+  'judged by the same rules as the task\'s own fields (hands-on hours from the calibration table). ' +
   'Empty array if the task is a single atomic action. Never invent work that is not there.\n' +
   'taskType is one of: "Email"|"Call"|"Text/Chat"|"Meeting"|"Claude"|"Actionable Task". Use "Email" or ' +
   '"Call" when the whole point of the task is sending one email or making one call. Use ' +
@@ -3861,6 +3938,12 @@ var TSG_ESTIMATE_SYSTEM =
   'web when you can). Never a Google Drive, Gmail or Calendar link (those are matched separately), ' +
   'never a search-results page, never a guess. null when the task names nothing external — ' +
   'that is the usual answer.\n\n' +
+  'steps — ONLY when CURRENT_STEPS is given: one entry per listed index, {"index", "title", "notes", ' +
+  '"estHours", "taskType", "priority", "tags", "progress", "location", "due"}, each judged exactly as ' +
+  'the same-named task field above but for THAT step (its own title and notes, read against the ' +
+  'parent\'s title and notes for context). A step you have nothing to change returns its current ' +
+  'values. Never drop or reorder an index; never add one that is not listed (new steps go in ' +
+  '"subitems").\n\n' +
   'title — ONLY when requested: the task title rewritten as one imperative line, at most 80 ' +
   'characters, specific (who/what), keeping names, addresses and numbers. When the notes are a ' +
   'free-flow thought and the title is a placeholder, derive the title from the notes. Return the ' +
@@ -3971,7 +4054,13 @@ function tsgEstimateSchema_(need) {
   var all = {
     estHours: { type: 'number' },
     taskType: { type: 'string', enum: TSG_TASK_TYPE_VALUES },
-    subitems: { type: 'array', items: { type: 'string' } },
+    subitems: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['title', 'estHours', 'taskType', 'priority'],
+      properties: { title: { type: 'string' }, estHours: nullable({ type: 'number' }), taskType: nullable({ type: 'string', enum: TSG_TASK_TYPE_VALUES }), priority: nullable({ type: 'string', enum: TSG_PRIORITY_VALUES }) } } },
+    steps: { type: 'array', items: { type: 'object', additionalProperties: false,
+      required: ['index', 'title', 'notes', 'estHours', 'taskType', 'priority', 'tags', 'progress', 'location', 'due'],
+      properties: { index: { type: 'integer' }, title: { type: 'string' }, notes: { type: 'string' }, estHours: nullable({ type: 'number' }),
+        taskType: nullable({ type: 'string', enum: TSG_TASK_TYPE_VALUES }), priority: nullable({ type: 'string', enum: TSG_PRIORITY_VALUES }),
+        tags: { type: 'array', items: { type: 'string' } }, progress: nullable({ type: 'integer' }), location: nullable({ type: 'string' }), due: nullable({ type: 'string' }) } } },
     priority: nullable({ type: 'string', enum: TSG_PRIORITY_VALUES }),
     group: nullable({ type: 'string' }),
     dependsOnTitle: nullable({ type: 'string' }),
@@ -4038,6 +4127,9 @@ function tsgEstimatePrompt_(title, notes, priority, need, context) {
   if (need.indexOf('mailMatch') !== -1) {
     userParts.push('MAIL_CANDIDATES (recent Gmail threads in the Director of Operations\' mailbox):\n' + (context.mailCandidates || '(none)'));
   }
+  if (need.indexOf('steps') !== -1) {
+    userParts.push('CURRENT_STEPS (the open steps already on this task; answer "steps" with exactly one entry per index):\n' + JSON.stringify(context.currentSteps || []));
+  }
   blocks.push({ type: 'text', text: userParts.join('\n\n') });
 
   var opts = { schema: tsgEstimateSchema_(need) };
@@ -4055,7 +4147,7 @@ function tsgEstimateParse_(raw, need, title, context) {
     return {
       estHours: null, taskType: null, subitems: [],
       priority: null, group: null, dependsOnTitle: null, progress: null,
-      driveMatch: null, meetingMatch: null, mailMatch: null, webLinks: null, title: null, notes: null, location: null, due: null,
+      driveMatch: null, meetingMatch: null, mailMatch: null, webLinks: null, steps: null, title: null, notes: null, location: null, due: null,
       tags: ['needs-estimate'], source: 'none', rationale: null, needsConfirmation: false
     };
   }
@@ -4063,7 +4155,7 @@ function tsgEstimateParse_(raw, need, title, context) {
   var out = {
     estHours: null, taskType: null, subitems: [],
     priority: null, group: null, dependsOnTitle: null, progress: null,
-    driveMatch: null, meetingMatch: null, mailMatch: null, webLinks: null, title: null, notes: null, location: null, due: null,
+    driveMatch: null, meetingMatch: null, mailMatch: null, webLinks: null, steps: null, title: null, notes: null, location: null, due: null,
     tags: [], source: 'claude', rationale: parsed.rationale || null,
     // Only meaningful when estHours was actually requested/returned this call — see the
     // "Triage" tag repurpose (2026-08-26): a self-assessed low-confidence estimate gets
@@ -4079,9 +4171,21 @@ function tsgEstimateParse_(raw, need, title, context) {
     out.taskType = parsed.taskType;
   }
   if (need.indexOf('subitems') !== -1) {
-    out.subitems = (parsed.subitems || []).filter(function (s) { return s && String(s).trim(); })
+    // A string (the Routine's older answers) or an object with the step's own hours/type/priority.
+    out.subitems = (parsed.subitems || []).map(function (s) { return (s && typeof s === 'object') ? s : { title: s }; })
+      .filter(function (s) { return s && String(s.title || '').trim(); })
       .slice(0, 8)
-      .map(function (s) { return { title: String(s).trim(), done: false }; });
+      .map(function (s) {
+        var o = { title: String(s.title).trim(), done: false };
+        if (typeof s.estHours === 'number' && isFinite(s.estHours) && s.estHours > 0) o.estHours = Math.max(0.25, Math.round(s.estHours * 4) / 4);
+        if (TSG_TASK_TYPE_VALUES.indexOf(s.taskType) !== -1) o.taskType = s.taskType;
+        if (TSG_PRIORITY_VALUES.indexOf(s.priority) !== -1) o.priority = s.priority;
+        return o;
+      });
+  }
+  if (need.indexOf('steps') !== -1 && Array.isArray(parsed.steps)) {
+    out.steps = parsed.steps.filter(function (st) { return st && typeof st === 'object' && Number.isInteger(st.index) && st.index >= 0; })
+      .map(function (st) { return { index: st.index, answer: st }; });
   }
   if (need.indexOf('priority') !== -1 && parsed.priority) {
     out.priority = parsed.priority;
@@ -4137,7 +4241,8 @@ function tsgEstimateTask_(title, notes, priority, need, context) {
     // (add_task queues it once the task has an id). The result is the "none" shape with
     // source 'queued' so callers fall back exactly as for an unreachable Claude.
     var req = { kind: 'enrich', need: p.need, title: String(title || ''), notes: String(notes || '').trim(), priority: priority || '',
-      current: context.current || null, subTitle: context.subTitle, batchSiblings: context.batchSiblings || [], driveCandidates: context.driveList || null, calendarCandidates: context.calendarList || null, mailCandidates: context.mailList || null };
+      current: context.current || null, subTitle: context.subTitle, batchSiblings: context.batchSiblings || [], driveCandidates: context.driveList || null, calendarCandidates: context.calendarList || null, mailCandidates: context.mailList || null,
+      currentSteps: context.currentSteps || null };
     var out = tsgEstimateParse_(null, p.need, title, context);
     out.source = 'queued';
     if (context.target && context.target.taskId != null) {
@@ -4270,16 +4375,18 @@ function tsgApplyProgressFromNotesOnSave_(prevTasks, nextTasks, doc, now) {
     if (!t) return;
     var p = prevById[t.id];
     var explicitProgress = !!p && !tsgValuesEqual_(p.progress, t.progress);
-    if (tsgNotesChanged_(t, p ? p.notes : '')) enrichTasks.push({ task: t, progressExplicit: explicitProgress });
     var ps = (p && Array.isArray(p.subitems)) ? p.subitems : [];
-    (t.subitems || []).forEach(function(s, i) {
-      if (!s) return;
-      var q = ps[i];
-      if (tsgNotesChanged_(s, q ? q.notes : '')) enrichTasks.push({ task: t, sub: s, subIdx: i, progressExplicit: !!q && !tsgValuesEqual_(q.progress, s.progress) });
-    });
+    if (tsgNotesChanged_(t, p ? p.notes : '')) {
+      // One call: the parent's enrich carries every open step (2026-09-17).
+      enrichTasks.push({ task: t, progressExplicit: explicitProgress });
+      return;
+    }
+    // Parent unchanged: the new or changed steps share one steps-only call.
+    var idx = tsgChangedStepIndices_(ps, t.subitems);
+    if (idx.length) enrichTasks.push({ task: t, stepIndices: idx });
   });
   if (doc) enrichTasks.forEach(function(x) {
-    if (x.sub) tsgEnrichItem_(doc, x.task, x.sub, x.subIdx, now || new Date().toISOString(), 'Durand', { progressExplicit: x.progressExplicit });
+    if (x.stepIndices) tsgEnrichSteps_(doc, x.task, now || new Date().toISOString(), 'Durand', x.stepIndices);
     else tsgEnrichTask_(doc, x.task, now || new Date().toISOString(), 'Durand', { progressExplicit: x.progressExplicit });
   });
   if (!wanted.length) return;

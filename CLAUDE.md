@@ -576,3 +576,24 @@ explain everything in the note too".
   `TSG_TASK_DIFF_FIELDS`); add_task and the enricher then never ask for `dependsOnTitle`; adding a
   dependency by hand (dashboard or an `update_task` with `depends`) lifts it; the Depends row
   says "none, cleared by you" with a refresh button (`allowDependsInfer`).
+
+## Subtasks ride in the parent's call (2026-09-17, backend 2026-09-17.5)
+
+Per Durand: "subtasks may also enrich when the main task's notes change, including getting new
+notes of their own, wait for that before enriching them on their own so there's only 1 call, not 2".
+- A task's enrich pass now carries its open steps: `tsgOpenStepsSnapshot_` (index + current values,
+  30 max, notes cut at 600 chars) goes in the prompt as `CURRENT_STEPS`, need gets `steps`, and the
+  answer's `steps[]` (one per index) is applied per step through the SAME parse + apply
+  (`tsgEstimateParse_` / `tsgApplyEstimateToTask_` with `subitem: true`), so hand-set protection and
+  Review flags work per step. Deferred answers follow a moved step by the title stored in the
+  request's `currentSteps`. A Done step is never touched.
+- Minted steps (`subitems`) are objects `{title, estHours, taskType, priority}` (schema enforced live;
+  a bare string from the Routine still lands), so a new step never needs a second call.
+- Triggers: parent notes change (update_task / replace_all) = one call carrying every open step;
+  parent unchanged but steps new or with changed notes = ONE steps-only call for that parent
+  (`tsgChangedStepIndices_` -> `tsgEnrichSteps_`, need `['steps']`, no link gathering); add_subitem
+  is always enriched (a title is enough for a step: `allowEmptyNotes`); update_subitem keeps its
+  own single call. New op `request_steps {id, indices?}`: steps-only re-judge of the open steps that
+  still have no hours (titles with hours already are never sent), used for backfills.
+- Backfill still pending: queue `request_steps` for the 12 parents holding the 33 unestimated
+  steps once the Routine has its Drive connector.

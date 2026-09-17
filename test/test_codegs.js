@@ -698,7 +698,7 @@ section('Judgment queue: no API key (2026-09-16, method 2)');
   const next = JSON.parse(JSON.stringify(d.tasks));
   next.find(x => x.id === 1).notes = 'Menu confirmed, deposit paid'; next.find(x => x.id === 2).subitems[0].notes = 'half done';
   write(d, { op: 'replace_all', baseVersion: d.meta.docVersion || 0, doc: { tasks: next, meta: { judgments: [] } } });
-  check('a dashboard save queues an enrich for the task and one for the subitem, and cannot overwrite the queue', d.meta.judgments.length === 2 && d.meta.judgments.some(r => r.kind === 'enrich' && r.taskId === 1) && d.meta.judgments.some(r => r.kind === 'enrich' && r.taskId === 2 && r.subIdx === 0 && r.subTitle === 'Draft step A'));
+  check('a dashboard save queues an enrich for the task and ONE steps-only request for the other task\'s changed step, and cannot overwrite the queue', d.meta.judgments.length === 2 && d.meta.judgments.some(r => r.kind === 'enrich' && r.taskId === 1) && d.meta.judgments.some(r => r.kind === 'enrich' && r.taskId === 2 && r.subIdx == null && r.need.length === 1 && r.need[0] === 'steps' && (r.currentSteps || []).some(cs => cs.index === 0 && cs.title === 'Draft step A')));
   write(d, { op: 'set_meta', fields: { judgments: [], judgmentSeq: 0, tidyProposals: { x: 1 } } });
   check('set_meta cannot touch judgments / judgmentSeq / tidyProposals', d.meta.judgments.length === 2 && d.meta.judgmentSeq > 0 && !d.meta.tidyProposals);
   // Tidy is a forced full re-run
@@ -1075,7 +1075,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   claudeCalls = []; progressAnswer = 90;
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 5, fields: { notes: 'nearly there' } })));
   d = JSON.parse(disk);
-  check('update: notes on a task with subitems are still polished in one call, but progress is not asked for; the subitems own the bar', r.ok === true && claudeCalls.length === 1 && !/"progress"/.test(claudeCalls[0]) && d.tasks[4].notes === 'nearly there' && d.tasks[4].progress === 0);
+  check('update: notes on a task with subitems are still polished in one call, but progress is not asked for; the subitems own the bar', r.ok === true && claudeCalls.length === 1 && !/NEEDED_FIELDS: \[[^\]]*"progress"/.test(claudeCalls[0]) && d.tasks[4].notes === 'nearly there' && d.tasks[4].progress === 0);
   check("update: a roll-up history line is automation, not a hand edit, and hours on a task with steps are never a disagreement (no Review tag, no REVIEW paragraph)", !(d.tasks[4].reviewFlags || []).length && !d.tasks[4].tags.includes('Review') && !d.tasks[4].tags.includes('Triage'));
   const savedResponder = claudeResponder;
   claudeResponder = () => ({ rationale: 'no number this time' });
@@ -1154,7 +1154,7 @@ section('Progress follows the notes on every write path (2026-09-15)');
 {
   let calls = [];
   let answer = 60;
-  claudeResponder = (system, user) => { calls.push(user); if (/^ITEMS:/.test(user)) { const n = (user.match(/^\d+\. Title:/gm) || []).length; return { items: Array.from({ length: n }, (_, i) => ({ index: i + 1, progress: answer })) }; } const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('progress')) out.progress = answer; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Actionable Task'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; return out; };
+  claudeResponder = (system, user) => { calls.push(user); if (/^ITEMS:/.test(user)) { const n = (user.match(/^\d+\. Title:/gm) || []).length; return { items: Array.from({ length: n }, (_, i) => ({ index: i + 1, progress: answer })) }; } const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('steps')) { const sm = /CURRENT_STEPS[^\n]*\n(\[.*\])/.exec(user); const cs = sm ? JSON.parse(sm[1]) : []; out.steps = cs.map(cc => ({ index: cc.index, title: cc.title, notes: cc.notes, estHours: null, taskType: null, priority: null, tags: [], progress: answer, location: null, due: null })); } if (need.includes('progress')) out.progress = answer; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Actionable Task'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; return out; };
   function d0() { return { meta: { docVersion: 5, next_id: 10, status_values: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'] }, tasks: [
     { id: 1, title: 'Call the caterer', owner: 'Durand', status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '', notes: '', tags: [], history: [], subitems: [] },
     { id: 2, title: 'Parent with steps', owner: 'Durand', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'p', tags: [], history: [], subitems: [
@@ -1171,10 +1171,10 @@ section('Progress follows the notes on every write path (2026-09-15)');
   check('update_task without a notes change makes no call', calls.length === 0 && d.tasks[0].progress === 60);
   calls = [];
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'new notes', progress: 15 }, source: 'Claude' });
-  check('update_task: an explicit progress in the same patch wins; the re-judge call does not ask for progress', calls.length === 1 && !/"progress"/.test(calls[0]) && d.tasks[0].progress === 15);
+  check('update_task: an explicit progress in the same patch wins; the re-judge call does not ask for progress', calls.length === 1 && !/NEEDED_FIELDS: \[[^\]]*"progress"/.test(calls[0]) && d.tasks[0].progress === 15);
   calls = [];
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 2, fields: { notes: 'parent notes changed' }, source: 'Claude' });
-  check('update_task: a task with subitems is re-judged without progress (its bar comes from the subitems)', calls.length === 1 && !/"progress"/.test(calls[0]) && d.tasks[1].progress === 0);
+  check('update_task: a task with subitems is re-judged without progress (its bar comes from the subitems)', calls.length === 1 && !/NEEDED_FIELDS: \[[^\]]*"progress"/.test(calls[0]) && d.tasks[1].progress === 0);
   calls = [];
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 3, fields: { notes: 'done notes changed' }, source: 'Claude' });
   check('update_task: a Done task is skipped', calls.length === 0 && d.tasks[2].progress === 100);
@@ -1189,13 +1189,13 @@ section('Progress follows the notes on every write path (2026-09-15)');
   next[1].subitems[0].notes = 'half done';                        // subitem notes changed -> re-read
   next[2].notes = 'reworded';                                     // Done -> skipped
   sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: 5, doc: { tasks: next } });
-  check('replace_all re-judges the task whose notes changed (one call) and reads the changed subitem (one ITEMS call), not the Done one', calls.length === 2 && calls.some(u => /"title"/.test(u)) && d.tasks[0].progress === 75 && d.tasks[1].subitems[0].progress === 75 && d.tasks[2].progress === 100);
+  check('replace_all re-judges the task whose notes changed (one call) and the changed step of the other task in one steps-only call, not the Done one', calls.length === 2 && calls.some(u => /"title"/.test(u)) && d.tasks[0].progress === 75 && d.tasks[1].subitems[0].progress === 75 && d.tasks[2].progress === 100);
   check('replace_all logs the derived progress as Durand', d.tasks[0].history.some(h => h.field === 'progress' && h.to === 75 && h.source === 'Durand'));
   d = d0(); calls = [];
   const next2 = JSON.parse(JSON.stringify(d.tasks));
   next2[0].notes = 'typed both'; next2[0].progress = 40;
   sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: 5, doc: { tasks: next2 } });
-  check('replace_all: a progress typed in the same save wins over the notes (the re-judge does not ask for it)', calls.length === 1 && !/"progress"/.test(calls[0]) && d.tasks[0].progress === 40);
+  check('replace_all: a progress typed in the same save wins over the notes (the re-judge does not ask for it)', calls.length === 1 && !/NEEDED_FIELDS: \[[^\]]*"progress"/.test(calls[0]) && d.tasks[0].progress === 40);
   d = d0(); calls = [];
   sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: 5, doc: { tasks: JSON.parse(JSON.stringify(d.tasks)) } });
   check('replace_all with no notes change makes no call', calls.length === 0);
@@ -1544,6 +1544,74 @@ section('Hand edits win, disagreements flagged, dependency clears stick (2026-09
   claudeResponder = () => ({ rationale: 'no rush', title: t3.title, notes: t3.notes, estHours: 4, taskType: 'Actionable Task', priority: 'Low', group: 'Marketing', tags: [], subitems: [], dependsOnTitle: null, location: null, due: '2026-11-30', progress: 0, needsConfirmation: false });
   sandbox.applyDataPatch_(d3, { op: 'update_task', id: t3.id, fields: { notes: 'print shop needs the order by wednesday. quote received' }, source: 'Durand' });
   check('...so a later pass keeps them and flags the disagreement (Critical vs Low, 9/25 vs 11/30)', t3.priority === 'Critical' && t3.timelineEnd === '2026-09-25' && t3.tags.includes('Review') && (t3.reviewFlags || []).some(f => f.field === 'timelineEnd' && f.claude === '2026-11-30'));
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+}
+
+section('Subtasks ride in the parent\'s call (2026-09-17)');
+{
+  let calls = [];
+  const parent = () => ({ id: 1, title: 'Plan the block party', owner: 'Durand', status: 'In Progress', priority: 'High', group: 'Ops', tags: [], notes: 'first thoughts', history: [], subitems: [
+    { title: 'book the band', done: false, status: 'Not Started', progress: 0, notes: 'emailed two bands', tags: [], history: [] },
+    { title: 'order tables', done: false, status: 'Not Started', progress: 0, notes: '', tags: [], history: [] },
+    { title: 'get the permit', done: true, status: 'Done', progress: 100, notes: 'done', tags: [], history: [] } ] });
+  claudeResponder = (system, user) => {
+    calls.push(user);
+    const need = JSON.parse((user.match(/NEEDED_FIELDS: (\[.*?\])/) || [])[1] || '[]');
+    const out = { rationale: 'r', title: 'Plan the block party', notes: 'Current state: planning.', tags: [], estHours: 8, taskType: 'Actionable Task', priority: 'High', group: 'Ops', dependsOnTitle: null, location: null, due: null, subitems: [], needsConfirmation: false };
+    if (need.includes('steps')) out.steps = [
+      { index: 0, title: 'Book the band', notes: 'Current state: two bands emailed.', estHours: 0.5, taskType: 'Email', priority: 'High', tags: [], progress: 40, location: null, due: null },
+      { index: 1, title: 'Order the tables', notes: '', estHours: 1, taskType: 'Call', priority: 'Medium', tags: [], progress: 0, location: null, due: '2026-10-01' },
+      { index: 2, title: 'SHOULD BE IGNORED', notes: 'x', estHours: 9, taskType: 'Call', priority: 'Low', tags: [], progress: 0, location: null, due: null } ];
+    return out;
+  };
+  let d = { meta: { docVersion: 1, next_id: 50 }, tasks: [parent()] };
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'first thoughts, plus the date is set' }, source: 'Durand' });
+  const t = d.tasks[0];
+  check('a parent notes change is ONE call that carries CURRENT_STEPS for the open steps only', calls.length === 1 && /NEEDED_FIELDS: \[[^\]]*"steps"/.test(calls[0]) && /CURRENT_STEPS/.test(calls[0]) && /"index":0/.test(calls[0]) && /"index":1/.test(calls[0]) && !/"index":2/.test(calls[0]));
+  check('each open step takes its own answer: polished title and notes, hours, type, priority, progress, due', t.subitems[0].title === 'Book the band' && t.subitems[0].estHours === 0.5 && t.subitems[0].taskType === 'Email' && t.subitems[0].progress === 40 && t.subitems[0].status === 'In Progress' && t.subitems[1].title === 'Order the tables' && t.subitems[1].estHours === 1 && t.subitems[1].timelineEnd === '2026-10-01');
+  check('a Done step is never touched, even when the answer names it', t.subitems[2].title === 'get the permit' && t.subitems[2].estHours === undefined);
+  check('the parent logs the step re-judge', t.history.some(h => h.field === 'auto-enriched' && /steps \(2 re-judged\)/.test(h.to)));
+  // minted steps arrive with their fields; a plain string still works
+  calls = [];
+  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', title: 'Confirm The Caterer', notes: 'Current state: x.', tags: [], estHours: 2, taskType: 'Actionable Task', priority: 'Medium', group: 'Ops', dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false,
+    subitems: [{ title: 'Call the caterer', estHours: 0.25, taskType: 'Call', priority: 'High' }, 'Send the deposit'] }; };
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Confirm the caterer', owner: 'Durand', priority: 'Medium', group: 'Ops', notes: 'need to lock the caterer', tags: [] }, source: 'Claude', skipDedup: true });
+  const n = d.tasks[d.tasks.length - 1];
+  check('minted steps carry hours, type and priority from the same answer; a string step still lands with defaults', calls.length === 1 && n.subitems.length === 2 && n.subitems[0].estHours === 0.25 && n.subitems[0].taskType === 'Call' && n.subitems[0].priority === 'High' && n.subitems[0].estSource === 'claude' && n.subitems[1].title === 'Send the deposit' && n.subitems[1].taskType === 'Actionable Task');
+  // a new step in a subitems array with the parent unchanged: one steps-only call for just that index
+  calls = [];
+  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', steps: [{ index: 2, title: 'Print the flyers', notes: '', estHours: 0.75, taskType: 'Actionable Task', priority: 'Medium', tags: [], progress: 0, location: null, due: null }] }; };
+  const subs = JSON.parse(JSON.stringify(n.subitems)).concat([{ title: 'print the flyers', done: false, status: 'Not Started', progress: 0, notes: '', tags: [], history: [] }]);
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: n.id, fields: { subitems: subs }, source: 'Durand' });
+  check('a new step with the parent unchanged costs one steps-only call scoped to the new index', calls.length === 1 && /NEEDED_FIELDS: \["steps"\]/.test(calls[0]) && /"index":2/.test(calls[0]) && !/"index":0/.test(calls[0]) && d.tasks[d.tasks.length - 1].subitems[2].estHours === 0.75 && d.tasks[d.tasks.length - 1].subitems[2].title === 'Print the flyers');
+  // add_subitem without notes is still estimated (title is enough)
+  calls = [];
+  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', title: 'Hang the banner', notes: '', tags: [], estHours: 0.5, taskType: 'Actionable Task', priority: 'Medium', location: null, due: null, progress: 0, needsConfirmation: false }; };
+  sandbox.applyDataPatch_(d, { op: 'add_subitem', id: n.id, subitem: { title: 'hang the banner', done: false, status: 'Not Started', progress: 0, notes: '', tags: [] }, source: 'Claude' });
+  const last = d.tasks[d.tasks.length - 1].subitems.slice(-1)[0];
+  check('add_subitem with no notes is estimated from its title in one call', calls.length === 1 && last.estHours === 0.5 && last.title === 'Hang the banner');
+  // request_steps backfills only the unestimated open steps and never touches an estimated step's title
+  calls = [];
+  const bf = { id: 7, title: 'Bonus task', owner: 'Durand', status: 'In Progress', priority: 'Critical', group: 'Ops', tags: [], notes: 'n', history: [], subitems: [
+    { title: 'Rollout — Follow up with Chelsey', done: false, status: 'Not Started', progress: 0, notes: '', estHours: 0.5, tags: [], history: [] },
+    { title: 'a step with no hours', done: false, status: 'Not Started', progress: 0, notes: '', tags: [], history: [] } ] };
+  d.tasks.push(bf);
+  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', steps: [{ index: 1, title: 'A step with no hours, now estimated', notes: '', estHours: 2, taskType: 'Actionable Task', priority: 'Critical', tags: [], progress: 0, location: null, due: null }] }; };
+  sandbox.applyDataPatch_(d, { op: 'request_steps', id: 7, source: 'Claude' });
+  check('request_steps sends only the unestimated open steps', calls.length === 1 && /"index":1/.test(calls[0]) && !/"index":0/.test(calls[0]) && bf.subitems[1].estHours === 2 && bf.subitems[0].title === 'Rollout — Follow up with Chelsey');
+  // queue mode: a deferred steps answer follows the step by title when the list moved
+  apiKeyPresent = false;
+  const origProps4 = sandbox.PropertiesService.getScriptProperties;
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (k === 'ANTHROPIC_API_KEY' ? null : null), setProperty: () => {} });
+  const q = { meta: { docVersion: 1, next_id: 90 }, tasks: [parent()] };
+  sandbox.applyDataPatch_(q, { op: 'update_task', id: 1, fields: { notes: 'queued thoughts' }, source: 'Durand' });
+  const jr = q.meta.judgments[q.meta.judgments.length - 1];
+  check('a queued parent request carries currentSteps', !!jr && jr.need.includes('steps') && (jr.currentSteps || []).length === 2 && jr.currentSteps[0].title === 'book the band');
+  q.tasks[0].subitems.unshift({ title: 'inserted first', done: false, status: 'Not Started', progress: 0, notes: '', tags: [], history: [] });
+  sandbox.applyDataPatch_(q, { op: 'judgment', id: jr.id, source: 'Claude (queue)', answer: { rationale: 'r', title: 'Plan the block party', notes: 'Current state: queued.', tags: [], estHours: 8, taskType: 'Actionable Task', priority: 'High', group: 'Ops', dependsOnTitle: null, location: null, due: null, subitems: [], needsConfirmation: false,
+    steps: [{ index: 0, title: 'Book the band', notes: 'Current state: booked.', estHours: 0.5, taskType: 'Email', priority: 'High', tags: [], progress: 60, location: null, due: null }] } });
+  check('a deferred steps answer lands on the right step by title after the list moved', q.tasks[0].subitems[1].title === 'Book the band' && q.tasks[0].subitems[1].progress === 60 && q.tasks[0].subitems[0].title === 'inserted first' && q.tasks[0].subitems[0].progress === 0);
+  sandbox.PropertiesService.getScriptProperties = origProps4; apiKeyPresent = true;
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 

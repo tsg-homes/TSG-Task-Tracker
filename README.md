@@ -174,11 +174,13 @@ judgment, and writes the answers back as inbox ops. Until an answer lands a new 
   `dependsOnTitle` or `subitems`), or a Tidy re-run (`force: true`). Polish the notes FIRST
   and derive every other field from the polished text. Fields: `need` (subset of `title`, `notes`, `estHours`, `taskType`, `subitems`, `priority`,
   `group`, `dependsOnTitle`, `tags`, `progress`, `location`, `due`, `driveMatch`,
-  `meetingMatch`, `mailMatch`, `webLinks`), `title`, `notes` (free-flow text as typed), `priority`, `current` (the
+  `meetingMatch`, `mailMatch`, `webLinks`, `steps`), `title`, `notes` (free-flow text as typed), `priority`, `current` (the
   task's current fields: return them unchanged unless the title/notes clearly justify a
   change), `batchSiblings`, `driveCandidates` (`[{url, label, excerpt}]` or null),
   `calendarCandidates` (`[{date, start, end, htmlLink, label}]` or null), `mailCandidates`
-  (`[{url, label, from, date, excerpt}]` recent Gmail threads, or null), `personCreated`.
+  (`[{url, label, from, date, excerpt}]` recent Gmail threads, or null), `currentSteps` (the task's open
+  steps `[{index, title, notes, estHours, taskType, priority, progress, location, due, delegate}]`
+  when `need` has `steps`; a request with `need: ["steps"]` alone is a steps-only re-judge), `personCreated`.
   Candidates are gathered on EVERY pass, whatever is already linked (2026-09-17).
   Read `EXISTING_GROUPS` / `OPEN_TASK_TITLES` / `EXISTING_TAGS` from the data file itself.
 - `kind: "progress"` — legacy; answer `{progress}` from the notes only.
@@ -189,7 +191,9 @@ judgment, and writes the answers back as inbox ops. Until an answer lands a new 
 {"target":"data","op":"bulk","source":"Claude (queue)","ops":[
   {"op":"judgment","id":"J17","answer":{"title":"Send Farina the listing agreement for signature",
    "notes":"Current state: …\n\nLog:\n- 2026-09-16: …","estHours":0.5,"taskType":"Email",
-   "subitems":[],"priority":"High","group":"Ops","dependsOnTitle":null,"tags":["Listings"],
+   "subitems":[{"title":"Chase the signed copy","estHours":0.25,"taskType":"Email","priority":"High"}],
+   "steps":[{"index":0,"title":"Draft the agreement","notes":"Current state: drafted.","estHours":0.5,"taskType":"Actionable Task","priority":"High","tags":[],"progress":100,"location":null,"due":null}],
+   "priority":"High","group":"Ops","dependsOnTitle":null,"tags":["Listings"],
    "progress":25,"location":"Farina Di Vita, Media PA","due":"2026-09-19","needsConfirmation":false,
    "driveMatch":{"index":1,"confident":true,"rationale":"…"},"meetingMatch":null,
    "mailMatch":{"index":2,"confident":true,"rationale":"…"},
@@ -205,7 +209,10 @@ hours are hands-on time from the calibration table; `taskType` one of Email | Ca
 Text/Chat | Meeting | Claude | Actionable Task; `priority` one of Critical | High | Medium |
 Low; `group` an existing group unless nothing fits; `dependsOnTitle` an exact open title or
 null; 0-3 topical tags, never a system tag; `progress` 0-100 from evidence in the notes;
-`location` a stated place or null; `due` a stated deadline as YYYY-MM-DD or null;
+`location` a stated place or null; `due` a stated deadline as YYYY-MM-DD or null; `subitems` NEW steps only,
+each `{title, estHours, taskType, priority}` (a bare string still works); `steps` one entry per index in
+`currentSteps`, each judged like the task's own fields for that step (a step with nothing to change echoes
+its current values; never drop, reorder or invent an index);
 `driveMatch` / `meetingMatch` / `mailMatch` `{index (1-based into the stored candidates), confident,
 rationale}` or null; `webLinks` up to 3 `{url, label}` for the named tool / service / vendor /
 form page / reference the task explicitly involves (official pages only, real URLs — RUN A WEB
