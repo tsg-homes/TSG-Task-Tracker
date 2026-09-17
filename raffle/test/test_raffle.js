@@ -244,7 +244,9 @@ const cell = (s, row, name) => {
     String(m.cc).indexOf('ryan@') !== -1, String(m.cc));
   // Ryan fields winner replies, per Durand 2026-09-17 — not info@, which five
   // people share and nobody owns.
-  check('replies go to Ryan', String(m.replyTo) === 'ryan@tsg.homes', String(m.replyTo));
+  check('replies go to Ryan', /ryan@tsg\.homes/.test(String(m.replyTo)), String(m.replyTo));
+  check('and to the shared inbox as well', /info@tsg\.homes/.test(String(m.replyTo)),
+    String(m.replyTo));
   // Durand: "there is no hat." Word-boundary matched, or this passes on "that".
   check('the email does not claim there was a hat',
     !/\bhats?\b/i.test(m.htmlBody + m.body));
@@ -542,6 +544,9 @@ const cell = (s, row, name) => {
   // The & is HTML-escaped in an href, which is correct markup -- match the parts.
   check('it carries a chain link',
     /action=refer/.test(chainMail[0].htmlBody) && /t=[0-9a-f-]{36}/.test(chainMail[0].htmlBody));
+  check('chain-invite replies reach the referrer and the shared inbox',
+    /dana@mail-test\.co/.test(String(chainMail[0].replyTo)) &&
+    /info@tsg\.homes/.test(String(chainMail[0].replyTo)), String(chainMail[0].replyTo));
 
   const chainToken = cell(s, s.__data()[0], 'Chain Token');
   check('the chain token is on the row', /^[0-9a-fA-F-]{36}$/.test(chainToken), chainToken);
@@ -619,10 +624,14 @@ const cell = (s, row, name) => {
                 referralPhone: '(215) 555-9600' } });
   const reminders = () => s.__sent.filter(m => /Last chance to confirm/.test(m.subject));
 
-  // Too early: days out, this is nagging rather than a last chance.
+  // Before the batch time: nothing, however close it is.
   const early = at(BEFORE, () => s.raffleSendConsentReminders_(false));
-  eq('no reminders days before the draw', reminders().length, 0);
-  check('and it says why', /Too early/.test(early.summary), early.summary);
+  eq('no reminders before the batch time', reminders().length, 0);
+  check('and it says when they go', /all at once/.test(early.summary), early.summary);
+  const nearly = at(new Date('2026-09-19T09:30:00-04:00').getTime(),
+                    () => s.raffleSendConsentReminders_(false));
+  eq('still nothing half an hour before the batch', reminders().length, 0);
+  check('still explained', /Not yet/.test(nearly.summary), nearly.summary);
 
   // Too late: minutes to go, the email cannot change anything.
   const late = at(new Date('2026-09-19T18:00:00-04:00').getTime(),
@@ -630,10 +639,10 @@ const cell = (s, row, name) => {
   eq('no reminders in the last minutes', reminders().length, 0);
   check('and it says why', /Too late/.test(late.summary), late.summary);
 
-  // In the window: exactly one, to the person who has not answered.
-  const res = at(new Date('2026-09-19T12:00:00-04:00').getTime(),
+  // At the batch time: everything goes at once.
+  const res = at(new Date('2026-09-19T10:00:00-04:00').getTime(),
                  () => s.raffleSendConsentReminders_(false));
-  eq('one reminder inside the window', reminders().length, 1);
+  eq('the batch sends at the batch time', reminders().length, 1);
   eq('sent to the referral who has not answered', reminders()[0].to, 'unsure@mail-test.co');
   check('never to one who already confirmed',
     reminders().every(m => m.to !== 'robin@mail-test.co'));
@@ -648,20 +657,27 @@ const cell = (s, row, name) => {
   check('it says when the draw is', /6:15 PM/.test(m.htmlBody));
   check('it offers the decline route too', /button for that|Would rather we did not/.test(m.htmlBody));
   check('it promises not to nag again', /only reminder/.test(m.htmlBody));
-  check('replies go to the person who referred them', m.replyTo === 'waiting@mail-test.co');
+  // Durand, 2026-09-17: a reply must reach BOTH the referrer and the shared inbox.
+  check('replies reach the person who referred them',
+    String(m.replyTo).indexOf('waiting@mail-test.co') !== -1, String(m.replyTo));
+  check('and the shared inbox',
+    String(m.replyTo).indexOf('info@tsg.homes') !== -1, String(m.replyTo));
 
-  // One per person, ever.
-  at(new Date('2026-09-19T13:00:00-04:00').getTime(),
-     () => s.raffleSendConsentReminders_(false));
+  // There is only ever ONE batch: the hourly catch-up must find the marker and do
+  // nothing, or reminders would stagger out over the afternoon.
+  const again = at(new Date('2026-09-19T13:00:00-04:00').getTime(),
+                   () => s.raffleSendConsentReminders_(false));
   at(new Date('2026-09-19T14:00:00-04:00').getTime(),
      () => s.raffleSendConsentReminders_(false));
-  eq('the hourly sweep does not nag', reminders().length, 1);
+  eq('the catch-up does not send a second batch', reminders().length, 1);
+  check('and says the batch already went', /already went out/.test(again.summary), again.summary);
+  check('the batch time is recorded', !!s.__props.RAFFLE_REMINDER_BATCH_AT);
   check('the row records when it went', cell(s, s.__data()[1], 'Reminder Sent At').length > 0);
 
   // And once someone answers, no reminder can follow.
   const s2 = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
   enterFull(s2, entry(), DURING);
-  at(new Date('2026-09-19T12:00:00-04:00').getTime(),
+  at(new Date('2026-09-19T10:00:00-04:00').getTime(),
      () => s2.raffleSendConsentReminders_(false));
   eq('a confirmed referral is never reminded',
     s2.__sent.filter(m => /Last chance/.test(m.subject)).length, 0);
@@ -673,10 +689,10 @@ const cell = (s, row, name) => {
   at(BEFORE, () => s.setupRaffle());
   const armed = n => s.ScriptApp.getProjectTriggers()
     .filter(t => t.getHandlerFunction() === n).length;
-  eq('the reminder sweep is armed', armed('raffleConsentReminderSweep'), 1);
-  eq('and only once', armed('raffleConsentReminderSweep'), 1);
+  // One batch trigger at the fixed moment, plus one hourly catch-up.
+  eq('the reminder batch and its catch-up are armed', armed('raffleConsentReminderSweep'), 2);
   at(BEFORE, () => s.setupRaffle());
-  eq('re-running setup does not double-arm it', armed('raffleConsentReminderSweep'), 1);
+  eq('re-running setup does not accumulate triggers', armed('raffleConsentReminderSweep'), 2);
 }
 
 // ---- Admin endpoints are key-gated -----------------------------------------

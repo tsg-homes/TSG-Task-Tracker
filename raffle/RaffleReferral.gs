@@ -709,7 +709,7 @@ function raffleSendReferralInvite_(d, test) {
   MailApp.sendEmail({
     to: found.entry.referralEmail,
     cc: [entrant.email, 'info@tsg.homes'].join(','),
-    replyTo: entrant.email,
+    replyTo: raffleReplyTo_(entrant.email),
     name: 'The Stawasz Group',
     subject: subject,
     htmlBody: raffleInviteHtml_(entrant, found.entry, url, test),
@@ -1313,6 +1313,7 @@ function raffleNotifyEntrantEntered_(entry, referralName, test, closed) {
   try {
     MailApp.sendEmail({
       to: entry.email,
+      replyTo: RAFFLE_SHARED_INBOX,     // this one IS to the referrer, so info@ alone
       name: 'The Stawasz Group',
       subject: (test ? QA_TEST_PREFIX : '') +
         (closed ? 'Your referral confirmed (after the drawing closed)'
@@ -1405,8 +1406,9 @@ function raffleSendWinnerEmail_(test, pickIndex, reason) {
   MailApp.sendEmail({
     to: w.email,
     cc: qaTestRecipients_(RAFFLE_RESULT_EMAIL.split(',')).join(','),
-    // Ryan fields winner replies, so that is where a reply lands.
-    replyTo: RAFFLE_WINNER_REPLY_TO,
+    // Ryan fields winner replies, so that is where a reply lands -- plus the
+    // shared inbox, per the standing rule that a reply never reaches only one place.
+    replyTo: raffleReplyTo_(RAFFLE_WINNER_REPLY_TO),
     name: 'The Stawasz Group',
     subject: (test ? QA_TEST_PREFIX : '🎉 ') + 'You won! ' + RAFFLE_PRIZE_SHORT +
              ' — TSG Block Party',
@@ -1553,6 +1555,28 @@ function rafflePickReasonProp_(test) {
 // ryan@tsg.homes in this project's agent roster). The business domain is used
 // here to match info@tsg.homes; both are still copied on the email itself.
 var RAFFLE_WINNER_REPLY_TO = 'ryan@tsg.homes';
+
+// Per Durand, 2026-09-17: a reply to anything we send about a referral must reach
+// BOTH info@ and the person who made the referral. The referrer is the one the
+// recipient actually knows, and info@ is the one that is always watched -- either
+// alone drops half the cases (a referrer on a listing appointment all Saturday, or
+// an info@ inbox that has no idea who this person is).
+//
+// CAVEAT worth knowing: Apps Script documents MailApp's replyTo as a single
+// address. RFC 5322 allows several and mail clients generally honour a
+// comma-separated list, but this is the one thing here that cannot be proved from
+// a sandbox -- it needs a real send. If only the first address survives, the fix
+// is to swap these calls to GmailApp with an explicit Reply-To header. Flagged for
+// the live QA run rather than assumed.
+var RAFFLE_SHARED_INBOX = 'info@tsg.homes';
+
+function raffleReplyTo_(referrerEmail) {
+  var who = String(referrerEmail || '').trim();
+  if (!who || raffleEmailKey_(who) === raffleEmailKey_(RAFFLE_SHARED_INBOX)) {
+    return RAFFLE_SHARED_INBOX;
+  }
+  return who + ',' + RAFFLE_SHARED_INBOX;
+}
 
 function raffleFubLink_(personId) {
   if (!personId) return '';
@@ -2107,7 +2131,7 @@ function raffleSendChainInvite_(entry, edited, chainToken, test) {
     MailApp.sendEmail({
       to: edited.email,
       name: 'The Stawasz Group',
-      replyTo: 'info@tsg.homes',
+      replyTo: raffleReplyTo_(entry.name ? entry.email : ''),
       subject: (test ? QA_TEST_PREFIX : '') + first + ', you can win ' + RAFFLE_PRIZE_SHORT + ' too',
       htmlBody: raffleChainHtml_(entry, edited, url, test),
       body: raffleChainPlain_(entry, edited, url)
@@ -2268,11 +2292,34 @@ function raffleChainStart_(e) {
 //     the trigger runs hourly and cache does not survive long enough to be a
 //     safe idempotency key across a whole day; and
 //   * everyone, once the draw has run.
-var RAFFLE_REMINDER_LEAD_HOURS = 24;         // start nudging a day out
-var RAFFLE_REMINDER_MIN_LEAD_MINUTES = 90;   // stop with 90 minutes to go
+// ONE BATCH, ONE MOMENT. Per Durand, 2026-09-17: every reminder goes out at the
+// same time, not dribbled over an hourly sweep. That is the right call and not
+// only for tidiness -- a staggered nudge means two people referred by the same
+// person get "last chance" emails hours apart, which reads as a system that does
+// not know what it is doing. A single send is also one thing to check afterwards
+// rather than twenty.
+//
+// Saturday morning: late enough to be a genuine last call, early enough that
+// somebody at work can still act on it before 6:15.
+var RAFFLE_REMINDER_AT = '2026-09-19T10:00:00-04:00';
+var RAFFLE_REMINDER_MIN_LEAD_MINUTES = 90;   // never send inside the last 90 minutes
+// Records when the one batch went, so it can never go twice -- a script property
+// rather than the cache, because the cache does not outlive the gap between the
+// trigger firing and anyone noticing it did not.
+var RAFFLE_REMINDER_BATCH_PROP = 'RAFFLE_REMINDER_BATCH_AT';
+var RAFFLE_TEST_REMINDER_BATCH_PROP = 'RAFFLE_TEST_REMINDER_BATCH_AT';
+
+function raffleReminderBatchProp_(test) {
+  return test ? RAFFLE_TEST_REMINDER_BATCH_PROP : RAFFLE_REMINDER_BATCH_PROP;
+}
 
 // Hourly trigger, armed by setupRaffle. Silent outside the window, so the trigger
 // can sit there all week without mailing anybody.
+// The one-shot trigger armed at RAFFLE_REMINDER_AT, and the hourly catch-up, both
+// land here. The batch marker makes that safe: whichever arrives first sends, the
+// other finds the marker and does nothing. The catch-up exists because a one-shot
+// trigger that fails to fire fails silently, and nobody would find out until the
+// draw.
 function raffleConsentReminderSweep() {
   try { return raffleSendConsentReminders_(false); }
   catch (err) {
@@ -2291,15 +2338,22 @@ function raffleSendConsentReminders_(test, ignoreWindow) {
   var closeMs = new Date(RAFFLE_CLOSE_AT).getTime();
   var now = Date.now();
   var minsLeft = Math.round((closeMs - now) / 60000);
+  var props = PropertiesService.getScriptProperties();
 
   if (!ignoreWindow) {
+    var alreadyRan = props.getProperty(raffleReminderBatchProp_(test));
+    if (alreadyRan) {
+      return { sent: 0, skipped: 0,
+        summary: 'The reminder batch already went out at ' + alreadyRan +
+                 '. There is only ever one.' };
+    }
     if (now >= closeMs) {
       return { sent: 0, skipped: 0, summary: 'Entries are closed — no reminders sent.' };
     }
-    if (minsLeft > RAFFLE_REMINDER_LEAD_HOURS * 60) {
+    if (now < new Date(RAFFLE_REMINDER_AT).getTime()) {
       return { sent: 0, skipped: 0,
-        summary: 'Too early — reminders start ' + RAFFLE_REMINDER_LEAD_HOURS +
-                 ' hours before the draw (' + minsLeft + ' minutes to go).' };
+        summary: 'Not yet — the batch goes out at ' +
+                 raffleFmt_(new Date(RAFFLE_REMINDER_AT)) + ' ET, all at once.' };
     }
     if (minsLeft < RAFFLE_REMINDER_MIN_LEAD_MINUTES) {
       return { sent: 0, skipped: 0,
@@ -2307,6 +2361,10 @@ function raffleSendConsentReminders_(test, ignoreWindow) {
                  RAFFLE_REMINDER_MIN_LEAD_MINUTES + ' minutes to act (' + minsLeft +
                  ' to go), so none sent.' };
     }
+    // Claimed BEFORE the sending loop, not after. If the send half-finishes and
+    // the execution dies, the catch-up trigger must not start again from the top
+    // and re-mail everyone it already reached.
+    props.setProperty(raffleReminderBatchProp_(test), raffleFmt_(raffleNow_()));
   }
 
   var sh = raffleSheet_(test);
@@ -2332,7 +2390,7 @@ function raffleSendConsentReminders_(test, ignoreWindow) {
     try {
       MailApp.sendEmail({
         to: r.referralEmail,
-        replyTo: r.email,                       // the person who knows them
+        replyTo: raffleReplyTo_(r.email),      // the referrer AND the shared inbox
         name: 'The Stawasz Group',
         subject: (test ? QA_TEST_PREFIX : '') + 'Last chance to confirm — ' +
                  r.name + ' is counting on it',

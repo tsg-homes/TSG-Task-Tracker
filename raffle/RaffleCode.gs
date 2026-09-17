@@ -491,9 +491,19 @@ function setupRaffle() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'raffleConsentReminderSweep') ScriptApp.deleteTrigger(t);
   });
+  // The batch itself: one shot, at one moment, so every reminder goes together.
+  var remindAt = new Date(RAFFLE_REMINDER_AT);
+  if (remindAt.getTime() > Date.now()) {
+    ScriptApp.newTrigger('raffleConsentReminderSweep').timeBased().at(remindAt).create();
+    out.push('Reminder batch armed for ' + raffleFmt_(remindAt) + ' ET — one send, all at once.');
+  } else {
+    out.push('NOTE: RAFFLE_REMINDER_AT is in the past; no batch trigger armed.');
+  }
+  // Hourly catch-up. It does nothing once the batch marker is set, so it cannot
+  // stagger the send -- it exists because a one-shot trigger that fails to fire
+  // fails silently, and nobody would notice until the draw.
   ScriptApp.newTrigger('raffleConsentReminderSweep').timeBased().everyHours(1).create();
-  out.push('Hourly last-chance reminder sweep armed (fires only inside the ' +
-           RAFFLE_REMINDER_LEAD_HOURS + '-hour window before the draw).');
+  out.push('Hourly catch-up armed in case the batch trigger misfires.');
   out.push('Hourly entry digest armed (silent outside 3:00-6:15 PM on the day).');
   out.push('Before the party you get an email every ' + RAFFLE_MILESTONE_EVERY +
            ' valid entries instead.');

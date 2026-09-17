@@ -531,8 +531,13 @@ const stage = (s, who, ref, when) => {
     String(invite.cc || '').indexOf('dana@mail-test.co') !== -1, String(invite.cc));
   check('info@ is copied on the invite',
     String(invite.cc || '').indexOf('info@tsg.homes') !== -1, String(invite.cc));
-  check('replies go to the entrant, not to a noreply address',
-    String(invite.replyTo || '') === 'dana@mail-test.co', String(invite.replyTo));
+  // Replies must reach BOTH the referrer and the shared inbox (Durand,
+  // 2026-09-17): the referrer is who the recipient knows, info@ is what is always
+  // watched, and either alone drops half the cases.
+  check('replies reach the entrant, not a noreply address',
+    /dana@mail-test\.co/.test(String(invite.replyTo || '')), String(invite.replyTo));
+  check('and the shared inbox too',
+    /info@tsg\.homes/.test(String(invite.replyTo || '')), String(invite.replyTo));
   check('the invite leads with who referred them',
     /Dana Reid referred you/.test(String(invite.subject)), String(invite.subject));
 
