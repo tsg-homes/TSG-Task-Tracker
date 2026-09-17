@@ -551,15 +551,98 @@ function raffleReferralToFub_(x, test) {
   }
 }
 
+// 2026-09-17: EVERY link was failing, silently, and had been from the start:
+//   400 {"errorMessage":"Invalid fields in the request body: relatedPersonId."}
+// So the entrant/referral relationship the deck advertises as "linked both ways"
+// has never once been written. It failed quietly because this logged and
+// returned false and nobody read the log, and because the QA suite asserted
+// nothing about FUB at all -- it reported 102 of 102 green over the top of it.
+//
+// The field name is NOT guessed here. FUB's own docs domain is unreachable from
+// the build environment, so raffleInspectFubRelationships() asks the API which
+// keys it accepts and prints the answer; RAFFLE_LINK_FIELD is set from that.
+// Until it is confirmed, this function still tries, still logs, and now ALERTS
+// once per execution so a silent failure cannot repeat.
+var RAFFLE_LINK_FIELD = 'relatedPersonId';   // pending raffleInspectFubRelationships()
+var raffleLinkAlerted_ = false;
+
 function raffleLinkPeople_(personId, relatedId, type, apiKey) {
-  var res = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships', 'post', {
-    personId: personId, relatedPersonId: relatedId, type: type
-  }, apiKey);
+  var payload = { personId: personId, type: type };
+  payload[RAFFLE_LINK_FIELD] = relatedId;
+  var res = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships', 'post',
+                           payload, apiKey);
   if (!res.ok) {
     Logger.log('raffleLinkPeople_: ' + personId + ' -> ' + relatedId + ' (' + type + ') ' +
       'returned ' + res.code + ': ' + String(res.text).slice(0, 200));
+    // One alert per execution, not one per pair: a broken field name breaks
+    // every link, and twelve identical emails would get filtered and ignored.
+    if (!raffleLinkAlerted_) {
+      raffleLinkAlerted_ = true;
+      try {
+        sendErrorAlert('Raffle: FUB relationship linking is FAILING',
+          'Every entrant/referral link is being rejected by FUB, so the "Referred" ' +
+          'and "Referred by" relationships are NOT being written. The contacts and ' +
+          'the notes are fine; only the relationship is missing, and the sheet has ' +
+          'who referred whom either way.\n\n' +
+          'FUB said (' + res.code + '): ' + String(res.text).slice(0, 300) + '\n\n' +
+          'Field being sent: "' + RAFFLE_LINK_FIELD + '". Run ' +
+          'raffleInspectFubRelationships() from the editor to have FUB name the ' +
+          'field it actually wants, then set RAFFLE_LINK_FIELD to it.');
+      } catch (alertErr) { Logger.log('link alert failed: ' + alertErr); }
+    }
   }
   return res.ok;
+}
+
+// ---------------------------------------------------------------------------
+// DIAGNOSTIC, editor-only. Asks FUB what it accepts instead of guessing.
+//
+// Run it from the editor and read the log. It does three things:
+//   1. GETs existing relationships and prints the KEYS FUB returns, which is the
+//      authoritative naming;
+//   2. reads the relationship types the account has;
+//   3. if two QA contacts are supplied, tries each candidate field name against
+//      them and reports which one FUB accepts.
+// Pass two ids from a "[QA TEST]" pair to get step 3 -- never a real pair.
+// ---------------------------------------------------------------------------
+function raffleInspectFubRelationships(qaPersonId, qaRelatedId) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+
+  var list = raffleFubCall_(
+    'https://api.followupboss.com/v1/peopleRelationships?limit=3', 'get', null, apiKey);
+  say('GET /peopleRelationships -> ' + list.code);
+  if (list.ok && list.body) {
+    say('  top-level keys: ' + Object.keys(list.body).join(', '));
+    var arr = list.body.peoplerelationships || list.body.peopleRelationships ||
+              list.body.relationships || [];
+    if (arr.length) {
+      say('  A RECORD\'S KEYS (this is the answer): ' + Object.keys(arr[0]).join(', '));
+      say('  sample: ' + JSON.stringify(arr[0]).slice(0, 400));
+    } else {
+      say('  no relationships exist yet, so no record to read keys from.');
+    }
+  } else {
+    say('  body: ' + String(list.text).slice(0, 300));
+  }
+
+  if (qaPersonId && qaRelatedId) {
+    ['relatedPersonId', 'relatedId', 'toPersonId', 'personIdTo', 'relatedPerson']
+      .forEach(function (field) {
+        var payload = { personId: qaPersonId, type: 'Referred' };
+        payload[field] = qaRelatedId;
+        var t = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships',
+                               'post', payload, apiKey);
+        say('  POST with "' + field + '" -> ' + t.code + ' ' +
+            (t.ok ? 'ACCEPTED — set RAFFLE_LINK_FIELD to this'
+                  : String(t.text).slice(0, 140)));
+      });
+  } else {
+    say('Pass two [QA TEST] contact ids to probe field names: ' +
+        'raffleInspectFubRelationships(33228, 33241)');
+  }
+  return out.join('\n');
 }
 
 // Reads the current value and writes value+1. Skipped entirely, with one log

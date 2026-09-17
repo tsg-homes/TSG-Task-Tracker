@@ -2012,6 +2012,47 @@ function raffleQaRun_(cleanUp) {
   check('status page shows a count', /\b\d+\b/.test(statusHtml), 'count page showed no number');
   check('status page is labelled as test data', /TEST DATA/.test(statusHtml));
 
+  // ---- 4b. DID ANY OF THAT ACTUALLY REACH FUB? ---------------------------
+  // The suite reported 102 of 102 green on 2026-09-17 while THREE separate FUB
+  // paths were broken: the API key was rejecting every call with a 401, every
+  // relationship link was failing with a 400 on an invalid field name, and the
+  // Referral Count custom field did not exist. None of it was visible, because
+  // nothing here asserted anything about FUB -- the checks were all about rows
+  // and emails, and the FUB write is best-effort by design so nothing throws.
+  //
+  // Getting leads into FUB is the entire point of the raffle. A green suite over
+  // a dead CRM is the worst possible failure, so it is checked explicitly now.
+  section('4b. The FUB writes actually landed');
+  var fubRows = raffleReadEntries_(true);
+  var entrantRow = fubRows.filter(function (r) { return !r.isReferralRow; })[0];
+  var refRow = fubRows.filter(function (r) { return r.isReferralRow; })[0];
+  check('the entrant reached FUB (a person id came back)',
+        !!entrantRow && String(entrantRow.fubId || '').length > 0,
+        'FUB Status: ' + (entrantRow && entrantRow.fubStatus) +
+        ' — a 401 here means the API key is dead and NO lead will reach the CRM');
+  check('the consented referral reached FUB',
+        !!refRow && String(refRow.referralFubId || '').length > 0,
+        'Referral FUB ID is empty — the referral was not created');
+  check('and the row does not record a FUB failure',
+        !!entrantRow && !/fail/i.test(String(entrantRow.fubStatus || '')),
+        entrantRow && entrantRow.fubStatus);
+
+  // The relationship, which is the part that had never once worked.
+  if (entrantRow && refRow && entrantRow.fubId && refRow.referralFubId) {
+    var relApiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+    var rel = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships?personId=' +
+                             encodeURIComponent(entrantRow.fubId), 'get', null, relApiKey);
+    check('FUB can be asked for the entrant\'s relationships', rel.ok === true,
+          rel.code + ': ' + String(rel.text).slice(0, 160));
+    var relArr = (rel.ok && rel.body && (rel.body.peoplerelationships ||
+                  rel.body.peopleRelationships || rel.body.relationships)) || [];
+    check('the entrant is LINKED to the person they referred',
+          relArr.length > 0,
+          'no relationship exists — linking is failing silently; run ' +
+          'raffleInspectFubRelationships(' + entrantRow.fubId + ', ' +
+          refRow.referralFubId + ') to have FUB name the field it wants');
+  }
+
   // ---- 5. The draw --------------------------------------------------------
   section('5. Test draw');
   var draw = raffleDrawWinner_(true);
@@ -2158,8 +2199,28 @@ function raffleQaRun_(cleanUp) {
 
   // THE 5:00 PM BATCH. Window-gated, so it would report "not yet" on any day but
   // Saturday -- ignoreWindow is what makes it testable at all before then.
+  //
+  // AND IT NEEDS SOMEBODY TO REMIND. The first version of this just ran the
+  // batch and accepted whatever came back: live it reported "0 sent, 21 skipped"
+  // and passed, because by that point every referral in the run had already
+  // consented and a consented referral is correctly skipped. So the reminder and
+  // the nudge had STILL never been sent once. This stages a referral, sends the
+  // invite, and deliberately leaves it unanswered -- which is the exact state
+  // most of Saturday afternoon will be in.
+  var waiting = json(raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: good.vid }, referralFor('wait', '(215) 555-9160'))));
+  check('a referral is left waiting, to be reminded',
+        waiting.ok === true && waiting.staged === true, JSON.stringify(waiting));
+  if (waiting.staged) {
+    json(raffleHandleSubmission_({ step: 'invite', vid: good.vid, token: waiting.token }));
+  }
   var rem = raffleSendConsentReminders_(true, true);
   check('the reminder batch runs and reports itself', !!rem && typeof rem.sent === 'number',
+        JSON.stringify(rem));
+  check('and it ACTUALLY SENT a last-chance reminder', !!rem && rem.sent >= 1,
+        (rem && rem.summary) + ' — 0 sent means the email was never rendered or delivered');
+  check('and nudged the referrer who is waiting on them',
+        !!rem && Number(rem.nudged === undefined ? 0 : rem.nudged) >= 1,
         JSON.stringify(rem));
   log.push('      reminder batch: ' + (rem && rem.summary));
 

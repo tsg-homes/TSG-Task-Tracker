@@ -44,6 +44,12 @@ function makeSandbox(opts) {
   const triggers = [];
   const templates = [];
   const quota = { left: opts.quota === undefined ? 1500 : opts.quota };
+  // The relationship store, and the field names FUB is modelled as accepting.
+  // opts.relationshipField overrides the accepted name, so a test can reproduce
+  // the live 400 by pretending FUB wants something else.
+  const relationships = [];
+  const RELATIONSHIP_RELATED_KEY = opts.relationshipField || 'relatedPersonId';
+  const RELATIONSHIP_FIELDS = ['personId', 'type', RELATIONSHIP_RELATED_KEY];
 
   // Multi-tab fake: the whole point of the test/live split is that they are
   // different sheets, so the fake has to model that rather than share one array.
@@ -188,6 +194,33 @@ function makeSandbox(opts) {
           return json(people.find(p => String(p.id) === m[1]) || {});
         }
         if (m && o && o.method === 'put') return json({ id: Number(m[1]) });
+
+        // RELATIONSHIPS, modelled as a real store rather than a blanket 200.
+        // Every link was failing live with
+        //   400 {"errorMessage":"Invalid fields in the request body: relatedPersonId."}
+        // and the fake's catch-all `{id: 999}` said yes to everything, so the
+        // sandbox could never have noticed. Now the POST validates the field
+        // name the same way FUB does and the GET reads back what was stored,
+        // which is what makes the suite's "is the entrant LINKED" check real.
+        if (/\/v1\/peopleRelationships/.test(url)) {
+          if (o && o.method === 'post') {
+            const body = JSON.parse(o.payload || '{}');
+            const bad = Object.keys(body).filter(k => RELATIONSHIP_FIELDS.indexOf(k) === -1);
+            if (bad.length) {
+              return { getResponseCode: () => 400, getContentText: () => JSON.stringify({
+                errorMessage: 'Invalid fields in the request body: ' + bad.join(', ') + '.' }) };
+            }
+            const rel = { id: relationships.length + 1, personId: body.personId,
+                          type: body.type };
+            rel[RELATIONSHIP_RELATED_KEY] = body[RELATIONSHIP_RELATED_KEY];
+            relationships.push(rel);
+            return json(rel);
+          }
+          const q = (url.match(/personId=(\d+)/) || [])[1];
+          return json({ peoplerelationships: q
+            ? relationships.filter(r => String(r.personId) === q)
+            : relationships.slice() });
+        }
         return json({ id: 999 });
       }
     },
