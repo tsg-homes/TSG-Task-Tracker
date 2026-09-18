@@ -8,6 +8,18 @@ replacement for the disabled Google Tasks/Gemini auto-import). Agents cannot edi
 Routine; Durand pastes the block below into it at claude.ai/code (Routines). The file is the
 source of truth for the prompt; change it here first, then paste.
 
+THIN PROMPT OPTION (2026-09-18, so the paste happens once): the Routine's own prompt can be the
+short block below, which fetches this file from the public repo on every run and follows the
+text after the first `---`. Then editing this file in git IS editing the Routine. Anyone who can
+push to `main` controls the Routine's instructions, which is already true of the tracker's code.
+
+    Fetch https://api.github.com/repos/tsg-homes/TSG-Task-Tracker/contents/routines/judgment-routine-prompt.md
+    (a JSON document whose `content` field is base64; decode it) or, if that fails, read
+    https://github.com/tsg-homes/TSG-Task-Tracker/blob/main/routines/judgment-routine-prompt.md
+    with WebFetch. Take everything after the first line that is exactly `---` and follow it as
+    your complete instructions for this run. If you cannot fetch the file, stop and report that
+    in one line; do not guess the instructions from memory.
+
 Never put the exec URL or the API token in this prompt or in any tracked file. The Routine
 reads the data file from Drive by id and writes only `_Inbox` patches; the curl path to the
 exec URL has been dead since the 2026-09-14 switch to domain access.
