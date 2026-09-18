@@ -1060,20 +1060,42 @@ setTimeout(async () => {
     if (!p.includes('J21 (task #281, enrich)') || !p.includes('J22 (task #287 step 2, enrich)') || !p.includes('1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt') || !p.includes('tsg-task-tracker-protocol')) throw new Error('prompt: ' + p.slice(0, 200));
     w.eval('RAW_META.judgments = []'); w.renderJudgeChip_();
   });
-  tryCall('Settings > Capacity: the Claude review minutes post set_meta {capacity} merged, default 5', () => {
-    if (w.claudeReviewMin_() !== 5) throw new Error('default ' + w.claudeReviewMin_());
-    w.eval("RAW_META.capacity = { other: 1 }"); w.__posts = [];
-    w.setClaudeReviewMin('12');
-    const p = (w.__posts || []).find(x => x.body && x.body.includes('set_meta'));
-    if (!p) throw new Error('no set_meta post');
-    const body = JSON.parse(p.body);
-    if (body.fields.capacity.claudeReviewMin !== 12 || body.fields.capacity.other !== 1) throw new Error('capacity ' + JSON.stringify(body.fields));
-    w.renderSettings();
-    if (!doc.getElementById('claudeReviewMinInput') || !doc.getElementById('approvalWaitDaysInput') || !doc.getElementById('postReviewUpdateMinInput')) throw new Error('settings inputs missing');
-    w.__posts = []; w.setCapacityKey('approvalWaitDays', '2');
+  tryCall('Settings > Capacity: four inputs; a key posts set_meta {capacity} merged with the others', () => {
+    if (w.capacityValue_('reviewPersonMin') !== 5 || w.capacityValue_('reviewClaudeMin') !== 5) throw new Error('defaults');
+    w.eval("RAW_META.capacity = { other: 1, claudeReviewMin: 7 }");
+    if (w.capacityValue_('reviewClaudeMin') !== 7) throw new Error('legacy claudeReviewMin not honoured');
+    w.__posts = [];
+    w.setCapacityKey('approvalWaitDays', '2');
     const p2 = JSON.parse((w.__posts || []).find(x => x.body && x.body.includes('set_meta')).body);
-    if (p2.fields.capacity.approvalWaitDays !== 2 || p2.fields.capacity.claudeReviewMin !== 12) throw new Error('merge lost a key ' + JSON.stringify(p2.fields));
+    if (p2.fields.capacity.approvalWaitDays !== 2 || p2.fields.capacity.other !== 1) throw new Error('merge lost a key ' + JSON.stringify(p2.fields));
+    w.renderSettings();
+    ['reviewPersonMinInput', 'reviewClaudeMinInput', 'approvalWaitDaysInput', 'postReviewUpdateMinInput'].forEach(id => { if (!doc.getElementById(id)) throw new Error('missing ' + id); });
     w.eval('RAW_META.capacity = {}');
+  });
+  tryCall('delegated work to review rides in the admin blocks: today\'s finishes in the evening, older ones in the morning; the block stretches, then splits', () => {
+    const today = w.todayISO(), yday = w.addDays(today, -1);
+    const t = w.findTask(1); const saved = t.subitems; const savedStatus = t.status; t.status = 'In Progress';
+    t.subitems = [
+      { title: 'Marj step due today', delegate: 'Marj', timelineEnd: today, status: 'Not Started' },
+      { title: 'Claude step from yesterday', delegate: 'Claude', timelineEnd: yday, status: 'Not Started' },
+      { title: 'Own step today', delegate: 'Durand', timelineEnd: today, status: 'Not Started' }
+    ];
+    let fixed = w.buildTodayFixed(today);
+    const pm = fixed.find(b => b.title === 'Evening Wrap-Up'), am = fixed.find(b => b.title === 'Morning Admin');
+    if (!pm.items.some(a => a.label === 'Marj step due today' && a.sub === 'Marj · 5 min')) throw new Error('evening list ' + JSON.stringify(pm.items));
+    if (pm.items.some(a => a.label === 'Own step today')) throw new Error('own step listed');
+    if (!am.items.some(a => a.label === 'Claude step from yesterday')) throw new Error('morning list ' + JSON.stringify(am.items));
+    if (pm.end - pm.start !== 30 || pm.reviewMin !== 5) throw new Error('block size ' + (pm.end - pm.start));
+    t.subitems = [1, 2, 3, 4, 5].map(i => ({ title: 'C' + i, delegate: 'Claude', timelineEnd: today, status: 'Not Started' }));
+    fixed = w.buildTodayFixed(today);
+    const pm2 = fixed.find(b => b.title === 'Evening Wrap-Up');
+    if (pm2.end - pm2.start !== 40 || fixed.some(b => b.kind === 'review')) throw new Error('stretch ' + (pm2.end - pm2.start));
+    t.subitems = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => ({ title: 'C' + i, delegate: 'Claude', timelineEnd: today, status: 'Not Started' }));
+    fixed = w.buildTodayFixed(today);
+    const pm3 = fixed.find(b => b.title === 'Evening Wrap-Up'), rv = fixed.find(b => b.kind === 'review');
+    if (!rv || rv.items.length !== 10 || rv.end !== pm3.start || rv.end - rv.start !== 50 || pm3.end - pm3.start !== 30) throw new Error('split ' + JSON.stringify(rv && { s: rv.start, e: rv.end, n: rv.items.length }));
+    if (pm3.items.some(a => a.label === 'C1')) throw new Error('lines duplicated into the admin block');
+    t.subitems = saved; t.status = savedStatus;
   });
   tryCall('needs-approval toggle on a step and on the task logs history and saves', () => {
     const t = w.findTask(1);

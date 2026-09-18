@@ -723,3 +723,18 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   default 10) `approvalWaitDays` (default 1) workdays after it finishes, in the roll-up and the
   scheduler (`tsgReserveReviewSlices_`, `tsgAddWorkdays_`). Settings > Capacity holds all three
   (`setCapacityKey` merges one key into `meta.capacity`).
+- REVIEW OF DELEGATED WORK LIVES IN THE ADMIN BLOCKS (backend 2026-09-18.5, UI 2026-09-18.5, per
+  Durand 2026-09-17 22:50 EDT: "wasn't meant to be a 30 min block each, fit into either the SOD or
+  EOD administrative block"). The 0.5 h per-delegated-step confirm cost (roll-up and scheduler) and
+  the Claude review minutes as capacity are RETIRED; every earlier note about them is history.
+  Dashboard: `delegatedReviewItems(date, 'on'|'before')` lists open delegated items (steps and
+  whole tasks) by scheduled end, costed by `reviewPersonMin` / `reviewClaudeMin` (Settings >
+  Capacity, default 5 each; legacy `claudeReviewMin` still read); Evening Wrap-Up carries the ones
+  ending that day, Morning Admin the older unconfirmed ones (plus the "Confirm delegated work (N
+  pending)" roll-up line, evening no longer). A block stretches past 30 min once the load exceeds
+  `REVIEW_FREE_MIN` (15) and past `REVIEW_SPLIT_MIN` (45) the list becomes its own `kind: 'review'`
+  "Review delegated work" block beside it (rendered like admin). Only real work still costs
+  capacity: a Claude item flagged `needsApproval` reserves `postReviewUpdateMin` after
+  `approvalWaitDays` (`tsgReserveReviewSlices_`); `tsgHandoffConfirmNeeded_` /
+  `tsgTaskHandoffConfirmNeeded_` / `tsgConfirmHoursFor_` are deleted. Live data 2026-09-17: 29 open
+  delegated items, 1-3 finishing per day, so the evening block absorbs them at 5 min each.

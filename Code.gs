@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.4';
+const TSG_CODE_VERSION = '2026-09-18.5';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -5125,25 +5125,16 @@ function tsgIsDurandDelegate_(s) {
 function tsgIsClaudeDelegate_(s) {
   return String((s && s.delegate) || '').trim().toLowerCase() === 'claude';
 }
-// The 0.5 h "confirm the handoff" slice belongs to a PERSON delegate: Durand checks their
-// work the day after. A Claude-delegated step's estimate already IS his attention on it
-// (turns x minutes), so charging a confirm slice on top double-counted him (seen 2026-09-18
-// on task 287: five steps worth 2.5 h rolled up to 4.5 h).
-function tsgHandoffConfirmNeeded_(s) {
-  return !!(s && s.delegate) && !tsgIsDurandDelegate_(s) && !tsgIsClaudeDelegate_(s);
-}
-// Per Durand ("add the extra minute", 2026-09-17 22:30 EDT): a Claude-delegated step DOES carry
-// a review cost, but a small, visible, adjustable one: meta.capacity.claudeReviewMin minutes
-// (Settings > Capacity; default 5 = one turn), charged on his day the workday after the step
-// finishes, exactly where the person slice lands. 0 turns it off.
-// Where the review sits (Durand, 2026-09-17 22:40 EDT: "same day preferred, at completion, if
-// approval is required account for that and a post review update session"): the review is
-// charged on the day the Claude step FINISHES, not the next workday; a step flagged
-// needsApproval also charges a post-review update session (postReviewUpdateMin) after
-// approvalWaitDays workdays, for the round of changes that follows the approver's notes.
-// All three live in meta.capacity (Settings > Capacity).
-var TSG_CAPACITY_DEFAULTS = { claudeReviewMin: 5, approvalWaitDays: 1, postReviewUpdateMin: 10 };
-var TSG_CLAUDE_REVIEW_MIN = TSG_CAPACITY_DEFAULTS.claudeReviewMin;
+// REVIEWING DELEGATED WORK IS NOT A CAPACITY SLICE (Durand, 2026-09-17 22:50 EDT: "the review
+// delegated work wasn't meant to be a 30 min block each, I was asking to fit into either the
+// SOD or EOD administrative block"). The dashboard's Morning Admin / Evening Wrap-Up blocks
+// list the delegated items finishing that day, costed per item from meta.capacity
+// (reviewPersonMin / reviewClaudeMin, dashboard-side), and stretch or split to hold them.
+// Nothing here adds review hours to a roll-up or reserves them on his day any more. The one
+// thing that still costs capacity is real work: a Claude step flagged needsApproval gets a
+// post-review update session (postReviewUpdateMin) approvalWaitDays workdays after it
+// finishes, for the round of changes that follows the approver's notes.
+var TSG_CAPACITY_DEFAULTS = { reviewPersonMin: 5, reviewClaudeMin: 5, approvalWaitDays: 1, postReviewUpdateMin: 10 };
 var TSG_APPROVAL_WAIT_DAYS = TSG_CAPACITY_DEFAULTS.approvalWaitDays;
 var TSG_POST_REVIEW_MIN = TSG_CAPACITY_DEFAULTS.postReviewUpdateMin;
 function tsgCapacityNumber_(cap, key) {
@@ -5152,21 +5143,14 @@ function tsgCapacityNumber_(cap, key) {
 }
 function tsgReadCapacity_(doc) {
   var cap = (doc && doc.meta && doc.meta.capacity) || {};
-  TSG_CLAUDE_REVIEW_MIN = tsgCapacityNumber_(cap, 'claudeReviewMin');
   TSG_APPROVAL_WAIT_DAYS = Math.round(tsgCapacityNumber_(cap, 'approvalWaitDays'));
   TSG_POST_REVIEW_MIN = tsgCapacityNumber_(cap, 'postReviewUpdateMin');
 }
-function tsgClaudeReviewHours_() { return Math.round(TSG_CLAUDE_REVIEW_MIN / 60 * 100) / 100; }
 function tsgPostReviewHours_() { return Math.round(TSG_POST_REVIEW_MIN / 60 * 100) / 100; }
 function tsgAddWorkdays_(iso, n) {
   var d = iso, guard = 0;
   while (n > 0 && guard++ < 60) { d = tsgAddDays_(d, 1); if (tsgIsWorkdayIso_(d)) n--; }
   return d;
-}
-// Same rule for a whole task: the person it sits with is its delegate, else its owner.
-function tsgTaskHandoffConfirmNeeded_(t) {
-  var who = String(tsgTaskDelegate_(t) || (t && t.owner) || '').trim().toLowerCase();
-  return !!who && who !== 'durand' && who !== 'claude' && who !== 'unassigned';
 }
 
 /**
@@ -5252,8 +5236,10 @@ function tsgPurgeBogusRollupTagHistory_(doc) {
 }
 
 /**
- * Hours still open under a task: every not-done subitem's estHours plus the invisible
- * 0.5h "confirm the handoff" cost for each one delegated to someone other than Durand.
+ * Hours still open under a task: every not-done subitem's estHours (plus, for a Claude step
+ * flagged needsApproval, its post-review update session). The old invisible 0.5 h "confirm the
+ * handoff" cost per delegated step is gone (2026-09-17): reviewing delegated work is an item
+ * in the dashboard's admin blocks, not hours on the task.
  * `any` is true when any subitem (done or not) ever carried estHours/delegate info, so a
  * task whose subitems are all done still rolls up (to its own hours, or 0) rather than
  * being left at a stale number (2026-09-01, per Durand). latestOpenEnd is the latest
@@ -5267,8 +5253,7 @@ function tsgOpenSubitemHours_(t) {
     if (hadInfo) any = true;
     if (!s.done) {
       if (s.estHours != null && !isNaN(s.estHours)) hours += Number(s.estHours);
-      if (tsgHandoffConfirmNeeded_(s)) hours += 0.5; // confirm-the-handoff cost, invisible (people only)
-      else if (tsgIsClaudeDelegate_(s)) hours += tsgClaudeReviewHours_() + (s.needsApproval ? tsgPostReviewHours_() : 0); // review of a Claude step, plus the post-approval update session (Settings > Capacity)
+      if (tsgIsClaudeDelegate_(s) && s.needsApproval) hours += tsgPostReviewHours_(); // post-approval update session (real work; Settings > Capacity)
       if (s.timelineEnd && (!latestOpenEnd || s.timelineEnd > latestOpenEnd)) latestOpenEnd = s.timelineEnd;
     }
   });
@@ -5336,24 +5321,14 @@ function tsgReserveConfirmCapacity_(addLoad, today, finishIso, hours, sameDay) {
   while (!tsgIsWorkdayIso_(d) && guard++ < 14) d = tsgAddDays_(d, 1);
   if (d >= today) addLoad(d, h);
 }
-// Every slice a finished non-Durand item puts on his day: a person handoff is confirmed the
-// next workday (0.5 h); a Claude step is reviewed the SAME day it finishes (Settings minutes),
-// and when it needs approval a post-review update session lands approvalWaitDays workdays later.
+// What a finished non-Durand item still puts on Durand's day: only the post-review update
+// session of a Claude item flagged needsApproval, approvalWaitDays workdays after it finishes.
+// Reviewing the work itself is an admin-block item on the dashboard, never a capacity slice.
 function tsgReserveReviewSlices_(addLoad, today, finishIso, item, whole) {
-  if (!finishIso || !item) return;
-  if (whole ? tsgTaskHandoffConfirmNeeded_(item) : tsgHandoffConfirmNeeded_(item)) { tsgReserveConfirmCapacity_(addLoad, today, finishIso, 0.5); return; }
+  if (!finishIso || !item || !item.needsApproval) return;
   var claude = whole ? String(tsgTaskDelegate_(item) || '').trim().toLowerCase() === 'claude' : tsgIsClaudeDelegate_(item);
   if (!claude) return;
-  tsgReserveConfirmCapacity_(addLoad, today, finishIso, tsgClaudeReviewHours_(), true);
-  if (item.needsApproval) tsgReserveConfirmCapacity_(addLoad, today, tsgAddWorkdays_(finishIso, TSG_APPROVAL_WAIT_DAYS), tsgPostReviewHours_(), true);
-}
-// The slice a finished non-Durand item costs him the next workday: 0.5 h for a person, the
-// Settings figure for Claude, nothing otherwise.
-function tsgConfirmHoursFor_(item, whole) {
-  if (whole ? tsgTaskHandoffConfirmNeeded_(item) : tsgHandoffConfirmNeeded_(item)) return 0.5;
-  var who = whole ? String(tsgTaskDelegate_(item) || '').trim().toLowerCase() : '';
-  if ((whole && who === 'claude') || (!whole && tsgIsClaudeDelegate_(item))) return tsgClaudeReviewHours_();
-  return 0;
+  tsgReserveConfirmCapacity_(addLoad, today, tsgAddWorkdays_(finishIso, TSG_APPROVAL_WAIT_DAYS), tsgPostReviewHours_(), true);
 }
 
 /**

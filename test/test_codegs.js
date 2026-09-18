@@ -840,9 +840,9 @@ section('Subitem rollup respects the parent\'s own work (2026-09-14, task #12 re
   d.tasks[0].timelineEnd = '2026-09-15';
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('an explicit parent due EARLIER than an open subitem is pushed out to it', d.tasks[0].timelineEnd === '2026-09-20');
-  check('non-Durand delegate on an open subitem still adds the 0.5h handoff cost', (function() {
+  check('non-Durand delegate on an open subitem adds NO handoff cost any more (review lives in the admin blocks)', (function() {
     const dd = { meta: {}, tasks: [parent({ estHoursOwn: 0, subitems: [{ title: 'x', done: false, delegate: 'Perly', estHours: 1 }] })] };
-    sandbox.tsgRollupSubitemHours_(dd); return dd.tasks[0].estHours === 1.5; })());
+    sandbox.tsgRollupSubitemHours_(dd); return dd.tasks[0].estHours === 1; })());
 }
 
 section('Domain access: identity gate, roster mapping, inbox trigger (2026-09-14)');
@@ -1143,7 +1143,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   let added = d.tasks.find(t => /fall flyer print run/i.test(t.title));
   check('add: creates a task owned by Marj, in her group, tagged Self-created and NOT held for review', r.ok === true && !!added && added.owner === 'Marj' && added.delegate === 'Marj' && added.group === 'Marj' && added.priority === 'Low' && added.tags.includes('Self-created') && !added.tags.includes('Triage'));
   check('add: the estimator fills estimate, type, subitems and tags', added.estSource === 'claude' && added.taskType === 'Actionable Task' && added.subitems.length === 2 && added.tags.includes('Flyers') && added.history.some(h => h.field === 'auto-enriched'));
-  check('add: the 2h estimate is split across the two minted steps; the rollup adds the 0.5h confirm cost per delegated step', added.subitems.every(s => s.estHours === 1 && s.estSource === 'claude') && added.estHours === 3);
+  check('add: the 2h estimate is split across the two minted steps; the rollup is their plain sum (no confirm cost)', added.subitems.every(s => s.estHours === 1 && s.estSource === 'claude') && added.estHours === 2);
   check('add: the estimator was asked for progress from the notes and priority/group were not re-asked', claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"progress"/.test(u)) && !claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"priority"/.test(u)) && !claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"group"/.test(u)));
   check('add: minted subitems are delegated to Marj, not left for Durand', added.subitems.every(s => s.delegate === 'Marj'));
   check('add: the scheduler placed her steps and rolled the due date up to the parent', added.subitems.every(s => !!s.timelineEnd) && !!added.timelineEnd && !(added.tags || []).includes('Scheduling Stuck'));
@@ -1743,7 +1743,7 @@ section('Actual time: log_time op and ACTUALS_BY_TYPE (2026-09-17)');
   check('actualHours is a diffed field on tasks and subtasks', sandbox.TSG_TASK_DIFF_FIELDS.includes('actualHours') && sandbox.TSG_SUBITEM_DIFF_FIELDS.includes('actualHours'));
 }
 
-section('Confirm-the-handoff slice is for people, not Claude (2026-09-18)');
+section('Reviewing delegated work is an admin-block item, not a capacity slice (2026-09-17)');
 {
   const t = { subitems: [
     { title: 'Claude step', estHours: 1, delegate: 'Claude' },
@@ -1751,36 +1751,28 @@ section('Confirm-the-handoff slice is for people, not Claude (2026-09-18)');
     { title: 'Own step', estHours: 1, delegate: 'Durand' },
     { title: 'Unassigned step', estHours: 1 }
   ] };
-  const r = sandbox.tsgOpenSubitemHours_(t);
-  check('roll-up: 4 h of steps + 0.5 h for the person step + 5 min (default) review for the Claude step = 4.58', r.hours === 4.58 && r.any === true);
-  sandbox.tsgReadCapacity_({ meta: { capacity: { claudeReviewMin: 0 } } });
-  check('Settings claudeReviewMin 0 turns the Claude review off (4.5)', sandbox.tsgOpenSubitemHours_(t).hours === 4.5);
-  sandbox.tsgReadCapacity_({ meta: { capacity: { claudeReviewMin: 15 } } });
-  check('claudeReviewMin 15 charges a quarter hour per Claude step (4.75)', sandbox.tsgOpenSubitemHours_(t).hours === 4.75);
-  check('tsgConfirmHoursFor_: person 0.5, Claude the Settings figure, unassigned 0', sandbox.tsgConfirmHoursFor_({ delegate: 'Marj' }, false) === 0.5 && sandbox.tsgConfirmHoursFor_({ delegate: 'Claude' }, false) === 0.25 && sandbox.tsgConfirmHoursFor_({}, false) === 0 && sandbox.tsgConfirmHoursFor_({ owner: 'Durand', delegate: 'Claude' }, true) === 0.25);
   sandbox.tsgReadCapacity_({ meta: {} });
-  check('no capacity in meta falls back to the 5-minute default', sandbox.tsgOpenSubitemHours_(t).hours === 4.58);
+  const r = sandbox.tsgOpenSubitemHours_(t);
+  check('roll-up is the plain sum of step hours: no confirm or review slices (4 h)', r.hours === 4 && r.any === true);
   t.subitems[0].needsApproval = true;
-  check('a Claude step that needs approval also carries the post-review update session (10 min default): 4.75', sandbox.tsgOpenSubitemHours_(t).hours === 4.75);
+  check('a Claude step needing approval adds only the post-review update session (10 min default): 4.17', sandbox.tsgOpenSubitemHours_(t).hours === 4.17);
   t.subitems[0].needsApproval = false;
-  // where the slices land: person next workday; Claude the same day; approval -> post-review after the wait
   const loads = []; const addLoad = (d, h) => loads.push([d, Math.round(h * 100) / 100]);
   sandbox.tsgReserveReviewSlices_(addLoad, '2026-09-01', '2026-09-25', { delegate: 'Marj' }, false);
-  check('person handoff: 0.5 h on the next workday (Fri 9/25 -> Mon 9/28)', loads.length === 1 && loads[0][0] === '2026-09-28' && loads[0][1] === 0.5);
-  loads.length = 0;
   sandbox.tsgReserveReviewSlices_(addLoad, '2026-09-01', '2026-09-25', { delegate: 'Claude' }, false);
-  check('Claude step: review the SAME day it finishes', loads.length === 1 && loads[0][0] === '2026-09-25' && loads[0][1] === 0.08);
-  loads.length = 0;
+  check('person handoff and plain Claude step reserve nothing on his day', loads.length === 0);
   sandbox.tsgReserveReviewSlices_(addLoad, '2026-09-01', '2026-09-25', { delegate: 'Claude', needsApproval: true }, false);
-  check('...needing approval: review same day + post-review update one workday later (Mon 9/28, 10 min)', loads.length === 2 && loads[0][0] === '2026-09-25' && loads[1][0] === '2026-09-28' && loads[1][1] === 0.17);
+  check('Claude step needing approval: post-review update one workday after Fri 9/25 (Mon 9/28, 10 min)', loads.length === 1 && loads[0][0] === '2026-09-28' && loads[0][1] === 0.17);
   loads.length = 0;
   sandbox.tsgReadCapacity_({ meta: { capacity: { approvalWaitDays: 3, postReviewUpdateMin: 30 } } });
   sandbox.tsgReserveReviewSlices_(addLoad, '2026-09-01', '2026-09-25', { owner: 'Durand', delegate: 'Claude', needsApproval: true }, true);
-  check('whole Claude task, Settings wait 3 workdays and 30 min: post-review lands Wed 9/30 at 0.5 h', loads.length === 2 && loads[1][0] === '2026-09-30' && loads[1][1] === 0.5);
+  check('whole Claude task, Settings wait 3 workdays and 30 min: lands Wed 9/30 at 0.5 h', loads.length === 1 && loads[0][0] === '2026-09-30' && loads[0][1] === 0.5);
+  loads.length = 0;
+  sandbox.tsgReserveReviewSlices_(addLoad, '2026-09-01', '2026-09-25', { owner: 'Durand', delegate: 'Marj', needsApproval: true }, true);
+  check('needsApproval on a person item costs nothing (their round of changes is theirs)', loads.length === 0);
   sandbox.tsgReadCapacity_({ meta: {} });
   check('needsApproval is a diffed field on tasks and steps', sandbox.TSG_TASK_DIFF_FIELDS.includes('needsApproval') && sandbox.TSG_SUBITEM_DIFF_FIELDS.includes('needsApproval'));
-  check('whole task: delegated to Marj yes, delegated to Claude no, owned by Marj with no delegate yes, Durand no', sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand', delegate: 'Marj' }) && !sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand', delegate: 'Claude' }) && sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Marj' }) && !sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand' }));
-  check('tsgHandoffConfirmNeeded_: Marj yes, Claude no, Durand no, none no', sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Marj' }) && !sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Claude' }) && !sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Durand' }) && !sandbox.tsgHandoffConfirmNeeded_({}));
+  check('the old handoff helpers are gone', typeof sandbox.tsgHandoffConfirmNeeded_ === 'undefined' && typeof sandbox.tsgConfirmHoursFor_ === 'undefined');
 }
 
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
