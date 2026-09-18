@@ -889,6 +889,16 @@ section('Dependencies and due dates always align (2026-09-18)');
   check('open steps shift by the same days and land on workdays, a Done step stays', t2.subitems[0].timelineEnd === '2026-09-25' && t2.subitems[2].timelineEnd === '2026-09-28' && t2.subitems[1].timelineEnd === '2026-09-21');
   check('scheduledDays shift too, off the weekend', JSON.stringify(t2.scheduledDays) === JSON.stringify(['2026-09-25', '2026-09-28']));
 
+  // A hand-set date is flagged, never moved (per Durand "flag on hand set instead").
+  d = { meta: { docVersion: 1 }, tasks: [ mk(1, { timelineEnd: '2026-09-25' }), mk(2, { timelineEnd: '2026-09-22', dueOverride: true, depends: '1' }) ] };
+  check('a hand-set dependent date is kept and flagged At Risk with the realistic end', sandbox.tsgAlignDependencies_(d, NOW2) === 0 && d.tasks[1].timelineEnd === '2026-09-22' && d.tasks[1].tags.includes('At Risk') && d.tasks[1].realisticEnd === '2026-09-28' && d.tasks[1].dependencyRisk.predId === 1);
+  check('...with one at-risk history line, source Dependency, and no repeat on the next pass', d.tasks[1].history.filter(h => h.field === 'at-risk').length === 1 && (sandbox.tsgAlignDependencies_(d, NOW2), d.tasks[1].history.filter(h => h.field === 'at-risk').length === 1) && d.tasks[1].history[0].source === 'Dependency');
+  sandbox.tsgRollupSubitemHours_(d, NOW2);
+  check('the roll-up pass does not clear a dependency flag', d.tasks[1].tags.includes('At Risk') && d.tasks[1].realisticEnd === '2026-09-28');
+  d.tasks[0].timelineEnd = '2026-09-18';
+  sandbox.tsgAlignDependencies_(d, NOW2);
+  check('the flag clears once the predecessor ends before the hand-set date', !d.tasks[1].tags.includes('At Risk') && !d.tasks[1].realisticEnd && !d.tasks[1].dependencyRisk && d.tasks[1].history.some(h => h.field === 'at-risk' && h.to === null && h.source === 'Dependency'));
+
   // The pass runs inside tsgAutoScheduleDoc_ on every write.
   d = { meta: { docVersion: 1 }, tasks: [ mk(1, { timelineEnd: '2026-09-25' }), mk(2, { timelineEnd: '2026-09-22', depends: '1' }) ] };
   sandbox.tsgAutoScheduleDoc_(d);

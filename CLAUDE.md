@@ -1046,8 +1046,11 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   workday after it: `timelineEnd`, `scheduledStart`, `scheduledDays` and every OPEN step move by the
   same days and land on workdays; history `due` with source `Dependency` naming the predecessor;
   chains settle to a fixed point (loop cap 50). Done/Cancelled or undated predecessors do not
-  constrain. A hand-set date (`dueOverride`) IS moved here (a date before its dependency cannot be
-  met; the history line says why). Only numeric ids in `depends` count: three of the four open
+  constrain. A hand-set date (`dueOverride`) is NEVER moved (Durand: "flag on hand set instead"):
+  the task gets `dependencyRisk {predId, predEnd, realisticEnd}`, the reserved tag `At Risk` and
+  `realisticEnd` (the date it would need), with an `at-risk` history line source `Dependency`; the
+  flag clears on the write where it fits again. `tsgFlagDueRisk_` keeps the tag while a dependency
+  flag holds and shows the later of the two realistic ends. Only numeric ids in `depends` count: three of the four open
   tasks with a dependency on 2026-09-18 held prose ("Raffle referral form must be deployed first",
   "After the Block Party"), which nothing can align; the dry run against the live file moved 0.
   The dashboard's `cascadeDependents` stays for instant feedback on a hand edit. Tests: "Dependencies

@@ -5655,12 +5655,19 @@ function tsgFlagDueRisk_(t, latestOpenEnd, now) {
   var tags = Array.isArray(t.tags) ? t.tags : [];
   var had = tags.indexOf('At Risk') !== -1;
   t.history = t.history || [];
+  // A dependency flag (tsgAlignDependencies_) owns the tag while it holds; the later of the two
+  // realistic ends is shown.
+  var depRisk = t.dependencyRisk && t.dependencyRisk.realisticEnd;
   if (atRisk) {
-    var changed = !had || t.realisticEnd !== latestOpenEnd;
-    t.realisticEnd = latestOpenEnd;
+    var target = (depRisk && depRisk > latestOpenEnd) ? depRisk : latestOpenEnd;
+    var changed = !had || t.realisticEnd !== target;
+    t.realisticEnd = target;
     if (!had) t.tags = tags.concat(['At Risk']);
     if (changed && now) t.history.push({ ts: now, field: 'at-risk', from: t.timelineEnd, to: latestOpenEnd, source: 'rollup',
       note: 'open steps run to ' + latestOpenEnd + ', past the due date ' + t.timelineEnd });
+  } else if (depRisk) {
+    if (!had) t.tags = tags.concat(['At Risk']);
+    t.realisticEnd = depRisk;
   } else if (had || t.realisticEnd) {
     t.tags = tags.filter(function(tg) { return tg !== 'At Risk'; });
     delete t.realisticEnd;
@@ -5703,7 +5710,7 @@ function tsgAlignDependencies_(doc, now) {
   function daysBetween(a, b) {
     return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000);
   }
-  var moved = 0, changed = true, guard = 0;
+  var moved = 0, changed = true, guard = 0, stillFlagged = {};
   while (changed && guard++ < 50) {
     changed = false;
     tasks.forEach(function(dep) {
@@ -5722,6 +5729,22 @@ function tsgAlignDependencies_(doc, now) {
         // Shift by the start; every moved date is then nudged off a weekend.
         var before = dep.timelineEnd;
         var newEnd = toWorkday(tsgAddDays_(before, shift));
+        if (dep.dueOverride) {
+          // A hand-set date is never moved (per Durand: "flag on hand set instead"): the task is
+          // tagged At Risk with the date it would need, and the flag clears once it fits again.
+          var prev = dep.dependencyRisk;
+          if (!prev || prev.realisticEnd < newEnd) dep.dependencyRisk = { predId: pred.id, predEnd: end, realisticEnd: newEnd };
+          if (!dep.realisticEnd || dep.realisticEnd < newEnd) dep.realisticEnd = newEnd;
+          var tags = Array.isArray(dep.tags) ? dep.tags : [];
+          if (tags.indexOf('At Risk') === -1) dep.tags = tags.concat(['At Risk']);
+          if (!prev || prev.realisticEnd !== newEnd || prev.predId !== pred.id) {
+            dep.history = dep.history || [];
+            dep.history.push({ ts: now || new Date().toISOString(), field: 'at-risk', from: before, to: newEnd, source: 'Dependency',
+              note: 'due date kept; it falls before "' + (pred.title || ('#' + pred.id)) + '" ends on ' + end + ', so the realistic end is ' + newEnd });
+          }
+          stillFlagged[dep.id] = true;
+          return;
+        }
         dep.timelineEnd = newEnd;
         if (dep.scheduledStart) dep.scheduledStart = newStart;
         if (Array.isArray(dep.scheduledDays)) dep.scheduledDays = dep.scheduledDays.map(function(d) { return toWorkday(tsgAddDays_(d, shift)); });
@@ -5737,6 +5760,20 @@ function tsgAlignDependencies_(doc, now) {
       });
     });
   }
+  // A dependency flag that no longer holds clears; the At Risk tag and realisticEnd stay only
+  // while the task's own steps still run past its date (tsgFlagDueRisk_'s case).
+  tasks.forEach(function(t) {
+    if (!t || !t.dependencyRisk || stillFlagged[t.id]) return;
+    var was = t.dependencyRisk.realisticEnd;
+    delete t.dependencyRisk;
+    var latest = tsgOpenSubitemHours_(t).latestOpenEnd;
+    var stepsRisk = !!(t.dueOverride && t.timelineEnd && latest && latest > t.timelineEnd);
+    if (stepsRisk) { t.realisticEnd = latest; return; }
+    t.tags = (Array.isArray(t.tags) ? t.tags : []).filter(function(tg) { return tg !== 'At Risk'; });
+    delete t.realisticEnd;
+    t.history = t.history || [];
+    t.history.push({ ts: now || new Date().toISOString(), field: 'at-risk', from: was, to: null, source: 'Dependency', note: 'the date fits after its dependencies again' });
+  });
   return moved;
 }
 
