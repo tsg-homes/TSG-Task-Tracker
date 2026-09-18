@@ -1039,3 +1039,16 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   records task's two key-rotation steps, retitled in the review pass) is silently skipped by the
   answer. Set such steps with a direct `update_subitem` (index + expectTitle) instead. A judgment
   `answer: null` on an `add_subitem`-queued request is the clean way to drop it.
+- DEPENDENCIES AND DUE DATES ALWAYS ALIGN (backend 2026-09-18.17, per Durand "shouldn't you fix it by
+  ensuring they do align always"): `tsgAlignDependencies_(doc, now)` runs inside `tsgAutoScheduleDoc_`
+  (every write; before the scheduler seeds and again after placement). A dependent whose span starts on
+  or before a predecessor's end (`realisticEnd` counts when later) is pushed to start on the next
+  workday after it: `timelineEnd`, `scheduledStart`, `scheduledDays` and every OPEN step move by the
+  same days and land on workdays; history `due` with source `Dependency` naming the predecessor;
+  chains settle to a fixed point (loop cap 50). Done/Cancelled or undated predecessors do not
+  constrain. A hand-set date (`dueOverride`) IS moved here (a date before its dependency cannot be
+  met; the history line says why). Only numeric ids in `depends` count: three of the four open
+  tasks with a dependency on 2026-09-18 held prose ("Raffle referral form must be deployed first",
+  "After the Block Party"), which nothing can align; the dry run against the live file moved 0.
+  The dashboard's `cascadeDependents` stays for instant feedback on a hand edit. Tests: "Dependencies
+  and due dates always align".

@@ -158,6 +158,15 @@ Switching the access mode: change `TSG_ACCESS_MODE` in `Code.gs` AND `webapp.acc
 `tsgInstallInboxTrigger` once from the Apps Script editor to authorize the new scopes and
 install the trigger.
 
+## Dependencies and due dates always align (2026-09-18)
+
+On every write the backend (`tsgAlignDependencies_`) pushes a dependent task forward so it starts on
+the next workday after every task it depends on ends (a predecessor's At Risk `realisticEnd` counts).
+The move shifts the due date, the scheduled span and every open step together, lands them on
+workdays, and logs `due` with source `Dependency`. Only numeric task ids in `depends` (comma list)
+take part; prose in that field is ignored, so a patch that wants a real dependency must write the id
+(or `dependsOnTitle` in an enrich answer, which the server resolves to the id).
+
 ## Judgment queue (2026-09-16): Claude answers without an API key
 
 The script has no `ANTHROPIC_API_KEY`. Instead of calling the API, every judgment it would
