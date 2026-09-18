@@ -88,21 +88,20 @@ const sandbox = {
     GuestStatus: { YES: 'yes', OWNER: 'owner', NO: 'no' }
   },
   Utilities: {
-    // Honours the time zone like the real Utilities.formatDate (2026-09-18: the old stub used the
-    // container's UTC clock, so the 16:30 New York due-date floor flipped a day early and three
-    // checks failed whenever the suite ran after 16:30 UTC).
+    // Formats in the REQUESTED zone like the real Utilities.formatDate does. The old stub
+    // used the Node process's local clock (UTC in a cloud session), so the due-date floor
+    // tests failed after 16:30 UTC = 12:30 PM Eastern (found 2026-09-18).
     formatDate: (date, tz, fmt) => {
       const pad = (n) => String(n).padStart(2, '0');
-      let y = date.getFullYear(), mo = date.getMonth() + 1, d = date.getDate(), h = date.getHours(), mi = date.getMinutes(), se = date.getSeconds();
+      let p = { y: date.getFullYear(), M: date.getMonth() + 1, d: date.getDate(), H: date.getHours(), m: date.getMinutes(), s: date.getSeconds() };
       try {
-        const parts = {};
-        new Intl.DateTimeFormat('en-US', { timeZone: tz || 'UTC', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
-          .formatToParts(date).forEach(pt => { parts[pt.type] = pt.value; });
-        y = Number(parts.year); mo = Number(parts.month); d = Number(parts.day); h = Number(parts.hour) % 24; mi = Number(parts.minute); se = Number(parts.second);
-      } catch (e) {}
-      if (fmt === 'yyyy-MM-dd') return y + '-' + pad(mo) + '-' + pad(d);
-      if (fmt === 'HH:mm') return pad(h) + ':' + pad(mi);
-      if (fmt === 'yyyy-MM-dd-HHmmss') return y + '-' + pad(mo) + '-' + pad(d) + '-' + pad(h) + pad(mi) + pad(se);
+        const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(date);
+        const g = (t) => Number(parts.find(x => x.type === t).value);
+        p = { y: g('year'), M: g('month'), d: g('day'), H: g('hour') % 24, m: g('minute'), s: g('second') };
+      } catch (e) { /* unknown zone: fall back to the local clock */ }
+      if (fmt === 'yyyy-MM-dd') return p.y + '-' + pad(p.M) + '-' + pad(p.d);
+      if (fmt === 'HH:mm') return pad(p.H) + ':' + pad(p.m);
+      if (fmt === 'yyyy-MM-dd-HHmmss') return p.y + '-' + pad(p.M) + '-' + pad(p.d) + '-' + pad(p.H) + pad(p.m) + pad(p.s);
       return date.toISOString();
     },
     base64EncodeWebSafe: (s) => Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
@@ -1832,9 +1831,7 @@ section('Reviewing delegated work is an admin-block item, not a capacity slice (
 
 section('A proposed due date is never a day that is already over (2026-09-17)');
 {
-  // New York wall-clock instants (the stub now honours the script time zone, so a bare local
-  // string would be read in the container's zone).
-  const fri1630 = new Date('2026-09-18T16:30:00-04:00'), fri1000 = new Date('2026-09-18T10:00:00-04:00'), sat = new Date('2026-09-19T09:00:00-04:00');
+  const fri1630 = new Date('2026-09-18T16:30:00-04:00'), fri1000 = new Date('2026-09-18T10:00:00-04:00'), sat = new Date('2026-09-19T09:00:00-04:00'); // Eastern, the script's zone
   check('during the workday the floor is today', sandbox.tsgEarliestDueIso_(fri1000) === '2026-09-18');
   check('at 16:30 or later the floor is the next workday (Fri -> Mon)', sandbox.tsgEarliestDueIso_(fri1630) === '2026-09-21');
   check('on a weekend the floor is Monday', sandbox.tsgEarliestDueIso_(sat) === '2026-09-21');
@@ -1869,6 +1866,23 @@ section('Retry / dismiss a filed inbox patch (2026-09-17)');
   check('dismiss trashes the filed file (prefix tolerated) and drops the record', junk.trashed === true && doc.meta.inboxErrors.length === 0);
   check('the two ops are in the accepted list', sandbox.TSG_DATA_OPS.includes('retry_filed') && sandbox.TSG_DATA_OPS.includes('dismiss_inbox_error'));
   sandbox.DriveApp.getFolderById = savedFolder;
+}
+
+section('reorder_subitems (2026-09-18)');
+{
+  const mk = (t, due) => ({ title: t, status: 'Not Started', timelineEnd: due, history: [{ ts: '2026-09-16T00:00:00Z', field: 'created', from: null, to: null }] });
+  const d = { meta: { docVersion: 1, next_id: 9 }, tasks: [ { id: 4, title: 'SOPs', owner: 'Durand', status: 'In Progress', tags: [], history: [], subitems: [mk('gate', '2026-11-20'), mk('early', '2026-09-25'), mk('undated', ''), mk('mid', '2026-10-02'), mk('also-early', '2026-09-25')] } ] };
+  sandbox.applyDataPatch_(d, { op: 'reorder_subitems', id: 4, by: 'due', source: 'Durand' });
+  check('by: due sorts steps by timelineEnd, stable for ties, undated last', d.tasks[0].subitems.map(s => s.title).join(',') === 'early,also-early,mid,gate,undated');
+  check('the steps themselves are untouched (history kept) and the parent logs the reorder', d.tasks[0].subitems[0].history.length === 1 && d.tasks[0].history.some(h => h.field === 'subitems-reordered' && h.to === 'by due date' && h.source === 'Durand'));
+  sandbox.applyDataPatch_(d, { op: 'reorder_subitems', id: 4, order: [4, 3, 2, 1, 0], source: 'Durand' });
+  check('an explicit permutation is applied', d.tasks[0].subitems.map(s => s.title).join(',') === 'undated,gate,mid,also-early,early');
+  let bad = false; try { sandbox.applyDataPatch_(d, { op: 'reorder_subitems', id: 4, order: [0, 1, 1, 3, 4] }); } catch (e) { bad = /permutation/.test(e.message); }
+  check('a non-permutation is refused by name', bad && d.tasks[0].subitems.length === 5);
+  const n = d.tasks[0].history.length;
+  sandbox.applyDataPatch_(d, { op: 'reorder_subitems', id: 4, order: [0, 1, 2, 3, 4] });
+  check('an identity order logs nothing', d.tasks[0].history.length === n);
+  check('the op is in the accepted list', sandbox.TSG_DATA_OPS.includes('reorder_subitems'));
 }
 
 section('An answered estimate on a task with steps is the TOTAL: own share = total minus open steps (2026-09-18)');

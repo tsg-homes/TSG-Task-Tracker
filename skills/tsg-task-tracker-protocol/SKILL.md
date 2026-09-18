@@ -24,6 +24,7 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 ### Data ops (`target: "data"`)
 - `add_task {task}` — fields below; `skipDedup`/`skipEnrich` only when told. A near-duplicate title is merged as a step of the existing task, not added.
 - `update_task {id, fields}` — merged with `Object.assign`; cannot set `id`/`history`; `timelineEnd` also sets `dueOverride`; `assignee` is accepted and landed as `delegate`; `depends` lifts `dependsNone`.
+- `reorder_subitems {id, by: "due"}` or `{id, order: [old indices]}` — reorder a task's steps without resending them (backend >= 2026-09-18.15); a stable sort by `timelineEnd` (undated last) or an explicit permutation; the steps are untouched and the parent logs `subitems-reordered`.
 - `update_subitem {id, index, fields, expectTitle}` — one step by 0-based `index` (`subIdx` is accepted as an alias from backend 2026-09-18.8; before that only `index` worked and a `subIdx` patch was filed FAILED-); `expectTitle` guards against a moved index.
 - `add_subitem {id, subitem}` — `{title, estHours, taskType, priority, delegate, notes}`; always enriched.
 - `delete_task {id}`. `bulk {ops}` is applied sub-op by sub-op: a failing sub-op is rolled back alone, the rest land, the file is kept as `PARTIAL-`.

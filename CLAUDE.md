@@ -909,6 +909,21 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   a time; before any deploy `git fetch origin main && git merge origin/main`, re-test, then ship;
   (3) never reuse a version number: look at `main` for the highest `TSG_CODE_VERSION` / `UI_VERSION`
   before bumping.
+- CHAT RULE (Durand, 2026-09-18 12:40 EDT): "use task titles not #s" — in chat, name tasks by their
+  title, never by id; ids stay in patches and code only.
+- Review pass 2026-09-18 (12:00-13:00 EDT, AskUserQuestion, four tasks per round): 38 open tasks
+  verified against Gmail/Calendar/Drive/GitHub first (three read-only agents), 13 stale ones
+  corrected by patch `patch-2026-09-18-live-state-corrections.json` (22 ops), then 40 decisions
+  written as `patch-2026-09-18-review-pass-A1/A2/B.json` (70 ops: adds, delegations to Claude,
+  merges of #257 into #249 and #272/#288 into new/existing tasks, deletes of #257/#272/#288/#295,
+  the SOP task's 31 steps reordered by due date). FINDINGS TO KEEP: (1) `meta.rejectedSaves` held
+  20 `stale_version` rejections: a dashboard save against a version the Routine had already moved
+  past is DROPPED with no retry, so Durand's edits vanish (his #259 update did); logged as a step on
+  the tracker feature task. (2) Every notes edit queues an enrich judgment, so a 22-op correction
+  patch queued ~30 requests (J52-J77) and `meta.judgments` reached 295 KB. (3) clasp's Google
+  token hits Workspace reauth (`invalid_rapt`) within hours: the Drive API cannot be driven from
+  the session's clasp credentials; large inbox patches go through the Drive connector, split
+  under ~30 KB per file (the Bash output cap that keeps them in context).
 
 ## Write amplification and silent MALFORMED patches (2026-09-18, backend 2026-09-18.14, dashboard UI 2026-09-18.16)
 
@@ -971,6 +986,17 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   Settings > General (the dashboard now shows it as a critical row).
 - NO EMAIL for filed patches (Durand 2026-09-18: "dont email me, just log and notify in tracker"):
   `tsgNotifyInboxErrors_` and its cache guard were removed before any mail ever went out (backend
-  2026-09-18.15); `meta.inboxErrors` is the log, the dashboard's critical/warn alert row plus one
+  2026-09-18.16, since main's .15 is `reorder_subitems`); `meta.inboxErrors` is the log, the dashboard's critical/warn alert row plus one
   toast per new entry on load (`checkInboxErrorToasts_`, localStorage `tsgSeenInboxErrorTs`, UI
-  2026-09-18.17) is the notification.
+  2026-09-18.18, since main's .17 is comment-mode swallow) is the notification.
+- Deployed 2026-09-18 13:05 EDT: web app @84 = backend 2026-09-18.14 / UI 2026-09-18.17 = commit
+  02f744e, `main` fast-forwarded. UI .17 = comment mode swallows mousedown/click for everything
+  inside the page or an open card except the comment buttons and the pop-over
+  (`COMMENT_MODE_PASSTHROUGH`, `commentModeSwallow_`); the other session's @83 carried UI .16, so
+  the same number was never reused. Durand's timeline comment (cmu75irckg1r3n) answered and
+  resolved by patch; the day-strip readability point is a step on the tracker feature task.
+- `reorder_subitems` (backend 2026-09-18.15, per Durand "word" to the reorder-op proposal): `{id, by:
+  'due'}` (stable sort by timelineEnd, undated last) or `{id, order: [old indices]}` (a permutation,
+  refused by name otherwise); steps untouched, parent logs `subitems-reordered`. Built because the
+  only other way to reorder was an `update_task` resending every step with its history (31 KB for the
+  SOP task), which the Drive connector cannot carry safely. First use: the SOP task's 31 steps by date.
