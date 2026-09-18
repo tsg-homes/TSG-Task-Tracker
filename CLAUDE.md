@@ -777,6 +777,15 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   if not, merge main, test, then deploy. The clasp login for a cloud session is done as
   durand@ (the script's owner); `.clasp.json` is written by hand with the Script ID and
   `.tracker-ids.json` from `clasp deployments` (the non-@HEAD id), both gitignored.
+- Deployed 2026-09-18 02:16 EDT: web app @76 = backend 2026-09-18.10 / UI 2026-09-18.12 = commit
+  fab0ecf, `main` fast-forwarded. ROLL-UP RULE (per Durand: "the end result should be the sum
+  of all subitems plus any hours allocated to the main task"): `estHours` on a task with steps =
+  `estHoursOwn` + open steps, and an enrichment answer's `estHours` on such a task is the TOTAL:
+  `tsgApplyEstimateToTask_` now calls `tsgCaptureOwnHours_` after minting/answering steps, the
+  same split an explicit edit gets. Before this the answered figure was written to estHours and
+  the roll-up added the steps to a stale own share (239 went 2 -> 3). Step hours in an answer
+  are floored to 0.25 by `tsgEstimateParse_`, so never answer sub-quarter steps; a direct
+  `update_subitem` keeps a smaller value (used to re-split 256/273/289 that night).
 - Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
   Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
   repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
