@@ -970,6 +970,12 @@ section('Inbox pipeline: lock busy, trash-after-write, unreadable document, whit
     const before = writes.length;
     r = sandbox.processInbox_();
     check('a FAILED- file is never re-read on a later pass', r.applied === 0 && writes.length === before && bad.name === 'FAILED-bad.json');
+    check('...and is not trashed while younger than the keep window', bad.trashed === false);
+    const oldFiled = fakePatchFile('FAILED-old.json', { target: 'data', op: 'update_task', id: 999, fields: {} });
+    oldFiled.getDateCreated = () => new Date(Date.now() - 8 * 86400000);
+    sandbox.DriveApp.getFolderById = () => fakeInbox([oldFiled]);
+    r = sandbox.processInbox_();
+    check('a filed patch older than 7 days is trashed by the tracker itself (record stays in meta)', oldFiled.trashed === true && r.applied === 0);
     // bulk with one unknown sub-op (the raffle case): the known sub-ops apply, the file is PARTIAL-, the error names the sub-op
     const mixed = fakePatchFile('mixed.json', { target: 'data', op: 'bulk', source: 'Claude (raffle)', ops: [
       { op: 'update_task', id: 1, fields: { notes: 'from bulk' } },

@@ -1472,6 +1472,8 @@
       <button class="settings-tab active" data-tab="rulesets" onclick="setSettingsTab('rulesets')">Rulesets</button>
       <button class="settings-tab" data-tab="threads" onclick="setSettingsTab('threads')">Threads</button>
       <button class="settings-tab" data-tab="team" onclick="setSettingsTab('team')">Team</button>
+      <button class="settings-tab" data-tab="general" onclick="setSettingsTab('general')">General</button>
+      <button class="settings-tab" data-tab="capacity" onclick="setSettingsTab('capacity')">Capacity</button>
     </div>
     <div class="settings-body" id="settingsBody"><div class="history-empty">Loading&hellip;</div></div>
   </div>
@@ -1568,7 +1570,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.5';
+  const UI_VERSION = '2026-09-18.6';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2636,7 +2638,7 @@
   }
   function openAlertTasks(index) {
     const a = LAST_ALERTS[index];
-    if (a && a.openSettings) { openSettings(); return; }
+    if (a && a.openSettings) { settingsTab = 'general'; openSettings(); return; }
     if (!a) return;
     openMultiTaskModal(a.text, a.ids);
   }
@@ -7301,7 +7303,49 @@
     const body = document.getElementById('settingsBody');
     if (!RULESETS) { body.innerHTML = '<div class="history-empty">Loading&hellip;</div>'; return; }
     if (settingsTab === 'team') { body.innerHTML = renderTeamTab(); return; }
+    if (settingsTab === 'general') { body.innerHTML = renderGeneralTab(); return; }
+    if (settingsTab === 'capacity') { body.innerHTML = renderCapacityTab(); return; }
     body.innerHTML = settingsTab === 'rulesets' ? renderRulesetsTab() : renderThreadsTab();
+  }
+  // ---- Settings: General (2026-09-17, per Durand "why is all of that on Team"): home base,
+  // reminder notifications, the Claude Code repo and the inbox trace, each its own thing ----
+  function renderGeneralTab() {
+    return `
+      <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Home base</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">The address every task location's round-trip travel time is driven from (the office, or home). Saved on its own; task travel times refresh on the next write.</div>
+        <input type="text" class="text-input" id="homeBaseInput" placeholder="Street address, city, state" value="${escapeHtml(HOME_BASE)}" onblur="setHomeBase(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+      </div>
+      <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Reminder notifications</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b> <button type="button" class="btn small" onclick="ensureNotifyPermission_().then(p => { const el = document.getElementById('notifyState'); if (el) el.textContent = p; })">Enable</button></div>
+      </div>
+      <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Claude Code repo</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Optional owner/repo the "Code" and "Code (cloud)" buttons on a Claude task open on (e.g. tsg-homes/TSG-Task-Tracker). Cowork sessions never need one.</div>
+        <input type="text" class="text-input" id="claudeRepoInput" placeholder="owner/repo" value="${escapeHtml(CLAUDE_REPO)}" onblur="setClaudeRepo(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+      </div>
+      <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Inbox errors</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Patches the tracker could not apply (backend ${escapeHtml(String(RAW_META.backendVersion || 'unknown'))}). The file stays in _Inbox under FAILED- (rolled back), PARTIAL- (a bulk whose failing sub-ops were rolled back while the rest applied) or MALFORMED- for 7 days, then the tracker trashes it; the record here stays.</div>
+        <div id="inboxErrorsList">${inboxErrorsHtml_()}</div>
+      </div>`;
+  }
+  // ---- Settings: Capacity (meta.capacity, server-read on every write) ----
+  function renderCapacityTab() {
+    return `
+      <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Reviewing delegated work</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Sits inside the Morning Admin and Evening Wrap-Up blocks, costed per item; a block stretches to hold its list and splits into its own "Review delegated work" block past 45 minutes. Nothing here draws on task capacity.</div>
+        <label class="hist-time">Review a person's item, minutes <input type="number" min="0" step="1" class="due-input modal-due" id="reviewPersonMinInput" style="width:70px;" value="${escapeHtml(String(capacityValue_('reviewPersonMin')))}" onchange="setCapacityKey('reviewPersonMin', this.value)"></label>
+        <label class="hist-time" style="margin-left:12px;">Review a Claude item, minutes <input type="number" min="0" step="1" class="due-input modal-due" id="reviewClaudeMinInput" style="width:70px;" value="${escapeHtml(String(capacityValue_('reviewClaudeMin')))}" onchange="setCapacityKey('reviewClaudeMin', this.value)"></label>
+      </div>
+      <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Approval</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">A Claude item flagged "approval" gets a post-review update session (real work, on your capacity) after the approval wait: the round of changes that follows the approver's notes.</div>
+        <label class="hist-time">Approval wait, workdays <input type="number" min="0" step="1" class="due-input modal-due" id="approvalWaitDaysInput" style="width:60px;" value="${escapeHtml(String(capacityValue_('approvalWaitDays')))}" onchange="setCapacityKey('approvalWaitDays', this.value)"></label>
+        <label class="hist-time" style="margin-left:12px;">Post-review update session, minutes <input type="number" min="0" step="1" class="due-input modal-due" id="postReviewUpdateMinInput" style="width:70px;" value="${escapeHtml(String(capacityValue_('postReviewUpdateMin')))}" onchange="setCapacityKey('postReviewUpdateMin', this.value)"></label>
+      </div>`;
   }
   // ---- Settings: Team roster (Owner/Delegate dropdown source) ----
   function renderTeamTab() {
@@ -7327,27 +7371,6 @@
       </div>`;
     }).join('');
     return `
-      <div class="modal-section">
-        <div class="ruleset-block-head"><h3>Home base</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">The address every task location's round-trip travel time is driven from (the office, or home). Saved on its own; task travel times refresh on the next write.</div>
-        <div class="ruleset-block-head" style="margin-top:12px;"><h3>Reminder notifications</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b> <button type="button" class="btn small" onclick="ensureNotifyPermission_().then(p => { const el = document.getElementById('notifyState'); if (el) el.textContent = p; })">Enable</button></div>
-        <div class="ruleset-block-head" style="margin-top:12px;"><h3>Capacity</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">Reviewing delegated work sits inside the Morning Admin and Evening Wrap-Up blocks, costed per item; a block stretches to hold its list and splits into its own "Review delegated work" block past 45 minutes. Nothing here draws on task capacity. An item that needs approval also gets a post-review update session (real work) after the approval wait.</div>
-        <label class="hist-time">Review a person's item, minutes <input type="number" min="0" step="1" class="due-input modal-due" id="reviewPersonMinInput" style="width:70px;" value="${escapeHtml(String(capacityValue_('reviewPersonMin')))}" onchange="setCapacityKey('reviewPersonMin', this.value)"></label>
-        <label class="hist-time" style="margin-left:12px;">Review a Claude item, minutes <input type="number" min="0" step="1" class="due-input modal-due" id="reviewClaudeMinInput" style="width:70px;" value="${escapeHtml(String(capacityValue_('reviewClaudeMin')))}" onchange="setCapacityKey('reviewClaudeMin', this.value)"></label>
-        <label class="hist-time" style="margin-left:12px;">Approval wait, workdays <input type="number" min="0" step="1" class="due-input modal-due" id="approvalWaitDaysInput" style="width:60px;" value="${escapeHtml(String(capacityValue_('approvalWaitDays')))}" onchange="setCapacityKey('approvalWaitDays', this.value)"></label>
-        <label class="hist-time" style="margin-left:12px;">Post-review update session, minutes <input type="number" min="0" step="1" class="due-input modal-due" id="postReviewUpdateMinInput" style="width:70px;" value="${escapeHtml(String(capacityValue_('postReviewUpdateMin')))}" onchange="setCapacityKey('postReviewUpdateMin', this.value)"></label>
-        <div class="ruleset-block-head" style="margin-top:12px;"><h3>Claude Code repo</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">Optional owner/repo the "Code" and "Code (cloud)" buttons on a Claude task open on (e.g. tsg-homes/task-tracker). Cowork sessions never need one.</div>
-        <input type="text" class="text-input" id="claudeRepoInput" placeholder="owner/repo" value="${escapeHtml(CLAUDE_REPO)}" onblur="setClaudeRepo(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
-        <input type="text" class="text-input" id="homeBaseInput" placeholder="Street address, city, state" value="${escapeHtml(HOME_BASE)}" onblur="setHomeBase(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
-      </div>
-      <div class="modal-section">
-        <div class="ruleset-block-head"><h3>Inbox errors</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">Patches the tracker could not apply (backend ${escapeHtml(String(RAW_META.backendVersion || 'unknown'))}). The file stays in _Inbox under FAILED- (rolled back), PARTIAL- (a bulk whose failing sub-ops were rolled back while the rest applied) or MALFORMED-; trash it once read.</div>
-        <div id="inboxErrorsList">${inboxErrorsHtml_()}</div>
-      </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Team Roster</h3><button class="btn small" onclick="syncFubRoster(false)">&#8635; Sync from FUB</button></div>
         <div class="history-empty" style="margin-bottom:10px;">Names here populate the Owner and Delegate dropdowns everywhere on the board, and the email feeds the meeting picker's guest invite. "Sync from FUB" pulls names/emails from Follow Up Boss and fills in matches by email or name &mdash; it only adds or fills in, never removes. Adding someone with "+ Add delegate" below only saves to this tracker; it never writes to FUB.</div>

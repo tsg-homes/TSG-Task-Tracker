@@ -392,9 +392,11 @@ setTimeout(async () => {
     if (!/Courthouse/.test(row.textContent) || !/40 min round trip/.test(row.textContent)) throw new Error('location or travel missing: ' + row.textContent);
     w.closeTaskCard();
     delete t.location; delete t.travelMin;
-    w.eval("RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true; settingsTab = 'team';");
-    w.renderSettings();
-    if (!doc.getElementById('homeBaseInput')) throw new Error('no Home base input on the Team tab');
+    w.eval("RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true;");
+    w.setSettingsTab('general');
+    if (!doc.getElementById('homeBaseInput') || !doc.getElementById('claudeRepoInput') || !doc.getElementById('inboxErrorsList')) throw new Error('General tab missing home base / repo / inbox errors');
+    w.setSettingsTab('team');
+    if (doc.getElementById('homeBaseInput') || !doc.getElementById('newRosterName')) throw new Error('Team tab should hold only the roster');
   });
 
   // Location picker, travel mode + total, tidy through the judgment queue (2026-09-16)
@@ -1068,8 +1070,9 @@ setTimeout(async () => {
     w.setCapacityKey('approvalWaitDays', '2');
     const p2 = JSON.parse((w.__posts || []).find(x => x.body && x.body.includes('set_meta')).body);
     if (p2.fields.capacity.approvalWaitDays !== 2 || p2.fields.capacity.other !== 1) throw new Error('merge lost a key ' + JSON.stringify(p2.fields));
-    w.renderSettings();
+    w.setSettingsTab('capacity');
     ['reviewPersonMinInput', 'reviewClaudeMinInput', 'approvalWaitDaysInput', 'postReviewUpdateMinInput'].forEach(id => { if (!doc.getElementById(id)) throw new Error('missing ' + id); });
+    if (doc.getElementById('newRosterName')) throw new Error('roster rendered on the Capacity tab');
     w.eval('RAW_META.capacity = {}');
   });
   tryCall('delegated work to review rides in the admin blocks: today\'s finishes in the evening, older ones in the morning; the block stretches, then splits', () => {

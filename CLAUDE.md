@@ -753,3 +753,10 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   ae02dd5. GitHub reports the repository RENAMED to `tsg-homes/TSG-Task-Tracker` (old name
   redirects); the session's git remote and the CCR repo scope still use `tsg-homes/task-tracker`,
   and Settings > Team > Claude Code repo should say the new name if it is set.
+- Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
+  Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
+  repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
+  session). The inbox-errors alert opens Settings on General. Backend 2026-09-18.7: filed
+  `FAILED-`/`PARTIAL-`/`MALFORMED-` inbox files are trashed by the tracker after
+  `TSG_INBOX_KEEP_DAYS` (7); the `meta.inboxErrors` record stays. The session can also trash a
+  file itself with the Drive connector (done for the 2026-09-17 test file).

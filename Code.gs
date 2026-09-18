@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.6';
+const TSG_CODE_VERSION = '2026-09-18.7';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -74,8 +74,16 @@ function processInbox_() {
       const f = it.next();
       if (f.isTrashed()) continue;
       // A file already filed as FAILED-/PARTIAL-/MALFORMED- stays in _Inbox as the record of
-      // what went wrong (2026-09-18); it is never re-read. Durand trashes it by hand.
-      if (/^(FAILED|PARTIAL|MALFORMED)-/.test(f.getName())) continue;
+      // what went wrong (2026-09-18); it is never re-read. After TSG_INBOX_KEEP_DAYS the
+      // tracker trashes it itself (the meta.inboxErrors record stays), per Durand 2026-09-17
+      // ("why can't you delete or archive it").
+      if (/^(FAILED|PARTIAL|MALFORMED)-/.test(f.getName())) {
+        try {
+          var ageMs = Date.now() - f.getDateCreated().getTime();
+          if (ageMs > TSG_INBOX_KEEP_DAYS * 86400000) { f.setTrashed(true); Logger.log('[inbox] filed patch "' + f.getName() + '" trashed after ' + TSG_INBOX_KEEP_DAYS + ' days'); }
+        } catch (ageErr) {}
+        continue;
+      }
       try {
         patches.push({ file: f, patch: JSON.parse(f.getBlob().getDataAsString()), created: f.getDateCreated() });
       } catch (err) {
@@ -176,6 +184,7 @@ function processInbox_() {
 
 // Script-cache helpers: every call is best-effort, the cache is an optimization only.
 var TSG_INBOX_EMPTY_TTL_SEC = 50;
+var TSG_INBOX_KEEP_DAYS = 7;   // how long a FAILED-/PARTIAL-/MALFORMED- file stays in _Inbox
 function tsgCachePut_(k, v, ttlSec) { try { CacheService.getScriptCache().put(k, v, ttlSec); } catch (err) {} }
 function tsgCacheGet_(k) { try { return CacheService.getScriptCache().get(k); } catch (err) { return null; } }
 function tsgCacheRemove_(k) { try { CacheService.getScriptCache().remove(k); } catch (err) {} }
