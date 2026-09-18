@@ -817,3 +817,7 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   that path is dead under DOMAIN access and neither value may enter a tracked file; rotating
   SCRIPT_TOKEN is his call. clasp needed a fresh `clasp login --no-localhost` this session
   (Google `invalid_rapt` reauth) before @72 could ship.
+- Deployed 2026-09-18 01:25 EDT: web app @73 = backend 2026-09-18.8 / UI 2026-09-18.12 = commit
+  e99e9ee; `main` fast-forwarded to it. (`clasp versions` showed a 72 before this deploy, so the
+  earlier "@71" note undercounted by one; @73 is the record.) GitHub's remote now answers with
+  the rename notice (tsg-homes/TSG-Task-Tracker); pushes to the old name still land.
