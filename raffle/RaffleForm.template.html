@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base target="_top">
+<title>Enter to Win | TSG Block Party 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Lato:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* TSG palette — same values the Open House Sign-In page uses, so the two
+     public forms are visibly the same brand. */
+  --tsg-green:#15464A;
+  --tsg-green-dark:#0d2e31;
+  --tsg-gray:#f4f5f5;
+  --tsg-gray-border:#dfe3e3;
+  --tsg-white:#ffffff;
+  --tsg-red:#a5342b;
+  --eagles-green:#004C54;
+  --eagles-silver:#A5ACAF;
+  --tm-blue:#009cde;
+}
+*{box-sizing:border-box;}
+body{margin:0;font-family:'Lato',Arial,sans-serif;background:var(--tsg-gray);color:#1c1c1c;-webkit-font-smoothing:antialiased;}
+header{background:var(--tsg-green);color:var(--tsg-white);padding:26px 20px 22px;text-align:center;}
+header .wordmark{font-family:'Playfair Display',serif;font-weight:700;font-size:24px;letter-spacing:1px;line-height:1.15;}
+header .subtitle{margin-top:6px;font-size:12px;letter-spacing:2.5px;text-transform:uppercase;opacity:0.85;}
+header .eventdate{margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.22);
+  font-size:13px;font-weight:700;letter-spacing:.3px;opacity:.95;}
+header .eventdate .loc{display:block;font-weight:400;font-size:11.5px;opacity:.75;margin-top:3px;
+  letter-spacing:.2px;}
+main{max-width:520px;margin:0 auto;padding:18px 16px 40px;}
+
+/* ---- Prize hero ---- */
+.prize{background:linear-gradient(160deg,var(--eagles-green) 0%,#01343a 100%);color:#fff;border-radius:10px;padding:22px 20px 20px;text-align:center;margin-bottom:18px;box-shadow:0 2px 10px rgba(0,0,0,0.12);}
+.prize .marks{display:flex;align-items:center;justify-content:center;gap:16px;margin-bottom:14px;}
+.prize .marks img.eagles{height:52px;width:auto;display:block;}
+.prize .marks .tm{width:132px;display:block;}
+.prize .marks .tm svg{width:100%;height:auto;display:block;}
+.prize .marks .x{color:var(--eagles-silver);font-size:15px;font-weight:700;opacity:.75;}
+.prize .kicker{font-size:11px;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;}
+.prize .amount{font-family:'Playfair Display',serif;font-weight:700;font-size:52px;line-height:1;margin:4px 0 2px;}
+.prize .desc{font-size:15px;font-weight:700;}
+.prize .when{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.18);font-size:13px;opacity:.92;}
+.prize .multi{margin-top:10px;font-size:13px;line-height:1.5;opacity:.95;}
+.prize .multi b{color:#fff;}
+
+/* ---- Form ---- */
+fieldset{background:var(--tsg-white);border:1px solid var(--tsg-gray-border);border-radius:8px;padding:18px 20px 20px;margin:0 0 16px;}
+legend{font-family:'Playfair Display',serif;font-weight:700;font-size:17px;color:var(--tsg-green);padding:0 6px;}
+.field{margin-top:14px;}
+.field:first-of-type{margin-top:4px;}
+label{display:block;font-weight:700;font-size:14px;margin-bottom:6px;}
+.req{color:var(--tsg-red);}
+input[type=text],input[type=email],input[type=tel]{width:100%;padding:12px 12px;border:1px solid var(--tsg-gray-border);border-radius:6px;font-size:16px;font-family:inherit;background:var(--tsg-white);}
+input:focus{outline:2px solid var(--tsg-green);outline-offset:1px;}
+.errmsg{font-size:12px;color:var(--tsg-red);margin-top:4px;min-height:14px;}
+
+/* ---- Consent ---- */
+.consent{background:#fbfbfb;border:1px solid var(--tsg-gray-border);border-radius:8px;padding:16px 18px;margin-bottom:14px;}
+.consent-row{display:flex;align-items:flex-start;gap:11px;}
+.consent-row input{margin-top:3px;width:18px;height:18px;flex:0 0 auto;}
+.consent-row label{font-weight:400;font-size:12.5px;line-height:1.5;margin-bottom:0;}
+details{margin-top:12px;border-top:1px solid var(--tsg-gray-border);padding-top:10px;}
+details summary{cursor:pointer;font-size:12.5px;font-weight:700;color:var(--tsg-green);}
+details .rules{font-size:11.5px;line-height:1.55;color:#4a5252;margin-top:10px;}
+details .rules h4{margin:12px 0 4px;font-size:11.5px;color:#1c1c1c;}
+details .rules p{margin:0 0 6px;}
+.disclaimer{font-size:11px;line-height:1.5;color:#5c6666;background:#f0f2f2;border-left:3px solid var(--eagles-silver);padding:10px 12px;border-radius:0 5px 5px 0;margin-top:12px;}
+
+button{background:var(--tsg-green);color:var(--tsg-white);border:none;border-radius:6px;padding:17px;font-size:17px;font-weight:900;font-family:'Lato',Arial,sans-serif;cursor:pointer;width:100%;letter-spacing:.5px;}
+button:active{background:var(--tsg-green-dark);}
+button:disabled{opacity:.5;cursor:not-allowed;}
+#submitErr{font-size:13px;color:var(--tsg-red);margin-top:10px;text-align:center;min-height:16px;}
+#website{position:absolute;left:-9999px;top:-9999px;}
+
+/* ---- Panels ---- */
+.panel{display:none;background:var(--tsg-white);border:1px solid var(--tsg-gray-border);border-radius:10px;padding:34px 22px;text-align:center;}
+.panel h2{font-family:'Playfair Display',serif;color:var(--tsg-green);margin:0 0 10px;font-size:26px;}
+.panel p{font-size:15px;line-height:1.5;color:#4a5252;margin:0 0 6px;}
+.panel .big{font-size:20px;font-weight:900;color:var(--eagles-green);margin-top:14px;}
+.hidden{display:none !important;}
+
+/* ---- Footer ---- */
+footer{background:var(--tsg-white);border-top:1px solid var(--tsg-gray-border);padding:28px 20px 32px;text-align:center;}
+footer .logos{display:flex;align-items:center;justify-content:center;gap:22px;flex-wrap:wrap;margin-bottom:6px;}
+footer .logos img.tsg{height:56px;width:auto;display:block;}
+footer .logos img.kw{height:38px;width:auto;display:block;}
+footer .logos .rule{width:1px;height:40px;background:var(--tsg-gray-border);}
+footer .contact{font-size:13px;line-height:1.75;color:#4a5252;margin-top:14px;}
+footer .contact a{color:var(--tsg-green);text-decoration:none;font-weight:700;}
+footer .fine{font-size:10.5px;color:#9aa3a3;margin-top:16px;line-height:1.5;}
+
+/* Code-entry step */
+#codePanel .sent{font-size:14px;color:#4a5252;margin:0 0 4px;}
+#codePanel .addr{font-weight:700;color:var(--tsg-green);word-break:break-all;}
+#codeInput{width:100%;max-width:260px;margin:18px auto 4px;display:block;text-align:center;
+  font-size:30px;letter-spacing:10px;font-weight:700;padding:14px 10px;border-radius:8px;
+  border:1px solid var(--tsg-gray-border);font-family:'Lato',Arial,sans-serif;}
+#codePanel .hint{font-size:12px;color:#8a9494;margin-top:10px;}
+#codePanel .linkish{background:none;border:none;color:var(--tsg-green);text-decoration:underline;
+  font-size:13px;cursor:pointer;padding:8px;width:auto;font-weight:700;margin-top:6px;}
+#codeErr{font-size:13px;color:var(--tsg-red);min-height:18px;margin-top:8px;}
+
+/* QA TEST MODE banner. Same treatment as the Open House Sign-In page: loud,
+   fixed, deliberately outside the TSG palette so it cannot be mistaken for part
+   of the real form. Present in the markup on every load but display:none unless
+   doGet actually handed the page a test token. */
+#qaTestBanner{display:none;position:fixed;top:0;left:0;right:0;z-index:9999;
+  background:#b3271e;color:#fff;font-weight:700;font-size:13px;line-height:1.35;
+  text-align:center;padding:11px 14px;letter-spacing:.3px;
+  border-bottom:4px solid #ffd400;box-shadow:0 2px 8px rgba(0,0,0,.25);}
+body.qa-test{padding-top:62px;}
+
+/* Countdown to doors-open */
+#beforePanel .count{display:flex;justify-content:center;gap:10px;margin:18px 0 6px;}
+#beforePanel .unit{background:var(--tsg-green);color:#fff;border-radius:8px;padding:10px 0;min-width:66px;}
+#beforePanel .unit .n{font-family:'Playfair Display',serif;font-weight:700;font-size:28px;line-height:1;}
+#beforePanel .unit .l{font-size:9.5px;letter-spacing:1.5px;text-transform:uppercase;opacity:.75;margin-top:4px;}
+#beforePanel .soon{font-family:'Playfair Display',serif;font-size:30px;color:var(--eagles-green);font-weight:700;margin:16px 0 4px;}
+  .roles { display:flex; gap:10px; margin-top:6px; }
+  .roles .radio { flex:1; display:flex; align-items:center; justify-content:center; gap:8px;
+                  border:1px solid var(--line,#dfe6e6); border-radius:8px; padding:13px 10px;
+                  background:#fff; font-weight:700; cursor:pointer; }
+  .roles .radio input { margin:0; width:18px; height:18px; accent-color:#15464A; }
+</style>
+</head>
+<body>
+
+<div id="qaTestBanner" role="alert">
+  TEST MODE — entries go to the Test Entries tab, tagged in FUB, and can never win the real prize
+</div>
+
+<header>
+  <div class="wordmark">THE STAWASZ GROUP</div>
+  <div class="subtitle">Block Party 2026</div>
+  <div class="eventdate">
+    <?= eventDate ?>
+    <span class="loc">1342 N Hancock St, Philadelphia &middot; 3:00&ndash;7:00 PM</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- Prize hero. The two third-party marks sit here with the non-affiliation
+       disclaimer below the form; see the OFFICIAL RULES section 12. -->
+  <div class="prize">
+    <div class="marks">
+      <img class="eagles" src="{{EAGLES_DATA_URI}}" alt="Philadelphia Eagles">
+      <span class="x">&#215;</span>
+      <span class="tm">{{TICKETMASTER_SVG}}</span>
+    </div>
+    <div class="kicker">Enter to win</div>
+    <div class="amount">$300</div>
+    <div class="desc">toward any Ticketmaster purchase</div>
+    <div class="when"><?= eventDateShort ?><br>Winner drawn at <b>6:15 PM</b> &middot; Announced at <b>6:30 PM</b></div>
+    <!-- The mechanic stated up front. Referring is a multiplier, not a gate: an
+         entrant who reads only the hero should still know they are in. -->
+    <div class="multi"><b>1 entry</b> just for entering<br>
+      <b>+5 entries</b> for every friend who confirms</div>
+  </div>
+
+  <!-- Entries not open yet -->
+  <div class="panel" id="beforePanel">
+    <h2>Goes live in</h2>
+    <div class="count" id="countBoxes">
+      <div class="unit"><div class="n" id="cD">0</div><div class="l">Days</div></div>
+      <div class="unit"><div class="n" id="cH">0</div><div class="l">Hours</div></div>
+      <div class="unit"><div class="n" id="cM">0</div><div class="l">Mins</div></div>
+      <div class="unit"><div class="n" id="cS">0</div><div class="l">Secs</div></div>
+    </div>
+    <div class="soon" id="countSoon" style="display:none">Opening now&hellip;</div>
+    <p>Entries open when the party starts &mdash; <b><?= openTime ?>, <?= eventDateShort ?></b>.</p>
+    <p>Come find us at the TSG table!</p>
+  </div>
+
+  <!-- Entries closed / drawing done -->
+  <div class="panel" id="closedPanel">
+    <h2>Entries are closed</h2>
+    <p>TSG Block Party &mdash; <b><?= eventDateShort ?></b></p>
+    <p>The drawing is complete.</p>
+    <div class="big">Winner announced at 6:30 PM</div>
+    <p style="margin-top:14px">Thanks for coming out &mdash; see you next year.</p>
+  </div>
+
+  <!-- Step 2: confirm the emailed code -->
+  <div class="panel" id="codePanel">
+    <h2>Check your email</h2>
+    <p class="sent">We sent a 6-digit code to<br><span class="addr" id="codeAddr"></span></p>
+    <input type="text" id="codeInput" inputmode="numeric" autocomplete="one-time-code"
+           maxlength="6" placeholder="------" aria-label="6-digit code">
+    <div id="codeErr" role="alert"></div>
+    <button type="button" id="codeBtn">Confirm &amp; Enter</button>
+    <div class="hint">It can take a few seconds. Check spam if you don't see it.</div>
+    <button type="button" class="linkish" id="startOverBtn">Wrong email? Start over</button>
+  </div>
+
+  <!-- Step 3: who are you referring -->
+  <div class="panel" id="referPanel">
+    <h2>You&rsquo;re in. Want 5 more entries?</h2>
+    <p class="sent">Thanks <span class="addr" id="entrantFirst"></span> &mdash; your email is verified
+      and <b>you are entered</b>. Now multiply your odds: tell us about someone you know who is
+      thinking of buying or selling in the next year. <b>When they confirm, you get 5 more
+      entries.</b> Refer as many different people as you like.</p>
+
+    <div class="field">
+      <label for="refName">Their full name <span class="req">*</span></label>
+      <input type="text" id="refName" autocapitalize="words">
+      <div class="errmsg" id="refNameErr"></div>
+    </div>
+    <div class="field">
+      <label for="refPhone">Their phone <span class="req">*</span></label>
+      <input type="tel" id="refPhone" inputmode="tel" placeholder="(215) 555-8123">
+      <div class="errmsg" id="refPhoneErr"></div>
+    </div>
+    <div class="field">
+      <label for="refEmail">Their email <span class="req">*</span></label>
+      <input type="email" id="refEmail" inputmode="email" autocapitalize="off"
+             placeholder="them@email.com">
+      <div class="errmsg" id="refEmailErr"></div>
+    </div>
+    <div class="field">
+      <label>Are they looking to buy or sell? <span class="req">*</span></label>
+      <div class="roles">
+        <label class="radio"><input type="radio" name="refRole" value="Buyer"><span>Buy</span></label>
+        <label class="radio"><input type="radio" name="refRole" value="Seller"><span>Sell</span></label>
+      </div>
+      <div class="errmsg" id="refRoleErr"></div>
+    </div>
+    <div class="field">
+      <label for="refTimeframe">When are they thinking of moving?</label>
+      <select id="refTimeframe"><option value="">Select&hellip;</option></select>
+    </div>
+
+    <div class="hint" style="text-align:left;margin:0 0 14px">
+      We&rsquo;ll email them to confirm their details and ask their permission &mdash; and we&rsquo;ll
+      copy you on it. <b>Confirming enters them in the drawing too</b>, so it is worth their
+      twenty seconds as well as yours. Please only refer someone who would be glad to hear
+      from us.
+    </div>
+
+    <div id="referErr" role="alert"></div>
+    <button type="button" id="referBtn">Continue</button>
+    <button type="button" class="linkish" id="doneBtn">No thanks &mdash; I&rsquo;m done</button>
+    <button type="button" class="linkish" id="startOverBtn2">Start over</button>
+  </div>
+
+  <!-- Step 4: send the confirmation email -->
+  <div class="panel" id="invitePanel">
+    <h2>One last step</h2>
+    <p class="sent">We&rsquo;re ready to email <span class="addr" id="inviteName"></span>.
+      They&rsquo;ll be asked to confirm their details and give permission for us to contact them.
+      <b>You get 5 more entries the moment they confirm</b> &mdash; and confirming enters them
+      as well, with one entry of their own. You&rsquo;ll be copied on the email.</p>
+    <div id="inviteErr" role="alert"></div>
+    <button type="button" id="inviteBtn">Send it &mdash; give me 5 more entries</button>
+    <div class="hint">Nothing is sent until you tap the button.</div>
+  </div>
+
+  <!-- Success -->
+  <div class="panel" id="successPanel">
+    <h2 id="successTitle">You&rsquo;re in the running</h2>
+    <p id="successMsg">Good luck.</p>
+    <div class="big">Winner announced at 6:30 PM</div>
+    <p style="margin-top:6px"><?= eventDateShort ?>, at the Block Party</p>
+    <p style="margin-top:14px">You do <b>not</b> need to be there to win &mdash; if you&rsquo;re not
+      with us at 6:30, we&rsquo;ll call you.</p>
+  </div>
+
+  <div id="formWrap">
+    <form id="raffleForm" novalidate>
+      <input type="text" id="website" name="website" autocomplete="off" tabindex="-1" aria-hidden="true">
+
+      <fieldset>
+        <legend>Your Entry</legend>
+        <div class="field">
+          <label for="fullName">Full Name <span class="req">*</span></label>
+          <input type="text" id="fullName" autocomplete="name" autocapitalize="words">
+          <div class="errmsg" id="nameErr"></div>
+        </div>
+        <div class="field">
+          <label for="phone">Phone <span class="req">*</span></label>
+          <input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="(215) 555-8123">
+          <div class="errmsg" id="phoneErr"></div>
+        </div>
+        <div class="field">
+          <label for="email">Email <span class="req">*</span></label>
+          <input type="email" id="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@email.com">
+          <div class="errmsg" id="emailErr"></div>
+        </div>
+      </fieldset>
+
+      <div class="consent">
+        <div class="consent-row">
+          <input type="checkbox" id="consent">
+          <label for="consent">
+            <b>Required to enter.</b> By checking this box and submitting this entry, I confirm I am
+            at least 18 years old and a legal U.S. resident, and I have read and agree to the
+            Official Rules below. I give my express written consent for The Stawasz Group to contact
+            me at the phone number and email address I provided &mdash; including by autodialed or
+            pre-recorded calls and text messages &mdash; about this drawing and about real estate
+            services. Message and data rates may apply; message frequency varies. Reply STOP to opt
+            out at any time, or HELP for help. I understand this consent is required to enter this
+            drawing and is not a condition of purchasing any goods or services.
+          </label>
+        </div>
+        <div class="errmsg" id="consentErr"></div>
+
+        <details>
+          <summary>Official Rules &mdash; read before entering</summary>
+          <div class="rules">
+            <h4>1. No purchase necessary</h4>
+            <p>NO PURCHASE OR PAYMENT OF ANY KIND IS NECESSARY TO ENTER OR WIN. A purchase or payment
+               will not improve your chances of winning. Void where prohibited by law.</p>
+
+            <h4>2. Sponsor</h4>
+            <p>The Stawasz Group, 728 S Broad St, Philadelphia, PA 19146 &mdash; a real estate team at
+               Keller Williams Empower (the &ldquo;Sponsor&rdquo;).</p>
+
+            <h4>3. Eligibility</h4>
+            <p>Open to legal residents of the United States who are 18 years of age or older at the
+               time of entry. Attendance at the TSG Block Party is not required to enter or to win.
+               Employees,
+               agents and independent contractors of Sponsor and of Keller Williams Empower, and
+               their immediate family and household members, are not eligible to win.</p>
+
+            <h4>4. Entry period</h4>
+            <p>Entries are accepted from the time this form is published until <b>6:15 PM Eastern
+               Time on Saturday, September 19, 2026</b>, when the winner is drawn. Your entry is
+               complete as soon as you verify your email address. Bonus entries are added only when
+               a referred person confirms (see section 5); a confirmation received after 6:15 PM
+               does not add entries to the drawing.</p>
+
+            <h4>5. How to enter &mdash; one entry, plus five per confirmed referral</h4>
+            <p>To enter, submit this form with your full name, phone number and email address, accept
+               these Official Rules, and verify your email address using the code we send you. That
+               gives you one (1) entry in the drawing. Referring someone is optional and is not
+               required to enter or to win.</p>
+            <p>To improve your chances, you may refer a friend or family member who is considering
+               buying or selling a home within the next year, by giving their name, phone number and
+               email address. We will email that person and ask them to confirm their details and
+               give their own consent to be contacted. <b>WHEN THEY CONFIRM, YOU RECEIVE FIVE (5)
+               ADDITIONAL ENTRIES.</b> If they decline, or do not respond before 6:15 PM on
+               September 19, 2026, you receive no additional entries &mdash; your own entry still
+               stands.</p>
+            <p><b>LIMIT ONE (1) ENTRY PER PERSON, PLUS FIVE (5) BONUS ENTRIES PER CONFIRMED
+               REFERRAL.</b> A given person can be referred only once: if two people refer the same
+               person, the bonus entries go to whichever referral that person confirms first, and
+               the other earns nothing. A person who is already a contact of Sponsor cannot be
+               referred and does not earn bonus entries. There is no limit on how many different
+               people you may refer, but each must be a different person, and you may not refer
+               yourself.</p>
+            <p>Duplicate or conflicting referrals are matched by email address and by phone number.
+               Automated, robotic, scripted or bulk entries are void.</p>
+
+            <h4>6. Prize</h4>
+            <p>One (1) prize: a $300 Ticketmaster gift card, redeemable toward any Ticketmaster
+               purchase, subject to Ticketmaster&rsquo;s own terms and conditions. Approximate Retail
+               Value (ARV): $300.00. Total ARV of all prizes: $300.00. No cash or other substitution,
+               except by Sponsor, who may substitute a prize of equal or greater value. The prize is
+               awarded &ldquo;as is&rdquo; with no warranty of any kind. All federal, state and local
+               taxes on the prize are the sole responsibility of the winner.</p>
+
+            <h4>7. Odds</h4>
+            <p>Odds of winning depend on the total number of entries in the drawing, including bonus
+               entries earned from confirmed referrals.</p>
+
+            <h4>8. Winner selection, notification and claim</h4>
+            <p>One (1) potential winner is selected by random drawing from all eligible entries at
+               approximately 6:15 PM ET on September 19, 2026, and announced at approximately 6:30 PM
+               ET at the event. The winner need not be present to win. If the winner is not present at
+               the announcement, Sponsor will attempt to notify the winner using the contact
+               information provided. If the winner cannot be reached, declines the prize, is found
+               ineligible, or fails to claim the prize within fourteen (14) days of the drawing, the
+               prize may be forfeited and an alternate winner drawn at random from the remaining
+               eligible entries.</p>
+
+            <h4>9. Publicity</h4>
+            <p>Except where prohibited, acceptance of the prize constitutes the winner&rsquo;s consent
+               to Sponsor&rsquo;s use of the winner&rsquo;s first name, last initial and likeness for
+               promotional purposes, without further compensation.</p>
+
+            <h4>10. Privacy and consent to contact</h4>
+            <p>The name, phone number and email address you provide are stored in Sponsor&rsquo;s
+               customer relationship management system and used to administer this drawing and to
+               contact you as described in the consent above. Sponsor does not sell your personal
+               information. You may ask us to delete your information or stop contacting you at any
+               time by emailing <a href="mailto:info@tsg.homes">info@tsg.homes</a>, by replying STOP to
+               a text message, or by using the unsubscribe link in any email.</p>
+
+            <h4>11. Release and limitation of liability</h4>
+            <p>By entering, you release Sponsor, Keller Williams Empower, and their respective
+               officers, directors, employees and agents from any liability for any loss, harm,
+               damage, injury, cost or expense arising out of participation in this promotion or the
+               acceptance, use or misuse of the prize.</p>
+
+            <h4>12. No affiliation with Ticketmaster, the Philadelphia Eagles or the NFL</h4>
+            <p>This promotion is in no way sponsored, endorsed, administered by, or associated with
+               Ticketmaster L.L.C., Live Nation Entertainment, Inc., the Philadelphia Eagles, the
+               National Football League, or any of their respective affiliates. All trademarks are the
+               property of their respective owners.</p>
+
+            <h4>13. Governing law</h4>
+            <p>This promotion is governed by the laws of the Commonwealth of Pennsylvania, without
+               regard to its conflict of law principles.</p>
+
+            <h4>14. Winner list</h4>
+            <p>For the name of the winner, email <a href="mailto:info@tsg.homes">info@tsg.homes</a>
+               within 30 days of the drawing.</p>
+          </div>
+        </details>
+
+        <div class="disclaimer">
+          This promotion is not sponsored, endorsed by, or associated with Ticketmaster,
+          Live Nation, the Philadelphia Eagles or the NFL. All trademarks are the property of their
+          respective owners.
+        </div>
+      </div>
+
+      <button type="submit" id="submitBtn">Enter the Drawing</button>
+      <div id="submitErr" role="alert"></div>
+    </form>
+  </div>
+</main>
+
+<footer>
+  <div class="logos">
+    <img class="tsg" src="{{TSG_LOGO}}" alt="The Stawasz Group">
+    <span class="rule"></span>
+    <img class="kw" src="{{KW_LOGO}}" alt="Keller Williams Empower">
+  </div>
+  <div class="contact">
+    728 S Broad St, Philadelphia, PA 19146<br>
+    <a href="tel:+12157606291">(215) 760-6291</a> &middot;
+    <a href="mailto:info@tsg.homes">info@tsg.homes</a><br>
+    <a href="https://tsg.homes">tsg.homes</a>
+  </div>
+  <div class="fine">
+    &copy; 2026 The Stawasz Group. Each Keller Williams office is independently owned and operated.
+  </div>
+</footer>
+
+<script>
+(function(){
+  var API        = <?!= safeJsonForScript_(baseUrl) ?>;
+  var TOKEN      = <?!= safeJsonForScript_(submitToken) ?>;
+  var KIOSK      = <?!= safeJsonForScript_(kiosk) ?> === '1';
+  var QA_TOKEN   = <?!= safeJsonForScript_(qaTestToken) ?>;   // '' on a normal load
+  var IS_TEST    = <?!= safeJsonForScript_(isTest) ?> === '1';
+  var OPEN_MS    = Number(<?!= safeJsonForScript_(openAtMs) ?>);
+  var CLOSE_MS   = Number(<?!= safeJsonForScript_(closeAtMs) ?>);
+  var SERVER_MS  = Number(<?!= safeJsonForScript_(serverNowMs) ?>);
+
+  // The page must go dead at 6:15 even if it has been sitting open on someone's
+  // phone since 3pm. The client clock can be wrong by minutes, so everything is
+  // measured against the SERVER's clock: we take the offset once at load and
+  // apply it from then on. The server re-checks the window on submit regardless,
+  // so this is purely so nobody fills in a form that is already dead.
+  var skew = SERVER_MS - Date.now();
+  function serverNow(){ return Date.now() + skew; }
+
+  var formWrap     = document.getElementById('formWrap');
+  var beforePanel  = document.getElementById('beforePanel');
+  var closedPanel  = document.getElementById('closedPanel');
+  var successPanel = document.getElementById('successPanel');
+  var form         = document.getElementById('raffleForm');
+  var btn          = document.getElementById('submitBtn');
+
+  var codePanel = document.getElementById('codePanel');
+  var referPanel  = document.getElementById('referPanel');
+  var invitePanel = document.getElementById('invitePanel');
+  var referBtn    = document.getElementById('referBtn');
+  var inviteBtn   = document.getElementById('inviteBtn');
+  var panels = [beforePanel, closedPanel, successPanel, codePanel, referPanel, invitePanel];
+  // Server-issued id for this pending entry. Nothing is written until the
+  // emailed code comes back against it.
+  var pendingVid = null;
+  // Server-issued id for a staged referral, held between the referral step and
+  // the send-the-email step.
+  var pendingToken = null;
+  // Once someone has entered, their confirmation stays put. The ticker below
+  // must not yank it away mid-read just because the clock moved on.
+  var holdingSuccess = false;
+
+  function show(el){
+    formWrap.classList.add('hidden');
+    panels.forEach(function(p){ p.style.display = 'none'; });
+    if (el) el.style.display = 'block';
+  }
+  function showForm(){
+    formWrap.classList.remove('hidden');
+    panels.forEach(function(p){ p.style.display = 'none'; });
+  }
+
+  function phase(){
+    // Test mode is always 'open'. Without this the rehearsal page would just
+    // show the countdown and there would be nothing to submit -- the server
+    // relaxes the same check, and only for a verified test token.
+    if (IS_TEST) return 'open';
+    var t = serverNow();
+    if (t < OPEN_MS)  return 'before';
+    if (t >= CLOSE_MS) return 'closed';
+    return 'open';
+  }
+
+  if (IS_TEST) {
+    document.body.classList.add('qa-test');
+    document.getElementById('qaTestBanner').style.display = 'block';
+  }
+
+  var cD = document.getElementById('cD'), cH = document.getElementById('cH'),
+      cM = document.getElementById('cM'), cS = document.getElementById('cS'),
+      countBoxes = document.getElementById('countBoxes'),
+      countSoon  = document.getElementById('countSoon');
+
+  function tickCountdown(){
+    var left = OPEN_MS - serverNow();
+    if (left <= 0) {
+      // The flip to the live form is handled by render(); this is just so the
+      // last second doesn't sit on screen reading "0".
+      countBoxes.style.display = 'none';
+      countSoon.style.display  = 'block';
+      return;
+    }
+    countBoxes.style.display = 'flex';
+    countSoon.style.display  = 'none';
+    var s = Math.floor(left / 1000);
+    cD.textContent = Math.floor(s / 86400);
+    cH.textContent = Math.floor(s % 86400 / 3600);
+    cM.textContent = Math.floor(s % 3600 / 60);
+    cS.textContent = s % 60;
+  }
+
+  var lastPhase = null;
+  function render(){
+    var p = phase();
+    if (p === 'before') tickCountdown();
+    // A held confirmation -- or a half-finished code step -- is only ever
+    // replaced by the 6:15 close, never by a phase change the entrant does not
+    // care about.
+    if ((holdingSuccess || pendingVid || pendingToken) && p !== 'closed') { lastPhase = p; return; }
+    if (p !== lastPhase || holdingSuccess) {
+      holdingSuccess = false;
+      pendingVid = null;
+      pendingToken = null;
+      if (p === 'before')      show(beforePanel);
+      else if (p === 'closed') show(closedPanel);
+      else                     showForm();
+      lastPhase = p;
+    }
+  }
+
+  if (CHAIN_VID) {
+    pendingVid = CHAIN_VID;
+    document.getElementById('entrantFirst').textContent = CHAIN_FIRST || '';
+    show(referPanel);
+    lastPhase = phase();
+  } else {
+    render();
+  }
+  // One second, so 3:00:00 opens and 6:15:00 closes on the second, with no
+  // reload either way.
+  setInterval(render, 1000);
+
+  // Live US phone formatting — this is a party, on a phone, one-handed.
+  var phoneEl = document.getElementById('phone');
+  phoneEl.addEventListener('input', function(){
+    var d = phoneEl.value.replace(/\D/g,'').slice(0,10);
+    phoneEl.value = d.length > 6 ? '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6)
+                  : d.length > 3 ? '(' + d.slice(0,3) + ') ' + d.slice(3)
+                  : d.length > 0 ? '(' + d : '';
+  });
+
+  function setErr(id, msg){ document.getElementById(id).textContent = msg || ''; }
+
+  function validate(v){
+    var ok = true;
+    setErr('nameErr'); setErr('phoneErr'); setErr('emailErr'); setErr('consentErr');
+    if (!v.fullName || v.fullName.indexOf(' ') === -1) {
+      setErr('nameErr','Enter your first and last name.'); ok = false;
+    }
+    if (v.phone.replace(/\D/g,'').length < 10) {
+      setErr('phoneErr','Enter a 10-digit phone number.'); ok = false;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(v.email)) {
+      setErr('emailErr','Enter a valid email address.'); ok = false;
+    }
+    if (v.consent !== 'Yes') {
+      setErr('consentErr','You must accept the Official Rules to enter.'); ok = false;
+    }
+    return ok;
+  }
+
+  var codeInput = document.getElementById('codeInput');
+  var codeBtn   = document.getElementById('codeBtn');
+  var codeAddr  = document.getElementById('codeAddr');
+  var codeErr   = document.getElementById('codeErr');
+
+  function post(payload){
+    return fetch(API, {
+      method: 'POST',
+      // text/plain keeps this a CORS "simple request" — Apps Script web apps
+      // do not answer preflight OPTIONS, so application/json would fail here.
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    }).then(function(r){ return r.json(); });
+  }
+
+
+  // The timeframe list comes from FUB, live, via getFubTimeframes() in Code.gs —
+  // the same source the Open House form uses, so there is no second hardcoded
+  // copy of FUB's labels to drift out of date. DEFAULT_TIMEFRAME is matched
+  // server-side against that same list, so a renamed bucket in FUB changes the
+  // preselection here with no code change.
+  // A chain entrant: someone who confirmed a referral and is now entering by
+  // referring in turn. They arrive with a server-minted session, so the page skips
+  // straight to the referral step -- they have already proved this inbox is theirs.
+  var CHAIN_VID   = <?!= chainVid ?>;
+  var CHAIN_FIRST = <?!= chainFirst ?>;
+
+  var TIMEFRAMES = <?!= timeframeList ?>;
+  var DEFAULT_TIMEFRAME = "<?!= defaultTimeframe ?>";
+  (function(){
+    var sel = document.getElementById('refTimeframe');
+    if (!sel) return;
+    TIMEFRAMES.forEach(function(t){
+      var o = document.createElement('option');
+      o.value = t.name; o.textContent = t.name;
+      if (t.name === DEFAULT_TIMEFRAME) o.selected = true;
+      sel.appendChild(o);
+    });
+  })();
+
+  function enteredOk(res){
+    document.getElementById('successTitle').textContent =
+      res.already ? 'You’re already in!' : 'You’re in the running';
+    document.getElementById('successMsg').textContent =
+      (res && res.message) || 'Good luck.';
+    holdingSuccess = true;
+    pendingVid = null;
+    pendingToken = null;
+    show(successPanel);
+    form.reset();
+    if (KIOSK) setTimeout(function(){
+      holdingSuccess = false; lastPhase = null; render();
+    }, 8000);
+  }
+
+  function refRole(){
+    var picked = document.querySelector('input[name="refRole"]:checked');
+    return picked ? picked.value : '';
+  }
+
+  // ---- Step 1: details -> emailed code ----
+  form.addEventListener('submit', function(ev){
+    ev.preventDefault();
+    document.getElementById('submitErr').textContent = '';
+
+    var payload = {
+      formType: 'raffle',
+      formToken: TOKEN,
+      qaTestToken: QA_TOKEN,
+      step: 'request',
+      website:  document.getElementById('website').value,
+      fullName: document.getElementById('fullName').value.replace(/\s+/g,' ').trim(),
+      phone:    phoneEl.value.trim(),
+      email:    document.getElementById('email').value.trim().toLowerCase(),
+      consent:  document.getElementById('consent').checked ? 'Yes' : 'No'
+    };
+    if (!validate(payload)) return;
+    if (phase() !== 'open') { lastPhase = null; render(); return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Sending code…';
+
+    post(payload).then(function(res){
+      btn.disabled = false;
+      btn.textContent = 'Enter the Drawing';
+      if (res && res.ok && res.needsCode) {
+        pendingVid = res.vid;
+        codeAddr.textContent = payload.email;
+        codeErr.textContent = '';
+        codeInput.value = '';
+        show(codePanel);
+        try { codeInput.focus(); } catch (e) {}
+      } else if (res && res.ok) {
+        enteredOk(res);                       // already entered
+      } else {
+        document.getElementById('submitErr').textContent =
+          (res && res.error) || 'Something went wrong. Grab someone from TSG.';
+      }
+    }).catch(function(){
+      btn.disabled = false;
+      btn.textContent = 'Enter the Drawing';
+      document.getElementById('submitErr').textContent =
+        'Could not reach us — check your signal and try again, or find someone from TSG.';
+    });
+  });
+
+  // ---- Step 2: confirm the code ----
+  codeInput.addEventListener('input', function(){
+    codeInput.value = codeInput.value.replace(/\D/g,'').slice(0,6);
+    codeErr.textContent = '';
+  });
+
+  function submitCode(){
+    var code = codeInput.value.replace(/\D/g,'');
+    if (code.length !== 6) { codeErr.textContent = 'Enter the 6-digit code from your email.'; return; }
+    codeBtn.disabled = true;
+    codeBtn.textContent = 'Checking…';
+    post({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'verify', vid: pendingVid, code: code
+    }).then(function(res){
+      codeBtn.disabled = false;
+      codeBtn.textContent = 'Confirm & Enter';
+      if (res && res.ok && res.verified) {
+        pendingVid = res.vid || pendingVid;
+        document.getElementById('entrantFirst').textContent = res.firstName || '';
+        document.getElementById('referErr').textContent = '';
+        show(referPanel);
+      } else if (res && res.ok) {
+        enteredOk(res);
+      } else {
+        codeErr.textContent = (res && res.error) || 'That did not work. Try again.';
+      }
+    }).catch(function(){
+      codeBtn.disabled = false;
+      codeBtn.textContent = 'Confirm & Enter';
+      codeErr.textContent = 'Could not reach us — check your signal and try again.';
+    });
+  }
+
+  codeBtn.addEventListener('click', submitCode);
+  codeInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') submitCode(); });
+
+  document.getElementById('startOverBtn').addEventListener('click', function(){
+    pendingVid = null;
+    pendingToken = null;
+    lastPhase = null;
+    render();
+  });
+  document.getElementById('startOverBtn2').addEventListener('click', function(){
+    pendingVid = null;
+    pendingToken = null;
+    lastPhase = null;
+    render();
+  });
+  // Declining to refer is not an error and needs no server round-trip: the entry
+  // was written when the code was verified. This only closes the panel.
+  document.getElementById('doneBtn').addEventListener('click', function(){
+    enteredOk({ ok: true, message: 'You are entered with 1 entry. Good luck!' });
+  });
+
+  // ---- Step 3: the referral ----
+  referBtn.addEventListener('click', function(){
+    ['refNameErr','refPhoneErr','refEmailErr','refRoleErr'].forEach(function(id){ setErr(id,''); });
+    document.getElementById('referErr').textContent = '';
+
+    var name  = document.getElementById('refName').value.replace(/\s+/g,' ').trim();
+    var phone = document.getElementById('refPhone').value.trim();
+    var email = document.getElementById('refEmail').value.trim().toLowerCase();
+    var role  = refRole();
+    var ok = true;
+    if (!name || name.indexOf(' ') === -1) { setErr('refNameErr','Enter their first and last name.'); ok = false; }
+    if (phone.replace(/\D/g,'').length < 10) { setErr('refPhoneErr','Enter a 10-digit phone number.'); ok = false; }
+    if (!/^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(email)) { setErr('refEmailErr','Enter a valid email address.'); ok = false; }
+    if (!role) { setErr('refRoleErr','Pick buy or sell.'); ok = false; }
+    if (!ok) return;
+
+    referBtn.disabled = true;
+    referBtn.textContent = 'Checking…';
+    post({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'referral', vid: pendingVid, consent: 'Yes',
+      referralName: name, referralPhone: phone, referralEmail: email,
+      referralRole: role,
+      referralTimeframe: document.getElementById('refTimeframe').value
+    }).then(function(res){
+      referBtn.disabled = false;
+      referBtn.textContent = 'Continue';
+      if (res && res.ok && res.staged) {
+        pendingToken = res.token;
+        document.getElementById('inviteName').textContent = res.referralEmail || res.referralName;
+        document.getElementById('inviteErr').textContent = '';
+        show(invitePanel);
+      } else {
+        document.getElementById('referErr').textContent =
+          (res && res.error) || 'That did not work. Try again.';
+      }
+    }).catch(function(){
+      referBtn.disabled = false;
+      referBtn.textContent = 'Continue';
+      document.getElementById('referErr').textContent =
+        'Could not reach us — check your signal and try again.';
+    });
+  });
+
+  // ---- Step 4: send the confirmation email ----
+  inviteBtn.addEventListener('click', function(){
+    document.getElementById('inviteErr').textContent = '';
+    inviteBtn.disabled = true;
+    inviteBtn.textContent = 'Sending…';
+    post({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'invite', vid: pendingVid, token: pendingToken
+    }).then(function(res){
+      inviteBtn.disabled = false;
+      inviteBtn.textContent = 'Send it — give me 5 more entries';
+      if (res && res.ok) enteredOk(res);
+      else document.getElementById('inviteErr').textContent =
+        (res && res.error) || 'That did not work. Try again.';
+    }).catch(function(){
+      inviteBtn.disabled = false;
+      inviteBtn.textContent = 'Send it — give me 5 more entries';
+      document.getElementById('inviteErr').textContent =
+        'Could not reach us — check your signal and try again.';
+    });
+  });
+
+})();
+</script>
+</body>
+</html>

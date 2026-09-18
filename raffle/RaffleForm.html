@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base target="_top">
+<title>Enter to Win | TSG Block Party 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Lato:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* TSG palette — same values the Open House Sign-In page uses, so the two
+     public forms are visibly the same brand. */
+  --tsg-green:#15464A;
+  --tsg-green-dark:#0d2e31;
+  --tsg-gray:#f4f5f5;
+  --tsg-gray-border:#dfe3e3;
+  --tsg-white:#ffffff;
+  --tsg-red:#a5342b;
+  --eagles-green:#004C54;
+  --eagles-silver:#A5ACAF;
+  --tm-blue:#009cde;
+}
+*{box-sizing:border-box;}
+body{margin:0;font-family:'Lato',Arial,sans-serif;background:var(--tsg-gray);color:#1c1c1c;-webkit-font-smoothing:antialiased;}
+header{background:var(--tsg-green);color:var(--tsg-white);padding:26px 20px 22px;text-align:center;}
+header .wordmark{font-family:'Playfair Display',serif;font-weight:700;font-size:24px;letter-spacing:1px;line-height:1.15;}
+header .subtitle{margin-top:6px;font-size:12px;letter-spacing:2.5px;text-transform:uppercase;opacity:0.85;}
+header .eventdate{margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.22);
+  font-size:13px;font-weight:700;letter-spacing:.3px;opacity:.95;}
+header .eventdate .loc{display:block;font-weight:400;font-size:11.5px;opacity:.75;margin-top:3px;
+  letter-spacing:.2px;}
+main{max-width:520px;margin:0 auto;padding:18px 16px 40px;}
+
+/* ---- Prize hero ---- */
+.prize{background:linear-gradient(160deg,var(--eagles-green) 0%,#01343a 100%);color:#fff;border-radius:10px;padding:22px 20px 20px;text-align:center;margin-bottom:18px;box-shadow:0 2px 10px rgba(0,0,0,0.12);}
+.prize .marks{display:flex;align-items:center;justify-content:center;gap:16px;margin-bottom:14px;}
+.prize .marks img.eagles{height:52px;width:auto;display:block;}
+.prize .marks .tm{width:132px;display:block;}
+.prize .marks .tm svg{width:100%;height:auto;display:block;}
+.prize .marks .x{color:var(--eagles-silver);font-size:15px;font-weight:700;opacity:.75;}
+.prize .kicker{font-size:11px;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;}
+.prize .amount{font-family:'Playfair Display',serif;font-weight:700;font-size:52px;line-height:1;margin:4px 0 2px;}
+.prize .desc{font-size:15px;font-weight:700;}
+.prize .when{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.18);font-size:13px;opacity:.92;}
+.prize .multi{margin-top:10px;font-size:13px;line-height:1.5;opacity:.95;}
+.prize .multi b{color:#fff;}
+
+/* ---- Form ---- */
+fieldset{background:var(--tsg-white);border:1px solid var(--tsg-gray-border);border-radius:8px;padding:18px 20px 20px;margin:0 0 16px;}
+legend{font-family:'Playfair Display',serif;font-weight:700;font-size:17px;color:var(--tsg-green);padding:0 6px;}
+.field{margin-top:14px;}
+.field:first-of-type{margin-top:4px;}
+label{display:block;font-weight:700;font-size:14px;margin-bottom:6px;}
+.req{color:var(--tsg-red);}
+input[type=text],input[type=email],input[type=tel]{width:100%;padding:12px 12px;border:1px solid var(--tsg-gray-border);border-radius:6px;font-size:16px;font-family:inherit;background:var(--tsg-white);}
+input:focus{outline:2px solid var(--tsg-green);outline-offset:1px;}
+.errmsg{font-size:12px;color:var(--tsg-red);margin-top:4px;min-height:14px;}
+
+/* ---- Consent ---- */
+.consent{background:#fbfbfb;border:1px solid var(--tsg-gray-border);border-radius:8px;padding:16px 18px;margin-bottom:14px;}
+.consent-row{display:flex;align-items:flex-start;gap:11px;}
+.consent-row input{margin-top:3px;width:18px;height:18px;flex:0 0 auto;}
+.consent-row label{font-weight:400;font-size:12.5px;line-height:1.5;margin-bottom:0;}
+details{margin-top:12px;border-top:1px solid var(--tsg-gray-border);padding-top:10px;}
+details summary{cursor:pointer;font-size:12.5px;font-weight:700;color:var(--tsg-green);}
+details .rules{font-size:11.5px;line-height:1.55;color:#4a5252;margin-top:10px;}
+details .rules h4{margin:12px 0 4px;font-size:11.5px;color:#1c1c1c;}
+details .rules p{margin:0 0 6px;}
+.disclaimer{font-size:11px;line-height:1.5;color:#5c6666;background:#f0f2f2;border-left:3px solid var(--eagles-silver);padding:10px 12px;border-radius:0 5px 5px 0;margin-top:12px;}
+
+button{background:var(--tsg-green);color:var(--tsg-white);border:none;border-radius:6px;padding:17px;font-size:17px;font-weight:900;font-family:'Lato',Arial,sans-serif;cursor:pointer;width:100%;letter-spacing:.5px;}
+button:active{background:var(--tsg-green-dark);}
+button:disabled{opacity:.5;cursor:not-allowed;}
+#submitErr{font-size:13px;color:var(--tsg-red);margin-top:10px;text-align:center;min-height:16px;}
+#website{position:absolute;left:-9999px;top:-9999px;}
+
+/* ---- Panels ---- */
+.panel{display:none;background:var(--tsg-white);border:1px solid var(--tsg-gray-border);border-radius:10px;padding:34px 22px;text-align:center;}
+.panel h2{font-family:'Playfair Display',serif;color:var(--tsg-green);margin:0 0 10px;font-size:26px;}
+.panel p{font-size:15px;line-height:1.5;color:#4a5252;margin:0 0 6px;}
+.panel .big{font-size:20px;font-weight:900;color:var(--eagles-green);margin-top:14px;}
+.hidden{display:none !important;}
+
+/* ---- Footer ---- */
+footer{background:var(--tsg-white);border-top:1px solid var(--tsg-gray-border);padding:28px 20px 32px;text-align:center;}
+footer .logos{display:flex;align-items:center;justify-content:center;gap:22px;flex-wrap:wrap;margin-bottom:6px;}
+footer .logos img.tsg{height:56px;width:auto;display:block;}
+footer .logos img.kw{height:38px;width:auto;display:block;}
+footer .logos .rule{width:1px;height:40px;background:var(--tsg-gray-border);}
+footer .contact{font-size:13px;line-height:1.75;color:#4a5252;margin-top:14px;}
+footer .contact a{color:var(--tsg-green);text-decoration:none;font-weight:700;}
+footer .fine{font-size:10.5px;color:#9aa3a3;margin-top:16px;line-height:1.5;}
+
+/* Code-entry step */
+#codePanel .sent{font-size:14px;color:#4a5252;margin:0 0 4px;}
+#codePanel .addr{font-weight:700;color:var(--tsg-green);word-break:break-all;}
+#codeInput{width:100%;max-width:260px;margin:18px auto 4px;display:block;text-align:center;
+  font-size:30px;letter-spacing:10px;font-weight:700;padding:14px 10px;border-radius:8px;
+  border:1px solid var(--tsg-gray-border);font-family:'Lato',Arial,sans-serif;}
+#codePanel .hint{font-size:12px;color:#8a9494;margin-top:10px;}
+#codePanel .linkish{background:none;border:none;color:var(--tsg-green);text-decoration:underline;
+  font-size:13px;cursor:pointer;padding:8px;width:auto;font-weight:700;margin-top:6px;}
+#codeErr{font-size:13px;color:var(--tsg-red);min-height:18px;margin-top:8px;}
+
+/* QA TEST MODE banner. Same treatment as the Open House Sign-In page: loud,
+   fixed, deliberately outside the TSG palette so it cannot be mistaken for part
+   of the real form. Present in the markup on every load but display:none unless
+   doGet actually handed the page a test token. */
+#qaTestBanner{display:none;position:fixed;top:0;left:0;right:0;z-index:9999;
+  background:#b3271e;color:#fff;font-weight:700;font-size:13px;line-height:1.35;
+  text-align:center;padding:11px 14px;letter-spacing:.3px;
+  border-bottom:4px solid #ffd400;box-shadow:0 2px 8px rgba(0,0,0,.25);}
+body.qa-test{padding-top:62px;}
+
+/* Countdown to doors-open */
+#beforePanel .count{display:flex;justify-content:center;gap:10px;margin:18px 0 6px;}
+#beforePanel .unit{background:var(--tsg-green);color:#fff;border-radius:8px;padding:10px 0;min-width:66px;}
+#beforePanel .unit .n{font-family:'Playfair Display',serif;font-weight:700;font-size:28px;line-height:1;}
+#beforePanel .unit .l{font-size:9.5px;letter-spacing:1.5px;text-transform:uppercase;opacity:.75;margin-top:4px;}
+#beforePanel .soon{font-family:'Playfair Display',serif;font-size:30px;color:var(--eagles-green);font-weight:700;margin:16px 0 4px;}
+  .roles { display:flex; gap:10px; margin-top:6px; }
+  .roles .radio { flex:1; display:flex; align-items:center; justify-content:center; gap:8px;
+                  border:1px solid var(--line,#dfe6e6); border-radius:8px; padding:13px 10px;
+                  background:#fff; font-weight:700; cursor:pointer; }
+  .roles .radio input { margin:0; width:18px; height:18px; accent-color:#15464A; }
+</style>
+</head>
+<body>
+
+<div id="qaTestBanner" role="alert">
+  TEST MODE — entries go to the Test Entries tab, tagged in FUB, and can never win the real prize
+</div>
+
+<header>
+  <div class="wordmark">THE STAWASZ GROUP</div>
+  <div class="subtitle">Block Party 2026</div>
+  <div class="eventdate">
+    <?= eventDate ?>
+    <span class="loc">1342 N Hancock St, Philadelphia &middot; 3:00&ndash;7:00 PM</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- Prize hero. The two third-party marks sit here with the non-affiliation
+       disclaimer below the form; see the OFFICIAL RULES section 12. -->
+  <div class="prize">
+    <div class="marks">
+      <img class="eagles" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAggAAAFICAMAAAACkvagAAAAwFBMVEUAAAD+/v4AAACkq64AS1P///+utbgCUVmapakMFhfR19jm6ekAPUUCJiqRlpgmJyj////////Gycs1Nze0xcdlaGlUVldzdnj///9GSEn///+EiYsANDr///////8qZ27Z4+RVh4yWtbhplJl5g4UZW2I6c3mxvcAEHiBdYWNHfIKXnqF7oqbY3uB0naFCeH690dN5foA+QEJbXmAdYGc8PkAgXmWfvcAgHx9APz9fkJUAAAAAAAAAAAAAAAAAAAASlTkQAAAAQHRSTlMA/v///wT/////////////Ls7///////9Q/6///49v/////////////////////////////////////wAAAAAASVprdwAAMOlJREFUeNrtfQlX6sy2rQikhUQhBBGVXux1d9997/7/H3bTVq1qU2nAJKbGOGfs4/awNTUz11z9xUV32n6GwUn+dPNwe311MeyeyU/EwBBjoBec2w4HPx4D0ekIoQF3V7kxGF493GMMdITQjDe4WiIYXt3c3/aYc9MBoeY8Hvz31bA6Iri97vHO9bDDQd1R8HB9U+KWIBHwMRCdh44Q6o6C4qwNrIGICNAZdoxQX10QoaAgDgjXoJd5OkKoNxcUw4GiNegIoTFcUAAHwBpkgGDtGRsv+fN9Rwh15oK8OFCWBO/e28tqMBgN7I4QGoGCHOE+CAIZBqzj7vMQYmAw0AdvHSE0AgWqOFAEwdr7eAkwgI+eEsJVRwh1RoESDhAIpM6B7b1tVjEP4DPaddHlJqAgGwdqTGBtNyudwkB81h0h1A0F3HuU4kAJBIEx+DwMRGfTEUKdUDAUXaQEByogEBNBRwgNQoEYBykVSFxE2zNeDoOs0xFCbVBwI36f+XVjCATiiOHa2z3KiSA9VkcIdUcBFwfYPRCDYLtbDVRPRwi1R0FYHEDdTrYoCCXBIM+xugq1yu82LwrueTe53bzzcZBQgSRubBk5QdARwvfCQEzs3kYffPFwkGkPAhAcVC5e1/WOEE4Lg+GNQsom+pbhlQAFh8FIXzM4AFRQzhyEGBiNzTu9I4QTwkChkCwJG/FRsIte6AONgyz/QBEEMQaezMvgdIRwShhkJoolIeSeFat8ncIBkoYCEKyVQBAZg7txhIHwPHWEcCoYXN1nFQzIwkbWG7rN/0gcJPEiQbBIwUWkMRAdaBk6QqgaBjIcyFzFtfGIr2UFcSCRhrb38airGAMaA5eUZegIoTpHIblecdGnBAX29hPG/lY27jYSU4FlvGRFDKEgYM5Y74KKJ3AUbuXFv6mTwEPBcQPfah3iQKQKIlEwym0MOkI4uaMgLQKXOgkbmtsxDnrc/0emKMjGQHhMvUs7ngoGXBzInISvHR37CfhAGmu2jE9dIUJwmX2AVNx1lYoVwACwPedBqjkJajhYH/erLAzcKYGAsgwdIVTkKGAcDFXlIeEkABw8CqngTeIfqBkDgVQcdYRQGgbEFVM4kAgDe/vCv08BDgJpeBBKw/wYoAhB73oZKvEXwVyJoZIwYOUhwsFnPipIvMPLAgdHFUdvXbdjFf4i9vSGQwWT4O2EqUF99MLxLP/yqUAvSATpwR966Lody8CAftUxDuKIAbfEwPqQiD0GB5YhoIKSGIh8R9zLsO0IoQJ/kcaBRBhw5CFxz6MNyRyrct6hqu+4wgNSOiCUhQHOFAt9Re1FZ1EwNkeYDzZQG+qnIQKOVDx2E5NKhw1IHEhMgrc58FAAX0yEg0Ab8hXB6O7psqqDfcfHbmJS6bBBj6wYEHkJrDBIUBAoNhoHoUEYncga8AnB6wihKhikFQNcL4EVBggFBA52fINwChAQhPDSZZtKRo+IDqQLAUiYiAFAAcTBYLdmPYQqJYGQELr0c2UwCHHA049sQolAQXAb+OZ1xiCEmuA0ICAI4X+74HI+GNCsb0Mc8MhgbaykKCBwMDgNCMxMQuiCy+Vg0Pv4wBONbjhksH0h33AGBUIc6JxvzXn97nThz+ZLx3CyossjoyMEVRiwKYXe+gOkhq5ZGHj7A3237NUKcg2BKChx/8/h9fe1+PS1WRYh/O2Cy8VjydZGv/uUlAxQNQYBCu7kZaPl7IE5Dt7/+d55RfePjuZmVSYdu+ByURh4LyAGwwsfEiZBgAIGB5F/YOZlgAgAKQH0maMts9JNXSypKAyOj7ISItpL0EU8b5aigsAEBApADAAEhEUWIVhdLKkQDLYrSSkZ7SWEt5uZ+ItVgSoIzAABv1IK6GceI4sQusplFYnIwMA4MCXGhMUYyZ0EDg6UqSCyAstXVQQkhDDLIIRupGIBGNhvKevjlkRRLoHrJLg0DnRdxUEIIBCSQC4EpMeUE0LnOmZbBRoG650+EuJg+0gLA/oGXN+xLRPiQMEgBBB4/uX0C0EgIoR5BiGsOtcxM3wkhMFAt2h9qGcIg8VyEnxfH+MgO2LkTv15QRbI9h27rGNhGMCLtshS5AyT4M76kR22fRDTk8mC0BIkWqBf7mj7jKDiS+c65oGBtSF4/0uYWGQjBtP5JA0uoJfzScwFphvoQaMCCCgSwrrrglfPKVAwQGwavOOks8iYhIWDuWOemQUKeUANA4boKBJCmnYcfXRKUQyDKzkMMA4YMiDec9PvAw9zMs2IDfzZvwoxgK44/I6j502CY7En+KrnEZoiixC6JENxGKQ4oJUBaRJIFPR6S5koDIiAowfiyw++7IW3/m7bdk/92GvL0zIJAWG6SzIwMCBLCtZ7Jim0TUYc6WKTQKOgZy3EIJhHviF7/15w+7nuPkGAHTCDl8AqixBeugp2QTT5XuwpQBxoj2IyYFAAnEY6rjB3ABFECNC0YvcfAiC8f4QkWQwBlUx3SpEfRnyg4wYMDMIw3PrtICQDDgqA0wjJeQFAECHgOLHWBQAQGoHJUUs+RSmoaNK9jl2SgQgjkuWG9gevcsgIBCLMJpD6cOFwbpK9DXM6S8xBTAKBESiCgF7EAZABaJfhWU4IXUxRIXBgcAvIdt5KSAbTpcW7LJ+xB5EwjK4vZIGiEDhqXA5QSDuanVJUh8GB33i8EikDF0WNZHRgTiN7EF6g5hVSApgFFGJJC7lS3HQxxQyPcbvKXG4R5gmAMNAEtzYjqGDfD0EQYaA4DahAQFqYlLqOOPssIoQh2iT+QzQi6Sp4CtNLIRlwhQEVUr50/wQGIbydyXshHnjPhQGlWNJWFFMcpuenaUQSBo/CbnUgEIFJsIS3h+gg0YaFicDLiwFZPUqqFF8Ypcjc/3B4dfNwP2y/gmDFARlG1AdPYxYFQCCKTAKkgxgFRUXhJDImRZJNTkZZ1Bpnnzn3HwAgWQVy33pmiMTBtTCMqOvBjZsSmzBdyu52nqKguHM4CUVh4azjVFqXhMqSQAhheHUV3f812dfbdiAwGpEIHAQvvslUmwObYM4mskuMMkyu7xRmAutYAgQSw5AqRVSIP0wMwK1gF1Dby1VCcXAv9BjTF18Eg6kjv95l6Ek4XiFdGNiniVYKBBLDcEkbhmvhgsgfEXMM2Y6MI0JXAfE/GE0bGIonFWUQXeQ0MBuTYiCwrdIgkHkM8W+kI8OQeVptGFhx8PXIkwG4ZzwxFJGbsMy64f5iPun1iqoCQ16AooiDP/KY4qPqT9TqmCMTOVhvuGrQ5HxtoSncZnEUcAoRJry6k4KhJMYwZJ3rFuOAjRx8CAJFzNdMScyg7LHiUEEEgKNCItp+n2i5OxkSilM3DO3NTrORg+1BUFaAvqYoEEuhIMpAKVcihKUnEloQeY7mQG4YbMvbfmw+V6hEu72GgXEZiXAyUWoWySrsKPjaqVAQxoyUk5BZiWeZQECTmtbs/b9tXlaH8K9HYER7a0MIjMv4DsXByKRYVEcwOKVNsFV9TNuaKGUdRWWKSPsmyec1df+IFv+23DAwVsHeQXFgUiyKHQX3dDZB8UR1qIpepTCCkGqelWfsNo/0/XNqtFta4M5YhS0OIOmDJ+ahpXZi0W8MBuIzzjAMg4x1cJtWGwbGKgBxAJOJqUBA0mDyfRhIbEE1KQZio580w2632DAwVgFEDmD+gArHnVIaqDiHBSKM2kJhb5P0bFtsGBir8AZChnf42ntE8Xd2CPGERGAUCzNrfvZ2DvlpcaMDE0HyViPWVTDndg/KLNf5HhB4ZVINwjF6lGHQ08MahvY2OtBWwXrhuAohDCAOpv3GgUCKA5O499Hd3d14PH4yTZMii1FrDQMjEncccRDBoNfHRYha80AgaWsKCQFevHC3V3sNQ5Rt5seTgUaMYID54NwwsEuXH8Tj9Y7zsvPZW2sYaJFofeJfGYWTZ7Fn4HyPv2gXBIGGTuBcOMv9fOb/LjufHXsM7coxMCJxxxEHfuIgOgQqamkP4N2/xne/+D11n0oOb299KIkWiTiQiK3CYkIMLzgnDFSpAF2+EVz+fPbsL6auWeH2BliE1cZQEi0SLVCChPLKGlFxfEYYZKsCdP3h7Vd9+YLZr23shAzpIMMqgEDB/KwwsI4SEID7fw6v//LEB7uOKPnconLVgA4IkcjzFZb4r/3zxZLFpakxAgxnH77/TycHAOs6trBFnvIZga+ArAJ8/xeXZ4KBAAUxB4QIOAMDiJXiV9v6GGg6eGOtwhS4iPZiZn8XChISCIzA2RFAK0U0O6U1IUXKZ8R5BVxuRGQR+meJGzAoSFnguyBAK8XHlnmONB0AkYiswtlzirQ6DDHwun+eupfffNobUqTUAaQDjlU4U7wAoiCyBcvZ72/HABVTbNdKpzB2wKcDZBWW50aBRhKBM/e/0xYICAFtJb9thWGgYge4Fg0VHfjnLTgCwiAEwXK2GF/W6Ixa6jlSocQdEzow+2cmAwOCYGpe1usAw9Cm1V6hSgSZBQurg1Qk+vY3kEFkDjJBYI7d6XSx8P/MZvP5fr9cOtF5Bb2vr6/x15bL5X4+n89mz76/WEynrmsWDD63s0qRMgvGt9JBqg8DFDjzheCaTLSv1zFgZlGDSUZu7pH5LiMASZiMDBNSykkJXNzeppwjaRbWn99JB++RsxjZA99V2NdbxX4OAhhhmvLXPE5TKhiGNvU1kWbhqDNVB84ZbULUzRpQwW9Ttqyxmu0sWalr7V+2YWhPw2tAaDdclYjSzdY5bUKoCp5dehR/qT1thc9rpseAqlWbn3Mkg0jrVCViOpidCwZe+C7SBgEt5zkvBORdDmj2aosEAhlE2uo0HZxLJb5rIQr2UBu6v5NFbf0i028qOIaZlWNYtUYgBDi4Zs0Cbmo9k1kI3EUSBelelujEK5jA8bwjWNVwKmgICQELhPe2CIRAJgKz8Dii6KCMWZhoyhiyjqFFSOfruP9mjhZtYMp2Vexw7068eKff71eMiNfM5PP/tEQgkDLR06nMQglvQZv9cVRx8O6lusBczDWrsKMa7WI6VgcIUT9sWpWkt2YySvDTP7BBJNDHNimKAld9XpLtObMIBQEIqglW2Dk2MpSZrIZHKTVcIAQ4AFGkDWMWpoXuZTI3L3+rC0xtPo0mLvcrj1gF/FAKDqKRm8hzPNjtEAiEu4C8RmwWisgD2wmu1feUv99YRNu8TihI7Wh8WgE0ZM1ixkWK9y3CwZfOTEJaFjEJmbO2ieO44aTdM3VH5uyMEw7p1+lUU8MFAuE2blHhAfqF+4XIwJ2rs4E18/vnTGjmm58hmqDDdDE0XCAQ2YV0cqqOZ+DkbWi2ZmYIgxxyz7a+Y56K6kQd0Z4/VijeNB0HrEzE8sDNabSjyIs763/XxKR8Z53NDCKPAUUQWiIUIQ7sxzSzbhZ0F/rTaA+HMbF7jTnvGWAYZwhFC0eShk3GAQ4jWf/F+7f0AZ53kuuROpEx9V+1OtCBbdvrZAp7epK57O9rmw5VWsKp3IJQksm0uzZbKEIceDojE/1cMHDjcdva5Fvv/92ahNkH3n4GOlWVTEfxQogIkCDyHJmupmYLRYiDI51rzIeDGAbmXPsuOkinrBfIO4lzVSKBkJpQVLzebKEIcWAw7kKeMFIMg0s/eMns7yCBCsLIXBwIks9IICCH4aEtOPhgkkyX83wSMZyqqfUn56aB/Etdy4eWnxiHodFCEeJgl7qNZn4cpHIqoIP++qwg8E6IARWhqL+3QShCHGyK48Dy0w44rX8+s2CV2uepioOsSBIKnTZ50S/EwScTPlBNL9jpPMJFYE+984BgPTkxEWTM3ERdDNs2OAwQBysmfKCKAydFzjy4m7OkjM4EAoWIInYcb9qBA7swDlAyxnWC67HOownOVrXsyFPP2HF8aAcO1v8xYSQ1HNg+nrodGGzrDFRwzur1V6njqKNJy40uQYA4OBTEAbIKl34YkzspDqRrGU+DA0EAwWRq15s8BgHgwNKZcKKSv2Bhx2p+YhxE2zyNNCB8PHrxOaJGl5PUsLtyh2Flt8BxrAAHwH4uQz/OOpksCD5d8yZhQbukhn0S1rBXSggZpShoTFKTHQaAgy82vaASV7YxHZjOCXHwPplYa6XQhB3vbzs5DtL3xmoXDrxiOADLkmMcnMZvtNUg8J57hV/hJgYUQPhqgeOYgQOFfCMIs5iv4R2cKY50thizCAeoJMlrgePIw8E4Dw6AWYj5oK99CwjeTxZjFnU5jpmAYjtwcOTgILseSTNpHPTPn3Y+aYxZHQf3rcDBloODaR5vIfYXzhBQPG+MWbQdHgUUjV7zM8+lcUBkYaL4gTE5uyb4loSjySQYGhxIysCBm8nxBGlG8cQzCoSzxJhFFYppQHH00XwcwHZnTlnapSni+HQBg00419M4qPdeOxRkjdYrhQPU0nTd2AoEiIO3PDjwEwVpEUFXM76Wo+DeqteGSncfhpvjQZrLfXjCPwT/2zDItW657QIHB00lBNj2/jFicXA5EZqD+G8sMgkzj5+nzbu2iVUxFyjsbIq39YkGZJrhRM5oJOfecfqimXwif4HFQe8qeajDJuNgx8OBJpSHMSFMyCccGwa2UtWe9KusZhehIAXAvMjGnnRKJz2hL2tKEsBBQAn3N00EA2x75+JA1O+sJX9F4eDS4RFCNDq7QhhwtzbF21qWAQKeyq5cCfCwj+EgiydycdBQMEAcbHg4EI1Hss1Lk2MXEo+hT8SW1+G0XKtKMjC4GJj7lc5mN5PZjf1pXhyQYGgGDnDbOypXhu/TXBI3mHFwcJlckU28vX3jWJlItD12bVPlGIBo8N2MIUlv4h82BMOwGTiQlStLEo5WLB5s+iEtYkLQgDIwqixOsZhZ6t+2owHPQNgYXxKc1986DDnlyiQOFtJAYvDLM6S5JKRi8vZW1tNgaQYFgudvW9QxII6+2m/5aK9/OhoOV16jfTzwuYoDy4FCCP+WEdNPSeeoBd7eynLREAZKizrOs8EPn8Pnh0f3c903AAdYJloHHg4kgWUnykuz1f2JZQgcRSs15VWlHCZwcZPxy//WBW5cHIS6cTBYbSA11L9uEcpEPEuV+GUlhj00CcsJ+4BmGuomT99dq1oYhDsavn9x011gDHRdjAavKfVqQ+70AwIHl5I32YounfNO/mKiPFaVMAhR8FyLXY7hgqhRiAYOEHRc0F73+pTgp8PDVA12aJ4soMjknDlasVocWHh1U11QgMBwx8XCuhkCgVzgueOUJ2YNUBReB80IVmUSUQUFpumGm7z859k8OL/2+/2v8A/RprYw23AiMAxoKDRkxia5qe1lxMWBtKNJY57G3Ek1Qtxu8gqchwpgEKjD+VSaIfBne2KRF3dPW5yCmlaOCEo6bpohEIhNbcht1MlBcXP1KpQ4Dp1ckxs98b3vVOMv2FqUJe7vF6KcQAAAfP+KBQlhSup54Z4KCM0QCOQCT87qBQUcWPRz0DA03NnMd5PS1bLxgygcFZiEPy4fAvH+niJ9TFqyRLwiNJCEYDVBIJAbutD+zgFJlrMc5YmRm0kGFEyjklK1wFUIyWDKwcAcZwZLbut73fvT0r4k1AijJgiEkA7Ahq4Ns6hNCQc2+d2uRVHE2BBWpuRzFYKX9nlM7/ObLfuVrnILqWFfKjpl6g0TCKGzAOjgfcV3GzM728jX36UzDlGLU1mhGIgDTVsuKBDERHCSRZ4lglR8gVDfFEPwc/H3uN5d5tAHwR3RdoHsaEgLU45lcOAFd0PYhBAESeEhOSG1qs1+ITEI90urGwa0zq22AmFIrnXGe1wpmZg9CcOncUCaijSkVMpl1PpzF2iCWcgE/bjO1IvHJiczk+31ezxS+VjB+rYQC//y4uCJwMGx5h0u4U91A+jAWgnkQfa+tj4Thp5xKldLGAb7qBkz9FOZi/lrpPHDOQiZPdJo0m5xLLzO3MKGofbr3EKrAEQi9hZoeZC9iIN8/aP33jeZQrUSHoOlvT6nH+j6y/4xIICcstMuNWkx0Au+uokYQUL4rLdQpK3C+nMgkAcK61ynHDNio2Ey01TJ2YVDB+gWXN/xLLv4dsfiffGBiVClhTHEQb23dES+ArAKYK3z4Cmfu0ALBPD9M9jaUlwpWq8JDPKuebHxqaQ3mtKqaiHFOkeSaHHQW7+IzILKOlcCB66hrUkk/CpHCLb2J4LBVGnnExqQxDqU8aKF2KTYVrGxa4GFWOTzHLf1bX0c0uKgZ+gib0FlyzeZYxgPRoONBRKSaXlSQUKYhBLR9DNXBNtrtNHXyFy0oHmhj1FoiFK2WICeI+qBrZ9QZGFgPQ4GAm9BZV6aTwXUoky8gYrXkGEoRghLM5zabGfKwLxegWEUD0V6C0WBoNc3ohjB4J54ijh2QKtEV8uNgzQRn06HsHGZWhGXYeJe/r+5le0KnHPCar/vKAuEukYUWRj0todSdNBbiN6J5Pr89I6KxBCWl/+/fxIP4CSjs1iBoNezJokDA2+Ff2raaVQpG7CnQnZMSBGTb35nYeZPpExwfgxI98CzEYSvOkYUOTCwXgYiOjAdReYWvhY6BYTcZQgToatoW98FAtkeeDaCUMPU85CViL31BsCAchZmSsLOkT6P+Br7RS2DcILu5DtRIJ6RQqcY9Dqu9Qt/jhsKBruBUCRO1XTdTP5ieHF4MX56pdJN9UGBeCkDIxRHmzriYEiEj0IY6CWtQi+TISMKmMTVhTNn0gYUZBkGKBRruNZvSMPgnYABZRXmSlbBYipVl1MypqJHn6NFbQfmpVO64dWqAQokQ1JoobiqYZfjEBYkBk90MxDDwFcz5UtTWLGcvhrRG2FNF1ElqKuVJYM6oCDAwV4xoogcx9saOY6BZQAO46cEBoriwGHpUSOKVwPLEFdrpu+Pb5ckA9A5SUw7M84aRxBtaWEdBquWkWUwFwvNPwlhQAcSlQSdveRZyT5Rzh4mX4mWF6cEDCZavI0lKkGgZjClCYYzoUGbKhar4n3wNYskIUrw0CYJmg1MJRhMZpx3YjyOkOAAWxkRAipXmdqlbII2sbKSDcdzhBhlAsHkZRzrl2EAlMCPI4Zb2zOF/WTOIYOFpkd984tl+r6EONgQ4eeiCsE+BiBQBJFtad8ZQYCOo1HbmuWAElK/wU5nRXN+GVndh9XnlucstGi8zh18NQIcfBLpqHlRNpAP4gwNAzrv4aqmk652k4aWscOg42lqNaxdZ7dv6CP+bxQWBJIvYcDOS36rhzmbJJ+IYhFPIz3lA4QDvygfSCsPNFC2ntSun6S7AUeSTBWHQa/5mk9gHN5GvPkXbCfxwo/axsW//sLCnxhc/93d3SgeCxDGVvHellmvuhNXHhjGd/iSrorDUPs1n8A4BJ6Dzk07F5hE6s9mocbcDqIxISEKRoOXEB94b4tTJQj6xneFE2QOA8QBCijWtocBBBM2qUUbV9Dzu4hD1ocAA+HMqF0IA3umXgnfjPCyrAbhiRdQrG+zK5yiiftcn0oDwU3V5HG79aw40oDoYGG3AQXqjiNY91rf7neIhP1oUBkULGGkwXRagQLxWgYaBwdUvz2s9xQE3O5qgB+/pIGI+1nCqJ81cYCPac4roIMwUpRrzsV3BhD094ZMxwGuA9rhKPQjc9oGuljJXVYBA019D4vx6jjO6yteDl4ZKrS5Ig6sBuLAWlXEB8gvsEHY0Z1VoRHFGUdiD8s0cHHBHhYzGaI242zaqD7jCDPPVv2HICRuwz0zJSmfC/kkWHuTvvsTZz4Lnn+10zR5Y46Cf2cxHWf/6Ka7eC47RkMxoNiY9c/EEMWtzCz8dpzgMZvMI50t+4Lg2rRX+ZnwV7H0X/ezRd45eOb0T7hoQ6seB7ACoSHrnwkcfAhqFSNW/wWmDwYveHDm+4RkhQV7FXmJcFISZ3RJmXFn6ViNDgc4sIhrEjjy4LmvcdchZjwXtwJNsEyzn2vN4A22Kj0PM0yj5MSCFAdjHg7um4ODdKgqRx4sXrVcTwYYkIWmWo8uqoXto0lJDAhKj7pDd+c7eaBQCAfDZuDATnaycHJO7lJlSumSaH8AxYvuLE1bRgGFxTyHZpz4aU7Cosea/at4Mu503tc6HKDhuqxMNOdq7wqRjg3EgUakqAPXLeZwP4exsGZozMrRgCg4zdT1ALHaaXBw2xwc/JfwASMTF4Ym9NmpL7y6VBBhQo4jDIRZHskQwiCpWbDgFIITzt43VaBQAAfDxuDgwJ21HVkFUd2uP3VoJBAbD9Nm2TBJ7DhhfWE+P9EH0UkDD7SbXp70jDP5TxpHGvPiBzXHAShEeNcFOJgJnorWj0aZzWixTSbjZsWdx/4CJ65szSgwv6y4VnC0wnFlOAvDagwObrNwIHokWj9NJJozhwzea7/gVZnF8goWCko72Cwozquq4sy0gnmmRuLg4jbLLgjoQOvPid1u/nzpOEAokJOW57mbnfu41CMUCFbSvDKXKIN4g3tYQuf7i0WcZChFCiJdJO9sAzjAeefbuq9luadxQBUguCI64NxI4HkBNfdM4ykPCiD5h7mKSZw0/OUK4oLRtnZ2FUsY/9zP/H8Fo02mI3gHpmo4WAEc1DyQhLoe7f+4YSRfpJnoRxEPvSX9yCmtOJVanifUePWwNybyGrXllBsPTNYwCIgr+StnXygAvdd4DrLSKAwd1yM1CQcrHg7MvaZkIuPgrMbcAdP2lDEL0Z44bGF8YBii1TzGggOCvaGYSE4Xw+cFw5wdx7g31fgA1anW3y7AHc8cHEhs5JRI14jugnd5l8H3s91JtiXcfWCH43UCcWCyn5M3ZRiBIef4bPpdkJWlQRyMXpqDA7DzPWl5fFIyC5gRkldSFnWZiqx6WBoSnHnGBrVlhIPXqSgpkLfWSMvrfhI6QTOmarM0cR9L7XHA6WR4kpMiYSfnwT2+Zl+BJoKCcqGbF2hAig7CfEAiBsMCNMd5NfIAIlzsoP5DPRES2VTDwQD1tdU8v0A4jrsR6zeaSy27ElQtJK8tfxcHQt961fqkgVk4R08zlnMfuIeh55hWG6lJBnV8ohnB9A8iwYHRFBxAx9Hg4MA1Kqz3LRAL/Jc8cndikLmLy4Xh9efC6oNol5sSFnJAIX4ntAw6gHVp2wbh4IHueoU4mParrfvOR8ZuIAPddDiHRozhmToKHxQol77SXs9farox2ifBeMNMvbLOppnCeqSa4wAJRYtTlrY4yU40Y65QO5A4IWkkf+ZBR9WdKwzBT8IaKljQ+n8UKUEz/Ix/ELSxWM3BAZiHcGBx4J+oezy4maUv2Y9nTp+TKtLUPTU1eFOLXDnH8fOrAhQcFVLwtSzTBnCAw4k1r1cmhWI6gv8MOECe/JyO+ZrmlKgrR0WwMx++5Lndj4WTjQTNV+CXLCZ7GnDCB7XHARQIu0ThgF/qz8lHzKRZgOV+Pv+1XzppkoAN2sDXtVCnjZ8teqUJZUXy0ZmNbbXvZyIjils2oOifGgecKuhc40vzFhtl2ofjvDIcALfxuv44wDPUUqH49A04kBruM1aYyGdcqBwwFwe7C9fDuuPgAguEVCiOT+svVNtVStpu01QoOZhrpzQNeCDhyuo1JN1ICYQXxmGoBQ76WmYk0hzfJVGw+Bbu5I2OMtmjvZYzPVgmfvZAGKkBOLjCU7NooTitBQ76femtPt1F85iInXnh/74zFaLEHCCU0iPjASe7UPvwARlB8BjHcXwaLZjMuSO+WrROfDwaUBgAYJC08C8KFZ3lkAcgqhy6jXXHAUgxpALhKaswq7B3GA4nWExd98lEx3Wnv/0/871jSOAgvJsQBQPZkXTxC0SwtAg18+Dswn9Wg9wF0jBsGIGw16rAgOH8mknHLyYdT7//7AXZIb6KN+94KBjRXxjnUoylhKKJfiAYRWqATCQMw3ZEG4ZnrTQGljmHE7iLucFigTfr3mTI4LB62ew+3j52m9VhIF47hA+ngVfapJJDHhhAJjYBB8BjWDMCoYRQjOPGBYcTTPd0d8ySAwNCGOiPuyNRHm8ZL9lImGqV4oAbPWiCTCQNwyMdQTBLoCAAQZn+ASriw5htk9iVeNh7vPrX9QeqHh4rGocydgGYhU+7WTIxsgzXRC0KfHmWBZejiwZyFy8QpSUC1Ab6RrweEq0n1AWodKvTiXyzcN0IswANg8UYBr/YYvSlX8WU3st/mjCKYAIYrLby1rk0czJQoAStjN8IvAWvafKAyDGs6DfHLTA9SDNmVeWGYJchKRGAo/6SvSvWkxsHoBIyqpFV6WDTg2ahGTgAIQTWMOSOIATCYHFZ2YF2iXhTMR28fKl0Sf2PnBLQrylpUhmr04EOuvjC6EFTcHAl9Bhye46a87s6GJBCFYR8cRx/xWWD69vwXMOllTspJSTMo/UlZmEwyqADjM1188wCoRRfyhoGbgNTGbdB46agEQ50g8HA7f3NVfrkh1dgnfFBuIgI/UPaUmLS7qjuDqEDo2+baBZgNYo3KOcxZJZ15z6QkLBPh3DwuaaI4P5miGRP0kV0RQXKxNQjR3G0W0FFHUA6aI5ZIICwKhdKyizrLikR0Kdz/LMIBRETIAQkf8bzfw4y22Dg4R4Cw8A0fHGtAkEHDTILUCJYjBXNBYRyWZpsiWBQmkwn1MHtTYICsQLaycKLTgaZiTfcEWGtDXBjr28aRAcXYFXPmtHVOSRCGa9LeH7zLENSB6jDUPLtFR8FRN2VJxMJplrY2OSkvHB9KqFcQzpoEg4wEGymbPkpx6TRU0yxmvMsw4DBQQgDcV/xcHgj+v1yF6EyhgVmPgnlet0glYiRkFjRv/SDMo0TmoXprz9Z2SgYxEjrxpJNyh75yIcKQE80UJliZGraKJH53NtNpgOCO1cM+ymGk7SFWh3hgKgaM45a35GFc6FlQlCLmRgH7h4yHzn6/TYCds9RlD4gJSKIbloNpwMYWNwwiRklIMgmSAUYIOoIdVAqtIjmnUg6y2BlKYomkTtPVPwz9Pt9jCSJJzUcoJ/+iaiGeSSEayPpAKacdowZVClN0gzRVZp3A14dIfoH4rl44kWpAIYomhRbhr95in7Q72cUAgKBg+j/bVL1kSQMIsVycdFIINzAB3WnXPcvx8FYVEyKoBbHdYVV4y4vzxBbhl2e7C76/bayWIDcX9BHm3hpyYiplCZhkKVYGhFIYP0rlRy0q15HSPFrctOitC/xj5uEZfjKs/MEAUEb5GeEJEYwekEJTPJXocogmmoVSFn9zuih7LYWfj0pC4PDKjg6pb1j7hf1sYGwIhVESNfnXg1zAeGYGwhpzUPYweqxgD7syLGx9421CikQEv+RcbQzQ4tcf2FMwuCwMbw4/m4fyXqH1PKMMy1DSjuR9zEy0BblXBpomxcIYxjM/qJh8EJNjI3DGRcXTUYC9B/hk8pqbOEW9xGFhKsdwZ1xz0SqQxLC4bMK8BlQSUqcbtLtXNuwSLGYw31EMcMjsfg0rpI1qITX7U3TYcD4j/D9zIgocerLn4iXxhMUjZEiYZHlM/zjBhGGqkC4Tzv58gSUntLNRcnAmyR7GS6232jrXvtgIHUbMlYTLKTO1oY3eF2HctEQA8Hl+I5kEOFW0R4jIOzyRBZTOkC1yMZ/f/+uHpGZax8MGLdhoOo/clQewMEnf/7+C2SdRC0u5NWK6O/jT3/MOXcEWb4XdSBgmbPLrIK7v2oHDKT5R6n/yF7gmJ+Xhyfi5xQIccCK2+xuCAnByyUVgRZeqW42xwXSelZd7PXDsC0wgGknRi1K3YZXbhVPxKePa2lleWp+YsLhiUXguKI4A+k7PigTAsyu6tlV9ri+YPS5lsMgqoJoDQxkatHMlXLkTQTgFpanQEj4/0kWRKAJIaWaoTIjwMKbTCDAUJghR8FDXAtzcdEiIDwUUIsMo6MG5DfJ4/uCIaUYCIZcKi4Ivvmbd4MuGUbI8B4BDEaPlhQFklqY5qvFr1xq0eULhNFHLxMIkBF44y9mIkIY5SUErBX3mVrxaSQoM2EKpYctRAFRu6HTb40kyEwHEXhNPhmmIYIZJyoFKmIQ78R5x0NuQhhCrSjrTSACohuoDq5xv0RaLN9CFBBvzWMOkfDKJ4RDTx0IkdfASTphZwXTxQBGlxXTDJDt1tLWeHLmCtk2ExahXl1dobsfthQF0I7Gzt1IqSTB4CuEDIdry8QROEOrsDJBfzkuRgh07pGbhA6rTAAMDoTrC2sehsMWgyBDJEhsg8mzDC8ZjvcHjCMY/Dg1/jex2SAVgjIhUB7RgFNDRVaZjA6kOIiqzobD1kOAFgkHJkNnqI2fM9UIgaiHcwVaESSgTW4M4VY924skwl8WCCEIqIQ5BYPb4cUPuH6eSNgwlvRZbf5cUl2sZwVkYSlx9Oaz4QgcxcL/BBlDyEMIJNeN7sbRubsbsEMZBysyHtrQItRK8k5sukFY006+yqaSVEx7UaH3uBASAnYd7whCuM9BCERBZnz58WFL6OihKw8/jQ5YB5KwDeKRlC5HI2QEZYl0RnzjrpgQXBJlXm5CoGv1xeeTHrpyP/xxdJBhGy5/aSplKUphWTKeZHBTmHhoxYz0SF6KEEICcG8kG8f5smUKDK4ufh4dEBTK2obAOGgKlJDEEZTCCGOgFfcilwFDJPloK29QEfS7eY86O4Mz/Mrh843Vtz8WBtA2/GVzM6IcJKkSlAKLBvAeY61IL9JF4y8xzMgPzkEIYPNAz/aMzeNfMIft7+Pm48jLJ/xgGMBH9sYZKCGSCcQtpqFFaSnHDkiQqCoRlaHRpYr4s5PWArsAISB4IzisLcvzvixrbbe+zqSk3xA3DVPpWlGBCpGBTPP4m6wwQpLMmHPiiiabbIqyjjoKLj/kIoSHXq7TrjqTkrZhx5s/NtMU+hpQ8886AwjAaTBEEzbH5Keu0OzKHPcEtlyroOA+Ti1f/OyDYrFrXge4OK7kXnKGXIkK1ZIJv9g9oJwGrBQXVBXpV4FNeQG4b3OgYNjapGKxfEOcDmBqeYTli1MOEkSlqzCwGEWqSKcBBa+w55goj03+4HJ8rh4USOH24WrYkQGrsA/c8SBTgRcpGIS5WWcBgY1FpIYB8MSA6GnJE0tKfqngPzf31xImeGh1hUERIAyvqIG1VPLeFKSkicsEo3F37+xzB6kfl8k0YNIxqeT2toBSTH+r+Jqvbh7u4QjO6+vb+4d0JOOwQwGfEpI1sDqdtV3wSYGYdgELfTZfklQDAwRUqIgVaGIYXoooRYgFOHCPTCkPOxBIKKH3mbqCVCGHOetzF98QL/YdrPWhQvgSIKAAJrY1aUrTLr1TmS0o+CklBqXizIG6HwnWnpjPBm/fEjGD2SSS/J4ACFMKCGmOAXyJ2pN2XzoLxDJCd/iPCRnRzUi4H22x77PLt7Sj84/TCqtTgUYGCL8YofhLGLTuru/8LmSv9ybZj2b+ni0NDZ7+63L2jzeb+C1DIzhU3TzIX9xRaaybiw4H32Acep6eMLw+4JV8mu5vfzabB2fmL6auYCjtNsNrSB0E7DiadO7iq2gIoTtVxBfDEONqhAZN5hk4c4elopUVR4iVIdowquFK1qSREuUYOsNwZpkAkIDqu/JAAbiPIPv0cM2PLEa2AYWqNGNMBil1/BmdYTg7EkDGzsOkoI8U1nURs4m3cOvhNT/XEFICSmjBmYsDMtdUgcfQndxIuOnxSCG44rGcFoh2IRhivkHZH5iGTopUkQMCRzam/+S6VCipO2V9BxCbtx4hFIRYMAkUEBPro+XYt2xhCtVgC3GQqk30KVcdIXwLEob3sEsNVgDr+mA0ptCQTFwWdAvFTSL3bKkamc/UXk0GB9tOIHw3Egjz0DPIYvD4zkd3wRmNmEaR0eENhpUfImClwuMI8ppEKSTwG9MAwuitEwg1EApkTceW0xfA7xNZGRAGyfh0BAQLFL2Ygs0f6fhjFJO87SoF6kMKPW+jD7LPCzubOP403hqVpcbLZKMx2L1OKNaFFO7JLqXtpxQLzDjSgA4STsex6xXd8kZXQ6c4wG3Vw84wfDspXFGlPevtZjVgO0WicaRMt9ADLv7CpbGwG3qa7l9dMDhA0xQ7h6EepHBxw1R5rb23zeqA40aH1eaNM46UnFhPtk2kVXCvTFkLi4POYaiLfeBXf9prywuOqFGEbiFF/iOxFCK0DUShW+o3djioo30YPlznaxOJYTAkP4anFqcauZY7qZAbPQLz0uGgRvZheHNbslsIiwRiXpdD7PZK12R8djioLRTU+gOS1kGe24/G/L7BoZ4uZ/gO9hu7QFJDsXCdTqLkmhgYUuJMtRpzcdABoZZQuLgS9opcZ3QLUZEEZiYyGuz+0eGg/lhIekWYVpEHhXmkqDA27qgbCdbmGB0OGoSF+E9XV3nmkSIH0howY5pw/bvX4aBJYOC1imT7oVeE33DHqXk+WNBf6HDQHDjkaRVBwUWNXLOM1yc92p3f+CNCUzdETfuINgu7XhdP/CEccg0XMMYDsnErDKh17fJMLaeEB6LfaQDpALRAXHc4aD0lpPVOMSXcYTrY8Ofid6fllLAiV6/DFoj7Dgc/SCVYRFkLnMLWuY0/y3F4A6vEDWptTvecfgInXBNz9qitetedWfgxlJCGF+0Du1Wvkwc/CQlpZbTFzODrzMKP1Iu9L3Kr3u2ww8HPNA69NV373j2dnxlMYDvjuvOzkMBUwj50KvFnywS0MaWjgx8uEzp18MORcCPojOvOD0VCtEerex4/3XWIVu52OPjpSLi+6azCd53/AyqgJ9wet+CuAAAAAElFTkSuQmCC" alt="Philadelphia Eagles">
+      <span class="x">&#215;</span>
+      <span class="tm"><svg role="img" aria-label="Ticketmaster" id="Layer_1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2496.3 335"><style>.tm-fill{fill:#009cde}</style><path class="tm-fill" d="M1535.6 295h-.9c-20.2 25.5-40.4 40-72.9 40-40.9 0-69.8-22.8-69.8-64.6 0-74.7 83.5-80.4 138.8-80.4h20.6c1.8-6.1 1.8-12.7 1.8-19.3 0-22.8-24.6-29.4-45.3-29.4-25.9 0-51 6.6-74.3 17.6l8.4-47c25.1-8.8 50.5-13.6 76.9-13.6 45.2 0 87.9 16.7 87.9 69.8 0 30.3-22.4 119.1-27.7 161.7h-49.6l6.1-34.8m-57.6-3c43.9 0 57.5-30.3 66.8-66.8h-20.7c-28.6 0-76 4.8-76 43.1 0 15.8 15 23.7 29.9 23.7zM9.2 103.2h42.6L62 56.7 125.2 36l-14.5 67.2h52.7l-9.2 43.1h-52.7L80 245.2c-1.8 7.2-2.7 14.6-2.7 22 0 13.6 9.2 22 22.4 22 10.6 0 21.1-2.2 28.6-5.3l-10.1 45.7c-10.1 2.2-21.5 5.3-31.6 5.3-40 0-68.1-15.8-68.1-59.3 0-17.6 3.5-34.7 7.5-52.8l16.7-76.4H0l9.2-43.2zm178.5 0h58.9l-48.3 226.3h-58.9l48.3-226.3m21.5-97.5h58.9L255.8 62h-58.9l12.3-56.3zm215.1 149.4c-11.5-7.5-26.8-11.4-43.1-11.4-47 0-73.4 43.9-73.4 86.6 0 29.4 9.7 58.9 50.1 58.9 14.5 0 32.5-4 47.9-11.4l-6.6 46.6c-18 8.8-37.4 10.5-56.7 10.5-58.4 0-96.2-39.1-96.2-97.5 0-79.1 52.3-139.3 133.6-139.3 22 0 43.1 4 58.9 8.8l-14.5 48.2zM488.9 0h58.9l-39.1 185.4h.9l82.2-82.2h76.4L559.6 206.5l68.1 123h-66.3l-58.4-120h-.9l-25.5 120h-57.5L488.9 0zm391.5 103.2H923l10.1-46.5L996.4 36l-14.5 67.2h52.7l-9.2 43.1h-52.7l-21.5 98.9c-1.7 7.2-2.6 14.6-2.6 22 0 13.6 9.2 22 22.4 22 10.6 0 21.1-2.2 28.6-5.3l-10.1 45.7c-10.1 2.2-21.5 5.3-31.6 5.3-40 0-68.1-15.8-68.1-59.3 0-17.6 3.5-34.7 7.5-52.8l16.7-76.4h-42.6l9-43.2z"/><path class="tm-fill" d="M860.7 184.1c0-57.6-36.9-86.1-92.7-86.1-74.3 0-128.7 67.7-128.7 138 0 67.2 43.9 98.9 109 98.9 24.2 0 49.2-5.7 72-12.7l7.5-46.6c-22 10.1-45.3 16.2-69.4 16.2-37.7 0-59.7-13.4-62.5-49-.1-2.1-.3-4.1-.3-6.2v-2c.3-15.4 3.6-30.7 9.6-44.9 11.3-28.8 27.3-48.7 62-48.7 24.6 0 37.4 13.6 37.4 37.8 0 5.3-.5 10.1-1.3 15.4h-80.6c-5.2 17.8-6.1 29.7-6.3 40.4H855c3.5-16.7 5.7-33.4 5.7-50.5zm199.4-55.8c1.7-8.8 3.5-18 4.8-25.1h54.9l-5.3 30.3h.9c15.8-23.3 41.7-35.6 69.4-35.6 26.8 0 54.5 15.8 57.6 43h.9c15-29.4 47.9-43 79.5-43 33.8 0 62.9 27.7 62.9 62 0 20.2-5.3 43.1-10.1 61.5l-23.7 108.1H1293l23.7-110.3c3-13.6 7.4-34.7 7.4-48.3 0-16.7-12.7-27.2-27.7-27.2-40.9 0-51 47.5-58.4 78.2l-23.3 107.7h-58.9l23.7-110.3c3.1-13.6 7.5-34.7 7.5-48.3 0-16.7-12.7-27.2-27.7-27.2-40 0-51 47.9-58.4 78.2l-23.3 107.7h-58.9l41.4-201.4zm721.5 21c-6.3-3.4-22.6-8.3-39.3-8.3-17.6 0-39.5 4.9-39.5 22.8 0 28.6 76.4 39.1 76.4 94.5 0 58.9-51.4 76.4-102 76.4-23.7 0-47.4-3.5-69-13.6l12.7-47c16.7 9.2 33.4 17.6 56.2 17.6 19.8 0 40.4-6.6 40.4-25 0-36.5-76.4-40-76.4-96.7 0-53.2 51.4-72.1 98-72.1 21.5 0 43.5 4 55.1 7l-12.6 44.4zm37.6-46.1h42.6l10.1-46.5 63.3-20.7-14.5 67.2h52.7l-9.3 43.1h-52.7l-21.5 98.9c-1.8 7.2-2.6 14.6-2.7 22 0 13.6 9.2 22 22.4 22 10.6 0 21.1-2.2 28.5-5.3l-10.1 45.7c-10.1 2.2-21.5 5.3-31.6 5.3-40 0-68.1-15.8-68.1-59.3 0-17.6 3.5-34.7 7.5-52.8l16.7-76.4H1810l9.2-43.2zm399.2 30.4c1.8-9.7 3.5-19.8 5.3-30.3h56.2l-7.9 42.6h.9c10.6-24.6 39.6-47.9 66.8-47.9 7.5 0 15.4.4 22.4 2.2l-12.3 57.6c-6.6-2.2-14.9-3.5-22.4-3.5-41.8 0-62 37.4-69.4 73.8l-21.1 101.5H2178l40.4-196zm-40.8 50.5c0-57.6-36.9-86.1-92.7-86.1-74.3 0-128.8 67.7-128.8 138 0 67.2 43.9 98.9 109 98.9 24.1 0 49.2-5.7 72.1-12.7l7.5-46.6c-22 10.1-45.2 16.2-69.4 16.2-37.7 0-59.7-13.4-62.5-49-.1-2.1-.3-4.1-.3-6.2 0-.4.1-.8.1-1.3v-.7h.1c.2-15.5 3.6-30.8 9.6-44.9 11.3-28.8 27.3-48.7 62-48.7 24.6 0 37.4 13.6 37.4 37.8 0 5.3-.5 10.1-1.3 15.4h-80.6c-5.2 17.8-6.1 29.7-6.3 40.4h138.7c3.2-16.7 5.4-33.4 5.4-50.5zM2445.4 89.7c28 0 50.9 22.8 50.9 50.9 0 28-22.9 50.9-50.9 50.9s-50.9-22.8-50.9-50.9c0-28 22.9-50.9 50.9-50.9zm.1 94.2c23.4 0 41-18.9 41-43.3s-17.7-43.3-41-43.3c-23.7 0-41.3 18.9-41.3 43.3s17.7 43.3 41.3 43.3zm-19.5-73.2h22.8c13.7 0 20.4 5.5 20.4 16.8 0 9.6-6 16.5-15.4 16.5l17 26.4h-10.3l-16.7-26.4h-8.2v26.4h-9.7v-59.7zm9.7 25.7h11.5c7.5 0 12.3-1.5 12.3-9.3 0-6.8-6.1-8.8-12.3-8.8h-11.5v18.1z"/></svg></span>
+    </div>
+    <div class="kicker">Enter to win</div>
+    <div class="amount">$300</div>
+    <div class="desc">toward any Ticketmaster purchase</div>
+    <div class="when"><?= eventDateShort ?><br>Winner drawn at <b>6:15 PM</b> &middot; Announced at <b>6:30 PM</b></div>
+    <!-- The mechanic stated up front. Referring is a multiplier, not a gate: an
+         entrant who reads only the hero should still know they are in. -->
+    <div class="multi"><b>1 entry</b> just for entering<br>
+      <b>+5 entries</b> for every friend who confirms</div>
+  </div>
+
+  <!-- Entries not open yet -->
+  <div class="panel" id="beforePanel">
+    <h2>Goes live in</h2>
+    <div class="count" id="countBoxes">
+      <div class="unit"><div class="n" id="cD">0</div><div class="l">Days</div></div>
+      <div class="unit"><div class="n" id="cH">0</div><div class="l">Hours</div></div>
+      <div class="unit"><div class="n" id="cM">0</div><div class="l">Mins</div></div>
+      <div class="unit"><div class="n" id="cS">0</div><div class="l">Secs</div></div>
+    </div>
+    <div class="soon" id="countSoon" style="display:none">Opening now&hellip;</div>
+    <p>Entries open when the party starts &mdash; <b><?= openTime ?>, <?= eventDateShort ?></b>.</p>
+    <p>Come find us at the TSG table!</p>
+  </div>
+
+  <!-- Entries closed / drawing done -->
+  <div class="panel" id="closedPanel">
+    <h2>Entries are closed</h2>
+    <p>TSG Block Party &mdash; <b><?= eventDateShort ?></b></p>
+    <p>The drawing is complete.</p>
+    <div class="big">Winner announced at 6:30 PM</div>
+    <p style="margin-top:14px">Thanks for coming out &mdash; see you next year.</p>
+  </div>
+
+  <!-- Step 2: confirm the emailed code -->
+  <div class="panel" id="codePanel">
+    <h2>Check your email</h2>
+    <p class="sent">We sent a 6-digit code to<br><span class="addr" id="codeAddr"></span></p>
+    <input type="text" id="codeInput" inputmode="numeric" autocomplete="one-time-code"
+           maxlength="6" placeholder="------" aria-label="6-digit code">
+    <div id="codeErr" role="alert"></div>
+    <button type="button" id="codeBtn">Confirm &amp; Enter</button>
+    <div class="hint">It can take a few seconds. Check spam if you don't see it.</div>
+    <button type="button" class="linkish" id="startOverBtn">Wrong email? Start over</button>
+  </div>
+
+  <!-- Step 3: who are you referring -->
+  <div class="panel" id="referPanel">
+    <h2>You&rsquo;re in. Want 5 more entries?</h2>
+    <p class="sent">Thanks <span class="addr" id="entrantFirst"></span> &mdash; your email is verified
+      and <b>you are entered</b>. Now multiply your odds: tell us about someone you know who is
+      thinking of buying or selling in the next year. <b>When they confirm, you get 5 more
+      entries.</b> Refer as many different people as you like.</p>
+
+    <div class="field">
+      <label for="refName">Their full name <span class="req">*</span></label>
+      <input type="text" id="refName" autocapitalize="words">
+      <div class="errmsg" id="refNameErr"></div>
+    </div>
+    <div class="field">
+      <label for="refPhone">Their phone <span class="req">*</span></label>
+      <input type="tel" id="refPhone" inputmode="tel" placeholder="(215) 555-8123">
+      <div class="errmsg" id="refPhoneErr"></div>
+    </div>
+    <div class="field">
+      <label for="refEmail">Their email <span class="req">*</span></label>
+      <input type="email" id="refEmail" inputmode="email" autocapitalize="off"
+             placeholder="them@email.com">
+      <div class="errmsg" id="refEmailErr"></div>
+    </div>
+    <div class="field">
+      <label>Are they looking to buy or sell? <span class="req">*</span></label>
+      <div class="roles">
+        <label class="radio"><input type="radio" name="refRole" value="Buyer"><span>Buy</span></label>
+        <label class="radio"><input type="radio" name="refRole" value="Seller"><span>Sell</span></label>
+      </div>
+      <div class="errmsg" id="refRoleErr"></div>
+    </div>
+    <div class="field">
+      <label for="refTimeframe">When are they thinking of moving?</label>
+      <select id="refTimeframe"><option value="">Select&hellip;</option></select>
+    </div>
+
+    <div class="hint" style="text-align:left;margin:0 0 14px">
+      We&rsquo;ll email them to confirm their details and ask their permission &mdash; and we&rsquo;ll
+      copy you on it. <b>Confirming enters them in the drawing too</b>, so it is worth their
+      twenty seconds as well as yours. Please only refer someone who would be glad to hear
+      from us.
+    </div>
+
+    <div id="referErr" role="alert"></div>
+    <button type="button" id="referBtn">Continue</button>
+    <button type="button" class="linkish" id="doneBtn">No thanks &mdash; I&rsquo;m done</button>
+    <button type="button" class="linkish" id="startOverBtn2">Start over</button>
+  </div>
+
+  <!-- Step 4: send the confirmation email -->
+  <div class="panel" id="invitePanel">
+    <h2>One last step</h2>
+    <p class="sent">We&rsquo;re ready to email <span class="addr" id="inviteName"></span>.
+      They&rsquo;ll be asked to confirm their details and give permission for us to contact them.
+      <b>You get 5 more entries the moment they confirm</b> &mdash; and confirming enters them
+      as well, with one entry of their own. You&rsquo;ll be copied on the email.</p>
+    <div id="inviteErr" role="alert"></div>
+    <button type="button" id="inviteBtn">Send it &mdash; give me 5 more entries</button>
+    <div class="hint">Nothing is sent until you tap the button.</div>
+  </div>
+
+  <!-- Success -->
+  <div class="panel" id="successPanel">
+    <h2 id="successTitle">You&rsquo;re in the running</h2>
+    <p id="successMsg">Good luck.</p>
+    <div class="big">Winner announced at 6:30 PM</div>
+    <p style="margin-top:6px"><?= eventDateShort ?>, at the Block Party</p>
+    <p style="margin-top:14px">You do <b>not</b> need to be there to win &mdash; if you&rsquo;re not
+      with us at 6:30, we&rsquo;ll call you.</p>
+  </div>
+
+  <div id="formWrap">
+    <form id="raffleForm" novalidate>
+      <input type="text" id="website" name="website" autocomplete="off" tabindex="-1" aria-hidden="true">
+
+      <fieldset>
+        <legend>Your Entry</legend>
+        <div class="field">
+          <label for="fullName">Full Name <span class="req">*</span></label>
+          <input type="text" id="fullName" autocomplete="name" autocapitalize="words">
+          <div class="errmsg" id="nameErr"></div>
+        </div>
+        <div class="field">
+          <label for="phone">Phone <span class="req">*</span></label>
+          <input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="(215) 555-8123">
+          <div class="errmsg" id="phoneErr"></div>
+        </div>
+        <div class="field">
+          <label for="email">Email <span class="req">*</span></label>
+          <input type="email" id="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@email.com">
+          <div class="errmsg" id="emailErr"></div>
+        </div>
+      </fieldset>
+
+      <div class="consent">
+        <div class="consent-row">
+          <input type="checkbox" id="consent">
+          <label for="consent">
+            <b>Required to enter.</b> By checking this box and submitting this entry, I confirm I am
+            at least 18 years old and a legal U.S. resident, and I have read and agree to the
+            Official Rules below. I give my express written consent for The Stawasz Group to contact
+            me at the phone number and email address I provided &mdash; including by autodialed or
+            pre-recorded calls and text messages &mdash; about this drawing and about real estate
+            services. Message and data rates may apply; message frequency varies. Reply STOP to opt
+            out at any time, or HELP for help. I understand this consent is required to enter this
+            drawing and is not a condition of purchasing any goods or services.
+          </label>
+        </div>
+        <div class="errmsg" id="consentErr"></div>
+
+        <details>
+          <summary>Official Rules &mdash; read before entering</summary>
+          <div class="rules">
+            <h4>1. No purchase necessary</h4>
+            <p>NO PURCHASE OR PAYMENT OF ANY KIND IS NECESSARY TO ENTER OR WIN. A purchase or payment
+               will not improve your chances of winning. Void where prohibited by law.</p>
+
+            <h4>2. Sponsor</h4>
+            <p>The Stawasz Group, 728 S Broad St, Philadelphia, PA 19146 &mdash; a real estate team at
+               Keller Williams Empower (the &ldquo;Sponsor&rdquo;).</p>
+
+            <h4>3. Eligibility</h4>
+            <p>Open to legal residents of the United States who are 18 years of age or older at the
+               time of entry. Attendance at the TSG Block Party is not required to enter or to win.
+               Employees,
+               agents and independent contractors of Sponsor and of Keller Williams Empower, and
+               their immediate family and household members, are not eligible to win.</p>
+
+            <h4>4. Entry period</h4>
+            <p>Entries are accepted from the time this form is published until <b>6:15 PM Eastern
+               Time on Saturday, September 19, 2026</b>, when the winner is drawn. Your entry is
+               complete as soon as you verify your email address. Bonus entries are added only when
+               a referred person confirms (see section 5); a confirmation received after 6:15 PM
+               does not add entries to the drawing.</p>
+
+            <h4>5. How to enter &mdash; one entry, plus five per confirmed referral</h4>
+            <p>To enter, submit this form with your full name, phone number and email address, accept
+               these Official Rules, and verify your email address using the code we send you. That
+               gives you one (1) entry in the drawing. Referring someone is optional and is not
+               required to enter or to win.</p>
+            <p>To improve your chances, you may refer a friend or family member who is considering
+               buying or selling a home within the next year, by giving their name, phone number and
+               email address. We will email that person and ask them to confirm their details and
+               give their own consent to be contacted. <b>WHEN THEY CONFIRM, YOU RECEIVE FIVE (5)
+               ADDITIONAL ENTRIES.</b> If they decline, or do not respond before 6:15 PM on
+               September 19, 2026, you receive no additional entries &mdash; your own entry still
+               stands.</p>
+            <p><b>LIMIT ONE (1) ENTRY PER PERSON, PLUS FIVE (5) BONUS ENTRIES PER CONFIRMED
+               REFERRAL.</b> A given person can be referred only once: if two people refer the same
+               person, the bonus entries go to whichever referral that person confirms first, and
+               the other earns nothing. A person who is already a contact of Sponsor cannot be
+               referred and does not earn bonus entries. There is no limit on how many different
+               people you may refer, but each must be a different person, and you may not refer
+               yourself.</p>
+            <p>Duplicate or conflicting referrals are matched by email address and by phone number.
+               Automated, robotic, scripted or bulk entries are void.</p>
+
+            <h4>6. Prize</h4>
+            <p>One (1) prize: a $300 Ticketmaster gift card, redeemable toward any Ticketmaster
+               purchase, subject to Ticketmaster&rsquo;s own terms and conditions. Approximate Retail
+               Value (ARV): $300.00. Total ARV of all prizes: $300.00. No cash or other substitution,
+               except by Sponsor, who may substitute a prize of equal or greater value. The prize is
+               awarded &ldquo;as is&rdquo; with no warranty of any kind. All federal, state and local
+               taxes on the prize are the sole responsibility of the winner.</p>
+
+            <h4>7. Odds</h4>
+            <p>Odds of winning depend on the total number of entries in the drawing, including bonus
+               entries earned from confirmed referrals.</p>
+
+            <h4>8. Winner selection, notification and claim</h4>
+            <p>One (1) potential winner is selected by random drawing from all eligible entries at
+               approximately 6:15 PM ET on September 19, 2026, and announced at approximately 6:30 PM
+               ET at the event. The winner need not be present to win. If the winner is not present at
+               the announcement, Sponsor will attempt to notify the winner using the contact
+               information provided. If the winner cannot be reached, declines the prize, is found
+               ineligible, or fails to claim the prize within fourteen (14) days of the drawing, the
+               prize may be forfeited and an alternate winner drawn at random from the remaining
+               eligible entries.</p>
+
+            <h4>9. Publicity</h4>
+            <p>Except where prohibited, acceptance of the prize constitutes the winner&rsquo;s consent
+               to Sponsor&rsquo;s use of the winner&rsquo;s first name, last initial and likeness for
+               promotional purposes, without further compensation.</p>
+
+            <h4>10. Privacy and consent to contact</h4>
+            <p>The name, phone number and email address you provide are stored in Sponsor&rsquo;s
+               customer relationship management system and used to administer this drawing and to
+               contact you as described in the consent above. Sponsor does not sell your personal
+               information. You may ask us to delete your information or stop contacting you at any
+               time by emailing <a href="mailto:info@tsg.homes">info@tsg.homes</a>, by replying STOP to
+               a text message, or by using the unsubscribe link in any email.</p>
+
+            <h4>11. Release and limitation of liability</h4>
+            <p>By entering, you release Sponsor, Keller Williams Empower, and their respective
+               officers, directors, employees and agents from any liability for any loss, harm,
+               damage, injury, cost or expense arising out of participation in this promotion or the
+               acceptance, use or misuse of the prize.</p>
+
+            <h4>12. No affiliation with Ticketmaster, the Philadelphia Eagles or the NFL</h4>
+            <p>This promotion is in no way sponsored, endorsed, administered by, or associated with
+               Ticketmaster L.L.C., Live Nation Entertainment, Inc., the Philadelphia Eagles, the
+               National Football League, or any of their respective affiliates. All trademarks are the
+               property of their respective owners.</p>
+
+            <h4>13. Governing law</h4>
+            <p>This promotion is governed by the laws of the Commonwealth of Pennsylvania, without
+               regard to its conflict of law principles.</p>
+
+            <h4>14. Winner list</h4>
+            <p>For the name of the winner, email <a href="mailto:info@tsg.homes">info@tsg.homes</a>
+               within 30 days of the drawing.</p>
+          </div>
+        </details>
+
+        <div class="disclaimer">
+          This promotion is not sponsored, endorsed by, or associated with Ticketmaster,
+          Live Nation, the Philadelphia Eagles or the NFL. All trademarks are the property of their
+          respective owners.
+        </div>
+      </div>
+
+      <button type="submit" id="submitBtn">Enter the Drawing</button>
+      <div id="submitErr" role="alert"></div>
+    </form>
+  </div>
+</main>
+
+<footer>
+  <div class="logos">
+    <img class="tsg" src="data:image/png;base64,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" alt="The Stawasz Group">
+    <span class="rule"></span>
+    <img class="kw" src="data:image/png;base64,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" alt="Keller Williams Empower">
+  </div>
+  <div class="contact">
+    728 S Broad St, Philadelphia, PA 19146<br>
+    <a href="tel:+12157606291">(215) 760-6291</a> &middot;
+    <a href="mailto:info@tsg.homes">info@tsg.homes</a><br>
+    <a href="https://tsg.homes">tsg.homes</a>
+  </div>
+  <div class="fine">
+    &copy; 2026 The Stawasz Group. Each Keller Williams office is independently owned and operated.
+  </div>
+</footer>
+
+<script>
+(function(){
+  var API        = <?!= safeJsonForScript_(baseUrl) ?>;
+  var TOKEN      = <?!= safeJsonForScript_(submitToken) ?>;
+  var KIOSK      = <?!= safeJsonForScript_(kiosk) ?> === '1';
+  var QA_TOKEN   = <?!= safeJsonForScript_(qaTestToken) ?>;   // '' on a normal load
+  var IS_TEST    = <?!= safeJsonForScript_(isTest) ?> === '1';
+  var OPEN_MS    = Number(<?!= safeJsonForScript_(openAtMs) ?>);
+  var CLOSE_MS   = Number(<?!= safeJsonForScript_(closeAtMs) ?>);
+  var SERVER_MS  = Number(<?!= safeJsonForScript_(serverNowMs) ?>);
+
+  // The page must go dead at 6:15 even if it has been sitting open on someone's
+  // phone since 3pm. The client clock can be wrong by minutes, so everything is
+  // measured against the SERVER's clock: we take the offset once at load and
+  // apply it from then on. The server re-checks the window on submit regardless,
+  // so this is purely so nobody fills in a form that is already dead.
+  var skew = SERVER_MS - Date.now();
+  function serverNow(){ return Date.now() + skew; }
+
+  var formWrap     = document.getElementById('formWrap');
+  var beforePanel  = document.getElementById('beforePanel');
+  var closedPanel  = document.getElementById('closedPanel');
+  var successPanel = document.getElementById('successPanel');
+  var form         = document.getElementById('raffleForm');
+  var btn          = document.getElementById('submitBtn');
+
+  var codePanel = document.getElementById('codePanel');
+  var referPanel  = document.getElementById('referPanel');
+  var invitePanel = document.getElementById('invitePanel');
+  var referBtn    = document.getElementById('referBtn');
+  var inviteBtn   = document.getElementById('inviteBtn');
+  var panels = [beforePanel, closedPanel, successPanel, codePanel, referPanel, invitePanel];
+  // Server-issued id for this pending entry. Nothing is written until the
+  // emailed code comes back against it.
+  var pendingVid = null;
+  // Server-issued id for a staged referral, held between the referral step and
+  // the send-the-email step.
+  var pendingToken = null;
+  // Once someone has entered, their confirmation stays put. The ticker below
+  // must not yank it away mid-read just because the clock moved on.
+  var holdingSuccess = false;
+
+  function show(el){
+    formWrap.classList.add('hidden');
+    panels.forEach(function(p){ p.style.display = 'none'; });
+    if (el) el.style.display = 'block';
+  }
+  function showForm(){
+    formWrap.classList.remove('hidden');
+    panels.forEach(function(p){ p.style.display = 'none'; });
+  }
+
+  function phase(){
+    // Test mode is always 'open'. Without this the rehearsal page would just
+    // show the countdown and there would be nothing to submit -- the server
+    // relaxes the same check, and only for a verified test token.
+    if (IS_TEST) return 'open';
+    var t = serverNow();
+    if (t < OPEN_MS)  return 'before';
+    if (t >= CLOSE_MS) return 'closed';
+    return 'open';
+  }
+
+  if (IS_TEST) {
+    document.body.classList.add('qa-test');
+    document.getElementById('qaTestBanner').style.display = 'block';
+  }
+
+  var cD = document.getElementById('cD'), cH = document.getElementById('cH'),
+      cM = document.getElementById('cM'), cS = document.getElementById('cS'),
+      countBoxes = document.getElementById('countBoxes'),
+      countSoon  = document.getElementById('countSoon');
+
+  function tickCountdown(){
+    var left = OPEN_MS - serverNow();
+    if (left <= 0) {
+      // The flip to the live form is handled by render(); this is just so the
+      // last second doesn't sit on screen reading "0".
+      countBoxes.style.display = 'none';
+      countSoon.style.display  = 'block';
+      return;
+    }
+    countBoxes.style.display = 'flex';
+    countSoon.style.display  = 'none';
+    var s = Math.floor(left / 1000);
+    cD.textContent = Math.floor(s / 86400);
+    cH.textContent = Math.floor(s % 86400 / 3600);
+    cM.textContent = Math.floor(s % 3600 / 60);
+    cS.textContent = s % 60;
+  }
+
+  var lastPhase = null;
+  function render(){
+    var p = phase();
+    if (p === 'before') tickCountdown();
+    // A held confirmation -- or a half-finished code step -- is only ever
+    // replaced by the 6:15 close, never by a phase change the entrant does not
+    // care about.
+    if ((holdingSuccess || pendingVid || pendingToken) && p !== 'closed') { lastPhase = p; return; }
+    if (p !== lastPhase || holdingSuccess) {
+      holdingSuccess = false;
+      pendingVid = null;
+      pendingToken = null;
+      if (p === 'before')      show(beforePanel);
+      else if (p === 'closed') show(closedPanel);
+      else                     showForm();
+      lastPhase = p;
+    }
+  }
+
+  if (CHAIN_VID) {
+    pendingVid = CHAIN_VID;
+    document.getElementById('entrantFirst').textContent = CHAIN_FIRST || '';
+    show(referPanel);
+    lastPhase = phase();
+  } else {
+    render();
+  }
+  // One second, so 3:00:00 opens and 6:15:00 closes on the second, with no
+  // reload either way.
+  setInterval(render, 1000);
+
+  // Live US phone formatting — this is a party, on a phone, one-handed.
+  var phoneEl = document.getElementById('phone');
+  phoneEl.addEventListener('input', function(){
+    var d = phoneEl.value.replace(/\D/g,'').slice(0,10);
+    phoneEl.value = d.length > 6 ? '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6)
+                  : d.length > 3 ? '(' + d.slice(0,3) + ') ' + d.slice(3)
+                  : d.length > 0 ? '(' + d : '';
+  });
+
+  function setErr(id, msg){ document.getElementById(id).textContent = msg || ''; }
+
+  function validate(v){
+    var ok = true;
+    setErr('nameErr'); setErr('phoneErr'); setErr('emailErr'); setErr('consentErr');
+    if (!v.fullName || v.fullName.indexOf(' ') === -1) {
+      setErr('nameErr','Enter your first and last name.'); ok = false;
+    }
+    if (v.phone.replace(/\D/g,'').length < 10) {
+      setErr('phoneErr','Enter a 10-digit phone number.'); ok = false;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(v.email)) {
+      setErr('emailErr','Enter a valid email address.'); ok = false;
+    }
+    if (v.consent !== 'Yes') {
+      setErr('consentErr','You must accept the Official Rules to enter.'); ok = false;
+    }
+    return ok;
+  }
+
+  var codeInput = document.getElementById('codeInput');
+  var codeBtn   = document.getElementById('codeBtn');
+  var codeAddr  = document.getElementById('codeAddr');
+  var codeErr   = document.getElementById('codeErr');
+
+  function post(payload){
+    return fetch(API, {
+      method: 'POST',
+      // text/plain keeps this a CORS "simple request" — Apps Script web apps
+      // do not answer preflight OPTIONS, so application/json would fail here.
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    }).then(function(r){ return r.json(); });
+  }
+
+
+  // The timeframe list comes from FUB, live, via getFubTimeframes() in Code.gs —
+  // the same source the Open House form uses, so there is no second hardcoded
+  // copy of FUB's labels to drift out of date. DEFAULT_TIMEFRAME is matched
+  // server-side against that same list, so a renamed bucket in FUB changes the
+  // preselection here with no code change.
+  // A chain entrant: someone who confirmed a referral and is now entering by
+  // referring in turn. They arrive with a server-minted session, so the page skips
+  // straight to the referral step -- they have already proved this inbox is theirs.
+  var CHAIN_VID   = <?!= chainVid ?>;
+  var CHAIN_FIRST = <?!= chainFirst ?>;
+
+  var TIMEFRAMES = <?!= timeframeList ?>;
+  var DEFAULT_TIMEFRAME = "<?!= defaultTimeframe ?>";
+  (function(){
+    var sel = document.getElementById('refTimeframe');
+    if (!sel) return;
+    TIMEFRAMES.forEach(function(t){
+      var o = document.createElement('option');
+      o.value = t.name; o.textContent = t.name;
+      if (t.name === DEFAULT_TIMEFRAME) o.selected = true;
+      sel.appendChild(o);
+    });
+  })();
+
+  function enteredOk(res){
+    document.getElementById('successTitle').textContent =
+      res.already ? 'You’re already in!' : 'You’re in the running';
+    document.getElementById('successMsg').textContent =
+      (res && res.message) || 'Good luck.';
+    holdingSuccess = true;
+    pendingVid = null;
+    pendingToken = null;
+    show(successPanel);
+    form.reset();
+    if (KIOSK) setTimeout(function(){
+      holdingSuccess = false; lastPhase = null; render();
+    }, 8000);
+  }
+
+  function refRole(){
+    var picked = document.querySelector('input[name="refRole"]:checked');
+    return picked ? picked.value : '';
+  }
+
+  // ---- Step 1: details -> emailed code ----
+  form.addEventListener('submit', function(ev){
+    ev.preventDefault();
+    document.getElementById('submitErr').textContent = '';
+
+    var payload = {
+      formType: 'raffle',
+      formToken: TOKEN,
+      qaTestToken: QA_TOKEN,
+      step: 'request',
+      website:  document.getElementById('website').value,
+      fullName: document.getElementById('fullName').value.replace(/\s+/g,' ').trim(),
+      phone:    phoneEl.value.trim(),
+      email:    document.getElementById('email').value.trim().toLowerCase(),
+      consent:  document.getElementById('consent').checked ? 'Yes' : 'No'
+    };
+    if (!validate(payload)) return;
+    if (phase() !== 'open') { lastPhase = null; render(); return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Sending code…';
+
+    post(payload).then(function(res){
+      btn.disabled = false;
+      btn.textContent = 'Enter the Drawing';
+      if (res && res.ok && res.needsCode) {
+        pendingVid = res.vid;
+        codeAddr.textContent = payload.email;
+        codeErr.textContent = '';
+        codeInput.value = '';
+        show(codePanel);
+        try { codeInput.focus(); } catch (e) {}
+      } else if (res && res.ok) {
+        enteredOk(res);                       // already entered
+      } else {
+        document.getElementById('submitErr').textContent =
+          (res && res.error) || 'Something went wrong. Grab someone from TSG.';
+      }
+    }).catch(function(){
+      btn.disabled = false;
+      btn.textContent = 'Enter the Drawing';
+      document.getElementById('submitErr').textContent =
+        'Could not reach us — check your signal and try again, or find someone from TSG.';
+    });
+  });
+
+  // ---- Step 2: confirm the code ----
+  codeInput.addEventListener('input', function(){
+    codeInput.value = codeInput.value.replace(/\D/g,'').slice(0,6);
+    codeErr.textContent = '';
+  });
+
+  function submitCode(){
+    var code = codeInput.value.replace(/\D/g,'');
+    if (code.length !== 6) { codeErr.textContent = 'Enter the 6-digit code from your email.'; return; }
+    codeBtn.disabled = true;
+    codeBtn.textContent = 'Checking…';
+    post({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'verify', vid: pendingVid, code: code
+    }).then(function(res){
+      codeBtn.disabled = false;
+      codeBtn.textContent = 'Confirm & Enter';
+      if (res && res.ok && res.verified) {
+        pendingVid = res.vid || pendingVid;
+        document.getElementById('entrantFirst').textContent = res.firstName || '';
+        document.getElementById('referErr').textContent = '';
+        show(referPanel);
+      } else if (res && res.ok) {
+        enteredOk(res);
+      } else {
+        codeErr.textContent = (res && res.error) || 'That did not work. Try again.';
+      }
+    }).catch(function(){
+      codeBtn.disabled = false;
+      codeBtn.textContent = 'Confirm & Enter';
+      codeErr.textContent = 'Could not reach us — check your signal and try again.';
+    });
+  }
+
+  codeBtn.addEventListener('click', submitCode);
+  codeInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') submitCode(); });
+
+  document.getElementById('startOverBtn').addEventListener('click', function(){
+    pendingVid = null;
+    pendingToken = null;
+    lastPhase = null;
+    render();
+  });
+  document.getElementById('startOverBtn2').addEventListener('click', function(){
+    pendingVid = null;
+    pendingToken = null;
+    lastPhase = null;
+    render();
+  });
+  // Declining to refer is not an error and needs no server round-trip: the entry
+  // was written when the code was verified. This only closes the panel.
+  document.getElementById('doneBtn').addEventListener('click', function(){
+    enteredOk({ ok: true, message: 'You are entered with 1 entry. Good luck!' });
+  });
+
+  // ---- Step 3: the referral ----
+  referBtn.addEventListener('click', function(){
+    ['refNameErr','refPhoneErr','refEmailErr','refRoleErr'].forEach(function(id){ setErr(id,''); });
+    document.getElementById('referErr').textContent = '';
+
+    var name  = document.getElementById('refName').value.replace(/\s+/g,' ').trim();
+    var phone = document.getElementById('refPhone').value.trim();
+    var email = document.getElementById('refEmail').value.trim().toLowerCase();
+    var role  = refRole();
+    var ok = true;
+    if (!name || name.indexOf(' ') === -1) { setErr('refNameErr','Enter their first and last name.'); ok = false; }
+    if (phone.replace(/\D/g,'').length < 10) { setErr('refPhoneErr','Enter a 10-digit phone number.'); ok = false; }
+    if (!/^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(email)) { setErr('refEmailErr','Enter a valid email address.'); ok = false; }
+    if (!role) { setErr('refRoleErr','Pick buy or sell.'); ok = false; }
+    if (!ok) return;
+
+    referBtn.disabled = true;
+    referBtn.textContent = 'Checking…';
+    post({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'referral', vid: pendingVid, consent: 'Yes',
+      referralName: name, referralPhone: phone, referralEmail: email,
+      referralRole: role,
+      referralTimeframe: document.getElementById('refTimeframe').value
+    }).then(function(res){
+      referBtn.disabled = false;
+      referBtn.textContent = 'Continue';
+      if (res && res.ok && res.staged) {
+        pendingToken = res.token;
+        document.getElementById('inviteName').textContent = res.referralEmail || res.referralName;
+        document.getElementById('inviteErr').textContent = '';
+        show(invitePanel);
+      } else {
+        document.getElementById('referErr').textContent =
+          (res && res.error) || 'That did not work. Try again.';
+      }
+    }).catch(function(){
+      referBtn.disabled = false;
+      referBtn.textContent = 'Continue';
+      document.getElementById('referErr').textContent =
+        'Could not reach us — check your signal and try again.';
+    });
+  });
+
+  // ---- Step 4: send the confirmation email ----
+  inviteBtn.addEventListener('click', function(){
+    document.getElementById('inviteErr').textContent = '';
+    inviteBtn.disabled = true;
+    inviteBtn.textContent = 'Sending…';
+    post({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'invite', vid: pendingVid, token: pendingToken
+    }).then(function(res){
+      inviteBtn.disabled = false;
+      inviteBtn.textContent = 'Send it — give me 5 more entries';
+      if (res && res.ok) enteredOk(res);
+      else document.getElementById('inviteErr').textContent =
+        (res && res.error) || 'That did not work. Try again.';
+    }).catch(function(){
+      inviteBtn.disabled = false;
+      inviteBtn.textContent = 'Send it — give me 5 more entries';
+      document.getElementById('inviteErr').textContent =
+        'Could not reach us — check your signal and try again.';
+    });
+  });
+
+})();
+</script>
+</body>
+</html>

