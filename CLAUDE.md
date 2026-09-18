@@ -755,11 +755,9 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   ae02dd5. GitHub reports the repository RENAMED to `tsg-homes/TSG-Task-Tracker` (old name
   redirects); the session's git remote and the CCR repo scope still use `tsg-homes/task-tracker`,
   and Settings > Team > Claude Code repo should say the new name if it is set.
-- MAIN IS ONE COMMIT AHEAD OF LIVE since c9e4b8e (backend 2026-09-18.7 / UI 2026-09-18.6, the
-  Settings-tabs commit below): `main` was pushed to it but the data file still stamps
-  `backendVersion` 2026-09-18.6 (@68). Deploying .7 restores "main = deployed"; until then read
-  `meta.backendVersion`, not `main`, for what the script accepts. The proxy refuses force-pushes,
-  so main cannot be moved back.
+- Backend 2026-09-18.7 / UI 2026-09-18.6 (c9e4b8e, the Settings-tabs commit below) is LIVE: the
+  data file stamped `backendVersion` 2026-09-18.7 at 04:10Z on 2026-09-18, and `main` is at the
+  same commit. `meta.backendVersion` remains the check for what the script accepts.
 - Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
   Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
   repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
