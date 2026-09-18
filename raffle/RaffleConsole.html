@@ -244,7 +244,7 @@ function failInfo_(err, res) {
   if (!err.kind) return { title: 'This page hit an error.', detail: String((err && err.message) || err) };
   if (err.kind === 'network') {
     return { title: 'No connection to the server.',
-             detail: 'fetch failed (' + err.detail + '). Check the signal and retry; nothing was changed.' };
+             detail: 'fetch failed (' + err.detail + '). Check the connection and retry; nothing was changed.' };
   }
   return { title: 'The server returned an error page instead of a result.',
            detail: err.detail + ' — retry in a moment. If it keeps failing, the admin link ' +

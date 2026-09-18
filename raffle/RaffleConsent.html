@@ -147,7 +147,7 @@ function lock(what) {
   var iv = setInterval(function () {
     var s = Math.round((Date.now() - t0) / 1000);
     document.getElementById('busySecs').textContent = s + ' s';
-    if (s >= 8) document.getElementById('busySlow').textContent = 'Still working. Do not reload; our server is slow, not your phone.';
+    if (s >= 8) document.getElementById('busySlow').textContent = 'Still working. Do not reload; our server is slow, not your connection.';
   }, 1000);
   return function () { clearInterval(iv); overlay.classList.remove('on'); };
 }
@@ -198,7 +198,7 @@ function post(payload, onDone, onFail) {
     report(err);
     onFail(err.kind === 'network'
       ? { title: 'We could not reach our server.',
-          detail: 'Your connection dropped when we tried (' + err.detail + '). Check your signal and retry. Nothing was recorded.' }
+          detail: 'Your connection dropped when we tried (' + err.detail + '). Check your internet connection and retry. Nothing was recorded.' }
       : { title: 'Our server returned an error.',
           detail: 'It answered with an error page instead of a result: ' + err.detail + '. That is on our side. Retry in a moment.' },
       again);

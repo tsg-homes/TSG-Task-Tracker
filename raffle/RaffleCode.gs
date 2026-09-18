@@ -1079,6 +1079,12 @@ function raffleRecordClientFailure_(d, test) {
   var status = Math.max(0, Math.min(999, parseInt(d && d.status, 10) || 0));
   var detail = collapseSpaces(d && d.detail).slice(0, 300);
   var ua = collapseSpaces(d && d.ua).slice(0, 200);
+  // Browser-side context that separates a dead connection from a server that
+  // answered without CORS headers: navigator.onLine and the page's origin.
+  var online = String((d && d.online) || '');
+  var origin = collapseSpaces(d && d.origin).slice(0, 80);
+  if (online === '1' || online === '0') ua = 'online=' + (online === '1' ? 'yes' : 'no') + ' · ' + ua;
+  if (origin) ua = ua + ' · from ' + origin;
   var attempt = Math.max(1, Math.min(99, parseInt(d && d.attempt, 10) || 1));
   var kiosk = String((d && d.kiosk) || '') === '1';
   var where = kiosk ? 'kiosk' : 'phone';

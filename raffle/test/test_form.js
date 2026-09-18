@@ -530,13 +530,20 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   check('fix 1: the failure block is gone', !(await p.locator('#submitFail').isVisible()));
   check('loud: the banner is gone once the retry succeeded', !(await p.locator('#failBanner').isVisible()));
 
-  // A real network failure still says so, and still offers the retry.
+  // A real network failure: one silent automatic retry first, then the failed
+  // state with a manual Retry.
   mode = 'abort';
+  const verifiesBefore = posts.filter(b => b.step === 'verify').length;
   await p.fill('#codeInput', '654321');
   await p.click('#codeBtn');
-  await p.waitForTimeout(500);
+  await p.waitForTimeout(600);
+  check('fix 1: after a network failure the page is still locked and says it is trying once more',
+    await p.locator('#busyOverlay').isVisible() && /Trying once more/.test(await p.locator('#busyWhat').textContent()));
+  await p.waitForTimeout(2200);
+  check('fix 1: exactly one automatic retry was sent', posts.filter(b => b.step === 'verify').length === verifiesBefore + 2);
+  check('fix 1: the failure report says the browser was online', posts.some(b => b.step === 'report' && b.kind === 'network' && b.online === '1' && b.origin));
   const netText = await p.locator('#codeFail').textContent();
-  check('fix 1: a dropped connection is named as one', /could not reach our server/i.test(netText) && /signal/.test(netText), netText);
+  check('fix 1: a dropped connection is named as one', /could not reach our server/i.test(netText) && /connection/.test(netText) && !/phone/.test(netText), netText);
   check('fix 1: with a Retry', (await p.locator('#codeFail button').count()) === 1);
   check('fix 1: the code typed is still there', (await p.inputValue('#codeInput')) === '654321');
   check('fix 1: a network failure is reported too', posts.some(b => b.step === 'report' && b.failedStep === 'verify' && b.kind === 'network'));
@@ -548,7 +555,7 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   const seText = await p.locator('#codeFail').textContent();
   check('fix 1: a caught server exception shows the real message', /Service invoked too many times/.test(seText), seText);
   check('fix 1: and its reference', /E-ABC123/.test(seText), seText);
-  check('fix 1: with a Retry counting the attempt', /Retry \(attempt 3\)/.test(seText), seText);
+  check('fix 1: with a Retry counting the attempt (the automatic one included)', /Retry \(attempt 4\)/.test(seText), seText);
 
   // (7) A clear in-progress state while the slow step runs; test mode prints the server timing.
   await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000,
@@ -642,8 +649,8 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   check('kiosk poll: the code step is up (setup)', await p.locator('#codePanel').isVisible());
   await p.waitForTimeout(11000);
   check('kiosk poll: the kiosk asked the server more than once', polls >= 2, 'polls ' + polls);
-  check('kiosk poll: and moved to the entered screen when the phone confirmed',
-    await p.locator('#successPanel').isVisible() && /confirmed on your phone/.test(await p.locator('#successMsg').textContent()));
+  check('kiosk poll: and moved to the entered screen once the guest confirmed from the email',
+    await p.locator('#successPanel').isVisible() && /confirmed from the email/.test(await p.locator('#successMsg').textContent()));
   await p.unroute(u => /\/exec/.test(u.href));
 
   // A shared-link phone never polls.

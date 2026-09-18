@@ -812,12 +812,12 @@ body.qa-test{padding-top:62px;}
     }
     if (err.kind === 'network') {
       return { title: 'We could not reach our server.',
-               detail: 'Your phone had no connection when we tried (' + err.detail + '). ' +
-                       'Check your signal and retry. Everything you typed is still here.' };
+               detail: 'Either your connection dropped or our server did not answer (' + err.detail + '). ' +
+                       'We already tried twice. Check your internet connection and retry. Everything you typed is still here.' };
     }
     return { title: 'Our server returned an error.',
              detail: 'It answered with an error page instead of a result: ' + err.detail +
-                     '. That is on our side, not your phone. Retry in a moment.' };
+                     '. That is on our side, not yours. Retry in a moment.' };
   }
 
   // The failed state: the message, the server's words, one Retry that re-sends
@@ -872,6 +872,12 @@ body.qa-test{padding-top:62px;}
         step: 'report', failedStep: failedStep, kind: err.kind || 'page',
         status: err.status || 0, detail: String(err.detail || err.message || '').slice(0, 300),
         attempt: attempt || 1, kiosk: KIOSK ? '1' : '',
+        // Whether the browser believed it was online, and which origin the page
+        // ran on: "Failed to fetch" with online:true from a page that could send
+        // this report is the server answering without CORS headers, not a dead
+        // connection (seen live 2026-09-18 10:58 ET, desktop Chrome).
+        online: (typeof navigator.onLine === 'boolean') ? (navigator.onLine ? '1' : '0') : '',
+        origin: String(location.origin || '').slice(0, 80),
         ua: String(navigator.userAgent || '').slice(0, 200)
       };
       fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -902,9 +908,9 @@ body.qa-test{padding-top:62px;}
       var s = Math.round((Date.now() - t0) / 1000);
       document.getElementById('busySecs').textContent = s + ' s';
       if (s >= 8) document.getElementById('busySlow').textContent =
-        'Still working. Our server is slow, not your phone. Do not go back or reload.';
+        'Still working. Our server is slow, not your connection. Do not go back or reload.';
       note.textContent = what + ' ' + s + ' s' +
-        (s >= 8 ? '. Still working. Our server is slow, not your phone.' : '.');
+        (s >= 8 ? '. Still working. Our server is slow, not your connection.' : '.');
     }, 1000);
     return function(resetLabel, res){
       clearInterval(iv);
@@ -992,10 +998,26 @@ body.qa-test{padding-top:62px;}
           (res && res.error) || 'Something went wrong. Grab someone from TSG.';
       }
     }).catch(function(err){
-      done('Enter the Drawing');
       report('request', err, requestAttempt);
+      // One silent retry on a "network" failure before anything is shown: seen
+      // live 2026-09-18, the browser said "Failed to fetch" while its own report
+      // a second later got through, i.e. the server answered once without CORS
+      // headers. A second code email at worst; the per-address cap holds.
+      if (autoRetry_(err, requestAttempt, 'submitBusy', function(){ requestCode(payload); })) return;
+      done('Enter the Drawing');
       showFail('submitFail', failFor_(err), function(){ requestCode(payload); }, requestAttempt);
     });
+  }
+
+  // Schedules one automatic retry of `again` for a transport failure on the
+  // first attempt. Returns true when it did (the caller leaves the lockout up).
+  function autoRetry_(err, attempt, noteId, again){
+    if (!err || err.kind !== 'network' || attempt !== 1) return false;
+    document.getElementById('busyWhat').textContent = 'No answer. Trying once more.';
+    document.getElementById('busySlow').textContent = '';
+    document.getElementById(noteId).textContent = 'No answer. Trying once more.';
+    setTimeout(again, 1500);
+    return true;
   }
 
   form.addEventListener('submit', function(ev){
@@ -1050,8 +1072,10 @@ body.qa-test{padding-top:62px;}
         codeErr.textContent = (res && res.error) || 'That did not work. Try again.';
       }
     }).catch(function(err){
-      done('Confirm & Enter');
       report('verify', err, verifyAttempt);
+      // Safe to retry by itself: the same code against the same pending entry.
+      if (autoRetry_(err, verifyAttempt, 'codeBusy', function(){ verifyCode(payload); })) return;
+      done('Confirm & Enter');
       showFail('codeFail', failFor_(err), function(){ verifyCode(payload); }, verifyAttempt);
     });
   }
@@ -1135,7 +1159,7 @@ body.qa-test{padding-top:62px;}
         try { data = JSON.parse(text); } catch (e) { data = null; }
         if (data && data.ok && data.verified && pendingVid === vid && kioskPoll) {
           stopKioskPoll();
-          enteredOk({ ok: true, message: 'You confirmed on your phone and you are entered. ' +
+          enteredOk({ ok: true, message: 'You confirmed from the email and you are entered. ' +
             'Keep going there to refer a friend for 5 more entries.' });
         }
       })
