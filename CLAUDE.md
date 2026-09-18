@@ -976,3 +976,9 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   2026-09-18; never `pkill -f "clasp login"` (it matches the calling shell and kills it, exit 144).
   Google Workspace expires the refresh token often (`invalid_rapt`), so expect a fresh login per
   cloud session.
+- Deployed 2026-09-18 13:05 EDT: web app @84 = backend 2026-09-18.14 / UI 2026-09-18.17 = commit
+  02f744e, `main` fast-forwarded. UI .17 = comment mode swallows mousedown/click for everything
+  inside the page or an open card except the comment buttons and the pop-over
+  (`COMMENT_MODE_PASSTHROUGH`, `commentModeSwallow_`); the other session's @83 carried UI .16, so
+  the same number was never reused. Durand's timeline comment (cmu75irckg1r3n) answered and
+  resolved by patch; the day-strip readability point is a step on the tracker feature task.
