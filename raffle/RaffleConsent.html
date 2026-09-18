@@ -125,7 +125,11 @@ function role() {
   return picked ? picked.value : '';
 }
 
-var ENDPOINT = window.location.href.split('?')[0] + '?form=raffle';
+// Always the plain /macros/s/<id>/exec form (see RaffleConsole.html): a POST to
+// the /a/macros/<domain>/ form runs the script and then answers with a Drive 404.
+var ENDPOINT = window.location.href.split('?')[0].split('#')[0]
+  .replace(/\/a\/macros\/[^\/]+\/s\//, '/macros/s/')
+  .replace(/\/a\/[^\/]+\/macros\/s\//, '/macros/s/') + '?form=raffle';
 
 // Same transport rules as the entry form: the reply is read as text and parsed,
 // so an Apps Script error page is reported with its own words, and only a

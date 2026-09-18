@@ -1988,6 +1988,22 @@ const toRyan = s => s.__sent.filter(m => /⚠️/.test(String(m.subject)) && /ry
   check('redraw failure: Durand alone is alerted', m.length === 1 && m[0].to === ALERT_TO && toRyan(s).length === 0 && /redraw FAILED/.test(m[0].subject), JSON.stringify(m));
 }
 
+{ // The page posts to the PLAIN exec URL whatever form it was served on (2026-09-18).
+  const scoped = 'https://script.google.com/a/macros/thestawaszgroup.com/s/AKfycbTESTID/exec';
+  const plain  = 'https://script.google.com/macros/s/AKfycbTESTID/exec';
+  // The harness renderer blanks safeJsonForScript_() tags, so read what the
+  // server ASSIGNED to the template rather than the rendered text.
+  const servedWith = (sb, url) => {
+    at(DURING, () => sb.raffleServeForm_({ parameter: {} }, url));
+    return sb.__templates[sb.__templates.length - 1].props.baseUrl;
+  };
+  eq('plain URL: a page served on the /a/macros/<domain>/ form posts to the plain form',
+    servedWith(makeSandbox(), scoped), plain);
+  eq('plain URL: a page served on the plain form keeps it', servedWith(makeSandbox(), plain), plain);
+  eq('plain URL: the /dev URL falls back to the remembered public one',
+    servedWith(makeSandbox({ props: { RAFFLE_EXEC_URL: plain } }), 'https://script.google.com/macros/s/AKfycbTESTID/dev'), plain);
+}
+
 { // Timing rides in the JSON of the slow steps (the form shows it in test mode).
   const s = makeSandbox();
   const r1 = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));

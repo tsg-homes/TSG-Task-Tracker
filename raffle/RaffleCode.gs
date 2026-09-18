@@ -839,7 +839,13 @@ function raffleServeForm_(e, baseUrl, chain) {
   tmpl.chainFirst = safeJsonForScript_(chain.chainFirst || '');
   if (chain.chainTest) isTest = true;
   tmpl.submitToken   = getSubmitToken();
-  tmpl.baseUrl       = baseUrl;
+  // The page posts back to THIS. It must be the plain /macros/s/<id>/exec form,
+  // never the /a/macros/<domain>/ form a signed-in Workspace visitor lands on:
+  // a POST to the domain-scoped URL runs the script (the code email goes out)
+  // and then Google answers the reply redirect with a Drive "Page Not Found",
+  // so the page saw an error for a request that had succeeded. Durand hit this
+  // on 2026-09-18 in test mode; guests on phones use the plain URL and did not.
+  tmpl.baseUrl       = raffleNormalizeExecUrl_(baseUrl) || raffleBaseUrl_() || baseUrl;
   tmpl.kiosk         = (e.parameter.kiosk || '') ? '1' : '';
   tmpl.qaTestToken   = qaTestToken;   // '' on every normal load
   tmpl.isTest        = isTest ? '1' : '';

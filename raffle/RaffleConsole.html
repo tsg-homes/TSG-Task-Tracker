@@ -186,7 +186,12 @@ var IS_TEST = <?!= isTestJson ?>;
 var ALREADY_SENT = <?!= sentAtJson ?> !== '';
 var HAS_DRAW = <?!= hasDrawJson ?> !== '';
 
-var ENDPOINT = window.location.href.split('?')[0] + '?form=raffle';
+// Always the plain /macros/s/<id>/exec form: a POST to the /a/macros/<domain>/
+// form a signed-in Workspace visitor lands on runs the script and then answers
+// with a Drive 404, so the console saw a failure for a send that went out.
+var ENDPOINT = window.location.href.split('?')[0].split('#')[0]
+  .replace(/\/a\/macros\/[^\/]+\/s\//, '/macros/s/')
+  .replace(/\/a\/[^\/]+\/macros\/s\//, '/macros/s/') + '?form=raffle';
 
 // Same transport rules as the entry form (RaffleForm.template.html, post()):
 // the reply is read as text and parsed, so an HTML error page from Apps Script
