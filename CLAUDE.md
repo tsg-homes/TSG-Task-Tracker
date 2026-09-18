@@ -854,3 +854,12 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   with a Copy-address button and a Test button once granted. Comments panel has "Send N open to
   Claude" (`commentsPromptFor_`, `sendCommentsToClaude`: Cowork deep link, shift = cloud Code)
   carrying every unresolved non-Claude comment with its anchor and the act / reply / resolve rules.
+
+## Email and other outward actions
+
+- **Draft, never send.** An email goes out only when Durand's message for that specific
+  email says "send". Choosing a recipient, a channel or a method is not a send instruction;
+  "draft", "write", "prepare" and silence all mean draft — create it in Gmail and say where
+  it is. Same bar for any outward action that cannot be undone: a post, a share, a delete.
+  (Established 2026-09-18 after a session sent a brief to Marj and Ryan when Durand had only
+  picked the send method for a different email.)
