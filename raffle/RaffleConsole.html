@@ -54,6 +54,21 @@
   .failbox .alt { margin-top:8px; font-size:12.5px; color:var(--muted); }
   .failbox button { margin-top:10px; }
   .busy { font-size:13px; color:var(--muted); margin:8px 0 0; min-height:1px; }
+  /* Loud failure: a fixed banner that cannot scroll away. Tap it for the block. */
+  #failBanner { display:none; position:fixed; top:0; left:0; right:0; z-index:9998; background:var(--red);
+                color:#fff; font-weight:700; font-size:14px; padding:12px 16px; text-align:center;
+                box-shadow:0 2px 8px rgba(0,0,0,.25); cursor:pointer; }
+  #failBanner.on { display:block; }
+  /* Lockout while a request is in flight: spinner, the step, a seconds counter. */
+  #busyOverlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; z-index:9997;
+                 background:rgba(21,70,74,.94); color:#fff; text-align:center; padding:40px 24px; }
+  #busyOverlay.on { display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  #busyOverlay .spin { width:46px; height:46px; border:4px solid rgba(255,255,255,.3); border-top-color:#fff;
+                       border-radius:50%; animation:spin .9s linear infinite; margin-bottom:20px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #busyOverlay .what { font-size:22px; font-weight:700; }
+  #busyOverlay .secs { margin-top:10px; font-size:16px; font-weight:700; }
+  #busyOverlay .slow { margin-top:16px; font-size:13.5px; opacity:.9; max-width:320px; min-height:20px; }
   .preview { border:1px solid var(--line); border-radius:8px; overflow:hidden; margin-top:14px;
              background:var(--bg); }
   .preview .ph { background:#eef3f3; padding:9px 12px; font-size:12px; color:var(--muted);
@@ -75,6 +90,13 @@
 </style>
 </head>
 <body>
+<div id="failBanner" role="alert"></div>
+<div id="busyOverlay" role="status" aria-live="polite">
+  <div class="spin"></div>
+  <div class="what" id="busyWhat"></div>
+  <div class="secs" id="busySecs"></div>
+  <div class="slow" id="busySlow"></div>
+</div>
 <div class="wrap">
   <? if (isTest) { ?><div class="test">TEST DRAW — the real 6:15 draw is untouched</div><? } ?>
 
@@ -235,12 +257,18 @@ function showFail(container, info, retryLabel, retry) {
   b.textContent = retryLabel; b.addEventListener('click', function () { retry(); });
   box.appendChild(b);
   var alt = document.createElement('div'); alt.className = 'alt';
-  alt.textContent = 'Durand and Ryan are emailed when a draw or a send fails on the server. ' +
+  alt.textContent = 'Durand is emailed when a draw or a send fails on the server. ' +
                     'A failure to reach the server at all is only visible here.';
   box.appendChild(alt);
   container.appendChild(box);
-  try { box.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+  var banner = document.getElementById('failBanner');
+  banner.textContent = info.title + ' Tap for details and the retry.';
+  banner.onclick = function () { try { box.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {} };
+  banner.classList.add('on');
+  try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch (e) {}
+  try { box.scrollIntoView({ block: 'center' }); } catch (e) {}
 }
+function clearBanner() { document.getElementById('failBanner').classList.remove('on'); }
 // Tell the server this page could not complete a request, so the failure is on
 // the Client Errors tab and in an alert. Fire-and-forget.
 function report(action, err) {
@@ -254,16 +282,26 @@ function report(action, err) {
     }).catch(function () {});
   } catch (e) { /* never throws */ }
 }
+// Lockout while a request is in flight: the page sits behind an overlay that
+// names the step and counts the seconds, so nothing can be pressed twice.
 function busy(button, label, what) {
   button.disabled = true; button.textContent = label;
+  clearBanner();
   var note = document.getElementById('busyNote');
+  var overlay = document.getElementById('busyOverlay');
   var t0 = Date.now();
   if (note) note.textContent = what;
+  document.getElementById('busyWhat').textContent = what;
+  document.getElementById('busySecs').textContent = '0 s';
+  document.getElementById('busySlow').textContent = '';
+  overlay.classList.add('on');
   var iv = setInterval(function () {
     var s = Math.round((Date.now() - t0) / 1000);
+    document.getElementById('busySecs').textContent = s + ' s';
+    if (s >= 8) document.getElementById('busySlow').textContent = 'Still working. Do not reload; the server is slow, not this page.';
     if (note) note.textContent = what + ' ' + s + ' s' + (s >= 8 ? '. Still working; keep this page open.' : '.');
   }, 1000);
-  return function () { clearInterval(iv); if (note) note.textContent = ''; };
+  return function () { clearInterval(iv); overlay.classList.remove('on'); if (note) note.textContent = ''; };
 }
 
 // The Email budget button is on the page whether or not there has been a draw.
@@ -272,9 +310,9 @@ if (raiseBtn) {
   var raiseCeiling = function () {
     var rm = document.getElementById('raiseMsg');
     rm.className = 'err'; rm.textContent = '';
-    raiseBtn.disabled = true;
-    raiseBtn.textContent = 'Raising…';
+    var done = busy(raiseBtn, 'Raising…', 'Raising the send ceiling.');
     post({ consoleAction: 'raiseceiling' }).then(function (res) {
+      done();
       raiseBtn.disabled = false;
       raiseBtn.textContent = 'Raise the ceiling by 500';
       if (res && res.ok) {
@@ -285,6 +323,7 @@ if (raiseBtn) {
         showFail(rm, failInfo_(null, res), 'Retry raising the ceiling', raiseCeiling);
       }
     }).catch(function (err) {
+      done();
       raiseBtn.disabled = false;
       raiseBtn.textContent = 'Raise the ceiling by 500';
       report('raiseceiling', err);

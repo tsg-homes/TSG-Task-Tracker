@@ -501,6 +501,10 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   check('fix 1: the server\'s own words are on screen', /Script function not found/.test(failText), failText);
   check('fix 1: it never blames the guest\'s phone', !/check your signal/i.test(failText), failText);
   check('fix 1: a Retry button is offered', (await p.locator('#submitFail button').count()) === 1);
+  check('loud: a fixed red banner is up at the top of the page', await p.locator('#failBanner').isVisible() &&
+    /server returned an error/.test(await p.locator('#failBanner').textContent()));
+  check('loud: the banner is fixed-position', (await p.locator('#failBanner').evaluate(e => getComputedStyle(e).position)) === 'fixed');
+  check('lockout: the overlay is down again once the server answered', !(await p.locator('#busyOverlay').isVisible()));
   check('fix 1: the fields are untouched', (await p.inputValue('#fullName')) === 'Dana Reid' &&
     (await p.inputValue('#email')) === 'dana@mail-test.co' && (await p.isChecked('#consent')));
   check('fix 1: the button is live again, not stuck disabled',
@@ -519,6 +523,7 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   check('fix 1: with the identical payload', JSON.stringify(reqs[reqs.length - 1]) === JSON.stringify(reqs[0]));
   check('fix 1: and the flow continues to the code step', await p.locator('#codePanel').isVisible());
   check('fix 1: the failure block is gone', !(await p.locator('#submitFail').isVisible()));
+  check('loud: the banner is gone once the retry succeeded', !(await p.locator('#failBanner').isVisible()));
 
   // A real network failure still says so, and still offers the retry.
   mode = 'abort';
@@ -564,8 +569,17 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   check('fix 7: the button says Checking…', (await p.locator('#codeBtn').textContent()) === 'Checking…');
   check('fix 7: and the line under it says what is happening and for how long',
     /Checking your code/.test(busyText) && /\d+ s/.test(busyText), busyText);
+  check('fix 7: the page is locked behind an overlay', await p.locator('#busyOverlay').isVisible());
+  check('fix 7: the overlay names the step and counts seconds',
+    /Checking your code/.test(await p.locator('#busyWhat').textContent()) && /^[1-9]\d* s$/.test((await p.locator('#busySecs').textContent()).trim()),
+    await p.locator('#busySecs').textContent());
+  check('fix 7: the overlay covers the button (a second tap cannot land)',
+    await p.evaluate(() => { const b = document.getElementById('codeBtn').getBoundingClientRect();
+      const top = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+      return !!top && !!top.closest('#busyOverlay'); }));
   await p.waitForTimeout(1200);
   check('fix 7: the referral step opens when the server answers', await p.locator('#referPanel').isVisible());
+  check('fix 7: and the overlay lifts', !(await p.locator('#busyOverlay').isVisible()));
   const timingText = await p.locator('#codeBusy').textContent();
   check('fix 7: test mode shows the server\'s timing breakdown',
     /TEST MODE timing/.test(timingText) && /fub 2\.1 s/.test(timingText) && /sheet 1\.4 s/.test(timingText), timingText);
@@ -614,6 +628,9 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
     const box = await p.locator('#msg .failbox').textContent();
     check('fix 2: the failure block says what the server sent', /error page/.test(box) && /unable to open the file/.test(box), box);
     check('fix 2: with a retry button', (await p.locator('#msg .failbox button').count()) === 1);
+    check('fix 2: the console shows the fixed red banner too', await p.locator('#failBanner').isVisible());
+    check('fix 2: the console overlay is down after the answer', !(await p.locator('#busyOverlay').isVisible()));
+    check('fix 2: the console never promises Ryan an error email', !/Ryan/.test(box));
     check('fix 2: the console reports the failure to the server',
       cposts.some(b => b.step === 'report' && b.failedStep === 'console' && /console send/.test(b.detail)));
     cmode = 'refused';

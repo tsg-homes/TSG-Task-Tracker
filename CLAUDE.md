@@ -456,8 +456,10 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   and name an HTML error page as a server error; every failure is a `.fail` / `.failbox` block
   with a Retry that re-sends the same payload; caught exceptions return `serverError`, a scrubbed
   message and an `E-XXXXXX` ref; `step: 'report'` writes the `Client Errors` sheet tab and alerts
-  Durand (10-min throttle); `raffleAlertOps_` mails Durand AND Ryan (`RAFFLE_NOTIFY_EMAIL`) on
-  draw / result-email / winner-email / redraw failures; `raffleTimer_` puts `timing` on the
+  Durand (10-min throttle); `raffleAlertOps_` mails Durand ONLY (`RAFFLE_ALERT_EMAIL`; per Durand "only send errors
+  to me not ryan", the quota alert too) on draw / result-email / winner-email / redraw failures;
+  every failure raises a fixed red `#failBanner`; every in-flight request locks the page
+  behind `#busyOverlay` with a seconds counter; `raffleTimer_` puts `timing` on the
   request/verify/referral/invite JSON (shown in test mode). Kiosk: `Start over for the next
   guest` only with `&kiosk=1`. Full write-up: README "Failure handling".
 

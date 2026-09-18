@@ -1003,7 +1003,7 @@ function raffleHandleSubmission_(d) {
 // disabled. Nothing was logged where anyone would look and nobody was alerted.
 // Everything below exists so that a failure is (1) described in the words the
 // server actually used, (2) written down where it can be found afterwards and
-// (3) alerts a person -- Durand for entry-path problems, Durand and Ryan for
+// (3) alerts Durand -- and only Durand; Ryan gets results, never errors -- for
 // anything to do with the draw or the winner email.
 
 var RAFFLE_CLIENT_ERROR_TAB = 'Client Errors';
@@ -1089,22 +1089,22 @@ function raffleRecordClientFailure_(d, test) {
   return jsonOut({ ok: true, logged: true });
 }
 
-// An alert that reaches BOTH Durand and Ryan (RAFFLE_NOTIFY_EMAIL): for the
-// draw and the winner email, the two things on Saturday that cannot quietly not
-// happen. sendErrorAlert (the host project's channel) is Durand-only, so this
-// sends its own message and calls that too. Never throws.
+// Error alerts go to Durand ONLY (Durand, 2026-09-18: "only send errors to me
+// not ryan"). Ryan gets results, never failures. Used for the draw and the
+// winner email, the two things on Saturday that cannot quietly not happen.
+// One email, from this function alone (not sendErrorAlert as well, which would
+// be the same person twice). Never throws.
+var RAFFLE_ALERT_EMAIL = 'durand@thestawaszgroup.com';
 function raffleAlertOps_(subject, body, test) {
-  var to = raffleQaRecipients_(RAFFLE_NOTIFY_EMAIL.split(','), test).join(',');
+  var to = raffleQaRecipients_([RAFFLE_ALERT_EMAIL], test).join(',');
   try {
     MailApp.sendEmail({
       to: to,
       name: 'TSG Block Party Raffle',
       subject: (test ? QA_TEST_PREFIX : '') + '⚠️ ' + subject,
-      body: body + '\n\nSent to: ' + to + '\nTime: ' + raffleFmt_(raffleNow_()) + ' ET'
+      body: body + '\n\nTime: ' + raffleFmt_(raffleNow_()) + ' ET'
     });
   } catch (mailErr) { Logger.log('raffleAlertOps_ email failed: ' + mailErr); }
-  try { sendErrorAlert('Raffle: ' + subject, body); }
-  catch (alertErr) { Logger.log('raffleAlertOps_ sendErrorAlert failed: ' + alertErr); }
   Logger.log('RAFFLE ALERT: ' + subject + ' — ' + String(body).split('\n')[0]);
 }
 
@@ -1370,7 +1370,7 @@ function raffleWatchMailQuota_(left, nowMs) {
     if (p && p.alert && !props.getProperty(RAFFLE_QUOTA_ALERT_PROP)) {
       props.setProperty(RAFFLE_QUOTA_ALERT_PROP, raffleFmt_(raffleNow_()));
       MailApp.sendEmail({
-        to: RAFFLE_NOTIFY_EMAIL,
+        to: RAFFLE_ALERT_EMAIL,   // errors go to Durand only (2026-09-18)
         name: 'TSG Block Party Raffle',
         subject: '⚠️ Raffle email may run out before 6:15 (' + left + ' left)',
         body: [

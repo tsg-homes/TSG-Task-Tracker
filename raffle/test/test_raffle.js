@@ -1623,7 +1623,7 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
     proj([{ t: T0, left: 100 }, { t: T0 + H, left: 1500 }], T0 + H).ratePerHour === 0);
 
   // The watcher end to end: readings accumulate under guarded sends during the
-  // party, one alert goes to Durand and Ryan, and it never fires again.
+  // party, one alert goes to Durand, and it never fires again.
   const wsb = makeSandbox({ quota: 1000 });
   const guard = (t, who) => at(t, () => wsb.raffleCheckCodeSendQuota_(who + '@mail-test.co', 1));
   guard(T0, 'p1');
@@ -1631,7 +1631,7 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   guard(T0 + H / 2, 'p2');
   const alerts = () => wsb.__sent.filter(m => /run out before 6:15/.test(m.subject));
   eq('a run-out alert went out', alerts().length, 1);
-  check('to Durand and Ryan', /durand@thestawaszgroup\.com/.test(alerts()[0].to) && /ryan@/.test(alerts()[0].to), alerts()[0].to);
+  check('to Durand only (errors never go to Ryan)', /durand@thestawaszgroup\.com/.test(alerts()[0].to) && !/ryan@/.test(alerts()[0].to), alerts()[0].to);
   check('it names the rate and the run-out time',
     /~600 per hour/.test(alerts()[0].body) &&
     alerts()[0].body.indexOf('Runs out around: ' + wsb.raffleFmt_(new Date(T0 + H / 2 + 66 * 60000))) !== -1,
@@ -1835,8 +1835,10 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
 // alert. These lock in: the report endpoint, the reference on a caught
 // exception, alerts that reach Durand AND Ryan for draw and send failures, a
 // winner send that fails cleanly and can be retried, and timing on the slow steps.
-const NOTIFY_BOTH = 'durand@thestawaszgroup.com,ryan@tsg.homes';
-const opsMail = s => s.__sent.filter(m => m.to === NOTIFY_BOTH && /⚠️/.test(String(m.subject)));
+// Error alerts go to Durand only (2026-09-18: "only send errors to me not ryan").
+const ALERT_TO = 'durand@thestawaszgroup.com';
+const opsMail = s => s.__sent.filter(m => /⚠️/.test(String(m.subject)));
+const toRyan = s => s.__sent.filter(m => /⚠️/.test(String(m.subject)) && /ryan@/.test(String(m.to) + String(m.cc) + String(m.bcc)));
 
 { // The `report` step: a page telling the server one of its requests failed.
   const s = makeSandbox();
@@ -1905,10 +1907,12 @@ const opsMail = s => s.__sent.filter(m => m.to === NOTIFY_BOTH && /⚠️/.test(
   const s = makeSandbox();                                  // no entries at all
   at(AFTER, () => s.raffleScheduledDraw());
   const m = opsMail(s);
-  eq('draw failure: one email to Durand and Ryan', m.length, 1);
+  eq('draw failure: one email, to Durand', m.length, 1);
+  eq('draw failure: addressed to Durand only', m[0].to, ALERT_TO);
+  eq('draw failure: Ryan is not on any error alert', toRyan(s).length, 0);
   check('draw failure: it says the draw did not complete and what to do',
     /did NOT complete/.test(m[0].subject) && /Draw by hand/.test(m[0].body), JSON.stringify(m[0]));
-  check('draw failure: the host project\'s alert channel fires too', s.__alerts.length === 1);
+  eq('draw failure: not duplicated through the host project\'s channel', s.__alerts.length, 0);
 
   const s2 = makeSandbox();
   enterFull(s2, entry(), DURING);
@@ -1929,8 +1933,8 @@ const opsMail = s => s.__sent.filter(m => m.to === NOTIFY_BOTH && /⚠️/.test(
   s.MailApp.sendEmail = realSend;
   check('result mail failure: the draw is still recorded', res.ok === true && res.emailFailed === true, JSON.stringify(res));
   const m = opsMail(s);
-  check('result mail failure: Durand and Ryan get the names in a plain email',
-    m.length === 1 && /result email FAILED/.test(m[0].subject) &&
+  check('result mail failure: Durand gets the names in a plain email (Ryan is not on it)',
+    m.length === 1 && m[0].to === ALERT_TO && toRyan(s).length === 0 && /result email FAILED/.test(m[0].subject) &&
     m[0].body.indexOf(res.result.winner.name) !== -1 && /BACKUP 1/.test(m[0].body), JSON.stringify(m));
 }
 
@@ -1948,8 +1952,8 @@ const opsMail = s => s.__sent.filter(m => m.to === NOTIFY_BOTH && /⚠️/.test(
     /did not send/.test(String(failed.error)) && /Mail service unavailable/.test(String(failed.error)), JSON.stringify(failed));
   check('winner send: nothing is stamped as sent', !s.__props.RAFFLE_WINNER_EMAILED_AT);
   const m = opsMail(s);
-  check('winner send: Durand and Ryan are alerted, with the winner\'s phone',
-    m.length === 1 && /winner email FAILED/.test(m[0].subject) && /Retry/.test(m[0].body) &&
+  check('winner send: Durand alone is alerted, with the winner\'s phone',
+    m.length === 1 && m[0].to === ALERT_TO && toRyan(s).length === 0 && /winner email FAILED/.test(m[0].subject) && /Retry/.test(m[0].body) &&
     m[0].body.indexOf(drawn.result.backups[0].phone) !== -1, JSON.stringify(m));
   check('winner send: no ALTERNATE PICK audit line for a send that never went',
     !s.__tabs['Draw Audit'] || !s.__tabs['Draw Audit'].rows.some(r => /ALTERNATE PICK/.test(r.join('|'))));
@@ -1981,7 +1985,7 @@ const opsMail = s => s.__sent.filter(m => m.to === NOTIFY_BOTH && /⚠️/.test(
   s.SpreadsheetApp.openById = realOpen;
   check('redraw failure: the console is told, with the fallback', r.ok === false && /Draw Audit/.test(String(r.error)), JSON.stringify(r));
   const m = opsMail(s);
-  check('redraw failure: Durand and Ryan are alerted', m.length === 1 && /redraw FAILED/.test(m[0].subject), JSON.stringify(m));
+  check('redraw failure: Durand alone is alerted', m.length === 1 && m[0].to === ALERT_TO && toRyan(s).length === 0 && /redraw FAILED/.test(m[0].subject), JSON.stringify(m));
 }
 
 { // Timing rides in the JSON of the slow steps (the form shows it in test mode).

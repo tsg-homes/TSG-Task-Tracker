@@ -111,6 +111,31 @@ body.kiosk .kiosk-only{display:block !important;}
 /* The in-progress line under a busy button: what is happening and for how long. */
 .busy-note{font-size:13px;color:#5c6666;margin-top:8px;text-align:center;min-height:16px;}
 
+/* Failure banner, fixed at the top: a failure cannot be missed even when the
+   block under the button has scrolled off a phone screen. Tapping it scrolls
+   to the block with the Retry. */
+#failBanner{display:none;position:fixed;top:0;left:0;right:0;z-index:9998;background:var(--tsg-red);
+  color:#fff;font-weight:700;font-size:14px;line-height:1.4;padding:12px 16px;text-align:center;
+  box-shadow:0 2px 8px rgba(0,0,0,.25);cursor:pointer;}
+#failBanner.on{display:block;}
+#failBanner .sub{display:block;font-weight:400;font-size:12.5px;opacity:.9;margin-top:2px;}
+body.qa-test #failBanner{top:62px;}
+
+/* Lockout while a request is in flight (Durand: "an indicator popup and
+   lockout"). Nothing on the page can be tapped, the guest sees what is
+   happening and for how long, and after 8 s that it is the server, not their
+   phone. Doubles as the guard against a double tap on the kiosk. */
+#busyOverlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:9997;
+  background:rgba(21,70,74,.94);color:#fff;text-align:center;padding:40px 24px;}
+#busyOverlay.on{display:flex;flex-direction:column;align-items:center;justify-content:center;}
+#busyOverlay .spin{width:46px;height:46px;border:4px solid rgba(255,255,255,.3);border-top-color:#fff;
+  border-radius:50%;animation:tsgspin .9s linear infinite;margin-bottom:20px;}
+@keyframes tsgspin{to{transform:rotate(360deg);}}
+#busyOverlay .what{font-family:'Playfair Display',serif;font-size:23px;font-weight:700;line-height:1.25;max-width:320px;}
+#busyOverlay .secs{margin-top:10px;font-size:16px;font-weight:700;opacity:.95;}
+#busyOverlay .slow{margin-top:16px;font-size:13.5px;opacity:.9;max-width:320px;line-height:1.5;min-height:20px;}
+#busyOverlay .keep{margin-top:22px;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.7;}
+
 /* ---- Panels ---- */
 .panel{display:none;background:var(--tsg-white);border:1px solid var(--tsg-gray-border);border-radius:10px;padding:34px 22px;text-align:center;}
 .panel h2{font-family:'Playfair Display',serif;color:var(--tsg-green);margin:0 0 10px;font-size:26px;}
@@ -164,6 +189,14 @@ body.qa-test{padding-top:62px;}
 
 <div id="qaTestBanner" role="alert">
   TEST MODE — entries go to the Test Entries tab, tagged in FUB, and can never win the real prize
+</div>
+<div id="failBanner" role="alert"></div>
+<div id="busyOverlay" role="status" aria-live="polite">
+  <div class="spin"></div>
+  <div class="what" id="busyWhat"></div>
+  <div class="secs" id="busySecs"></div>
+  <div class="slow" id="busySlow"></div>
+  <div class="keep">Keep this page open</div>
 </div>
 
 <header>
@@ -753,12 +786,26 @@ body.qa-test{padding-top:62px;}
     alt.textContent = 'If it fails again, find someone from TSG at the table. We will enter you by hand.';
     box.appendChild(alt);
     box.classList.add('on');
-    try { box.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+    // Loud: a fixed banner at the top as well, a buzz where the phone allows it,
+    // and the block scrolled into view.
+    var banner = document.getElementById('failBanner');
+    banner.innerHTML = '';
+    banner.appendChild(document.createTextNode(info.title));
+    var sub = document.createElement('span'); sub.className = 'sub';
+    sub.textContent = 'Nothing was lost. Tap here for details and Retry.';
+    banner.appendChild(sub);
+    banner.onclick = function(){ try { box.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {} };
+    banner.classList.add('on');
+    try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch (e) {}
+    try { box.scrollIntoView({ block: 'center' }); } catch (e) {}
   }
   function clearFail(id){
     var box = document.getElementById(id);
     box.classList.remove('on');
     box.innerHTML = '';
+    if (!document.querySelector('.fail.on')) {
+      document.getElementById('failBanner').classList.remove('on');
+    }
   }
 
   // Tell the server a request failed on this page, so a failure a guest saw is
@@ -783,19 +830,32 @@ body.qa-test{padding-top:62px;}
   // long. Returns the function that puts the button back; in test mode that line
   // then shows the server's own timing so a rehearsal can read where the seconds
   // went (see raffleTimer_ in RaffleCode.gs).
+  // The lockout: while a request is in flight the whole page sits behind an
+  // overlay that names the step, counts the seconds, and after 8 s says it is
+  // our server and not their phone. Nothing can be tapped twice. The button
+  // and the line under it are updated as well, for when the overlay closes.
+  var overlay = document.getElementById('busyOverlay');
   function busy(button, label, noteId, what){
     button.disabled = true;
     button.textContent = label;
     var note = document.getElementById(noteId);
     var t0 = Date.now();
     note.textContent = what;
+    document.getElementById('busyWhat').textContent = what;
+    document.getElementById('busySecs').textContent = '0 s';
+    document.getElementById('busySlow').textContent = '';
+    overlay.classList.add('on');
     var iv = setInterval(function(){
       var s = Math.round((Date.now() - t0) / 1000);
+      document.getElementById('busySecs').textContent = s + ' s';
+      if (s >= 8) document.getElementById('busySlow').textContent =
+        'Still working. Our server is slow, not your phone. Do not go back or reload.';
       note.textContent = what + ' ' + s + ' s' +
-        (s >= 8 ? '. Still working. Our server is slow, not your phone. Keep this page open.' : '.');
+        (s >= 8 ? '. Still working. Our server is slow, not your phone.' : '.');
     }, 1000);
     return function(resetLabel, res){
       clearInterval(iv);
+      overlay.classList.remove('on');
       button.disabled = false;
       button.textContent = resetLabel;
       note.textContent = (IS_TEST && res && res.timing) ? timingLine_(res) : '';

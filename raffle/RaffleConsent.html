@@ -49,6 +49,19 @@
   .failbox .d { margin-top:4px; color:var(--muted); font-size:13px; word-break:break-word; }
   .failbox .alt { margin-top:8px; font-size:12.5px; color:var(--muted); }
   .failbox button { margin-top:10px; }
+  #failBanner { display:none; position:fixed; top:0; left:0; right:0; z-index:9998; background:#b3271e;
+                color:#fff; font-weight:700; font-size:14px; padding:12px 16px; text-align:center;
+                box-shadow:0 2px 8px rgba(0,0,0,.25); cursor:pointer; }
+  #failBanner.on { display:block; }
+  #busyOverlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; z-index:9997;
+                 background:rgba(21,70,74,.94); color:#fff; text-align:center; padding:40px 24px; }
+  #busyOverlay.on { display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  #busyOverlay .spin { width:46px; height:46px; border:4px solid rgba(255,255,255,.3); border-top-color:#fff;
+                       border-radius:50%; animation:spin .9s linear infinite; margin-bottom:20px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #busyOverlay .what { font-size:22px; font-weight:700; }
+  #busyOverlay .secs { margin-top:10px; font-size:16px; font-weight:700; }
+  #busyOverlay .slow { margin-top:16px; font-size:13.5px; opacity:.9; max-width:320px; min-height:20px; }
   .locknote { margin:-8px 0 14px; font-size:13px; color:var(--muted); font-weight:400; line-height:1.45; }
   input[readonly] { cursor:not-allowed; }
   .done { text-align:center; padding:8px 0 4px; }
@@ -57,6 +70,13 @@
 </style>
 </head>
 <body>
+<div id="failBanner" role="alert"></div>
+<div id="busyOverlay" role="status" aria-live="polite">
+  <div class="spin"></div>
+  <div class="what" id="busyWhat"></div>
+  <div class="secs" id="busySecs"></div>
+  <div class="slow" id="busySlow"></div>
+</div>
 <div class="wrap">
   <? if (isTest) { ?><div class="test">QA TEST MODE — not a real referral</div><? } ?>
 
@@ -111,6 +131,22 @@ var ENDPOINT = window.location.href.split('?')[0] + '?form=raffle';
 // so an Apps Script error page is reported with its own words, and only a
 // failed fetch is called a connection problem. onFail(info, retry) renders the
 // failed state; `retry` re-sends the identical payload.
+// Lockout while a request is in flight, and the loud banner on a failure.
+function lock(what) {
+  document.getElementById('failBanner').classList.remove('on');
+  var overlay = document.getElementById('busyOverlay');
+  var t0 = Date.now();
+  document.getElementById('busyWhat').textContent = what;
+  document.getElementById('busySecs').textContent = '0 s';
+  document.getElementById('busySlow').textContent = '';
+  overlay.classList.add('on');
+  var iv = setInterval(function () {
+    var s = Math.round((Date.now() - t0) / 1000);
+    document.getElementById('busySecs').textContent = s + ' s';
+    if (s >= 8) document.getElementById('busySlow').textContent = 'Still working. Do not reload; our server is slow, not your phone.';
+  }, 1000);
+  return function () { clearInterval(iv); overlay.classList.remove('on'); };
+}
 function post(payload, onDone, onFail) {
   var body = Object.assign({
     formType: 'raffle',
@@ -119,6 +155,10 @@ function post(payload, onDone, onFail) {
     website: ''            // honeypot, deliberately empty
   }, payload);
   var again = function () { post(payload, onDone, onFail); };
+  var unlock = lock(payload.decision === 'decline' ? 'Saving your answer.' : 'Confirming your details.');
+  var doneWrapped = onDone, failWrapped = onFail;
+  onDone = function (res) { unlock(); doneWrapped(res); };
+  onFail = function (info, retry) { unlock(); failWrapped(info, retry); };
   fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -200,6 +240,12 @@ function showFail(info, retry, retryLabel) {
   alt.textContent = 'If it fails again, reply to the email that brought you here and we will record your answer by hand.';
   box.appendChild(alt);
   e.appendChild(box);
+  var banner = document.getElementById('failBanner');
+  banner.textContent = info.title + ' Nothing was recorded. Tap for details and Retry.';
+  banner.onclick = function () { try { box.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (x) {} };
+  banner.classList.add('on');
+  try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch (x) {}
+  try { box.scrollIntoView({ block: 'center' }); } catch (x) {}
 }
 
 function finish(title, message) {

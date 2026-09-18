@@ -168,7 +168,7 @@ and a missing key both return an identical "Not found", so neither can be probed
   the Open House form, and every bcc copy counts (a code is 1, an invite is 3, a
   full referral chain about 14). Every send between 3:00 and 6:15 records the
   remaining quota; if the faster of the party-long and last-hour rates says it
-  runs out before entries close, **one** email goes to Durand and Ryan with the
+  runs out before entries close, **one** email goes to Durand with the
   rate and the projected time (`raffleWatchMailQuota_`). Independently, sends
   refuse once fewer than 40 recipients would remain (`RAFFLE_MAIL_RESERVE`), so
   the result, the winner email and alerts always have budget; the entrant is
@@ -439,7 +439,9 @@ page's title and first line of text. Only a failed `fetch` (no signal, DNS, a
 captive portal) is called a connection problem. The old message blamed the
 guest's phone for both.
 
-**Every failure is a failed state with a Retry.** A red block under the button:
+**Every failure is a failed state with a Retry, and it is loud.** A fixed red
+banner at the top of the page (tap it to jump to the block), a vibration where
+the phone allows it, and a red block under the button:
 what failed, the server's words, one **Retry** that re-sends the identical
 payload (nothing is retyped, the form is never reset on the way back), and the
 fallback ("find someone from TSG"). The button goes back to live, never stuck
@@ -463,8 +465,8 @@ bounded, formula-safe): where (phone/kiosk), which step, kind, HTTP status, what
 the guest saw, device. A network failure is logged only; a server-kind failure
 also emails Durand, at most once per 10 minutes.
 
-**Draw and send failures reach Durand AND Ryan** (`raffleAlertOps_`, to
-`RAFFLE_NOTIFY_EMAIL`, plus the host project's `sendErrorAlert`): the 6:15
+**Draw and send failures reach Durand, and only Durand** (`raffleAlertOps_`, to
+`RAFFLE_ALERT_EMAIL`; per Durand 2026-09-18, Ryan gets results, never errors): the 6:15
 trigger not completing (including an exception inside it, which used to die
 silently), the draw running but its result email failing (the alert carries the
 three names and phones in plain text), the winner email failing to send
@@ -488,8 +490,10 @@ laps `fub` / `sheet` / `mail` and the JSON carries `timing` (also in the
 Executions log as `Raffle timing verify: fub=…ms sheet=…ms total=…ms`). In
 **test mode** the form prints it under the button after each step, so a
 rehearsal reads the real numbers from the real deployment. Live, the button
-shows *Checking…* with a line underneath that says what is happening and counts
-the seconds, and after 8 s adds that it is the server, not the phone.
+shows *Checking…* and the whole page locks behind a full-screen overlay (spinner,
+the step's name, a seconds counter, and after 8 s that it is the server, not the
+phone). Nothing can be tapped twice; the overlay lifts when the server answers.
+The same lockout covers every request on the form and the console.
 
 The collapse worth doing, once the numbers say FUB is the bulk of it: write the
 sheet row first and push to FUB afterwards from a sweep (`raffleRetryFubFailures`
