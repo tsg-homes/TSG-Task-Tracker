@@ -909,3 +909,18 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   a time; before any deploy `git fetch origin main && git merge origin/main`, re-test, then ship;
   (3) never reuse a version number: look at `main` for the highest `TSG_CODE_VERSION` / `UI_VERSION`
   before bumping.
+- CHAT RULE (Durand, 2026-09-18 12:40 EDT): "use task titles not #s" — in chat, name tasks by their
+  title, never by id; ids stay in patches and code only.
+- Review pass 2026-09-18 (12:00-13:00 EDT, AskUserQuestion, four tasks per round): 38 open tasks
+  verified against Gmail/Calendar/Drive/GitHub first (three read-only agents), 13 stale ones
+  corrected by patch `patch-2026-09-18-live-state-corrections.json` (22 ops), then 40 decisions
+  written as `patch-2026-09-18-review-pass-A1/A2/B.json` (70 ops: adds, delegations to Claude,
+  merges of #257 into #249 and #272/#288 into new/existing tasks, deletes of #257/#272/#288/#295,
+  the SOP task's 31 steps reordered by due date). FINDINGS TO KEEP: (1) `meta.rejectedSaves` held
+  20 `stale_version` rejections: a dashboard save against a version the Routine had already moved
+  past is DROPPED with no retry, so Durand's edits vanish (his #259 update did); logged as a step on
+  the tracker feature task. (2) Every notes edit queues an enrich judgment, so a 22-op correction
+  patch queued ~30 requests (J52-J77) and `meta.judgments` reached 295 KB. (3) clasp's Google
+  token hits Workspace reauth (`invalid_rapt`) within hours: the Drive API cannot be driven from
+  the session's clasp credentials; large inbox patches go through the Drive connector, split
+  under ~30 KB per file (the Bash output cap that keeps them in context).
