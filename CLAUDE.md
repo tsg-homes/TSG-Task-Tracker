@@ -982,3 +982,8 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   (`COMMENT_MODE_PASSTHROUGH`, `commentModeSwallow_`); the other session's @83 carried UI .16, so
   the same number was never reused. Durand's timeline comment (cmu75irckg1r3n) answered and
   resolved by patch; the day-strip readability point is a step on the tracker feature task.
+- `reorder_subitems` (backend 2026-09-18.15, per Durand "word" to the reorder-op proposal): `{id, by:
+  'due'}` (stable sort by timelineEnd, undated last) or `{id, order: [old indices]}` (a permutation,
+  refused by name otherwise); steps untouched, parent logs `subitems-reordered`. Built because the
+  only other way to reorder was an `update_task` resending every step with its history (31 KB for the
+  SOP task), which the Drive connector cannot carry safely. First use: the SOP task's 31 steps by date.

@@ -266,6 +266,13 @@ carries the exec URL or the API token. The dashboard's "Judge now" prompt carrie
 three steps in short form, and both it and "Send open comments" open the working session
 set under Settings > General (prompt copied, session opened) when one is set.
 
+## Reordering steps (2026-09-18)
+
+`reorder_subitems {id, by: "due"}` sorts a task's steps by due date (stable, undated last);
+`{id, order: [old indices]}` applies an explicit permutation. Nothing on the steps changes and
+the parent logs `subitems-reordered`. Use it instead of an `update_task` carrying the whole
+`subitems` array, which resends every step's history and is easy to corrupt.
+
 ## Git mirrors what is live (2026-09-17)
 
 `npm run deploy` refuses a dirty tree (uncommitted changes in the four pushed files) unless

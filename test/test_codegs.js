@@ -1868,6 +1868,23 @@ section('Retry / dismiss a filed inbox patch (2026-09-17)');
   sandbox.DriveApp.getFolderById = savedFolder;
 }
 
+section('reorder_subitems (2026-09-18)');
+{
+  const mk = (t, due) => ({ title: t, status: 'Not Started', timelineEnd: due, history: [{ ts: '2026-09-16T00:00:00Z', field: 'created', from: null, to: null }] });
+  const d = { meta: { docVersion: 1, next_id: 9 }, tasks: [ { id: 4, title: 'SOPs', owner: 'Durand', status: 'In Progress', tags: [], history: [], subitems: [mk('gate', '2026-11-20'), mk('early', '2026-09-25'), mk('undated', ''), mk('mid', '2026-10-02'), mk('also-early', '2026-09-25')] } ] };
+  sandbox.applyDataPatch_(d, { op: 'reorder_subitems', id: 4, by: 'due', source: 'Durand' });
+  check('by: due sorts steps by timelineEnd, stable for ties, undated last', d.tasks[0].subitems.map(s => s.title).join(',') === 'early,also-early,mid,gate,undated');
+  check('the steps themselves are untouched (history kept) and the parent logs the reorder', d.tasks[0].subitems[0].history.length === 1 && d.tasks[0].history.some(h => h.field === 'subitems-reordered' && h.to === 'by due date' && h.source === 'Durand'));
+  sandbox.applyDataPatch_(d, { op: 'reorder_subitems', id: 4, order: [4, 3, 2, 1, 0], source: 'Durand' });
+  check('an explicit permutation is applied', d.tasks[0].subitems.map(s => s.title).join(',') === 'undated,gate,mid,also-early,early');
+  let bad = false; try { sandbox.applyDataPatch_(d, { op: 'reorder_subitems', id: 4, order: [0, 1, 1, 3, 4] }); } catch (e) { bad = /permutation/.test(e.message); }
+  check('a non-permutation is refused by name', bad && d.tasks[0].subitems.length === 5);
+  const n = d.tasks[0].history.length;
+  sandbox.applyDataPatch_(d, { op: 'reorder_subitems', id: 4, order: [0, 1, 2, 3, 4] });
+  check('an identity order logs nothing', d.tasks[0].history.length === n);
+  check('the op is in the accepted list', sandbox.TSG_DATA_OPS.includes('reorder_subitems'));
+}
+
 section('An answered estimate on a task with steps is the TOTAL: own share = total minus open steps (2026-09-18)');
 {
   const NOW = '2026-09-18T06:20:00Z';

@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.14';
+const TSG_CODE_VERSION = '2026-09-18.15';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -607,7 +607,7 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
 // session that sends an op the DEPLOYED script does not know yet reads exactly why.
 var TSG_DATA_OPS = ['add_task', 'update_task', 'update_subitem', 'add_subitem', 'delete_task', 'bulk', 'set_meta',
   'replace_all', 'add_comment', 'update_comment', 'judgment', 'request_tidy', 'clear_tidy_proposal', 'request_steps',
-  'log_time', 'retry_filed', 'dismiss_inbox_error', 'remove_dismissed_google_task_ids'];
+  'log_time', 'retry_filed', 'dismiss_inbox_error', 'remove_dismissed_google_task_ids', 'reorder_subitems'];
 // In-place restore of a document from a JSON snapshot: the caller's reference stays valid.
 function tsgRestoreDoc_(doc, snapJson) {
   var snap = JSON.parse(snapJson);
@@ -1090,6 +1090,32 @@ function applyDataPatch_(doc, patch) {
     // from the retired Google Tasks import. Single-purpose and parameter-free by design —
     // not a general "clear any meta field" op.
     delete doc.meta.dismissedGoogleTaskIds;
+  } else if (patch.op === 'reorder_subitems') {
+    // Reorder a task's steps without resending them (2026-09-18, per Durand "reorder by date"
+    // on the SOP task: a full-array update_task carried 31 KB of steps and histories, too big
+    // and too easy to corrupt). {id, order: [old indices]} is an explicit permutation;
+    // {id, by: 'due'} is a stable sort by timelineEnd (undated steps last). Nothing on the steps
+    // changes; the parent logs `subitems-reordered`.
+    const rt = doc.tasks.find(function(x) { return x.id === patch.id; });
+    if (!rt) throw new Error('reorder_subitems: task id not found: ' + patch.id);
+    const rsubs = Array.isArray(rt.subitems) ? rt.subitems : [];
+    let order;
+    if (patch.by === 'due') {
+      order = rsubs.map(function(s, i) { return i; }).sort(function(a, b) {
+        const da = rsubs[a].timelineEnd || '9999-12-31', db = rsubs[b].timelineEnd || '9999-12-31';
+        return da < db ? -1 : da > db ? 1 : a - b;
+      });
+    } else {
+      order = Array.isArray(patch.order) ? patch.order.map(Number) : null;
+      const okPerm = order && order.length === rsubs.length && order.slice().sort(function(a, b) { return a - b; }).every(function(v, i) { return v === i; });
+      if (!okPerm) throw new Error('reorder_subitems: order must be a permutation of 0..' + (rsubs.length - 1) + ' (or pass by: "due")');
+    }
+    const before = rsubs.map(function(s) { return s.title; });
+    rt.subitems = order.map(function(i) { return rsubs[i]; });
+    if (order.some(function(v, i) { return v !== i; })) {
+      rt.history = rt.history || [];
+      rt.history.push({ ts: now, field: 'subitems-reordered', from: before.join(' | ').slice(0, 300), to: (patch.by === 'due' ? 'by due date' : 'order ' + order.join(',')), source: patch.source || 'unknown' });
+    }
   } else if (patch.op === 'update_subitem') {
     // One subitem by parent id + index (subitems have no ids). expectTitle guards against
     // the index having shifted under a concurrent reorder: mismatch -> rejected, not misapplied.
