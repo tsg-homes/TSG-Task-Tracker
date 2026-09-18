@@ -710,3 +710,16 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   on every write, `tsgOpenSubitemHours_` adds it per open Claude step, `tsgConfirmHoursFor_` gives
   the scheduler's reserve (0.5 h person / Settings figure Claude / 0). First key of the
   Settings-backed capacity values (the rest of the tranche-4 capacity knobs go here too).
+- TEAM VIEWS ARE OFF-LIMITS (Durand, 2026-09-17 22:40 EDT: "nothing should be editing the team
+  views, I need to build them separately"): do not edit `person.html` or the person-page RPC
+  surface in Code.gs (`tsgPersonRpc`, `tsgPersonSlice_`, `TSG_PERSON_*_FIELDS`) in any tranche;
+  Durand builds the team views himself. Unchanged since d80f280.
+- Review placement (backend 2026-09-18.4, UI 2026-09-18.4, per Durand "same day preferred, at
+  completion, if approval is required account for that and a post review update session"): a
+  Claude-delegated step's review (`claudeReviewMin`) is reserved on the day it FINISHES, not the
+  next workday; a person handoff keeps 0.5 h the next workday. New hand-set field `needsApproval`
+  (tasks and steps, in both DIFF_FIELDS, "approval" checkbox beside every delegate select, never
+  set by enrichment): the item also gets a post-review update session (`postReviewUpdateMin`,
+  default 10) `approvalWaitDays` (default 1) workdays after it finishes, in the roll-up and the
+  scheduler (`tsgReserveReviewSlices_`, `tsgAddWorkdays_`). Settings > Capacity holds all three
+  (`setCapacityKey` merges one key into `meta.capacity`).

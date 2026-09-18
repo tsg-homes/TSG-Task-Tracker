@@ -1069,8 +1069,23 @@ setTimeout(async () => {
     const body = JSON.parse(p.body);
     if (body.fields.capacity.claudeReviewMin !== 12 || body.fields.capacity.other !== 1) throw new Error('capacity ' + JSON.stringify(body.fields));
     w.renderSettings();
-    if (!doc.getElementById('claudeReviewMinInput')) throw new Error('settings input missing');
+    if (!doc.getElementById('claudeReviewMinInput') || !doc.getElementById('approvalWaitDaysInput') || !doc.getElementById('postReviewUpdateMinInput')) throw new Error('settings inputs missing');
+    w.__posts = []; w.setCapacityKey('approvalWaitDays', '2');
+    const p2 = JSON.parse((w.__posts || []).find(x => x.body && x.body.includes('set_meta')).body);
+    if (p2.fields.capacity.approvalWaitDays !== 2 || p2.fields.capacity.claudeReviewMin !== 12) throw new Error('merge lost a key ' + JSON.stringify(p2.fields));
     w.eval('RAW_META.capacity = {}');
+  });
+  tryCall('needs-approval toggle on a step and on the task logs history and saves', () => {
+    const t = w.findTask(1);
+    if (!t.subitems || !t.subitems.length) t.subitems = [{ title: 'Step', status: 'Not Started' }];
+    w.setNeedsApproval(1, 0, true);
+    if (t.subitems[0].needsApproval !== true || !t.history.some(h => h.field === 'subitem-needsApproval' && h.source === 'Durand')) throw new Error('step flag not set/logged');
+    w.setNeedsApproval(1, null, true);
+    if (t.needsApproval !== true || !t.history.some(h => h.field === 'needsApproval')) throw new Error('task flag not set/logged');
+    w.openTaskCard(1);
+    if (!doc.getElementById('taskModal').innerHTML.includes('approval')) throw new Error('toggle not rendered on the card');
+    w.closeTaskCard();
+    w.setNeedsApproval(1, 0, false); w.setNeedsApproval(1, null, false);
   });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));

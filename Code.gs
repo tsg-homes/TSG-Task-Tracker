@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.3';
+const TSG_CODE_VERSION = '2026-09-18.4';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -3247,9 +3247,9 @@ function backupTrackerFile_(key, payload) {
 // edits (replace_all) or 'unknown' if a caller genuinely didn't say. tags is diffed as
 // one whole-array entry rather than per-tag; every other field here is a plain scalar.
 var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned', 'dueTime', 'remindAt', 'dependsNone', 'actualHours'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned', 'dueTime', 'remindAt', 'dependsNone', 'actualHours', 'needsApproval'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done', 'location', 'travelMode', 'travelMethod', 'dueTime', 'remindAt', 'actualHours'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done', 'location', 'travelMode', 'travelMethod', 'dueTime', 'remindAt', 'actualHours', 'needsApproval'];
 
 function tsgValuesEqual_(a, b) {
   if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a || []) === JSON.stringify(b || []);
@@ -5136,14 +5136,33 @@ function tsgHandoffConfirmNeeded_(s) {
 // a review cost, but a small, visible, adjustable one: meta.capacity.claudeReviewMin minutes
 // (Settings > Capacity; default 5 = one turn), charged on his day the workday after the step
 // finishes, exactly where the person slice lands. 0 turns it off.
-var TSG_CLAUDE_REVIEW_MIN_DEFAULT = 5;
-var TSG_CLAUDE_REVIEW_MIN = TSG_CLAUDE_REVIEW_MIN_DEFAULT;
+// Where the review sits (Durand, 2026-09-17 22:40 EDT: "same day preferred, at completion, if
+// approval is required account for that and a post review update session"): the review is
+// charged on the day the Claude step FINISHES, not the next workday; a step flagged
+// needsApproval also charges a post-review update session (postReviewUpdateMin) after
+// approvalWaitDays workdays, for the round of changes that follows the approver's notes.
+// All three live in meta.capacity (Settings > Capacity).
+var TSG_CAPACITY_DEFAULTS = { claudeReviewMin: 5, approvalWaitDays: 1, postReviewUpdateMin: 10 };
+var TSG_CLAUDE_REVIEW_MIN = TSG_CAPACITY_DEFAULTS.claudeReviewMin;
+var TSG_APPROVAL_WAIT_DAYS = TSG_CAPACITY_DEFAULTS.approvalWaitDays;
+var TSG_POST_REVIEW_MIN = TSG_CAPACITY_DEFAULTS.postReviewUpdateMin;
+function tsgCapacityNumber_(cap, key) {
+  var v = Number(cap && cap[key]);
+  return (isFinite(v) && v >= 0) ? v : TSG_CAPACITY_DEFAULTS[key];
+}
 function tsgReadCapacity_(doc) {
   var cap = (doc && doc.meta && doc.meta.capacity) || {};
-  var m = Number(cap.claudeReviewMin);
-  TSG_CLAUDE_REVIEW_MIN = (isFinite(m) && m >= 0) ? m : TSG_CLAUDE_REVIEW_MIN_DEFAULT;
+  TSG_CLAUDE_REVIEW_MIN = tsgCapacityNumber_(cap, 'claudeReviewMin');
+  TSG_APPROVAL_WAIT_DAYS = Math.round(tsgCapacityNumber_(cap, 'approvalWaitDays'));
+  TSG_POST_REVIEW_MIN = tsgCapacityNumber_(cap, 'postReviewUpdateMin');
 }
 function tsgClaudeReviewHours_() { return Math.round(TSG_CLAUDE_REVIEW_MIN / 60 * 100) / 100; }
+function tsgPostReviewHours_() { return Math.round(TSG_POST_REVIEW_MIN / 60 * 100) / 100; }
+function tsgAddWorkdays_(iso, n) {
+  var d = iso, guard = 0;
+  while (n > 0 && guard++ < 60) { d = tsgAddDays_(d, 1); if (tsgIsWorkdayIso_(d)) n--; }
+  return d;
+}
 // Same rule for a whole task: the person it sits with is its delegate, else its owner.
 function tsgTaskHandoffConfirmNeeded_(t) {
   var who = String(tsgTaskDelegate_(t) || (t && t.owner) || '').trim().toLowerCase();
@@ -5249,7 +5268,7 @@ function tsgOpenSubitemHours_(t) {
     if (!s.done) {
       if (s.estHours != null && !isNaN(s.estHours)) hours += Number(s.estHours);
       if (tsgHandoffConfirmNeeded_(s)) hours += 0.5; // confirm-the-handoff cost, invisible (people only)
-      else if (tsgIsClaudeDelegate_(s)) hours += tsgClaudeReviewHours_(); // review of a Claude step (Settings > Capacity)
+      else if (tsgIsClaudeDelegate_(s)) hours += tsgClaudeReviewHours_() + (s.needsApproval ? tsgPostReviewHours_() : 0); // review of a Claude step, plus the post-approval update session (Settings > Capacity)
       if (s.timelineEnd && (!latestOpenEnd || s.timelineEnd > latestOpenEnd)) latestOpenEnd = s.timelineEnd;
     }
   });
@@ -5308,14 +5327,25 @@ function tsgCaptureExplicitEditsFromSave_(prevTasks, nextTasks) {
  * that slice of Durand's day as already spoken for. No-ops if the finish date is in the
  * past relative to today (nothing to reserve for a handoff that already happened).
  */
-function tsgReserveConfirmCapacity_(addLoad, today, finishIso, hours) {
+function tsgReserveConfirmCapacity_(addLoad, today, finishIso, hours, sameDay) {
   if (!finishIso) return;
   var h = (typeof hours === 'number') ? hours : 0.5;
   if (!(h > 0)) return;
-  var d = tsgAddDays_(finishIso, 1);
+  var d = sameDay ? finishIso : tsgAddDays_(finishIso, 1);
   var guard = 0;
   while (!tsgIsWorkdayIso_(d) && guard++ < 14) d = tsgAddDays_(d, 1);
   if (d >= today) addLoad(d, h);
+}
+// Every slice a finished non-Durand item puts on his day: a person handoff is confirmed the
+// next workday (0.5 h); a Claude step is reviewed the SAME day it finishes (Settings minutes),
+// and when it needs approval a post-review update session lands approvalWaitDays workdays later.
+function tsgReserveReviewSlices_(addLoad, today, finishIso, item, whole) {
+  if (!finishIso || !item) return;
+  if (whole ? tsgTaskHandoffConfirmNeeded_(item) : tsgHandoffConfirmNeeded_(item)) { tsgReserveConfirmCapacity_(addLoad, today, finishIso, 0.5); return; }
+  var claude = whole ? String(tsgTaskDelegate_(item) || '').trim().toLowerCase() === 'claude' : tsgIsClaudeDelegate_(item);
+  if (!claude) return;
+  tsgReserveConfirmCapacity_(addLoad, today, finishIso, tsgClaudeReviewHours_(), true);
+  if (item.needsApproval) tsgReserveConfirmCapacity_(addLoad, today, tsgAddWorkdays_(finishIso, TSG_APPROVAL_WAIT_DAYS), tsgPostReviewHours_(), true);
 }
 // The slice a finished non-Durand item costs him the next workday: 0.5 h for a person, the
 // Settings figure for Claude, nothing otherwise.
@@ -5629,7 +5659,7 @@ function tsgAutoScheduleDoc_(doc) {
       // still needs to be reserved on his calendar the day after, same as a freshly
       // placed one below.
       var existingSpan = tsgScheduledSpan_(r);
-      if (existingSpan) tsgReserveConfirmCapacity_(addLoad, today, existingSpan.end, tsgConfirmHoursFor_(r, false));
+      if (existingSpan) tsgReserveReviewSlices_(addLoad, today, existingSpan.end, r, false);
       return;
     }
     var hours = tsgItemHours_(r);
@@ -5831,7 +5861,7 @@ function tsgAutoScheduleDoc_(doc) {
       t.history = t.history || [];
       t.history.push({ ts: new Date().toISOString(), field: 'timelineEnd', from: before || null, to: t.timelineEnd, note: 'auto-scheduled' });
       finishDate[t.id] = t.timelineEnd;
-      if (!isDurandWork) tsgReserveConfirmCapacity_(addLoad, today, t.timelineEnd, tsgConfirmHoursFor_(t, true));
+      if (!isDurandWork) tsgReserveReviewSlices_(addLoad, today, t.timelineEnd, t, true);
     } else {
       // A subitem: it carries no history of its own, so the note goes on the parent
       // task instead, naming which subitem it was. Nothing outside its own task ever
@@ -5844,7 +5874,7 @@ function tsgAutoScheduleDoc_(doc) {
         // Freshly placed non-Durand step — reserve its confirm slice (0.5 h for a person, the
         // Settings review minutes for Claude) on Durand's capacity pool now, so any items still
         // left in the queue this same run see that slice of his day as already spoken for.
-        tsgReserveConfirmCapacity_(addLoad, today, t.timelineEnd, tsgConfirmHoursFor_(t, false));
+        tsgReserveReviewSlices_(addLoad, today, t.timelineEnd, t, false);
       }
     }
     placed++;

@@ -1760,6 +1760,25 @@ section('Confirm-the-handoff slice is for people, not Claude (2026-09-18)');
   check('tsgConfirmHoursFor_: person 0.5, Claude the Settings figure, unassigned 0', sandbox.tsgConfirmHoursFor_({ delegate: 'Marj' }, false) === 0.5 && sandbox.tsgConfirmHoursFor_({ delegate: 'Claude' }, false) === 0.25 && sandbox.tsgConfirmHoursFor_({}, false) === 0 && sandbox.tsgConfirmHoursFor_({ owner: 'Durand', delegate: 'Claude' }, true) === 0.25);
   sandbox.tsgReadCapacity_({ meta: {} });
   check('no capacity in meta falls back to the 5-minute default', sandbox.tsgOpenSubitemHours_(t).hours === 4.58);
+  t.subitems[0].needsApproval = true;
+  check('a Claude step that needs approval also carries the post-review update session (10 min default): 4.75', sandbox.tsgOpenSubitemHours_(t).hours === 4.75);
+  t.subitems[0].needsApproval = false;
+  // where the slices land: person next workday; Claude the same day; approval -> post-review after the wait
+  const loads = []; const addLoad = (d, h) => loads.push([d, Math.round(h * 100) / 100]);
+  sandbox.tsgReserveReviewSlices_(addLoad, '2026-09-01', '2026-09-25', { delegate: 'Marj' }, false);
+  check('person handoff: 0.5 h on the next workday (Fri 9/25 -> Mon 9/28)', loads.length === 1 && loads[0][0] === '2026-09-28' && loads[0][1] === 0.5);
+  loads.length = 0;
+  sandbox.tsgReserveReviewSlices_(addLoad, '2026-09-01', '2026-09-25', { delegate: 'Claude' }, false);
+  check('Claude step: review the SAME day it finishes', loads.length === 1 && loads[0][0] === '2026-09-25' && loads[0][1] === 0.08);
+  loads.length = 0;
+  sandbox.tsgReserveReviewSlices_(addLoad, '2026-09-01', '2026-09-25', { delegate: 'Claude', needsApproval: true }, false);
+  check('...needing approval: review same day + post-review update one workday later (Mon 9/28, 10 min)', loads.length === 2 && loads[0][0] === '2026-09-25' && loads[1][0] === '2026-09-28' && loads[1][1] === 0.17);
+  loads.length = 0;
+  sandbox.tsgReadCapacity_({ meta: { capacity: { approvalWaitDays: 3, postReviewUpdateMin: 30 } } });
+  sandbox.tsgReserveReviewSlices_(addLoad, '2026-09-01', '2026-09-25', { owner: 'Durand', delegate: 'Claude', needsApproval: true }, true);
+  check('whole Claude task, Settings wait 3 workdays and 30 min: post-review lands Wed 9/30 at 0.5 h', loads.length === 2 && loads[1][0] === '2026-09-30' && loads[1][1] === 0.5);
+  sandbox.tsgReadCapacity_({ meta: {} });
+  check('needsApproval is a diffed field on tasks and steps', sandbox.TSG_TASK_DIFF_FIELDS.includes('needsApproval') && sandbox.TSG_SUBITEM_DIFF_FIELDS.includes('needsApproval'));
   check('whole task: delegated to Marj yes, delegated to Claude no, owned by Marj with no delegate yes, Durand no', sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand', delegate: 'Marj' }) && !sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand', delegate: 'Claude' }) && sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Marj' }) && !sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand' }));
   check('tsgHandoffConfirmNeeded_: Marj yes, Claude no, Durand no, none no', sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Marj' }) && !sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Claude' }) && !sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Durand' }) && !sandbox.tsgHandoffConfirmNeeded_({}));
 }

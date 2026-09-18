@@ -1568,7 +1568,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.3';
+  const UI_VERSION = '2026-09-18.4';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -3055,7 +3055,7 @@
     renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
   function delegateSelect(taskId, idx, current) {
-    return `<select class="person-select sub-person-select" data-id="${taskId}" data-idx="${idx}" onchange="onDelegateChange(this)" onclick="event.stopPropagation()">${personOptions(current, true)}</select>`;
+    return `<select class="person-select sub-person-select" data-id="${taskId}" data-idx="${idx}" onchange="onDelegateChange(this)" onclick="event.stopPropagation()">${personOptions(current, true)}</select>${approvalToggleHtml_(taskId, idx)}`;
   }
   function onOwnerChange(el) {
     const id = Number(el.dataset.id);
@@ -6389,7 +6389,7 @@
       `<div class="modal-row"><b>Merge</b><span class="modal-tags"><select class="due-input modal-merge-select" id="mergeTarget"><option value="">Merge this task into…</option>${mergeOptionsHtml_(t)}</select><button type="button" class="btn small" onclick="mergeTaskInto(${id})">Merge</button></span></div>`,
       `<div class="modal-row"><b>Depends on</b><span class="modal-tags">${dependsChipsHtml_(t)}${t.dependsNone && !dependsList(t).length ? `<span class="hist-time">none, cleared by you (Claude won't infer one) <button type="button" class="icon-btn" onclick="allowDependsInfer(${id})" title="Let Claude infer a dependency again">&#8635;</button></span>` : ''}<select class="due-input modal-depends-select" onchange="modalAddDepends(${id}, this)"><option value="">+ add a task this waits on…</option>${dependsOptionsHtml_(t)}</select></span></div>`,
       `<div class="modal-row"><b>Owner</b><span class="modal-owner-wrap" title="Accountable for this task — confirming delegated subtasks are actually done is the owner's job">${avatarHtml(t.owner, 'lg')}${ownerSelect(id, t.owner)}</span></div>`,
-      `<div class="modal-row"><b>Delegate</b><span class="modal-owner-wrap" title="Who is doing this task. It appears on their own page (subtasks can also be delegated one by one below).">${avatarHtml(taskDelegate(t), 'lg')}${taskDelegateSelect(id, taskDelegate(t))}</span></div>`,
+      `<div class="modal-row"><b>Delegate</b><span class="modal-owner-wrap" title="Who is doing this task. It appears on their own page (subtasks can also be delegated one by one below).">${avatarHtml(taskDelegate(t), 'lg')}${taskDelegateSelect(id, taskDelegate(t))}${approvalToggleHtml_(id, null)}</span></div>`,
       `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}</div>`,
       `<div class="modal-row"><b>Priority</b>${modalPillSelect('priority', t.priority, id)}</div>`,
       `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Actionable Task')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,
@@ -7227,13 +7227,31 @@
   }
   // Settings > Capacity (2026-09-17, per Durand "add the extra minute"): meta.capacity is a
   // server-read object; the dashboard merges one key at a time so later keys survive.
-  function claudeReviewMin_() { const v = Number((RAW_META.capacity || {}).claudeReviewMin); return (isFinite(v) && v >= 0) ? v : 5; }
-  async function setClaudeReviewMin(val) {
+  // Needs approval (2026-09-17, per Durand): a Claude-delegated item reviewed at completion that
+  // also has to pass an approver gets a post-review update session scheduled after the approval
+  // wait (Settings > Capacity). The flag is hand-set here; enrichment never touches it.
+  function approvalToggleHtml_(taskId, idx) {
+    const t = findTask(taskId); if (!t) return '';
+    const item = idx == null ? t : ((t.subitems || [])[idx] || null); if (!item) return '';
+    return ` <label class="hist-time" title="Needs approval: reviewed at completion, then a post-review update session after the approval wait (Settings > Capacity)" onclick="event.stopPropagation()"><input type="checkbox" ${item.needsApproval ? 'checked' : ''} onchange="setNeedsApproval(${taskId}, ${idx == null ? 'null' : idx}, this.checked)"> approval</label>`;
+  }
+  function setNeedsApproval(taskId, idx, on) {
+    const t = findTask(taskId); if (!t) return;
+    const item = idx == null ? t : ((t.subitems || [])[idx] || null); if (!item) return;
+    const before = !!item.needsApproval;
+    item.needsApproval = !!on;
+    if (before !== !!on) logHistory(t, idx == null ? 'needsApproval' : 'subitem-needsApproval', idx == null ? String(before) : item.title, String(!!on));
+    renderAll(); if (currentModalTaskId === taskId) openTaskCard(taskId); scheduleSave();
+  }
+  function capacityValue_(key) { const d = { claudeReviewMin: 5, approvalWaitDays: 1, postReviewUpdateMin: 10 }; const v = Number((RAW_META.capacity || {})[key]); return (isFinite(v) && v >= 0) ? v : d[key]; }
+  async function setCapacityKey(key, val) {
     const n = Math.max(0, Math.round(Number(val) || 0));
-    RAW_META.capacity = Object.assign({}, RAW_META.capacity || {}, { claudeReviewMin: n });
+    RAW_META.capacity = Object.assign({}, RAW_META.capacity || {}, { [key]: n });
     await postCommentOp_({ op: 'set_meta', fields: { capacity: RAW_META.capacity }, source: 'Durand' });
     setSyncStatus('saved', 'Capacity saved');
   }
+  function claudeReviewMin_() { const v = Number((RAW_META.capacity || {}).claudeReviewMin); return (isFinite(v) && v >= 0) ? v : 5; }
+  function setClaudeReviewMin(val) { return setCapacityKey('claudeReviewMin', val); }
   function inboxErrorsHtml_() {
     const errs = (RAW_META.inboxErrors || []).slice(-10).reverse();
     if (!errs.length) return '<div class="history-empty">None recorded.</div>';
@@ -7275,8 +7293,10 @@
         <div class="ruleset-block-head" style="margin-top:12px;"><h3>Reminder notifications</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b> <button type="button" class="btn small" onclick="ensureNotifyPermission_().then(p => { const el = document.getElementById('notifyState'); if (el) el.textContent = p; })">Enable</button></div>
         <div class="ruleset-block-head" style="margin-top:12px;"><h3>Capacity</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">Minutes of your attention charged the workday after a Claude-delegated step finishes (its review). A person-delegated step always costs 30 minutes; 0 turns the Claude review off.</div>
-        <label class="hist-time">Review of a Claude step, minutes <input type="number" min="0" step="1" class="due-input modal-due" id="claudeReviewMinInput" style="width:70px;" value="${escapeHtml(String(claudeReviewMin_()))}" onchange="setClaudeReviewMin(this.value)"></label>
+        <div class="history-empty" style="margin-bottom:6px;">A Claude-delegated step is reviewed by you on the day it finishes. One that needs approval also gets a post-review update session (the round of changes after the approver's notes) after the approval wait. A person-delegated step always costs 30 minutes the next workday. 0 turns a slice off.</div>
+        <label class="hist-time">Review of a Claude step, minutes <input type="number" min="0" step="1" class="due-input modal-due" id="claudeReviewMinInput" style="width:70px;" value="${escapeHtml(String(capacityValue_('claudeReviewMin')))}" onchange="setCapacityKey('claudeReviewMin', this.value)"></label>
+        <label class="hist-time" style="margin-left:12px;">Approval wait, workdays <input type="number" min="0" step="1" class="due-input modal-due" id="approvalWaitDaysInput" style="width:60px;" value="${escapeHtml(String(capacityValue_('approvalWaitDays')))}" onchange="setCapacityKey('approvalWaitDays', this.value)"></label>
+        <label class="hist-time" style="margin-left:12px;">Post-review update session, minutes <input type="number" min="0" step="1" class="due-input modal-due" id="postReviewUpdateMinInput" style="width:70px;" value="${escapeHtml(String(capacityValue_('postReviewUpdateMin')))}" onchange="setCapacityKey('postReviewUpdateMin', this.value)"></label>
         <div class="ruleset-block-head" style="margin-top:12px;"><h3>Claude Code repo</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">Optional owner/repo the "Code" and "Code (cloud)" buttons on a Claude task open on (e.g. tsg-homes/task-tracker). Cowork sessions never need one.</div>
         <input type="text" class="text-input" id="claudeRepoInput" placeholder="owner/repo" value="${escapeHtml(CLAUDE_REPO)}" onblur="setClaudeRepo(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
