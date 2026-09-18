@@ -1313,6 +1313,38 @@ section('Comments ops and the Tidy proposal (2026-09-16)');
   let threw = false; try { sandbox.applyDataPatch_(d, { op: 'add_comment', comment: { text: '  ' } }); } catch (e) { threw = true; }
   check('add_comment refuses empty text', threw);
 
+  // Comments route to the pinned Claude feature task and the judgment queue (2026-09-18)
+  const fd = { meta: { docVersion: 1, next_id: 10, judgments: [] }, tasks: [
+    { id: 1, title: 'Plan the fall mailer', owner: 'Durand', status: 'In Progress', priority: 'Medium', taskType: 'Actionable Task', group: 'Marketing', tags: [], history: [], subitems: [{ title: 'Pick the vendor', status: 'Not Started', history: [] }] },
+    { id: 5, title: '@Claude - Track all Task Tracker Feature/Bug Requests/Reports Here', owner: 'Durand', delegate: 'Claude', pinned: true, status: 'In Progress', priority: 'High', taskType: 'Claude', group: 'Systems', tags: [], history: [], subitems: [] } ] };
+  sandbox.applyDataPatch_(fd, { op: 'add_comment', comment: { text: 'esc should end the commenting\nsecond line of detail', author: 'Durand', anchor: { kind: 'element', label: 'THE STAWASZ GROUP Internal Use Only', path: 'div.wrap' } }, source: 'Durand' });
+  const uiC = fd.meta.comments[0];
+  check('a comment on the page itself lands as a Claude-delegated step on the pinned feature task, stamped with the comment id', fd.tasks[1].subitems.length === 1 && fd.tasks[1].subitems[0].title === 'esc should end the commenting' && fd.tasks[1].subitems[0].delegate === 'Claude' && fd.tasks[1].subitems[0].commentId === uiC.id && /div\.wrap/.test(fd.tasks[1].subitems[0].notes));
+  check('...and is queued as a comment judgment pointing at that task', fd.meta.judgments.length === 1 && fd.meta.judgments[0].kind === 'comment' && fd.meta.judgments[0].commentId === uiC.id && fd.meta.judgments[0].taskId === 5 && fd.meta.judgments[0].featureStep === true && /esc should/.test(fd.meta.judgments[0].text));
+  sandbox.applyDataPatch_(fd, { op: 'add_comment', comment: { text: 'these two should be up by the settings', author: 'Durand', anchor: { kind: 'element', label: 'header', path: 'div.wrap' } }, source: 'Durand' });
+  check('a second page comment keeps its own request (dedupe is per comment, not per task)', fd.meta.judgments.length === 2 && fd.tasks[1].subitems.length === 2);
+  sandbox.applyDataPatch_(fd, { op: 'add_comment', comment: { text: 'is this the right vendor?', author: 'Durand', anchor: { kind: 'sub', id: 1, idx: 0, label: 'Plan the fall mailer → Pick the vendor' } }, source: 'Durand' });
+  const subC = fd.meta.comments[2];
+  check('a comment on a task or step is queued (task id + step index) but never becomes a feature step', fd.meta.judgments.length === 3 && fd.meta.judgments[2].taskId === 1 && fd.meta.judgments[2].subIdx === 0 && fd.meta.judgments[2].featureStep === false && fd.tasks[1].subitems.length === 2);
+  sandbox.applyDataPatch_(fd, { op: 'add_comment', comment: { text: 'Done: vendor confirmed.', author: 'Claude', replyTo: subC.id, anchor: subC.anchor }, source: 'Claude' });
+  check('a Claude reply is never queued or turned into a step', fd.meta.judgments.length === 3 && fd.tasks[1].subitems.length === 2);
+  const jq = fd.meta.judgments.find(r => r.commentId === uiC.id);
+  sandbox.applyDataPatch_(fd, { op: 'judgment', id: jq.id, source: 'Claude (queue)', answer: { reply: 'Built: Esc now ends comment mode.', resolved: true } });
+  check('answering a comment request with {reply, resolved} posts the Claude reply on the same anchor, resolves the original and drops the request', fd.meta.comments.some(c => c.replyTo === uiC.id && c.author === 'Claude' && /Esc now ends/.test(c.text)) && uiC.resolved === true && uiC.resolvedBy === 'Claude (queue)' && !fd.meta.judgments.some(r => r.id === jq.id));
+  sandbox.applyDataPatch_(fd, { op: 'update_comment', id: subC.id, fields: { resolved: true }, source: 'Durand' });
+  check('resolving a comment by hand drops its pending request', !fd.meta.judgments.some(r => r.commentId === subC.id) && fd.meta.judgments.length === 1);
+  const fd2 = { meta: { docVersion: 1, next_id: 10, judgments: [] }, tasks: [ { id: 7, title: 'Some task', owner: 'Durand', status: 'Not Started', tags: [], history: [], subitems: [] } ] };
+  sandbox.applyDataPatch_(fd2, { op: 'add_comment', comment: { text: 'page note with no feature task', author: 'Durand', anchor: { kind: 'element', label: 'header' } }, source: 'Durand' });
+  check('with no pinned feature task the page comment is still queued (taskId 0) and no step is invented', fd2.meta.judgments.length === 1 && fd2.meta.judgments[0].taskId === 0 && fd2.tasks[0].subitems.length === 0);
+  fd2.meta.featureTaskId = 7;
+  sandbox.applyDataPatch_(fd2, { op: 'add_comment', comment: { text: 'meta.featureTaskId wins', author: 'Durand', anchor: { kind: 'tile', label: 'Open' } }, source: 'Durand' });
+  check('meta.featureTaskId names the feature task explicitly', fd2.tasks[0].subitems.length === 1 && fd2.tasks[0].subitems[0].commentId === fd2.meta.comments[1].id);
+  // update_subitem accepts subIdx as an alias for index (live-only fix 2026-09-18.9, ported)
+  sandbox.applyDataPatch_(fd, { op: 'update_subitem', id: 1, subIdx: 0, fields: { status: 'In Progress' }, source: 'Claude' });
+  check('update_subitem accepts subIdx as an alias for index', fd.tasks[0].subitems[0].status === 'In Progress');
+  let threw2 = false; try { sandbox.applyDataPatch_(fd, { op: 'update_subitem', id: 1, fields: { status: 'Done' } }); } catch (e) { threw2 = /missing index/.test(e.message); }
+  check('update_subitem with neither index nor subIdx is refused with a clear message', threw2);
+
   // Tidy proposal: validated field by field, system tags kept
   const FILE_IDS5 = vm.runInContext('FILE_IDS', sandbox);
   const origGet5 = sandbox.DriveApp.getFileById;

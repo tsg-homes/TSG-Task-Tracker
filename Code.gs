@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.8';
+const TSG_CODE_VERSION = '2026-09-18.10';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -352,13 +352,65 @@ function applyRulesetPatchOp_(doc, patch) {
 var TSG_JUDGMENT_QUEUE_CAP = 200;
 var TSG_CURRENT_DOC = null; // the document applyDataPatch_ is working on, for queueing from deep helpers
 function tsgJudgmentMode_() { return !tsgApiKey_(); }
+/**
+ * Where a comment goes besides meta.comments (2026-09-18, per Durand's header comment "also
+ * needs to add the the pinned claude task / and add these to the judgement que"):
+ * - every comment by a person (not Claude, not a reply) is queued as a `comment` judgment so
+ *   the Routine / Judge-now session sees it next to the enrich requests;
+ * - a comment on the PAGE itself (anchor kind element / tile / group, i.e. not on a task or
+ *   step) is a feature request or bug report for the tracker, so it also lands as a step on
+ *   the pinned Claude task that tracks those (`meta.featureTaskId`, else the pinned task
+ *   delegated to Claude whose title mentions the Task Tracker), delegated to Claude and
+ *   stamped with the comment id so nothing is added twice.
+ */
+function tsgFeatureTask_(doc) {
+  var tasks = doc.tasks || [];
+  var byId = doc.meta && doc.meta.featureTaskId != null ? tasks.filter(function(t) { return t && t.id === doc.meta.featureTaskId; })[0] : null;
+  if (byId) return byId;
+  return tasks.filter(function(t) {
+    return t && t.pinned && t.status !== 'Done' && tsgIsClaudeDelegate_(t) && /task tracker/i.test(String(t.title || '')) && /feature|bug|request/i.test(String(t.title || ''));
+  })[0] || null;
+}
+function tsgRouteNewComment_(doc, entry, now) {
+  if (!entry || entry.replyTo) return;
+  if (String(entry.author || '').trim().toLowerCase() === 'claude') return;
+  var anchor = entry.anchor || {};
+  var onItem = (anchor.kind === 'task' || anchor.kind === 'sub') && anchor.id != null;
+  var feature = onItem ? null : tsgFeatureTask_(doc);
+  if (feature) {
+    feature.subitems = Array.isArray(feature.subitems) ? feature.subitems : [];
+    var dup = feature.subitems.some(function(s) { return s && s.commentId === entry.id; });
+    if (!dup) {
+      var firstLine = String(entry.text).split(/\n/)[0].trim();
+      var title = firstLine.length > 80 ? firstLine.slice(0, 77).replace(/\s+\S*$/, '') + '…' : firstLine;
+      var where = anchor.label ? ('On: ' + anchor.label + (anchor.path ? ' (' + anchor.path + ')' : '')) : '';
+      feature.subitems.push({
+        title: title, status: 'Not Started', done: false, delegate: 'Claude', taskType: 'Claude', priority: feature.priority || 'Medium',
+        notes: String(entry.text) + (where ? '\n\n' + where : '') + '\nComment ' + entry.id + ' by ' + (entry.author || 'Durand') + ' ' + String(entry.ts || now).slice(0, 16),
+        commentId: entry.id, tags: [], docs: [],
+        history: [{ ts: now, field: 'created', from: null, to: 'from comment ' + entry.id, source: entry.author || 'Durand' }]
+      });
+      feature.history = feature.history || [];
+      feature.history.push({ ts: now, field: 'subitem-added', from: null, to: title, source: entry.author || 'Durand' });
+    }
+  }
+  tsgQueueJudgment_(doc, {
+    kind: 'comment', taskId: onItem ? anchor.id : (feature ? feature.id : 0), subIdx: (anchor.kind === 'sub' && anchor.idx != null) ? anchor.idx : null,
+    commentId: entry.id, author: entry.author, text: String(entry.text), anchor: anchor,
+    featureStep: !!feature
+  });
+}
 function tsgQueueJudgment_(doc, req) {
   if (!doc || !req || req.taskId == null) return null;
   doc.meta = doc.meta || {};
   var q = Array.isArray(doc.meta.judgments) ? doc.meta.judgments : [];
   var sub = (req.subIdx == null) ? null : req.subIdx;
   // One pending request per kind + target: a newer one replaces the older.
-  q = q.filter(function(r) { return !(r && r.kind === req.kind && r.taskId === req.taskId && ((r.subIdx == null) ? null : r.subIdx) === sub); });
+  q = q.filter(function(r) {
+    if (!r || r.kind !== req.kind) return true;
+    if (req.kind === 'comment') return r.commentId !== req.commentId;   // one request per comment
+    return !(r.taskId === req.taskId && ((r.subIdx == null) ? null : r.subIdx) === sub);
+  });
   doc.meta.judgmentSeq = (doc.meta.judgmentSeq || 0) + 1;
   req.id = 'J' + doc.meta.judgmentSeq;
   req.ts = new Date().toISOString();
@@ -377,6 +429,20 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
   var answer = patch.answer;
   if (!answer || typeof answer !== 'object') { Logger.log('[judgment] ' + req.id + ' dropped: no answer'); return; }
   var source = patch.source || 'Claude';
+  if (req.kind === 'comment') {
+    // Answer {reply?, resolved?}: the reply lands as a Claude comment on the same anchor and
+    // the original is resolved when asked. Either field alone is fine.
+    var cms = Array.isArray(doc.meta.comments) ? doc.meta.comments : [];
+    var orig = cms.filter(function(c) { return c && c.id === req.commentId; })[0];
+    if (!orig) { Logger.log('[judgment] ' + req.id + ': comment ' + req.commentId + ' no longer exists'); return; }
+    if (String(answer.reply || '').trim()) {
+      cms.push({ id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), ts: now, author: source.replace(/\s*\(.*$/, '') || 'Claude',
+        text: String(answer.reply), anchor: orig.anchor, resolved: false, replyTo: orig.id });
+    }
+    if (answer.resolved === true && !orig.resolved) { orig.resolved = true; orig.resolvedTs = now; orig.resolvedBy = source; }
+    doc.meta.comments = cms;
+    return;
+  }
   var t = (doc.tasks || []).filter(function(x) { return x && x.id === req.taskId; })[0];
   if (!t) { Logger.log('[judgment] ' + req.id + ': task #' + req.taskId + ' no longer exists'); return; }
   if (req.kind === 'enrich' || req.kind === 'estimate' || req.kind === 'tidy') {
@@ -907,6 +973,12 @@ function applyDataPatch_(doc, patch) {
     const pt = doc.tasks.find(function(x) { return x.id === patch.id; });
     if (!pt) throw new Error('update_subitem: task id not found: ' + patch.id);
     const subs = Array.isArray(pt.subitems) ? pt.subitems : [];
+    // The key is `index`; `subIdx` (the key log_time and the judgment queue use) is accepted
+    // too, because the protocol skill documented it that way and a session writing to the docs
+    // threw "no subitem at index undefined" and was filed FAILED- (found 2026-09-18; this fix
+    // shipped as backend 2026-09-18.9 straight from a session, ported to git here).
+    if (patch.index == null && typeof patch.subIdx === 'number') patch.index = patch.subIdx;
+    if (typeof patch.index !== 'number') throw new Error('update_subitem: missing index (a number; `subIdx` is accepted as an alias) on task ' + patch.id);
     const sub = subs[patch.index];
     if (!sub) throw new Error('update_subitem: no subitem at index ' + patch.index + ' on task ' + patch.id);
     if (patch.expectTitle != null && String(sub.title || '') !== String(patch.expectTitle)) {
@@ -989,6 +1061,7 @@ function applyDataPatch_(doc, patch) {
       replyTo: cm.replyTo || null
     };
     doc.meta.comments.push(entry);
+    tsgRouteNewComment_(doc, entry, now);
   } else if (patch.op === 'update_comment') {
     var list = Array.isArray(doc.meta.comments) ? doc.meta.comments : [];
     var target = list.filter(function(x) { return x && x.id === patch.id; })[0];
@@ -999,6 +1072,10 @@ function applyDataPatch_(doc, patch) {
       ['id', 'ts', 'author'].forEach(function(k) { delete cf[k]; });
       Object.assign(target, cf);
       if (Object.prototype.hasOwnProperty.call(cf, 'resolved')) { target.resolvedTs = cf.resolved ? now : null; target.resolvedBy = cf.resolved ? (patch.source || 'unknown') : null; }
+    }
+    if (patch.remove || (patch.fields && patch.fields.resolved === true)) {
+      // A resolved or removed comment has nothing left to judge.
+      doc.meta.judgments = (doc.meta.judgments || []).filter(function(r) { return !(r && r.kind === 'comment' && r.commentId === patch.id); });
     }
   } else if (patch.op === 'replace_all') {
     // A whole-document save — today this is only ever the dashboard's own doSave(),

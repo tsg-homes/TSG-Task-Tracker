@@ -38,7 +38,9 @@ queue" of the GitHub repo tsg-homes/task-tracker: only the fields in `need`; pol
 first and derive the rest from the polished text; steps as one entry per index in
 `currentSteps`; hours from the one estimation workflow in the skill (measured actuals in
 `actuals`, then the calibration table, PERT last, never a flat multiplier); a due date never
-earlier than the next workday when the request was queued after 4:30 PM Eastern.
+earlier than the next workday when the request was queued after 4:30 PM Eastern. A `kind:
+"comment"` request is one of Durand's comments (see STEP 3): do the work, then answer it with
+`{reply, resolved}` instead of separate add_comment / update_comment ops.
 
 STEP 3 — Comments. Read `meta.comments`. Every unresolved comment not authored by Claude is a
 note from Durand for you. Do what it asks when it is tracker work (a field change goes in the

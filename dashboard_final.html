@@ -1054,6 +1054,7 @@
   /* Comment mode */
   body.comment-mode .wrap, body.comment-mode .modal-card { cursor: crosshair; }
   body.comment-mode #board tr.task-row:hover, body.comment-mode .task-card:hover, body.comment-mode .sub-item:hover, body.comment-mode .stat-tile:hover, body.comment-mode .group-head:hover { outline: 2px dashed var(--brand); outline-offset: -2px; }
+  body.comment-mode .comment-hover { outline: 2px dashed var(--brand) !important; outline-offset: -2px; background: rgba(181,84,28,0.08); }
   #commentPopover { position: fixed; z-index: 10000; width: 320px; background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.35); display: flex; flex-direction: column; gap: 8px; }
   #commentPopover .cp-anchor { font-size: 11.5px; color: var(--text-muted); }
   .cp-actions { display: flex; gap: 6px; justify-content: flex-end; }
@@ -1326,6 +1327,8 @@
     </div>
     <div class="masthead-right">
       <span class="sub">Internal Use Only</span>
+      <button class="btn small" id="btnCommentMode" type="button" onclick="toggleCommentMode()" title="Comment mode: click anything on the board to leave a note on it (Esc ends it)">&#128172; Comment</button>
+      <button class="btn small" id="btnComments" type="button" onclick="openCommentsPanel()" title="All comments">Comments <span class="count-badge" id="commentCount"></span></button>
       <button class="theme-toggle" id="btnSettings" type="button" aria-label="Settings" title="Rulesets &amp; Threads" onclick="openSettings()">&#9881;&#65039;</button>
       <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle dark mode">&#127769;</button>
     </div>
@@ -1417,8 +1420,6 @@
     <button class="btn" id="btnReload">⟳ Reload</button>
     <button class="btn" id="btnExport">⤓ Export</button>
     <span class="toolbar-sep"></span>
-    <button class="btn" id="btnCommentMode" type="button" onclick="toggleCommentMode()" title="Comment mode: click anything on the board to leave a note on it">&#128172; Comment</button>
-    <button class="btn" id="btnComments" type="button" onclick="openCommentsPanel()" title="All comments">Comments <span class="count-badge" id="commentCount"></span></button>
     <button class="btn" id="timerChip" type="button" style="display:none" onclick="openTimerTask_()" title="Timer running — click to open the task"></button>
     <button class="btn" id="judgeChip" type="button" style="display:none" onclick="judgeNow(event)" title="Judgments waiting for Claude. Click: answer them now in a Cowork session on this computer. Shift-click: Claude Code in the cloud. The 7:30 AM Routine is the backstop."></button>
     <span class="toolbar-sep"></span>
@@ -1584,7 +1585,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.12';
+  const UI_VERSION = '2026-09-18.13';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1981,8 +1982,27 @@
     document.body.classList.toggle('comment-mode', commentMode);
     const b = document.getElementById('btnCommentMode');
     if (b) b.classList.toggle('toggle-active', commentMode);
-    if (!commentMode) closeCommentPopover_();
+    if (!commentMode) { closeCommentPopover_(); setCommentHover_(null); }
   }
+  function endCommentMode_() { if (commentMode) toggleCommentMode(); }
+  // Hover highlight (2026-09-18, per Durand "need to highlight the element on hover"): the
+  // element a click would anchor the comment to gets `.comment-hover` while the pointer is on it,
+  // so the header, a toolbar chip or any other element shows the same dashed outline rows do.
+  let COMMENT_HOVER = null;
+  function commentHoverTarget_(el) {
+    if (!el || !el.closest) return null;
+    if (el.closest('#commentPopover, #btnCommentMode, #btnComments, .toolbar, #dayViewModal, .modal-header-actions')) return null;
+    if (!el.closest('.wrap, .modal-card')) return null;
+    return el.closest('.sub-item[data-sub-idx], tr.task-row[data-id], .task-card[data-id], .stat-tile, .group-head, .card-group-title') || el;
+  }
+  function setCommentHover_(el) {
+    if (COMMENT_HOVER === el) return;
+    if (COMMENT_HOVER) COMMENT_HOVER.classList.remove('comment-hover');
+    COMMENT_HOVER = el || null;
+    if (COMMENT_HOVER) COMMENT_HOVER.classList.add('comment-hover');
+  }
+  document.addEventListener('mouseover', function(e) { if (!commentMode) return; setCommentHover_(commentHoverTarget_(e.target)); }, true);
+  document.addEventListener('mouseleave', function() { setCommentHover_(null); });
   function commentAnchorFor_(el) {
     const row = el.closest('tr.task-row[data-id], .task-card[data-id]');
     const sub = el.closest('.sub-item[data-sub-idx]');
@@ -2970,10 +2990,10 @@
   function pendingJudgments_() { return ((RAW_META && RAW_META.judgments) || []).filter(r => r && r.id && r.id !== 'pending'); }
   function judgePromptFor_() {
     const pend = pendingJudgments_();
-    const ids = pend.map(r => r.id + ' (task #' + r.taskId + (r.subIdx != null ? ' step ' + r.subIdx : '') + ', ' + r.kind + ')').join(', ');
+    const ids = pend.map(r => r.id + ' (' + (r.kind === 'comment' ? 'comment ' + r.commentId + (r.taskId ? ' on #' + r.taskId : '') : 'task #' + r.taskId + (r.subIdx != null ? ' step ' + r.subIdx : '') + ', ' + r.kind) + ')').join(', ');
     return 'Answer the TSG Task Tracker judgment queue. Use the tsg-task-tracker-protocol skill.\n\n' +
       '1. Read the tracker data file (Google Drive file id 1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt) with the Drive connector. Note meta.backendVersion and read every pending request in meta.judgments. Pending when this was opened: ' + (pend.length ? ids : 'none') + '.\n' +
-      '2. Answer each request under your own judgment, exactly in the answer shapes documented in README.md "Judgment queue" of the GitHub repo tsg-homes/task-tracker: only the fields in need; polish the notes first and derive the rest from the polished text; steps as one entry per index in currentSteps; hours from the one estimation workflow in the skill (measured actuals, then the calibration table); run a web search to confirm every webLinks url; null for a match you are not confident in.\n' +
+      '2. Answer each request under your own judgment, exactly in the answer shapes documented in README.md "Judgment queue" of the GitHub repo tsg-homes/task-tracker (a kind "comment" request is one of Durand\'s comments: do what it asks when it is tracker work, then answer {reply, resolved}); for enrich requests only the fields in need; polish the notes first and derive the rest from the polished text; steps as one entry per index in currentSteps; hours from the one estimation workflow in the skill (measured actuals, then the calibration table); run a web search to confirm every webLinks url; null for a match you are not confident in.\n' +
       '3. Push all answers as ONE bulk data patch of judgment ops (source "Claude (judge now)") into the _Inbox folder 1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi with the Drive connector\'s create_file. Timestamps in America/New_York.\n' +
       '4. Then read meta.comments: every unresolved comment not authored by Claude is a note from Durand for you. Do what it asks when it is within the tracker (a field change goes in the same bulk patch as an update_task / update_subitem op), reply with an add_comment op (author "Claude", replyTo the comment id, anchored to the same item) saying what you did or why not, and resolve it with update_comment {id, fields: {resolved: true}} only once it is done.\n' +
       '5. Then carry out the work delegated to Claude: every task or step whose delegate (or owner, when no delegate) is "Claude", not Done and not tagged Triage. Do what is reasonably executable; anything outward-facing (email, message, calendar event that notifies others) is DRAFTED ONLY into the item\'s notes under "DRAFT — AWAITING APPROVAL", never sent; internal/read-only work is completed and marked Done; log the attention with a log_time op. Use update_subitem for steps, never resend a whole subitems or history array. Say so in one line when nothing is delegated.\n' +
@@ -6558,6 +6578,9 @@
     return false;
   }
   function handleModalNavKeydown(e) {
+    // Esc ends commenting first (2026-09-18, per Durand "esc should end the commenting"): the
+    // popover closes and comment mode switches off in one press; modals come next.
+    if (e.key === 'Escape' && commentMode) { endCommentMode_(); e.preventDefault(); return; }
     if (e.key === 'Escape') { if (closeTopmostModal_()) e.preventDefault(); return; }
     if (!document.getElementById('taskModal').classList.contains('open')) return;
     if (e.target && (e.target.isContentEditable || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) return;

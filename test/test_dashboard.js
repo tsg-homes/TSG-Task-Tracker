@@ -231,7 +231,18 @@ setTimeout(async () => {
       if (!last || last.op !== 'add_comment' || last.comment.anchor.id !== 2 || last.comment.text !== 'Check with Marj first') throw new Error('add_comment not posted: ' + JSON.stringify(last));
       if (!doc.querySelector('tr.task-row[data-id="2"] .comment-badge')) throw new Error('no comment badge on the row');
       if (doc.getElementById('commentCount').textContent !== '1') throw new Error('toolbar count wrong');
-      w.toggleCommentMode();
+      // hover highlight + Esc ends commenting (2026-09-18)
+      const hdr = doc.querySelector('header.masthead .wordmark');
+      hdr.dispatchEvent(new w.MouseEvent('mouseover', { bubbles: true }));
+      if (!hdr.classList.contains('comment-hover')) throw new Error('hovered element not highlighted');
+      doc.querySelector('tr.task-row[data-id="2"] td.title-cell').dispatchEvent(new w.MouseEvent('mouseover', { bubbles: true }));
+      if (hdr.classList.contains('comment-hover') || !doc.querySelector('tr.task-row[data-id="2"]').classList.contains('comment-hover')) throw new Error('highlight did not move to the row');
+      doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      if (doc.body.classList.contains('comment-mode') || doc.getElementById('commentPopover') || doc.querySelector('.comment-hover')) throw new Error('Esc did not end commenting');
+      if (!doc.querySelector('header.masthead .masthead-right #btnCommentMode') || !doc.querySelector('header.masthead .masthead-right #btnComments') || doc.querySelector('.toolbar #btnCommentMode')) throw new Error('comment buttons are not up by settings/dark mode');
+      w.eval("RAW_META.judgments = [{ id: 'J9', kind: 'comment', commentId: 'cX', taskId: 285, text: 'x' }]");
+      if (!/J9 \(comment cX on #285\)/.test(w.judgePromptFor_()) || !/\{reply, resolved\}/.test(w.judgePromptFor_())) throw new Error('judge prompt does not describe comment requests');
+      w.eval("RAW_META.judgments = []");
       w.openCommentsPanel();
       if (!doc.querySelector('.comment-item')) throw new Error('panel empty');
       const cid = w.eval('COMMENTS')[0].id;

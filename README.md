@@ -184,6 +184,16 @@ judgment, and writes the answers back as inbox ops. Until an answer lands a new 
   Candidates are gathered on EVERY pass, whatever is already linked (2026-09-17).
   Read `EXISTING_GROUPS` / `OPEN_TASK_TITLES` / `EXISTING_TAGS` from the data file itself.
 - `kind: "progress"` — legacy; answer `{progress}` from the notes only.
+- `kind: "comment"` (2026-09-18) — one of Durand's comments (`commentId`, `text`, `anchor`,
+  `taskId` = the anchored task, or the pinned feature task, or 0; `featureStep` true when the
+  comment was also added as a step on that task). Do what it asks when it is tracker work
+  (update ops in the same bulk patch), then answer `{"reply": "<what you did or why not>",
+  "resolved": true}`; the server posts the reply as a Claude comment on the same anchor and
+  resolves the original. `resolved: false` keeps it open with the reply. A comment resolved by
+  hand drops its request. A comment on the page itself (anchor kind element / tile / group)
+  is a tracker feature request: `add_comment` also appends it as a Claude-delegated step on
+  the pinned feature task (`meta.featureTaskId`, else the pinned Claude task whose title
+  mentions the Task Tracker and feature/bug/request), stamped `commentId`.
 
 **Answer op** (one per request, in a `bulk` data patch dropped into `_Inbox`):
 

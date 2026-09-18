@@ -821,3 +821,22 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   e99e9ee; `main` fast-forwarded to it. (`clasp versions` showed a 72 before this deploy, so the
   earlier "@71" note undercounted by one; @73 is the record.) GitHub's remote now answers with
   the rename notice (tsg-homes/TSG-Task-Tracker); pushes to the old name still land.
+- Comments route to the pinned Claude task and the queue (backend 2026-09-18.10, UI 2026-09-18.13,
+  per Durand's header comments 2026-09-18: "these two should be up by the settings/dark mode and
+  need to highlight the element on hover / also needs to add the the pinned claude task / and add
+  these to the judgement que" and "esc should end the commenting"). Read as: the Comment and
+  Comments buttons (`#btnCommentMode`, `#btnComments`) move into `header.masthead .masthead-right`
+  before the settings and theme toggles; in comment mode the element a click would anchor to
+  carries `.comment-hover` (`commentHoverTarget_` / `setCommentHover_`, mouseover capture);
+  Escape ends comment mode before any modal (`endCommentMode_`). Backend: `tsgRouteNewComment_`
+  runs inside `add_comment` for every non-Claude, non-reply comment: queues a `comment` judgment
+  (`commentId`, `text`, `anchor`, `taskId`, `featureStep`; dedupe per commentId) and, for a
+  comment on the page itself (anchor element / tile / group), appends a Claude-delegated step to
+  `tsgFeatureTask_` (`meta.featureTaskId` else the pinned Claude task titled like "@Claude - Track
+  all Task Tracker Feature/Bug Requests/Reports Here", live id 285), stamped `commentId`.
+  `tsgApplyJudgmentOp_` kind comment: answer `{reply, resolved}` posts the reply (author = source
+  without its parenthetical) and resolves; `update_comment` resolve/remove drops the request.
+  LIVE-ONLY FIX PORTED: the deployed script was backend 2026-09-18.9 (a `subIdx` alias for
+  `index` in `update_subitem`, pushed straight from another session on 2026-09-18, never
+  committed); it is now in git and covered by tests. Any deploy from git before this port would
+  have removed it.
