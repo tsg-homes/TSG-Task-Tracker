@@ -1587,7 +1587,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.15';
+  const UI_VERSION = '2026-09-18.16';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2598,7 +2598,15 @@
     // stay in _Inbox under FAILED-/PARTIAL-/MALFORMED-; the details are in Settings.
     const inboxErrs = (RAW_META.inboxErrors || []).filter(e => e && String(e.ts || '').slice(0, 10) >= addDays(todayISO(), -7));
     if (inboxErrs.length) {
-      alerts.push({ level: 'warn', text: inboxErrs.length + ' inbox patch' + (inboxErrs.length === 1 ? '' : 'es') + ' failed in the last 7 days (kept in _Inbox as FAILED-/PARTIAL-; details in Settings).', ids: [], openSettings: true });
+      // FAILED-/MALFORMED- means nothing of that patch applied (2026-09-18): critical, and the
+      // row names the newest file so the failure is readable without opening Settings. A
+      // PARTIAL- alone (some sub-ops applied) stays a warning.
+      const dropped = inboxErrs.filter(e => !(e.appliedSubOps > 0));
+      const newest = inboxErrs[inboxErrs.length - 1];
+      alerts.push({ level: dropped.length ? 'critical' : 'warn',
+        text: inboxErrs.length + ' inbox patch' + (inboxErrs.length === 1 ? '' : 'es') + ' failed in the last 7 days' +
+          (dropped.length ? ' (' + dropped.length + ' dropped entirely)' : ' (applied in part)') + '. Latest: ' + (newest.file || '?') +
+          ' — ' + String(newest.error || '').slice(0, 90) + '. Retry or dismiss in Settings.', ids: [], openSettings: true });
     }
     const overdueImportant = TASKS.filter(function(t) {
       return t.status !== 'Done' && isOverdue(t) && (t.priority === 'Critical' || t.priority === 'High');

@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.13';
+const TSG_CODE_VERSION = '2026-09-18.14';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -88,7 +88,9 @@ function processInbox_() {
         patches.push({ file: f, patch: JSON.parse(f.getBlob().getDataAsString()), created: f.getDateCreated() });
       } catch (err) {
         Logger.log('[inbox] malformed patch file "' + f.getName() + '" kept as MALFORMED-: ' + err);
-        malformed.push({ ts: new Date().toISOString(), file: f.getName(), target: null, op: null, error: 'malformed JSON: ' + String((err && err.message) || err) });
+        var rawText = ''; try { rawText = f.getBlob().getDataAsString(); } catch (e3) {}
+        malformed.push({ ts: new Date().toISOString(), file: f.getName(), target: null, op: null,
+          error: 'malformed JSON: ' + String((err && err.message) || err) + tsgJsonErrorExcerpt_(rawText, err), bytes: rawText.length });
         try { f.setName('MALFORMED-' + f.getName()); } catch (e2) {}
       }
     }
@@ -151,6 +153,9 @@ function processInbox_() {
         catch (loadErr2) { Logger.log('[inbox] cannot load the data file to record ' + errors.length + ' error(s): ' + loadErr2); }
       }
       if (dataDoc) { errors.forEach(function(e) { tsgRecordInboxError_(dataDoc, e); }); dataDirty = true; }
+      // A filed patch is also mailed to the owner (2026-09-18, per Durand: "a malformed inbox
+      // patch is dropped with no alert"). The dashboard alert only helps once the page is open.
+      tsgNotifyInboxErrors_(errors);
     }
 
     if (rulesetsDoc && applied.some(function(p) { return p.patch.target === 'rulesets'; })) {
@@ -161,6 +166,10 @@ function processInbox_() {
     }
     if (dataDoc && (dataDirty || applied.some(function(p) { return p.patch.target === 'data'; }))) {
       tsgAutoScheduleDoc_(dataDoc);
+      // History retention (2026-09-18): lines over the per-item cap move to a sibling file in
+      // the History folder BEFORE the data write; a failed archive write prunes nothing.
+      try { tsgArchiveHistory_(dataDoc, new Date().toISOString()); }
+      catch (archErr) { Logger.log('[history] archive skipped, nothing pruned: ' + archErr.message); }
       var hb = tsgCurrentHeartbeat_();
       if (hb) { dataDoc.meta = dataDoc.meta || {}; dataDoc.meta.lastLiveHeartbeat = hb; }
       const dataJson = JSON.stringify(dataDoc);
@@ -185,6 +194,33 @@ function processInbox_() {
 // Script-cache helpers: every call is best-effort, the cache is an optimization only.
 var TSG_INBOX_EMPTY_TTL_SEC = 50;
 var TSG_INBOX_KEEP_DAYS = 7;   // how long a FAILED-/PARTIAL-/MALFORMED- file stays in _Inbox
+var TSG_INBOX_MAIL_TTL_SEC = 21600;   // one mail per filed file per 6 h (retries never re-mail)
+/** Where a JSON parse failed, as text a person can act on: "... near: <60 chars around it>". */
+function tsgJsonErrorExcerpt_(text, err) {
+  var m = /position (\d+)/.exec(String((err && err.message) || err || ''));
+  if (!m || !text) return '';
+  var at = Number(m[1]), from = Math.max(0, at - 30);
+  return ' near: ' + JSON.stringify(String(text).slice(from, at + 30));
+}
+/** One email to the owner per pass naming every newly filed patch; a file already mailed within the TTL is skipped. */
+function tsgNotifyInboxErrors_(errors) {
+  var fresh = (errors || []).filter(function(e) { return e && e.file && !tsgCacheGet_('inboxErrMailed:' + e.file); });
+  if (!fresh.length) return 0;
+  try {
+    var lines = fresh.map(function(e) {
+      var s = '- ' + e.file + (e.op ? ' (' + e.op + ')' : '') + ': ' + e.error;
+      if (e.appliedSubOps != null) s += '\n    applied sub-ops: ' + e.appliedSubOps;
+      if (e.failedSubOps && e.failedSubOps.length) s += '\n    failed sub-ops: ' + e.failedSubOps.map(function(x) { return '#' + x.index + ' ' + x.op + (x.id != null ? ' id ' + x.id : '') + ': ' + x.error; }).join('; ');
+      return s;
+    });
+    MailApp.sendEmail(OWNER_EMAIL, 'Task Tracker: ' + fresh.length + ' inbox patch' + (fresh.length === 1 ? '' : 'es') + ' failed',
+      'These patches did not apply, or applied only in part. Each file stays in _Inbox under FAILED-/PARTIAL-/MALFORMED- for ' +
+      TSG_INBOX_KEEP_DAYS + ' days; the dashboard lists them under Settings > General with Retry and Dismiss.\n\n' + lines.join('\n') +
+      '\n\nBackend ' + TSG_CODE_VERSION);
+    fresh.forEach(function(e) { tsgCachePut_('inboxErrMailed:' + e.file, '1', TSG_INBOX_MAIL_TTL_SEC); });
+  } catch (mailErr) { Logger.log('[inbox] error mail failed: ' + mailErr.message); }
+  return fresh.length;
+}
 function tsgCachePut_(k, v, ttlSec) { try { CacheService.getScriptCache().put(k, v, ttlSec); } catch (err) {} }
 function tsgCacheGet_(k) { try { return CacheService.getScriptCache().get(k); } catch (err) { return null; } }
 function tsgCacheRemove_(k) { try { CacheService.getScriptCache().remove(k); } catch (err) {} }
@@ -349,7 +385,88 @@ function applyRulesetPatchOp_(doc, patch) {
 // server-owned: replace_all and set_meta never write it. Request shapes are documented in
 // README "Judgment queue". Nothing here runs when a key IS set: then the live call happens.
 // ---------------------------------------------------------------------------------------
-var TSG_JUDGMENT_QUEUE_CAP = 200;
+var TSG_JUDGMENT_QUEUE_CAP = 80;
+// Write amplification (2026-09-18, measured offline on the live file: a 2,074-byte bulk that
+// touched five steps grew the document by 36,208 bytes, 17.5x, 89% of it queued requests at
+// ~8.4 KB each, of which ~6.8 KB were candidate lists). Every request is slimmed to these caps
+// when queued AND on every write, so requests already queued shrink too. The notes as typed are
+// never cut: a polished answer replaces them wholesale.
+var TSG_JUDGMENT_CAPS = { drive: 6, driveExcerpt: 240, calendar: 10, mail: 4, mailExcerpt: 160 };
+function tsgSlimJudgmentRequest_(req) {
+  if (!req || typeof req !== 'object') return req;
+  var c = TSG_JUDGMENT_CAPS;
+  if (Array.isArray(req.driveCandidates)) {
+    req.driveCandidates = req.driveCandidates.slice(0, c.drive).map(function(f) {
+      if (f && typeof f.excerpt === 'string' && f.excerpt.length > c.driveExcerpt) f.excerpt = f.excerpt.slice(0, c.driveExcerpt);
+      return f;
+    });
+    if (!req.driveCandidates.length) req.driveCandidates = null;
+  }
+  if (Array.isArray(req.mailCandidates)) {
+    req.mailCandidates = req.mailCandidates.slice(0, c.mail).map(function(m) {
+      if (m && typeof m.excerpt === 'string' && m.excerpt.length > c.mailExcerpt) m.excerpt = m.excerpt.slice(0, c.mailExcerpt);
+      return m;
+    });
+    if (!req.mailCandidates.length) req.mailCandidates = null;
+  }
+  if (Array.isArray(req.calendarCandidates)) {
+    // Calendar candidates only matter for a Meeting or a task whose type is still open; a step
+    // of an unknown type never gets them (the parent was judged already).
+    var type = req.current && req.current.taskType;
+    var isSub = !!(req.current && req.current.subtask) || req.subIdx != null;
+    var wantCal = type === 'Meeting' || (!type && !isSub);
+    req.calendarCandidates = wantCal ? req.calendarCandidates.slice(0, c.calendar) : null;
+    if (!req.calendarCandidates || !req.calendarCandidates.length) {
+      req.calendarCandidates = null;
+      if (Array.isArray(req.need)) req.need = req.need.filter(function(f) { return f !== 'meetingMatch'; });
+    }
+  }
+  return req;
+}
+/** Every pending request slimmed and the queue held to its cap; runs on every write. */
+function tsgCompactJudgments_(doc) {
+  if (!doc || !doc.meta || !Array.isArray(doc.meta.judgments)) return;
+  doc.meta.judgments.forEach(tsgSlimJudgmentRequest_);
+  if (doc.meta.judgments.length > TSG_JUDGMENT_QUEUE_CAP) doc.meta.judgments = doc.meta.judgments.slice(-TSG_JUDGMENT_QUEUE_CAP);
+}
+/**
+ * A bulk that touched several steps of one task queued one full enrich request PER STEP (each
+ * with its own candidate lists). After the bulk they collapse into ONE steps-only request for
+ * that parent (the shape tsgEnrichSteps_ / request_steps already use), or into the parent's own
+ * pending request when it has one. Link matching for those steps rides the parent's next pass.
+ */
+function tsgCoalesceStepRequests_(doc, seqBefore, now, source) {
+  if (!doc || !doc.meta || !Array.isArray(doc.meta.judgments)) return 0;
+  var byTask = {};
+  doc.meta.judgments.forEach(function(r) {
+    if (!r || r.kind !== 'enrich' || r.subIdx == null || r.force) return;
+    var n = parseInt(String(r.id || '').slice(1), 10);
+    if (!(n > seqBefore)) return;
+    (byTask[String(r.taskId)] = byTask[String(r.taskId)] || []).push(r);
+  });
+  var merged = 0;
+  Object.keys(byTask).forEach(function(tid) {
+    var group = byTask[tid];
+    if (group.length < 2) return;
+    var task = (doc.tasks || []).filter(function(t) { return String(t.id) === tid; })[0];
+    if (!task) return;
+    var indices = group.map(function(r) { return r.subIdx; });
+    doc.meta.judgments = doc.meta.judgments.filter(function(r) { return group.indexOf(r) === -1; });
+    var parentReq = doc.meta.judgments.filter(function(r) { return r && r.kind === 'enrich' && r.subIdx == null && String(r.taskId) === tid; })[0];
+    if (parentReq) {
+      if (!Array.isArray(parentReq.need)) parentReq.need = [];
+      if (parentReq.need.indexOf('steps') === -1) parentReq.need.push('steps');
+      var fresh = tsgOpenStepsSnapshot_(task, indices);
+      parentReq.currentSteps = (parentReq.currentSteps || []).filter(function(st) { return st && indices.indexOf(st.index) === -1; }).concat(fresh)
+        .sort(function(a, b) { return a.index - b.index; });
+    } else {
+      tsgEnrichSteps_(doc, task, now, source || 'unknown', indices);
+    }
+    merged += group.length;
+    Logger.log('[judgment] ' + group.length + ' per-step requests on task ' + tid + ' collapsed into one steps request');
+  });
+  return merged;
+}
 var TSG_CURRENT_DOC = null; // the document applyDataPatch_ is working on, for queueing from deep helpers
 function tsgJudgmentMode_() { return !tsgApiKey_(); }
 /**
@@ -414,6 +531,7 @@ function tsgQueueJudgment_(doc, req) {
   doc.meta.judgmentSeq = (doc.meta.judgmentSeq || 0) + 1;
   req.id = 'J' + doc.meta.judgmentSeq;
   req.ts = new Date().toISOString();
+  tsgSlimJudgmentRequest_(req);
   q.push(req);
   if (q.length > TSG_JUDGMENT_QUEUE_CAP) q = q.slice(-TSG_JUDGMENT_QUEUE_CAP);
   doc.meta.judgments = q;
@@ -544,6 +662,9 @@ function applyDataPatch_(doc, patch) {
   const now = patch.ts || new Date().toISOString();
   TSG_CURRENT_DOC = doc;
   tsgReadCapacity_(doc);
+  // An envelope with `ops` but no `op` can only mean a bulk (2026-09-18); accepting it costs
+  // nothing and one less way for a routine-written file to be filed FAILED-.
+  if (!patch.op && Array.isArray(patch.ops)) patch.op = 'bulk';
 
   if (patch.op === 'bulk') {
     // 2026-09-10 per Durand: dependsOnTitle inference should see every task in this same
@@ -565,6 +686,7 @@ function applyDataPatch_(doc, patch) {
     // succeeded. The error thrown at the end carries `partial` so processInbox_ keeps the
     // applied part and files the rest under PARTIAL-.
     var bulkErrors = [], bulkApplied = 0;
+    var judgmentSeqBefore = (doc.meta && doc.meta.judgmentSeq) || 0;
     (patch.ops || []).forEach(function(sub, i) {
       // A bulk envelope's own top-level source (if any) applies to every sub-op unless
       // that sub-op sets its own — Object.assign's key ordering means `sub`'s own
@@ -594,6 +716,7 @@ function applyDataPatch_(doc, patch) {
         t.depends = resolved ? String(resolved.id) : '';
       }
     });
+    tsgCoalesceStepRequests_(doc, judgmentSeqBefore, now, patch.source);
     doc.meta.last_updated = now;
     if (bulkErrors.length) {
       var bulkErr = new Error('bulk: ' + bulkErrors.length + ' of ' + (patch.ops || []).length + ' sub-op(s) failed: ' +
@@ -2305,12 +2428,17 @@ function tsgUserTouched_(task, field, sinceTs) {
   return (task && task.history || []).some(function(h) {
     if (!h || h.field !== field) return false;
     if (sinceTs && !(String(h.ts || '') > String(sinceTs))) return false;
-    var src = String(h.source || '');
-    // No source = automation (the scheduler's auto-scheduled stamps, legacy rollups); every
-    // hand edit since 2026-09 carries 'Durand' or a roster name.
-    // Automation sources: Claude answers, Maps, the estimate roll-up, the scheduler, reminders.
-    return !!src && !/^(Claude|Maps|system|rollup|Scheduler|Reminder)/i.test(src) && src !== 'unknown';
+    return tsgIsPersonSource_(h.source);
   });
+}
+/**
+ * No source = automation (the scheduler's auto-scheduled stamps, legacy rollups); every hand
+ * edit since 2026-09 carries 'Durand' or a roster name. Automation sources: Claude answers,
+ * Maps, the estimate roll-up, the scheduler, reminders.
+ */
+function tsgIsPersonSource_(source) {
+  var src = String(source || '');
+  return !!src && !/^(Claude|Maps|system|rollup|Scheduler|Reminder)/i.test(src) && src !== 'unknown';
 }
 /** The fields the estimator is told to keep unless the notes clearly justify a change. */
 function tsgCurrentSnapshot_(t) {
@@ -2373,7 +2501,9 @@ function tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts) {
     mailCands = tsgMailCandidates_(item.title);
     if (mailCands) need.push('mailMatch');
     if (need.indexOf('webLinks') === -1) need.push('webLinks');
-    if (!item.meetingDate && (item.taskType === 'Meeting' || !item.taskType || need.indexOf('taskType') !== -1)) { calCands = tsgCalendarCandidates_(item.timelineEnd); if (calCands) need.push('meetingMatch'); }
+    // Meeting, or a TASK whose type is still open (2026-09-18: the old "or taskType is being
+    // asked for" clause made this true on every pass, so every step carried 20 events).
+    if (!item.meetingDate && (item.taskType === 'Meeting' || (!item.taskType && !sub))) { calCands = tsgCalendarCandidates_(item.timelineEnd); if (calCands) need.push('meetingMatch'); }
   }
   var current = tsgCurrentSnapshot_(item);
   if (sub) { current.subtask = true; current.parentTitle = parent.title; }
@@ -5391,6 +5521,79 @@ function tsgRollupSubitemHours_(doc, now) {
  * tags, so any such entry is noise — drop it. Idempotent and cheap; remove once the live
  * document has been observed clean.
  */
+// History retention (2026-09-18). Measured on the live file: 1,328 history lines held 405 KB of
+// a 930 KB document, and notes lines alone (whole old + new notes text per line) 231 KB; task
+// 289 carried 36 KB of history in 29 lines. Two rules: (1) a from/to value is cut at
+// TSG_HISTORY_VALUE_CHARS on every write (the dashboard's history row shows the change, the
+// notes themselves live on the item); (2) an item over its cap keeps `created`, the latest line
+// per field, the latest PERSON line per field (what tsgUserTouched_ / hand-set protection
+// reads) and the newest `low` lines; the rest go to a dated file in the tracker folder's
+// History subfolder (tsgArchiveHistory_, called only by processInbox_ before the data write).
+var TSG_HISTORY_VALUE_CHARS = 240;
+var TSG_HISTORY_KEEP = { task: 40, taskLow: 24, done: 12, doneLow: 8, sub: 12, subLow: 8 };
+var TSG_HISTORY_FOLDER = 'History';
+function tsgTruncateHistoryValues_(doc) {
+  var n = 0;
+  function cut(h) {
+    if (!h) return;
+    ['from', 'to'].forEach(function(k) {
+      if (typeof h[k] === 'string' && h[k].length > TSG_HISTORY_VALUE_CHARS) { h[k] = h[k].slice(0, TSG_HISTORY_VALUE_CHARS) + '…'; n++; }
+    });
+  }
+  (doc && doc.tasks || []).forEach(function(t) {
+    (t.history || []).forEach(cut);
+    (t.subitems || []).forEach(function(s) { (s && s.history || []).forEach(cut); });
+  });
+  return n;
+}
+/** Which lines of one history to keep / prune; null when the item is within its cap or nothing would go. */
+function tsgHistoryKeepPlan_(hist, cap, low) {
+  if (!Array.isArray(hist) || hist.length <= cap) return null;
+  var keepIdx = {}, latestByField = {}, latestPersonByField = {};
+  hist.forEach(function(h, i) {
+    if (!h) return;
+    if (h.field === 'created') keepIdx[i] = 1;
+    latestByField[h.field] = i;
+    if (tsgIsPersonSource_(h.source)) latestPersonByField[h.field] = i;
+  });
+  Object.keys(latestByField).forEach(function(f) { keepIdx[latestByField[f]] = 1; });
+  Object.keys(latestPersonByField).forEach(function(f) { keepIdx[latestPersonByField[f]] = 1; });
+  for (var i = Math.max(0, hist.length - low); i < hist.length; i++) keepIdx[i] = 1;
+  var keep = [], pruned = [];
+  hist.forEach(function(h, i) { (keepIdx[i] ? keep : pruned).push(h); });
+  return pruned.length ? { keep: keep, pruned: pruned } : null;
+}
+function tsgHistoryFolder_() {
+  var parent = DriveApp.getFolderById(TRACKER_FOLDER_ID);
+  var it = parent.getFoldersByName(TSG_HISTORY_FOLDER);
+  return it.hasNext() ? it.next() : parent.createFolder(TSG_HISTORY_FOLDER);
+}
+/** Prunes over-cap histories into one dated archive file. Writes the archive FIRST; a throw prunes nothing. */
+function tsgArchiveHistory_(doc, now) {
+  var K = TSG_HISTORY_KEEP, items = [];
+  (doc && doc.tasks || []).forEach(function(t) {
+    if (!t) return;
+    var done = t.status === 'Done' || t.status === 'Cancelled';
+    var plan = tsgHistoryKeepPlan_(t.history, done ? K.done : K.task, done ? K.doneLow : K.taskLow);
+    if (plan) items.push({ ref: t, taskId: t.id, subIdx: null, title: t.title, plan: plan });
+    (t.subitems || []).forEach(function(s, i) {
+      if (!s) return;
+      var p = tsgHistoryKeepPlan_(s.history, K.sub, K.subLow);
+      if (p) items.push({ ref: s, taskId: t.id, subIdx: i, title: s.title, plan: p });
+    });
+  });
+  if (!items.length) return 0;
+  var lines = items.reduce(function(a, it) { return a + it.plan.pruned.length; }, 0);
+  var payload = { archivedAt: now, backendVersion: TSG_CODE_VERSION, lines: lines,
+    items: items.map(function(it) { return { taskId: it.taskId, subIdx: it.subIdx, title: it.title, lines: it.plan.pruned }; }) };
+  var file = tsgHistoryFolder_().createFile('history-' + String(now).replace(/[:.]/g, '-') + '.json', JSON.stringify(payload), 'application/json');
+  items.forEach(function(it) { it.ref.history = it.plan.keep; });
+  doc.meta = doc.meta || {};
+  var prev = doc.meta.historyArchive || {};
+  doc.meta.historyArchive = { lastAt: now, files: (prev.files || 0) + 1, lines: (prev.lines || 0) + lines, lastFile: file && file.getName ? file.getName() : undefined };
+  Logger.log('[history] ' + lines + ' line(s) from ' + items.length + ' item(s) archived');
+  return lines;
+}
 function tsgPurgeBogusRollupTagHistory_(doc) {
   (doc.tasks || []).forEach(function(t) {
     if (!Array.isArray(t.history)) return;
@@ -5779,6 +5982,8 @@ function tsgAutoScheduleDoc_(doc) {
   if (doc.meta) delete doc.meta._scheduleWarning;
 
   tsgPurgeBogusRollupTagHistory_(doc);
+  tsgTruncateHistoryValues_(doc);
+  tsgCompactJudgments_(doc);
   tsgMigrateAssigneeToDelegate_(doc);
   tsgMigrateDocToDocs_(doc);
   tsgRollupSubitemHours_(doc, new Date().toISOString());

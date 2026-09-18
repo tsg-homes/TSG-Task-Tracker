@@ -128,7 +128,15 @@ with ONE `set_meta` op carrying those four keys only.
 STEP 6 — Push everything as ONE bulk data patch (judgment ops, comment ops, update ops,
 log_time ops, add_task ops, the scan set_meta op; source "Claude (routine)") into the `_Inbox` folder
 1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi with the Drive connector's create_file. Never write to the
-Data or Rulesets files directly.
+Data or Rulesets files directly. THE FILE MUST BE VALID JSON, PROVEN BEFORE UPLOAD: build the
+patch as a data structure and serialize it with a real JSON encoder (`json.dumps` /
+`JSON.stringify`), never by pasting notes text into a hand-written JSON string (on 2026-09-18
+the J49 patch died at an unescaped quote inside a `notes` value: filed MALFORMED-, the answer
+lost); then parse the exact text you are about to upload (`json.loads` / `JSON.parse`) and only
+upload when that succeeds. Envelope: `{"target":"data","op":"bulk","source":…,"ts":…,"ops":[…]}`.
+A file that fails to parse on the server is filed `MALFORMED-` in `_Inbox`, recorded in
+`meta.inboxErrors` with the position and the text around it, emailed to Durand, and shown as a
+critical alert on the dashboard; the request it answered stays queued for the next run.
 
 STEP 7 — Verify. Wait about 90 seconds, re-download the data file and confirm: the answered
 ids are gone from `meta.judgments`; the replies are in `meta.comments` with the resolved flags
