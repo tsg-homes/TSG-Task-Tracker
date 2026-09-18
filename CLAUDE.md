@@ -807,6 +807,11 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   steps run to M/D" from `realisticEnd`, class `tag-risk`, opens the card) and the card's Due row
   carries `atRiskDueNoteHtml_` ("open steps run to <date>; your date is kept"). Test: dashboard
   "an At Risk tag renders a chip...". The Triage toolbar filter does not include At Risk.
+- Deployed 2026-09-18 03:25 EDT: web app @82 = backend 2026-09-18.13 / UI 2026-09-18.15 = commit
+  0bd1f4f, `main` fast-forwarded. The Triage toolbar filter now also shows `At Risk` tasks (with
+  Triage and Review), and `computeAlerts` raises a separate CRITICAL row "N task(s) at risk: the
+  open steps run past the due date you set" (click opens the list). Test: dashboard "At Risk
+  tasks show in the Triage filter and raise their own alert row".
 - Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
   Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
   repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
