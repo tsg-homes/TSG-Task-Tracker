@@ -775,12 +775,12 @@ setTimeout(async () => {
   });
 
   // Due time + reminders (2026-09-17)
-  tryCall('modal Due row has a time input and a reminder select; a preset computes remindAt from the due date and time', () => {
+  tryCall('modal Due row has a time select and a reminder select; a preset computes remindAt from the due date and time', () => {
     const t = w.findTask(1);
     t.timelineEnd = '2026-09-25'; delete t.dueTime; delete t.remindAt;
     w.openTaskCard(1);
     const html = doc.getElementById('modalMeta').innerHTML;
-    if (!html.includes('type="time"') || !html.includes('remind-select')) throw new Error('controls missing');
+    if (!html.includes('time-select') || !html.includes('remind-select')) throw new Error('controls missing');
     w.modalDueTimeChange(1, '14:00');
     if (w.findTask(1).dueTime !== '14:00') throw new Error('dueTime not set');
     w.onRemindPreset(1, null, '60');
