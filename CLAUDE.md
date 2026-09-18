@@ -765,3 +765,14 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   time", quarter-hours 6:00 AM–8:00 PM in 12-hour labels, an off-grid stored value as its own
   option, and "other…" which prompts free text parsed by `parseTimeInput_` (h:mm, hmm, am/pm,
   24-hour). Values stay `HH:mm` 24-hour in the data.
+- UI 2026-09-18.8 (per Durand): the Enable-notifications button now reports its outcome
+  (`enableNotificationsClick_`, `notifyStateText_`): Chrome refuses notification prompts from
+  the Apps Script cross-origin frame, so the request resolves without a prompt and the page says
+  toasts plus email reminders are what fire; the button hides once granted. Inbox error messages
+  wrap (`.inbox-err`, `pre-wrap`). The "inbox patches failed" alert opens Settings and lands on
+  the General tab with the tab highlighted (`openSettings().then(setSettingsTab('general'))`).
+- Comments channel (README "Comments are the Durand-to-Claude channel", skill "Comments"): the
+  Judge-now prompt's step 4 has every queue-answering session read unresolved non-Claude comments,
+  act, reply with add_comment (author Claude, replyTo) and resolve with update_comment. The
+  Routine's own prompt is Durand's to edit (agents cannot); it needs the same step. Time select
+  is narrower (`select.time-select`, 92 px max).

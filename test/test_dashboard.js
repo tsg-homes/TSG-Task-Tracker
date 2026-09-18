@@ -1059,7 +1059,7 @@ setTimeout(async () => {
     const chip = doc.getElementById('judgeChip');
     if (chip.style.display === 'none' || !/2 judgments queued/.test(chip.textContent)) throw new Error('chip: ' + chip.textContent);
     const p = w.judgePromptFor_();
-    if (!p.includes('J21 (task #281, enrich)') || !p.includes('J22 (task #287 step 2, enrich)') || !p.includes('1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt') || !p.includes('tsg-task-tracker-protocol')) throw new Error('prompt: ' + p.slice(0, 200));
+    if (!p.includes('J21 (task #281, enrich)') || !p.includes('J22 (task #287 step 2, enrich)') || !p.includes('1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt') || !p.includes('tsg-task-tracker-protocol') || !p.includes('meta.comments')) throw new Error('prompt: ' + p.slice(0, 200));
     w.eval('RAW_META.judgments = []'); w.renderJudgeChip_();
   });
   tryCall('Settings > Capacity: four inputs; a key posts set_meta {capacity} merged with the others', () => {
@@ -1122,6 +1122,19 @@ setTimeout(async () => {
     if (doc.querySelector('#taskModal input[type="time"]')) throw new Error('native time input still on the card');
     if (!doc.querySelector('#taskModal select.time-select')) throw new Error('no time select on the card');
     w.closeTaskCard();
+  });
+  tryCall('notifications: the Enable button explains the outcome; inbox errors wrap; the alert lands on the General tab', async () => {
+    if (!/toasts and email/.test(w.notifyStateText_('denied')) || !/granted/.test(w.notifyStateText_('granted'))) throw new Error('state text');
+    w.eval("RAW_META.inboxErrors = [{ ts: new Date().toISOString(), file: 'x.json', op: 'bulk', error: 'a very long error message that must wrap ' + 'x'.repeat(300) }]");
+    if (!/class="inbox-err"/.test(w.inboxErrorsHtml_())) throw new Error('error text not in the wrapping element');
+    if (!/#inboxErrorsList \.inbox-err \{[^}]*pre-wrap/.test(doc.querySelector('style').textContent)) throw new Error('no wrapping rule');
+    const a = w.computeAlerts().find(x => x.openSettings); const i = w.computeAlerts().indexOf(a);
+    w.eval('LAST_ALERTS = computeAlerts()');
+    w.openAlertTasks(i);
+    await new Promise(r => setTimeout(r, 30));
+    const active = doc.querySelector('.settings-tab.active');
+    if (!active || active.dataset.tab !== 'general' || !doc.getElementById('inboxErrorsList')) throw new Error('did not land on General: ' + (active && active.dataset.tab));
+    w.closeSettings(); w.eval('RAW_META.inboxErrors = []');
   });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));

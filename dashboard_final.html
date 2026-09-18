@@ -787,6 +787,11 @@
   }
   .history-entry:last-child { border-bottom: none; padding-bottom: 0; }
   .hist-time { color: var(--text-muted); white-space: nowrap; flex: none; min-width: 108px; }
+  /* Inbox errors (Settings > General): long messages wrap instead of running off the card */
+  select.time-select { width: auto; max-width: 92px; padding: 2px 4px; font-size: 12px; }
+  #inboxErrorsList .history-row { display: block; }
+  #inboxErrorsList .hist-time { white-space: normal; min-width: 0; }
+  #inboxErrorsList .inbox-err { color: var(--text-muted); white-space: pre-wrap; word-break: break-word; font-size: 12px; margin-top: 2px; }
   .hist-desc { color: var(--text-primary); }
   .history-empty { color: var(--text-muted); font-size: 12.5px; }
 
@@ -1570,7 +1575,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.7';
+  const UI_VERSION = '2026-09-18.8';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2638,7 +2643,7 @@
   }
   function openAlertTasks(index) {
     const a = LAST_ALERTS[index];
-    if (a && a.openSettings) { settingsTab = 'general'; openSettings(); return; }
+    if (a && a.openSettings) { settingsTab = 'general'; openSettings().then(() => setSettingsTab('general')); return; }
     if (!a) return;
     openMultiTaskModal(a.text, a.ids);
   }
@@ -2920,7 +2925,8 @@
       '1. Read the tracker data file (Google Drive file id 1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt) with the Drive connector. Note meta.backendVersion and read every pending request in meta.judgments. Pending when this was opened: ' + (pend.length ? ids : 'none') + '.\n' +
       '2. Answer each request under your own judgment, exactly in the answer shapes documented in README.md "Judgment queue" of the GitHub repo tsg-homes/task-tracker: only the fields in need; polish the notes first and derive the rest from the polished text; steps as one entry per index in currentSteps; hours from the one estimation workflow in the skill (measured actuals, then the calibration table); run a web search to confirm every webLinks url; null for a match you are not confident in.\n' +
       '3. Push all answers as ONE bulk data patch of judgment ops (source "Claude (judge now)") into the _Inbox folder 1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi with the Drive connector\'s create_file. Timestamps in America/New_York.\n' +
-      '4. Wait one minute, re-read the data file, confirm the answered ids are gone from meta.judgments and that no FAILED-, PARTIAL- or MALFORMED- file appeared in _Inbox, and report per id what changed on the task.';
+      '4. Then read meta.comments: every unresolved comment not authored by Claude is a note from Durand for you. Do what it asks when it is within the tracker (a field change goes in the same bulk patch as an update_task / update_subitem op), reply with an add_comment op (author "Claude", replyTo the comment id, anchored to the same item) saying what you did or why not, and resolve it with update_comment {id, fields: {resolved: true}} only once it is done.\n' +
+      '5. Wait one minute, re-read the data file, confirm the answered ids are gone from meta.judgments and that no FAILED-, PARTIAL- or MALFORMED- file appeared in _Inbox, and report per id what changed on the task.';
   }
   function renderJudgeChip_() {
     const el = document.getElementById('judgeChip'); if (!el) return;
@@ -5990,6 +5996,25 @@
     if (Notification.permission === 'default') { try { return await Notification.requestPermission(); } catch (e) { return Notification.permission; } }
     return Notification.permission;
   }
+  // What the permission state means for THIS page (2026-09-17, per Durand "enabling
+  // notifications button doesn't do anything"): the dashboard runs inside Apps Script's
+  // cross-origin frame, and Chrome refuses notification prompts from such frames, so the
+  // request resolves without a prompt. Say so instead of silently doing nothing; the
+  // in-page toasts and the email reminders are what actually fire here.
+  function notifyStateText_(state) {
+    if (state === 'granted') return 'granted: native notifications are on for this page.';
+    if (state === 'unsupported') return 'not available in this frame: the tracker uses in-page toasts and email reminders instead.';
+    if (state === 'denied') return 'blocked by the browser (Apps Script pages run in a frame that Chrome does not let ask): in-page toasts and email reminders are used instead.';
+    return 'not decided yet: click Enable. If nothing appears, the browser refused to show the prompt inside the Apps Script frame and toasts plus email are used instead.';
+  }
+  async function enableNotificationsClick_() {
+    const before = notifyPermission_();
+    const after = await ensureNotifyPermission_();
+    const el = document.getElementById('notifyState');
+    if (el) el.textContent = after + (after === before && after !== 'granted' ? ' (no prompt was shown)' : '');
+    const why = document.getElementById('notifyWhy'); if (why) why.textContent = notifyStateText_(after);
+    if (after === 'granted') toast_('Notifications on', 'Reminders will also pop up here while the tracker is open.');
+  }
   function toast_(title, body, onClick) {
     let host = document.getElementById('tsgToasts');
     if (!host) { host = document.createElement('div'); host.id = 'tsgToasts'; document.body.appendChild(host); }
@@ -7335,7 +7360,7 @@
   function inboxErrorsHtml_() {
     const errs = (RAW_META.inboxErrors || []).slice(-10).reverse();
     if (!errs.length) return '<div class="history-empty">None recorded.</div>';
-    return errs.map(e => `<div class="history-row"><span class="hist-time">${escapeHtml(String(e.ts || '').replace('T', ' ').slice(0, 16))}</span> <b>${escapeHtml(e.file || '')}</b> · ${escapeHtml(e.op || '')}<div class="hist-time">${escapeHtml(e.error || '')}</div></div>`).join('');
+    return errs.map(e => `<div class="history-row"><span class="hist-time">${escapeHtml(String(e.ts || '').replace('T', ' ').slice(0, 16))}</span> <b>${escapeHtml(e.file || '')}</b> · ${escapeHtml(e.op || '')}<div class="inbox-err">${escapeHtml(e.error || '')}</div></div>`).join('');
   }
   function renderSettings() {
     const body = document.getElementById('settingsBody');
@@ -7356,7 +7381,7 @@
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Reminder notifications</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b> <button type="button" class="btn small" onclick="ensureNotifyPermission_().then(p => { const el = document.getElementById('notifyState'); if (el) el.textContent = p; })">Enable</button></div>
+        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b> ${notifyPermission_() === 'granted' ? '' : '<button type="button" class="btn small" onclick="enableNotificationsClick_()">Enable</button>'}<div class="history-empty" id="notifyWhy" style="margin-top:4px;">${escapeHtml(notifyStateText_(notifyPermission_()))}</div></div>
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Claude Code repo</h3></div>
