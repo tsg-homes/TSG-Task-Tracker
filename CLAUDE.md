@@ -807,3 +807,29 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   with a Copy-address button and a Test button once granted. Comments panel has "Send N open to
   Claude" (`commentsPromptFor_`, `sendCommentsToClaude`: Cowork deep link, shift = cloud Code)
   carrying every unresolved non-Claude comment with its anchor and the act / reply / resolve rules.
+- UI 2026-09-18.11 (per Durand 2026-09-18): `copyText_(text, btn, what)` is the ONE clipboard
+  path (button reads "Copied" 1.5 s with `.btn.copied`, a "Copied" toast names what landed, a
+  refused clipboard toasts "Copy failed" and opens a prompt with the text); `copyClaudePrompt`
+  and the notifications "Copy address" button use it. The time pop-over has no "no time"
+  option ("dont need no time"). Default reminder: `meta.remindDefault` (preset minutes as a
+  string, '' = none, unset = '15'; Settings > General select `remindDefaultSelect`,
+  `setRemindDefault` -> `set_meta`); `onDueTimeChange_` applies it (with a Durand history line)
+  the moment an item with a due date but no reminder gets a time; a hand-picked preset still
+  follows time changes and is never replaced. Notifications: Durand allowed the frame origin by
+  hand and reported "notifications test passed" (2026-09-18). The Routine's prompt already
+  carries the comments step (Durand pasted its tail); the claude.ai/code/routines link I gave
+  did not open for him. Judge-now / Send-to-Claude deep links (`claude://…/new`,
+  `claude.ai/code?prompt=`) can only start NEW sessions; nothing routes a prompt into an
+  existing session by URL (same limit as "Open linked session": open + copied prompt).
+- UI 2026-09-18.12 (per Durand "wrap this into the judgement routine" / "why cant the submit all to
+  claude button open this thread with the correct prompt on the clipboard?"): `meta.claudeSession`
+  (Settings > General "Working Claude session", `setClaudeSession`, claude.ai links only) is where
+  `routePromptToClaude_` sends board-level prompts: prompt copied through `copyText_`, session
+  opened in the named window `tsgClaudeSession`; shift-click = new cloud Code session; no
+  session set = new Cowork session as before. `judgePromptFor_` step 5 = work delegated to
+  Claude (draft-only boundary, log_time, update_subitem). The full Routine prompt is
+  `routines/judgment-routine-prompt.md` (Durand pastes it; agents cannot edit the Routine).
+  The prompt Durand pasted on 2026-09-18 carried the exec URL and SCRIPT_TOKEN in a curl step:
+  that path is dead under DOMAIN access and neither value may enter a tracked file; rotating
+  SCRIPT_TOKEN is his call. clasp needed a fresh `clasp login --no-localhost` this session
+  (Google `invalid_rapt` reauth) before @72 could ship.
