@@ -1060,6 +1060,18 @@ setTimeout(async () => {
     if (!p.includes('J21 (task #281, enrich)') || !p.includes('J22 (task #287 step 2, enrich)') || !p.includes('1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt') || !p.includes('tsg-task-tracker-protocol')) throw new Error('prompt: ' + p.slice(0, 200));
     w.eval('RAW_META.judgments = []'); w.renderJudgeChip_();
   });
+  tryCall('Settings > Capacity: the Claude review minutes post set_meta {capacity} merged, default 5', () => {
+    if (w.claudeReviewMin_() !== 5) throw new Error('default ' + w.claudeReviewMin_());
+    w.eval("RAW_META.capacity = { other: 1 }"); w.__posts = [];
+    w.setClaudeReviewMin('12');
+    const p = (w.__posts || []).find(x => x.body && x.body.includes('set_meta'));
+    if (!p) throw new Error('no set_meta post');
+    const body = JSON.parse(p.body);
+    if (body.fields.capacity.claudeReviewMin !== 12 || body.fields.capacity.other !== 1) throw new Error('capacity ' + JSON.stringify(body.fields));
+    w.renderSettings();
+    if (!doc.getElementById('claudeReviewMinInput')) throw new Error('settings input missing');
+    w.eval('RAW_META.capacity = {}');
+  });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

@@ -704,3 +704,9 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   patch, verify), shift-click opens claude.ai/code with the same prompt. The page never answers
   judgments itself. The Routine cannot be edited by an agent (created via http_api); Durand
   edits its schedule at claude.ai/code/routines.
+- Claude-step review minutes (backend 2026-09-18.3, UI 2026-09-18.3, per Durand "add the extra
+  minute"): `meta.capacity.claudeReviewMin` (Settings > Capacity, default 5 = one turn, 0 = off) is
+  what a finished Claude-delegated step costs Durand the next workday; `tsgReadCapacity_` loads it
+  on every write, `tsgOpenSubitemHours_` adds it per open Claude step, `tsgConfirmHoursFor_` gives
+  the scheduler's reserve (0.5 h person / Settings figure Claude / 0). First key of the
+  Settings-backed capacity values (the rest of the tranche-4 capacity knobs go here too).

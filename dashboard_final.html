@@ -1568,7 +1568,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.2';
+  const UI_VERSION = '2026-09-18.3';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -7225,6 +7225,15 @@
     document.querySelectorAll('.settings-tab').forEach(function(b) { b.classList.toggle('active', b.dataset.tab === tab); });
     renderSettings();
   }
+  // Settings > Capacity (2026-09-17, per Durand "add the extra minute"): meta.capacity is a
+  // server-read object; the dashboard merges one key at a time so later keys survive.
+  function claudeReviewMin_() { const v = Number((RAW_META.capacity || {}).claudeReviewMin); return (isFinite(v) && v >= 0) ? v : 5; }
+  async function setClaudeReviewMin(val) {
+    const n = Math.max(0, Math.round(Number(val) || 0));
+    RAW_META.capacity = Object.assign({}, RAW_META.capacity || {}, { claudeReviewMin: n });
+    await postCommentOp_({ op: 'set_meta', fields: { capacity: RAW_META.capacity }, source: 'Durand' });
+    setSyncStatus('saved', 'Capacity saved');
+  }
   function inboxErrorsHtml_() {
     const errs = (RAW_META.inboxErrors || []).slice(-10).reverse();
     if (!errs.length) return '<div class="history-empty">None recorded.</div>';
@@ -7265,6 +7274,9 @@
         <div class="history-empty" style="margin-bottom:6px;">The address every task location's round-trip travel time is driven from (the office, or home). Saved on its own; task travel times refresh on the next write.</div>
         <div class="ruleset-block-head" style="margin-top:12px;"><h3>Reminder notifications</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b> <button type="button" class="btn small" onclick="ensureNotifyPermission_().then(p => { const el = document.getElementById('notifyState'); if (el) el.textContent = p; })">Enable</button></div>
+        <div class="ruleset-block-head" style="margin-top:12px;"><h3>Capacity</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Minutes of your attention charged the workday after a Claude-delegated step finishes (its review). A person-delegated step always costs 30 minutes; 0 turns the Claude review off.</div>
+        <label class="hist-time">Review of a Claude step, minutes <input type="number" min="0" step="1" class="due-input modal-due" id="claudeReviewMinInput" style="width:70px;" value="${escapeHtml(String(claudeReviewMin_()))}" onchange="setClaudeReviewMin(this.value)"></label>
         <div class="ruleset-block-head" style="margin-top:12px;"><h3>Claude Code repo</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">Optional owner/repo the "Code" and "Code (cloud)" buttons on a Claude task open on (e.g. tsg-homes/task-tracker). Cowork sessions never need one.</div>
         <input type="text" class="text-input" id="claudeRepoInput" placeholder="owner/repo" value="${escapeHtml(CLAUDE_REPO)}" onblur="setClaudeRepo(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">

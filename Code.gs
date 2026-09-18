@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.2';
+const TSG_CODE_VERSION = '2026-09-18.3';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -433,6 +433,7 @@ function tsgRecordInboxError_(doc, entry) {
 function applyDataPatch_(doc, patch) {
   const now = patch.ts || new Date().toISOString();
   TSG_CURRENT_DOC = doc;
+  tsgReadCapacity_(doc);
 
   if (patch.op === 'bulk') {
     // 2026-09-10 per Durand: dependsOnTitle inference should see every task in this same
@@ -5131,6 +5132,18 @@ function tsgIsClaudeDelegate_(s) {
 function tsgHandoffConfirmNeeded_(s) {
   return !!(s && s.delegate) && !tsgIsDurandDelegate_(s) && !tsgIsClaudeDelegate_(s);
 }
+// Per Durand ("add the extra minute", 2026-09-17 22:30 EDT): a Claude-delegated step DOES carry
+// a review cost, but a small, visible, adjustable one: meta.capacity.claudeReviewMin minutes
+// (Settings > Capacity; default 5 = one turn), charged on his day the workday after the step
+// finishes, exactly where the person slice lands. 0 turns it off.
+var TSG_CLAUDE_REVIEW_MIN_DEFAULT = 5;
+var TSG_CLAUDE_REVIEW_MIN = TSG_CLAUDE_REVIEW_MIN_DEFAULT;
+function tsgReadCapacity_(doc) {
+  var cap = (doc && doc.meta && doc.meta.capacity) || {};
+  var m = Number(cap.claudeReviewMin);
+  TSG_CLAUDE_REVIEW_MIN = (isFinite(m) && m >= 0) ? m : TSG_CLAUDE_REVIEW_MIN_DEFAULT;
+}
+function tsgClaudeReviewHours_() { return Math.round(TSG_CLAUDE_REVIEW_MIN / 60 * 100) / 100; }
 // Same rule for a whole task: the person it sits with is its delegate, else its owner.
 function tsgTaskHandoffConfirmNeeded_(t) {
   var who = String(tsgTaskDelegate_(t) || (t && t.owner) || '').trim().toLowerCase();
@@ -5236,6 +5249,7 @@ function tsgOpenSubitemHours_(t) {
     if (!s.done) {
       if (s.estHours != null && !isNaN(s.estHours)) hours += Number(s.estHours);
       if (tsgHandoffConfirmNeeded_(s)) hours += 0.5; // confirm-the-handoff cost, invisible (people only)
+      else if (tsgIsClaudeDelegate_(s)) hours += tsgClaudeReviewHours_(); // review of a Claude step (Settings > Capacity)
       if (s.timelineEnd && (!latestOpenEnd || s.timelineEnd > latestOpenEnd)) latestOpenEnd = s.timelineEnd;
     }
   });
@@ -5294,12 +5308,22 @@ function tsgCaptureExplicitEditsFromSave_(prevTasks, nextTasks) {
  * that slice of Durand's day as already spoken for. No-ops if the finish date is in the
  * past relative to today (nothing to reserve for a handoff that already happened).
  */
-function tsgReserveConfirmCapacity_(addLoad, today, finishIso) {
+function tsgReserveConfirmCapacity_(addLoad, today, finishIso, hours) {
   if (!finishIso) return;
+  var h = (typeof hours === 'number') ? hours : 0.5;
+  if (!(h > 0)) return;
   var d = tsgAddDays_(finishIso, 1);
   var guard = 0;
   while (!tsgIsWorkdayIso_(d) && guard++ < 14) d = tsgAddDays_(d, 1);
-  if (d >= today) addLoad(d, 0.5);
+  if (d >= today) addLoad(d, h);
+}
+// The slice a finished non-Durand item costs him the next workday: 0.5 h for a person, the
+// Settings figure for Claude, nothing otherwise.
+function tsgConfirmHoursFor_(item, whole) {
+  if (whole ? tsgTaskHandoffConfirmNeeded_(item) : tsgHandoffConfirmNeeded_(item)) return 0.5;
+  var who = whole ? String(tsgTaskDelegate_(item) || '').trim().toLowerCase() : '';
+  if ((whole && who === 'claude') || (!whole && tsgIsClaudeDelegate_(item))) return tsgClaudeReviewHours_();
+  return 0;
 }
 
 /**
@@ -5552,6 +5576,7 @@ function tsgAutoScheduleDoc_(doc) {
   // Which backend wrote this document: a session reads it to know which ops the DEPLOYED
   // script accepts before sending them (2026-09-18).
   if (doc && doc.meta) doc.meta.backendVersion = TSG_CODE_VERSION;
+  tsgReadCapacity_(doc);
   try { tsgIndexReminders_(doc); } catch (remErr) { Logger.log('[reminders] index failed: ' + remErr.message); }
   var tasks = doc.tasks || [];
 
@@ -5604,7 +5629,7 @@ function tsgAutoScheduleDoc_(doc) {
       // still needs to be reserved on his calendar the day after, same as a freshly
       // placed one below.
       var existingSpan = tsgScheduledSpan_(r);
-      if (existingSpan && tsgHandoffConfirmNeeded_(r)) tsgReserveConfirmCapacity_(addLoad, today, existingSpan.end);
+      if (existingSpan) tsgReserveConfirmCapacity_(addLoad, today, existingSpan.end, tsgConfirmHoursFor_(r, false));
       return;
     }
     var hours = tsgItemHours_(r);
@@ -5806,7 +5831,7 @@ function tsgAutoScheduleDoc_(doc) {
       t.history = t.history || [];
       t.history.push({ ts: new Date().toISOString(), field: 'timelineEnd', from: before || null, to: t.timelineEnd, note: 'auto-scheduled' });
       finishDate[t.id] = t.timelineEnd;
-      if (!isDurandWork && tsgTaskHandoffConfirmNeeded_(t)) tsgReserveConfirmCapacity_(addLoad, today, t.timelineEnd);
+      if (!isDurandWork) tsgReserveConfirmCapacity_(addLoad, today, t.timelineEnd, tsgConfirmHoursFor_(t, true));
     } else {
       // A subitem: it carries no history of its own, so the note goes on the parent
       // task instead, naming which subitem it was. Nothing outside its own task ever
@@ -5815,11 +5840,11 @@ function tsgAutoScheduleDoc_(doc) {
       item.parent.history = item.parent.history || [];
       item.parent.history.push({ ts: new Date().toISOString(), field: 'subitem-scheduled', from: null,
         to: 'Auto-scheduled ' + item.label + ' for ' + t.timelineEnd, note: 'auto-scheduled' });
-      if (!isDurandWork && tsgHandoffConfirmNeeded_(t)) {
-        // Freshly placed step delegated to a PERSON — reserve the 0.5h "confirm this is done"
-        // slice on Durand's capacity pool now, so any items still left in the queue this same
-        // run see that slice of his day as already spoken for. Claude steps get no slice.
-        tsgReserveConfirmCapacity_(addLoad, today, t.timelineEnd);
+      if (!isDurandWork) {
+        // Freshly placed non-Durand step — reserve its confirm slice (0.5 h for a person, the
+        // Settings review minutes for Claude) on Durand's capacity pool now, so any items still
+        // left in the queue this same run see that slice of his day as already spoken for.
+        tsgReserveConfirmCapacity_(addLoad, today, t.timelineEnd, tsgConfirmHoursFor_(t, false));
       }
     }
     placed++;

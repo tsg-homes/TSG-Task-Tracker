@@ -1752,7 +1752,14 @@ section('Confirm-the-handoff slice is for people, not Claude (2026-09-18)');
     { title: 'Unassigned step', estHours: 1 }
   ] };
   const r = sandbox.tsgOpenSubitemHours_(t);
-  check('roll-up adds 0.5 h only for the person-delegated step: 4 h of steps + 0.5 = 4.5', r.hours === 4.5 && r.any === true);
+  check('roll-up: 4 h of steps + 0.5 h for the person step + 5 min (default) review for the Claude step = 4.58', r.hours === 4.58 && r.any === true);
+  sandbox.tsgReadCapacity_({ meta: { capacity: { claudeReviewMin: 0 } } });
+  check('Settings claudeReviewMin 0 turns the Claude review off (4.5)', sandbox.tsgOpenSubitemHours_(t).hours === 4.5);
+  sandbox.tsgReadCapacity_({ meta: { capacity: { claudeReviewMin: 15 } } });
+  check('claudeReviewMin 15 charges a quarter hour per Claude step (4.75)', sandbox.tsgOpenSubitemHours_(t).hours === 4.75);
+  check('tsgConfirmHoursFor_: person 0.5, Claude the Settings figure, unassigned 0', sandbox.tsgConfirmHoursFor_({ delegate: 'Marj' }, false) === 0.5 && sandbox.tsgConfirmHoursFor_({ delegate: 'Claude' }, false) === 0.25 && sandbox.tsgConfirmHoursFor_({}, false) === 0 && sandbox.tsgConfirmHoursFor_({ owner: 'Durand', delegate: 'Claude' }, true) === 0.25);
+  sandbox.tsgReadCapacity_({ meta: {} });
+  check('no capacity in meta falls back to the 5-minute default', sandbox.tsgOpenSubitemHours_(t).hours === 4.58);
   check('whole task: delegated to Marj yes, delegated to Claude no, owned by Marj with no delegate yes, Durand no', sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand', delegate: 'Marj' }) && !sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand', delegate: 'Claude' }) && sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Marj' }) && !sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand' }));
   check('tsgHandoffConfirmNeeded_: Marj yes, Claude no, Durand no, none no', sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Marj' }) && !sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Claude' }) && !sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Durand' }) && !sandbox.tsgHandoffConfirmNeeded_({}));
 }
