@@ -787,6 +787,20 @@
   }
   .history-entry:last-child { border-bottom: none; padding-bottom: 0; }
   .hist-time { color: var(--text-muted); white-space: nowrap; flex: none; min-width: 108px; }
+  /* Inbox errors (Settings > General): long messages wrap instead of running off the card */
+  .time-pick { display: inline-flex; align-items: center; }
+  .time-btn { cursor: pointer; min-width: 72px; text-align: left; }
+  /* Time pop-over (2026-09-17, per Durand "only show a few at a time so it doesn't extend to the
+     edge of the screen"): two scrollable columns capped at seven rows, never the browser's list. */
+  .time-pop { position: absolute; z-index: 10000; display: flex; gap: 6px; align-items: flex-start; background: var(--surface-1); border: 1px solid var(--gridline); border-radius: 8px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+  .time-pop-col { max-height: 168px; overflow-y: auto; min-width: 64px; }
+  .time-opt { padding: 3px 8px; cursor: pointer; border-radius: 4px; font-size: 12px; line-height: 18px; white-space: nowrap; }
+  .time-opt:hover { background: var(--gray-accent); }
+  .time-opt.on { background: var(--brand); color: #fff; }
+  .time-pop-none { align-self: stretch; color: var(--text-muted); }
+  #inboxErrorsList .history-row { display: block; }
+  #inboxErrorsList .hist-time { white-space: normal; min-width: 0; }
+  #inboxErrorsList .inbox-err { color: var(--text-muted); white-space: pre-wrap; word-break: break-word; font-size: 12px; margin-top: 2px; }
   .hist-desc { color: var(--text-primary); }
   .history-empty { color: var(--text-muted); font-size: 12.5px; }
 
@@ -1570,7 +1584,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.6';
+  const UI_VERSION = '2026-09-18.10';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2046,13 +2060,38 @@
     const list = (taskId ? COMMENTS.filter(c => c.anchor && c.anchor.id === taskId) : COMMENTS.slice()).sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
     document.getElementById('dayViewTitle').textContent = taskId ? 'Comments on #' + taskId : 'Comments';
     setDayViewAdd_(null);
-    document.getElementById('dayViewBody').innerHTML = list.length ? '<div class="comment-list">' + list.map(c => `
+    const openCount = COMMENTS.filter(c => c && !c.resolved && String(c.author || '').toLowerCase() !== 'claude').length;
+    const sendBar = openCount ? `<div class="cp-actions" style="margin-bottom:10px;"><button type="button" class="btn small primary" onclick="sendCommentsToClaude(event)" title="Open a Cowork session on this computer with every open comment (shift-click: Claude Code in the cloud). The session acts, replies in the thread and resolves what it finished.">Send ${openCount} open to Claude</button></div>` : '';
+    document.getElementById('dayViewBody').innerHTML = sendBar + (list.length ? '<div class="comment-list">' + list.map(c => `
       <div class="comment-item ${c.resolved ? 'resolved' : ''}" data-cid="${escapeHtml(c.id)}">
         <div class="comment-head"><b>${escapeHtml(c.author || '')}</b> · ${escapeHtml(formatDateTime(c.ts))} · <span class="comment-anchor" ${c.anchor && c.anchor.id ? `onclick="closeDayView(); openTaskCard(${c.anchor.id})"` : ''}>${escapeHtml(c.anchor ? c.anchor.label : '')}</span></div>
         <div class="comment-text">${escapeHtml(c.text)}</div>
         <div class="cp-actions"><button type="button" class="btn small" onclick="setCommentResolved_('${escapeHtml(c.id)}', ${c.resolved ? 'false' : 'true'})">${c.resolved ? 'Reopen' : 'Resolve'}</button><button type="button" class="btn small danger" onclick="deleteComment_('${escapeHtml(c.id)}')">Delete</button></div>
-      </div>`).join('') + '</div>' : '<div class="history-empty">No comments yet. Turn on Comment mode and click anything to leave one.</div>';
+      </div>`).join('') + '</div>' : '<div class="history-empty">No comments yet. Turn on Comment mode and click anything to leave one.</div>');
     document.getElementById('dayViewModal').classList.add('open');
+  }
+  // "Send to Claude" (2026-09-17, per Durand: "a button on the all comments view to submit them
+  // now"): every unresolved comment Durand wrote goes to a Claude session with the item it is
+  // anchored to; the session acts, replies in the thread (add_comment, replyTo) and resolves
+  // what it finished. The scheduled Routine is the backstop for anything not sent by hand.
+  function commentsPromptFor_() {
+    const open = COMMENTS.filter(c => c && !c.resolved && String(c.author || '').toLowerCase() !== 'claude');
+    const lines = open.map(c => {
+      const t = c.anchor && c.anchor.id ? findTask(c.anchor.id) : null;
+      const where = c.anchor ? (c.anchor.kind + (c.anchor.id ? ' #' + c.anchor.id : '') + (c.anchor.idx != null ? ' step ' + c.anchor.idx : '') + (c.anchor.label ? ' "' + c.anchor.label + '"' : '')) : 'board';
+      return '- [' + c.id + '] on ' + where + (t ? ' (task: ' + t.title + ')' : '') + ', by ' + (c.author || 'Durand') + ' ' + String(c.ts || '').slice(0, 16) + ': ' + String(c.text || '').replace(/\s+/g, ' ');
+    });
+    return 'Act on the open TSG Task Tracker comments below. Use the tsg-task-tracker-protocol skill.\n\n' +
+      '1. Read the tracker data file (Google Drive file id 1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt) with the Drive connector; meta.comments holds these comments with their anchors, and the anchored tasks and steps are in tasks[].\n' +
+      '2. For each comment: do what it asks when it is tracker work (field changes as update_task / update_subitem ops on the anchored item, in the same bulk patch), then reply with an add_comment op {comment: {text, author: "Claude", replyTo: "<comment id>", anchor: <the same anchor>}} saying what you did, and resolve it with update_comment {id: "<comment id>", fields: {resolved: true}} only once it is done. If it needs a decision only Durand can make, reply with the question and leave it open.\n' +
+      '3. Push everything as ONE bulk data patch (source "Claude (comments)") into the _Inbox folder 1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi with the Drive connector\'s create_file. Timestamps UTC ISO; dates in America/New_York.\n' +
+      '4. Wait one minute, re-read the data file, confirm the replies are in meta.comments, the resolved flags are set and no FAILED-, PARTIAL- or MALFORMED- file appeared in _Inbox, and report per comment what was done.\n\n' +
+      'COMMENTS:\n' + (lines.length ? lines.join('\n') : '(none)');
+  }
+  function sendCommentsToClaude(ev) {
+    const q = encodeURIComponent(commentsPromptFor_());
+    if (ev && ev.shiftKey) { window.open('https://claude.ai/code?prompt=' + q, '_blank'); return; }
+    window.location.href = 'claude://cowork/new?q=' + q;
   }
   async function setCommentResolved_(cid, resolved) {
     const c = COMMENTS.find(x => x.id === cid); if (!c) return;
@@ -2638,7 +2677,7 @@
   }
   function openAlertTasks(index) {
     const a = LAST_ALERTS[index];
-    if (a && a.openSettings) { settingsTab = 'general'; openSettings(); return; }
+    if (a && a.openSettings) { settingsTab = 'general'; openSettings().then(() => setSettingsTab('general')); return; }
     if (!a) return;
     openMultiTaskModal(a.text, a.ids);
   }
@@ -2920,7 +2959,8 @@
       '1. Read the tracker data file (Google Drive file id 1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt) with the Drive connector. Note meta.backendVersion and read every pending request in meta.judgments. Pending when this was opened: ' + (pend.length ? ids : 'none') + '.\n' +
       '2. Answer each request under your own judgment, exactly in the answer shapes documented in README.md "Judgment queue" of the GitHub repo tsg-homes/task-tracker: only the fields in need; polish the notes first and derive the rest from the polished text; steps as one entry per index in currentSteps; hours from the one estimation workflow in the skill (measured actuals, then the calibration table); run a web search to confirm every webLinks url; null for a match you are not confident in.\n' +
       '3. Push all answers as ONE bulk data patch of judgment ops (source "Claude (judge now)") into the _Inbox folder 1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi with the Drive connector\'s create_file. Timestamps in America/New_York.\n' +
-      '4. Wait one minute, re-read the data file, confirm the answered ids are gone from meta.judgments and that no FAILED-, PARTIAL- or MALFORMED- file appeared in _Inbox, and report per id what changed on the task.';
+      '4. Then read meta.comments: every unresolved comment not authored by Claude is a note from Durand for you. Do what it asks when it is within the tracker (a field change goes in the same bulk patch as an update_task / update_subitem op), reply with an add_comment op (author "Claude", replyTo the comment id, anchored to the same item) saying what you did or why not, and resolve it with update_comment {id, fields: {resolved: true}} only once it is done.\n' +
+      '5. Wait one minute, re-read the data file, confirm the answered ids are gone from meta.judgments and that no FAILED-, PARTIAL- or MALFORMED- file appeared in _Inbox, and report per id what changed on the task.';
   }
   function renderJudgeChip_() {
     const el = document.getElementById('judgeChip'); if (!el) return;
@@ -5010,7 +5050,7 @@
             <span class="sub-delegate" title="Delegate — who this subtask is delegated to">${avatarHtml(s.delegate)}${delegateSelect(t.id, i, s.delegate)}</span>
             ${subPillSelect('status', s.status, t.id, i)}
             ${subPillSelect('priority', s.priority, t.id, i)}
-            <span class="sub-due ${overdueSub ? 'overdue' : ''}"><input type="date" class="due-input" value="${due}" onchange="onSubFieldChange(${t.id}, ${i}, 'timelineEnd', this.value)"><input type="time" class="due-input sub-time" value="${s.dueTime || ''}" title="Optional time of day" onchange="onDueTimeChange_(${t.id}, ${i}, this.value)">${reminderControlHtml_(s, t.id, i)}</span>
+            <span class="sub-due ${overdueSub ? 'overdue' : ''}"><input type="date" class="due-input" value="${due}" onchange="onSubFieldChange(${t.id}, ${i}, 'timelineEnd', this.value)">${timeSelectHtml_(s.dueTime || '', `onDueTimeChange_(${t.id}, ${i}, v)`, 'sub-time')}${reminderControlHtml_(s, t.id, i)}</span>
             <span class="sub-hours"><input type="number" min="0.25" step="0.25" class="due-input sub-hours-input" value="${s.estHours != null ? s.estHours : ''}" placeholder="hrs" onchange="onSubFieldChange(${t.id}, ${i}, 'estHours', this.value ? Number(this.value) : null)"></span>
             ${t.subitems.length > 1 ? `<select class="due-input sub-depends-select" title="Depends on — defaults to the subitem right before it" onchange="onSubFieldChange(${t.id}, ${i}, 'depends', this.value)"><option value="">${i > 0 ? 'Previous subtask (default)' : 'No dependency (default)'}</option>${dependsOptions}</select>` : ''}
           </div>
@@ -5795,7 +5835,7 @@
         <label>Title<input type="text" class="text-input" id="mfTitle" value="${escapeHtml(item.title || '')}"></label>
         <div class="meeting-form-row">
           <label>Date<input type="date" class="due-input" id="mfDate" value="${defaultDate}"></label>
-          <label>Start<input type="time" class="due-input" id="mfStart" value="10:00"></label>
+          <label>Start${timeSelectHtml_('10:00', '', '', 'mfStart')}</label>
           <label>Duration (min)<input type="number" class="due-input" id="mfDuration" value="${meetingBucket_(item.estHours)}" min="15" step="15"></label>
         </div>
         <div class="sched-detail-note">Suggested times — Mon–Thu 9–2 when free for both of you, before the due date, ${meetingBucket_(item.estHours)} min from the estimate <label class="mf-blocks"><input type="checkbox" id="mfBlocks" checked onchange="onMfGuestChange_()"> skip errand and break blocks</label></div>
@@ -5855,7 +5895,7 @@
     const dt = isoToLocalDateHm_(sl.startISO), dtEnd = isoToLocalDateHm_(sl.endISO);
     if (!dt) return;
     document.getElementById('mfDate').value = dt.date;
-    document.getElementById('mfStart').value = dt.hm;
+    setTimePick_('mfStart', dt.hm);
     if (dtEnd) document.getElementById('mfDuration').value = Math.round((new Date(sl.endISO) - new Date(sl.startISO)) / 60000);
     document.querySelectorAll('#mfSlots .meeting-row').forEach((row, j) => row.classList.toggle('meeting-row-guess', j === i));
   }
@@ -5990,6 +6030,30 @@
     if (Notification.permission === 'default') { try { return await Notification.requestPermission(); } catch (e) { return Notification.permission; } }
     return Notification.permission;
   }
+  // What the permission state means for THIS page (2026-09-17, per Durand "enabling
+  // notifications button doesn't do anything"): the dashboard runs inside Apps Script's
+  // cross-origin frame, and Chrome refuses notification prompts from such frames, so the
+  // request resolves without a prompt. Say so instead of silently doing nothing; the
+  // in-page toasts and the email reminders are what actually fire here.
+  function notifyStateText_(state) {
+    if (state === 'granted') return 'granted: native notifications are on for this page.';
+    if (state === 'unsupported') return 'not available in this frame: the tracker uses in-page toasts and email reminders instead.';
+    if (state === 'denied') return 'blocked by the browser (Apps Script pages run in a frame that Chrome does not let ask): in-page toasts and email reminders are used instead.';
+    if (typeof window !== 'undefined' && window.top !== window) return 'no prompt is possible inside the Apps Script frame; allow it by hand: copy the address ' + location.origin + ', open chrome://settings/content/notifications, click Add under "Allowed to send notifications", paste it, then reload the tracker. Until then in-page toasts and email reminders are used.';
+    return 'not decided yet: click Enable.';
+  }
+  function testNotification_() {
+    try { const n = new Notification('TSG Task Tracker', { body: 'Native notifications work on this page.' }); setTimeout(() => n.close(), 6000); }
+    catch (e) { toast_('Notification failed', String(e.message || e)); }
+  }
+  async function enableNotificationsClick_() {
+    const before = notifyPermission_();
+    const after = await ensureNotifyPermission_();
+    const el = document.getElementById('notifyState');
+    if (el) el.textContent = after + (after === before && after !== 'granted' ? ' (no prompt was shown)' : '');
+    const why = document.getElementById('notifyWhy'); if (why) why.textContent = notifyStateText_(after);
+    if (after === 'granted') toast_('Notifications on', 'Reminders will also pop up here while the tracker is open.');
+  }
   function toast_(title, body, onClick) {
     let host = document.getElementById('tsgToasts');
     if (!host) { host = document.createElement('div'); host.id = 'tsgToasts'; document.body.appendChild(host); }
@@ -6065,6 +6129,74 @@
   function onRemindCustom(id, idx, val) {
     const ctx = itemFor_(id, idx); if (!ctx || !ctx.item) return;
     setRemindAt_(ctx, id, idx, val ? val.slice(0, 16) : '');
+  }
+  // Time picker (2026-09-17, per Durand "the time picker sucks"): the browser's native
+  // <input type=time> is replaced by a select of quarter-hours in 12-hour labels, 6:00 AM to
+  // 8:00 PM, with "no time" first and "other…" for anything off the grid (typed as h:mm,
+  // 24-hour or with am/pm). A stored value off the grid is shown as its own option.
+  function timeLabel12_(hm) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || '')); if (!m) return hm || '';
+    const h = Number(m[1]); return ((h % 12) || 12) + ':' + m[2] + (h < 12 ? ' AM' : ' PM');
+  }
+  function parseTimeInput_(raw) {
+    const t = String(raw || '').trim().toLowerCase(); if (!t) return '';
+    const m = /^(\d{1,2})(?::?(\d{2}))?\s*(a|p|am|pm)?$/.exec(t); if (!m) return null;
+    let h = Number(m[1]); const mm = m[2] ? Number(m[2]) : 0;
+    if (m[3]) { const pm = m[3][0] === 'p'; if (h === 12) h = pm ? 12 : 0; else if (pm) h += 12; }
+    if (h > 23 || mm > 59) return null;
+    return String(h).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  }
+  function timeSelectHtml_(value, onchangeExpr, extraClass, hiddenId) {
+    // A button showing the time; clicking it opens a pop-over with an hour column (6 AM to
+    // 8 PM) and a minutes column (:00 :15 :30 :45), each scrolling past seven rows, plus "no
+    // time". Never the browser's own dropdown, which lists every option to the screen edge.
+    // The value is HH:mm; with hiddenId it is mirrored into a hidden input for forms.
+    return `<span class="time-pick ${extraClass || ''}"><button type="button" class="due-input time-btn" data-value="${escapeHtml(value || '')}" onclick="openTimePop_(this, function(v){ ${onchangeExpr} })" title="Time of day">${value ? escapeHtml(timeLabel12_(value)) : '—'}</button>${hiddenId ? `<input type="hidden" id="${hiddenId}" value="${escapeHtml(value || '')}">` : ''}</span>`;
+  }
+  let TIME_POP = null;
+  function closeTimePop_() { if (TIME_POP) { TIME_POP.remove(); TIME_POP = null; } document.removeEventListener('mousedown', onTimePopOutside_, true); }
+  function onTimePopOutside_(ev) { if (TIME_POP && !TIME_POP.contains(ev.target)) closeTimePop_(); }
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && TIME_POP) { closeTimePop_(); ev.stopPropagation(); } }, true);
+  function timePickParts_(v) { const m = /^(\d{1,2}):(\d{2})$/.exec(String(v || '')); return m ? { h: Number(m[1]), mm: m[2] } : { h: null, mm: '00' }; }
+  function setTimePickButton_(btn, v) {
+    btn.dataset.value = v || ''; btn.textContent = v ? timeLabel12_(v) : '—';
+    const wrap = btn.closest('.time-pick'); const hid = wrap && wrap.querySelector('input[type=hidden]'); if (hid) hid.value = v || '';
+  }
+  function openTimePop_(btn, apply) {
+    closeTimePop_();
+    let cur = btn.dataset.value || '';
+    const hourLabel = hh => ((hh % 12) || 12) + (hh < 12 ? ' AM' : ' PM');
+    const pop = document.createElement('div'); pop.className = 'time-pop'; pop.setAttribute('role', 'listbox');
+    const render = () => {
+      const p = timePickParts_(cur);
+      const hours = []; for (let hh = 6; hh <= 20; hh++) hours.push(hh); if (p.h !== null && hours.indexOf(p.h) === -1) hours.push(p.h);
+      const mins = ['00', '15', '30', '45']; if (mins.indexOf(p.mm) === -1) { mins.push(p.mm); mins.sort(); }
+      pop.innerHTML = `<div class="time-pop-col hours">${hours.map(hh => `<div class="time-opt ${p.h === hh ? 'on' : ''}" data-h="${hh}">${hourLabel(hh)}</div>`).join('')}</div>` +
+        `<div class="time-pop-col mins">${mins.map(x => `<div class="time-opt ${p.mm === x ? 'on' : ''}" data-m="${x}">:${x}</div>`).join('')}</div>` +
+        `<div class="time-opt time-pop-none" data-none="1">no time</div>`;
+      const on = pop.querySelector('.hours .on'); if (on && on.scrollIntoView) { try { on.scrollIntoView({ block: 'nearest' }); } catch (e) {} }
+    };
+    const set = v => { cur = v; setTimePickButton_(btn, v); apply(v); };
+    pop.addEventListener('click', ev => {
+      const el = ev.target.closest('.time-opt'); if (!el) return;
+      ev.stopPropagation();
+      if (el.dataset.none) { set(''); closeTimePop_(); return; }
+      const p = timePickParts_(cur);
+      if (el.dataset.h) { set(String(el.dataset.h).padStart(2, '0') + ':' + p.mm); render(); return; }
+      if (el.dataset.m) { set(String(p.h == null ? 9 : p.h).padStart(2, '0') + ':' + el.dataset.m); closeTimePop_(); }
+    });
+    render();
+    document.body.appendChild(pop);
+    const r = btn.getBoundingClientRect();
+    pop.style.top = (r.bottom + window.scrollY + 4) + 'px'; pop.style.left = (r.left + window.scrollX) + 'px';
+    TIME_POP = pop;
+    setTimeout(() => document.addEventListener('mousedown', onTimePopOutside_, true), 0);
+    return pop;
+  }
+  function setTimePick_(hiddenId, hm) {
+    const hid = document.getElementById(hiddenId); if (!hid) return;
+    const wrap = hid.closest('.time-pick'); const btn = wrap && wrap.querySelector('.time-btn');
+    if (btn) setTimePickButton_(btn, hm || ''); else hid.value = hm || '';
   }
   function onDueTimeChange_(id, idx, val) {
     const ctx = itemFor_(id, idx); if (!ctx || !ctx.item) return;
@@ -6407,7 +6539,7 @@
       `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}</div>`,
       `<div class="modal-row"><b>Priority</b>${modalPillSelect('priority', t.priority, id)}</div>`,
       `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Actionable Task')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,
-      `<div class="modal-row"><b>Due</b><span class="modal-est-wrap"><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)"><input type="time" class="due-input" value="${t.dueTime || ''}" title="Optional time of day" onchange="modalDueTimeChange(${id}, this.value)">${reminderControlHtml_(t, id, null)}</span></div>`,
+      `<div class="modal-row"><b>Due</b><span class="modal-est-wrap"><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)">${timeSelectHtml_(t.dueTime || '', `modalDueTimeChange(${id}, v)`)}${reminderControlHtml_(t, id, null)}</span></div>`,
       (t.timelineEnd ? `<div class="modal-row"><b>Countdown</b>${bonusCountdownHtml_(t)}</div>` : ''),
       `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button>${t.location ? `<a class="btn small" href="${escapeHtml(directionsUrl_(t))}" target="_blank" rel="noopener" title="Open directions in Google Maps">&#128506; Directions</a><button type="button" class="btn small" onclick="sendDirections(${id}, this)" title="Email the Maps directions link to your phone">&#128241; Send to phone</button>` : ''}</span></div>`,
       `<div class="modal-row"><b>Estimate</b><span class="modal-est-wrap"><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs${(pendingJudgment_(id, 'enrich') || pendingJudgment_(id, 'estimate')) ? ' <span class="hist-time" title="Queued for the hourly Claude Routine: the title, notes and fields update when it answers">· queued for Claude</span>' : ''}${travelRowHtml_(t)}</span></div>`,
@@ -7297,7 +7429,18 @@
   function inboxErrorsHtml_() {
     const errs = (RAW_META.inboxErrors || []).slice(-10).reverse();
     if (!errs.length) return '<div class="history-empty">None recorded.</div>';
-    return errs.map(e => `<div class="history-row"><span class="hist-time">${escapeHtml(String(e.ts || '').replace('T', ' ').slice(0, 16))}</span> <b>${escapeHtml(e.file || '')}</b> · ${escapeHtml(e.op || '')}<div class="hist-time">${escapeHtml(e.error || '')}</div></div>`).join('');
+    return errs.map(e => `<div class="history-row"><span class="hist-time">${escapeHtml(String(e.ts || '').replace('T', ' ').slice(0, 16))}</span> <b>${escapeHtml(e.file || '')}</b> · ${escapeHtml(e.op || '')} <button type="button" class="btn small" onclick="retryInboxError_('${jsAttr(e.file || '')}')" title="Re-apply the failed part of the filed patch (works once the backend accepts it)">Retry</button> <button type="button" class="btn small" onclick="dismissInboxError_('${jsAttr(e.file || '')}')" title="Drop this record and trash the filed file">Dismiss</button><div class="inbox-err">${escapeHtml(e.error || '')}</div></div>`).join('');
+  }
+  // Retry re-applies only the failed sub-ops of the filed patch (the file is still in _Inbox for
+  // 7 days); Dismiss trashes the file and drops the record (Durand, 2026-09-17: "why just look at
+  // the error message instead of running a fix?").
+  async function retryInboxError_(file) {
+    await postCommentOp_({ op: 'retry_filed', file: file, source: 'Durand' });
+    await loadData(true, true); renderSettings();
+  }
+  async function dismissInboxError_(file) {
+    await postCommentOp_({ op: 'dismiss_inbox_error', file: file, source: 'Durand' });
+    await loadData(true, true); renderSettings();
   }
   function renderSettings() {
     const body = document.getElementById('settingsBody');
@@ -7318,7 +7461,7 @@
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Reminder notifications</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b> <button type="button" class="btn small" onclick="ensureNotifyPermission_().then(p => { const el = document.getElementById('notifyState'); if (el) el.textContent = p; })">Enable</button></div>
+        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b>${(notifyPermission_() === 'default' && window.top === window) ? ' <button type="button" class="btn small" onclick="enableNotificationsClick_()">Enable</button>' : ''}${notifyPermission_() === 'granted' ? ' <button type="button" class="btn small" onclick="testNotification_()">Test</button>' : ''}<div class="history-empty" id="notifyWhy" style="margin-top:4px;">${escapeHtml(notifyStateText_(notifyPermission_()))}${window.top !== window && notifyPermission_() !== 'granted' ? ' <button type="button" class="btn small" onclick="navigator.clipboard && navigator.clipboard.writeText(location.origin)">Copy address</button>' : ''}</div></div>
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Claude Code repo</h3></div>

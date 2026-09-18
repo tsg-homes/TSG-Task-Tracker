@@ -262,6 +262,16 @@ side it was "consumed with nothing recorded". Now:
 - Verify a write by re-reading the data file: the change is there, or the file name in `_Inbox`
   and `meta.inboxErrors` say why not. Nothing else counts as evidence.
 
+## Comments are the Durand-to-Claude channel (2026-09-17)
+
+`meta.comments` holds notes Durand anchors to a task, step, group or tile from the dashboard's
+Comment mode. Every session that touches the tracker (the judgment Routine, a Judge-now session,
+any Cowork/Code session on a task) reads the UNRESOLVED comments not authored by Claude, does what
+they ask when it is tracker work (field changes ride in the same bulk patch), replies with
+`add_comment` (`author: "Claude"`, `replyTo: <id>`, same anchor) saying what was done or why not,
+and resolves with `update_comment {id, fields: {resolved: true}}` only when done. A Claude-authored
+comment (e.g. an estimate settlement) is Durand's to resolve after reading.
+
 ## Actual time (2026-09-17): one log, three ways in
 
 Nothing measured actual time before this. Now every item (task or step) carries `timeLog[]`

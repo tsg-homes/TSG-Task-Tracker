@@ -776,3 +776,34 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   `FAILED-`/`PARTIAL-`/`MALFORMED-` inbox files are trashed by the tracker after
   `TSG_INBOX_KEEP_DAYS` (7); the `meta.inboxErrors` record stays. The session can also trash a
   file itself with the Drive connector (done for the 2026-09-17 test file).
+- Time picker (UI 2026-09-18.7, per Durand "the time picker sucks"): every `<input type="time">`
+  (modal Due row, subtask rows, the meeting form's Start) is a `timeSelectHtml_` select: "no
+  time", quarter-hours 6:00 AM–8:00 PM in 12-hour labels, an off-grid stored value as its own
+  option, and "other…" which prompts free text parsed by `parseTimeInput_` (h:mm, hmm, am/pm,
+  24-hour). Values stay `HH:mm` 24-hour in the data.
+- UI 2026-09-18.8 (per Durand): the Enable-notifications button now reports its outcome
+  (`enableNotificationsClick_`, `notifyStateText_`): Chrome refuses notification prompts from
+  the Apps Script cross-origin frame, so the request resolves without a prompt and the page says
+  toasts plus email reminders are what fire; the button hides once granted. Inbox error messages
+  wrap (`.inbox-err`, `pre-wrap`). The "inbox patches failed" alert opens Settings and lands on
+  the General tab with the tab highlighted (`openSettings().then(setSettingsTab('general'))`).
+- Comments channel (README "Comments are the Durand-to-Claude channel", skill "Comments"): the
+  Judge-now prompt's step 4 has every queue-answering session read unresolved non-Claude comments,
+  act, reply with add_comment (author Claude, replyTo) and resolve with update_comment. The
+  Routine's own prompt is Durand's to edit (agents cannot); it needs the same step. Time select
+  is narrower (`select.time-select`, 92 px max).
+- UI 2026-09-18.9 / backend 2026-09-18.8 (per Durand): the time picker is two short lists
+  (`timeSelectHtml_`: hour none/6 AM–8 PM, minutes :00/:15/:30/:45, off-grid values kept,
+  `timePickValue_`, `onTimePick_`, `setTimePick_` for the meeting form's hidden `mfStart`); the
+  notifications block is a status line (Enable shows only when the page is top-level and
+  undecided: Chrome never prompts inside the Apps Script frame, so a reload cannot trigger it
+  either); inbox error rows carry Retry (`retry_filed {file}`: re-applies only the failed sub-ops
+  of the filed PARTIAL-/FAILED- copy, trashes it and drops the record on success) and Dismiss
+  (`dismiss_inbox_error {file}`), both in `TSG_DATA_OPS`.
+- UI 2026-09-18.10 (per Durand): the time picker is a button + pop-over (`openTimePop_`,
+  `.time-pop`, hour and minute columns capped at 168 px with scrolling, "no time"; `setTimePick_`
+  for the meeting form), never the browser's dropdown. Notifications status line tells how to
+  allow the frame's origin by hand (chrome://settings/content/notifications, Add `location.origin`)
+  with a Copy-address button and a Test button once granted. Comments panel has "Send N open to
+  Claude" (`commentsPromptFor_`, `sendCommentsToClaude`: Cowork deep link, shift = cloud Code)
+  carrying every unresolved non-Claude comment with its anchor and the act / reply / resolve rules.

@@ -71,6 +71,10 @@ The in-script estimator (`TSG_ESTIMATE_SYSTEM`) and every session use the SAME m
 
 Read the current figures from the Rulesets "Daily capacity & task scheduling rules" (and `meta.capacity` once Settings carries them); defaults: 6 usable hours a day (4 on Friday), minus that day's real calendar meetings (skip self-blocked Focus time; trips are zero days); per-task daily chunk Critical 4 h, High 3 h, Medium 2.5 h, Low 2 h, never more than the day has left; 3–5 tasks active per day; chunks on consecutive workdays, never weekends; hard-deadline work claims capacity first; a due date that cannot be met is flagged at-risk with the realistic date, never quietly forced. Delegated and Claude-delegated items are paced, not charged to Durand's day. `estDays = ceil(estHours / chunk)` placed across those days.
 
+## Comments (added 2026-09-17)
+
+`meta.comments` is Durand's channel to you. On every tracker write-back also read the unresolved comments not authored by Claude on the items you touched (all of them in a queue-answering session): do what they ask when it is tracker work, reply with `add_comment {comment: {text, author: "Claude", replyTo: <id>, anchor: <same anchor>}}`, and resolve with `update_comment {id, fields: {resolved: true}}` only once done. Never resolve a comment you did not act on.
+
 ## Session effort report (added 2026-09-17)
 
 At every write-back for a tracker task the session worked on (progress, notes, Done), also push:

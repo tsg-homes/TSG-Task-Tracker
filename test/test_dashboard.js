@@ -775,12 +775,12 @@ setTimeout(async () => {
   });
 
   // Due time + reminders (2026-09-17)
-  tryCall('modal Due row has a time input and a reminder select; a preset computes remindAt from the due date and time', () => {
+  tryCall('modal Due row has a time select and a reminder select; a preset computes remindAt from the due date and time', () => {
     const t = w.findTask(1);
     t.timelineEnd = '2026-09-25'; delete t.dueTime; delete t.remindAt;
     w.openTaskCard(1);
     const html = doc.getElementById('modalMeta').innerHTML;
-    if (!html.includes('type="time"') || !html.includes('remind-select')) throw new Error('controls missing');
+    if (!html.includes('time-pick') || !html.includes('remind-select')) throw new Error('controls missing');
     w.modalDueTimeChange(1, '14:00');
     if (w.findTask(1).dueTime !== '14:00') throw new Error('dueTime not set');
     w.onRemindPreset(1, null, '60');
@@ -1059,7 +1059,7 @@ setTimeout(async () => {
     const chip = doc.getElementById('judgeChip');
     if (chip.style.display === 'none' || !/2 judgments queued/.test(chip.textContent)) throw new Error('chip: ' + chip.textContent);
     const p = w.judgePromptFor_();
-    if (!p.includes('J21 (task #281, enrich)') || !p.includes('J22 (task #287 step 2, enrich)') || !p.includes('1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt') || !p.includes('tsg-task-tracker-protocol')) throw new Error('prompt: ' + p.slice(0, 200));
+    if (!p.includes('J21 (task #281, enrich)') || !p.includes('J22 (task #287 step 2, enrich)') || !p.includes('1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt') || !p.includes('tsg-task-tracker-protocol') || !p.includes('meta.comments')) throw new Error('prompt: ' + p.slice(0, 200));
     w.eval('RAW_META.judgments = []'); w.renderJudgeChip_();
   });
   tryCall('Settings > Capacity: four inputs; a key posts set_meta {capacity} merged with the others', () => {
@@ -1111,6 +1111,53 @@ setTimeout(async () => {
     if (!doc.getElementById('taskModal').innerHTML.includes('approval')) throw new Error('toggle not rendered on the card');
     w.closeTaskCard();
     w.setNeedsApproval(1, 0, false); w.setNeedsApproval(1, null, false);
+  });
+  tryCall('time picker: a button opens a pop-over with scroll-capped hour and minute columns; picking hour then minute applies HH:mm; no time clears', () => {
+    const html = w.timeSelectHtml_('11:15', 'x(v)');
+    if (!/time-btn/.test(html) || !/data-value="11:15"/.test(html) || !/>11:15 AM</.test(html)) throw new Error('button html ' + html.slice(0, 200));
+    if (!/\.time-pop-col \{[^}]*max-height: 168px[^}]*overflow-y: auto/.test(doc.querySelector('style').textContent)) throw new Error('columns not scroll-capped');
+    const host = doc.createElement('div'); host.innerHTML = w.timeSelectHtml_('11:15', 'x(v)'); doc.body.appendChild(host);
+    const btn = host.querySelector('.time-btn'); const got = [];
+    const pop = w.openTimePop_(btn, v => got.push(v));
+    if (!pop || pop.querySelectorAll('.hours .time-opt').length !== 15 || pop.querySelectorAll('.mins .time-opt').length !== 4) throw new Error('pop contents');
+    if (!pop.querySelector('.hours .time-opt.on') || pop.querySelector('.hours .time-opt.on').dataset.h !== '11') throw new Error('current hour not marked');
+    pop.querySelector('.hours [data-h="14"]').click();
+    if (got[got.length - 1] !== '14:15' || btn.dataset.value !== '14:15' || !doc.body.contains(pop)) throw new Error('hour pick ' + JSON.stringify(got));
+    pop.querySelector('.mins [data-m="30"]').click();
+    if (got[got.length - 1] !== '14:30' || btn.textContent !== '2:30 PM' || doc.body.contains(pop)) throw new Error('minute pick ' + JSON.stringify(got));
+    const pop2 = w.openTimePop_(btn, v => got.push(v)); pop2.querySelector('[data-none]').click();
+    if (got[got.length - 1] !== '' || btn.textContent !== '—') throw new Error('no time');
+    host.innerHTML = w.timeSelectHtml_('10:00', '', '', 'mfStartTest'); w.setTimePick_('mfStartTest', '13:45');
+    if (doc.getElementById('mfStartTest').value !== '13:45' || host.querySelector('.time-btn').textContent !== '1:45 PM') throw new Error('setTimePick_');
+    host.remove();
+    w.openTaskCard(1);
+    if (doc.querySelector('#taskModal input[type="time"]') || !doc.querySelector('#taskModal .time-btn')) throw new Error('card picker');
+    w.closeTaskCard();
+  });
+  tryCall('comments panel: "Send N open to Claude" lists only unresolved non-Claude comments in the prompt', () => {
+    w.eval("COMMENTS = [{ id: 'c1', ts: '2026-09-17T20:00:00Z', author: 'Durand', text: 'Move this to Friday', anchor: { kind: 'task', id: 1, label: 'Task one' }, resolved: false }, { id: 'c2', ts: '2026-09-17T20:01:00Z', author: 'Claude', text: 'noted', anchor: { kind: 'task', id: 1, label: 'Task one' }, resolved: false }, { id: 'c3', ts: '2026-09-17T20:02:00Z', author: 'Durand', text: 'old', anchor: { kind: 'task', id: 2, label: 'Two' }, resolved: true }]");
+    w.openCommentsPanel();
+    if (!doc.getElementById('dayViewBody').innerHTML.includes('Send 1 open to Claude')) throw new Error('no send button');
+    const p = w.commentsPromptFor_();
+    if (!p.includes('[c1]') || p.includes('[c2]') || p.includes('[c3]') || !p.includes('Move this to Friday') || !p.includes('replyTo')) throw new Error('prompt ' + p.slice(0, 300));
+    w.closeDayView(); w.eval('COMMENTS = []');
+  });
+  tryCall('inbox error rows carry Retry and Dismiss; Retry posts retry_filed; errors wrap; the alert lands on General', async () => {
+    w.eval("RAW_META.inboxErrors = [{ ts: new Date().toISOString(), file: 'mixed.json', op: 'bulk', error: 'a very long error message that must wrap ' + 'x'.repeat(300) }]");
+    const html = w.inboxErrorsHtml_();
+    if (!/retryInboxError_\('mixed.json'\)/.test(html) || !/dismissInboxError_\('mixed.json'\)/.test(html) || !/class="inbox-err"/.test(html)) throw new Error('buttons/wrap ' + html.slice(0, 200));
+    if (!/#inboxErrorsList \.inbox-err \{[^}]*pre-wrap/.test(doc.querySelector('style').textContent)) throw new Error('no wrapping rule');
+    w.__posts = []; w.retryInboxError_('mixed.json');
+    const p = (w.__posts || []).find(x => x.body && x.body.includes('retry_filed'));
+    if (!p || JSON.parse(p.body).file !== 'mixed.json') throw new Error('no retry post');
+    const a = w.computeAlerts().find(x => x.openSettings); const i = w.computeAlerts().indexOf(a);
+    w.eval('LAST_ALERTS = computeAlerts()');
+    w.openAlertTasks(i);
+    await new Promise(r => setTimeout(r, 30));
+    const active = doc.querySelector('.settings-tab.active');
+    if (!active || active.dataset.tab !== 'general' || !doc.getElementById('inboxErrorsList')) throw new Error('did not land on General: ' + (active && active.dataset.tab));
+    if (!/toasts and email/.test(w.notifyStateText_('denied'))) throw new Error('state text');
+    w.closeSettings(); w.eval('RAW_META.inboxErrors = []');
   });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));

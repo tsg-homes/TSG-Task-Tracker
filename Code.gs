@@ -423,7 +423,7 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
 // session that sends an op the DEPLOYED script does not know yet reads exactly why.
 var TSG_DATA_OPS = ['add_task', 'update_task', 'update_subitem', 'add_subitem', 'delete_task', 'bulk', 'set_meta',
   'replace_all', 'add_comment', 'update_comment', 'judgment', 'request_tidy', 'clear_tidy_proposal', 'request_steps',
-  'log_time', 'remove_dismissed_google_task_ids'];
+  'log_time', 'retry_filed', 'dismiss_inbox_error', 'remove_dismissed_google_task_ids'];
 // In-place restore of a document from a JSON snapshot: the caller's reference stays valid.
 function tsgRestoreDoc_(doc, snapJson) {
   var snap = JSON.parse(snapJson);
@@ -432,6 +432,41 @@ function tsgRestoreDoc_(doc, snapJson) {
 }
 // A dropped or partially applied patch leaves a trace in the data file (2026-09-18, after a
 // raffle-session bulk was consumed with nothing recorded): newest last, capped at 30.
+// Retry / dismiss a filed patch (2026-09-17, per Durand "why just look at the error message
+// instead of running a fix?"). The filed copy stays in _Inbox for TSG_INBOX_KEEP_DAYS, so a
+// retry can re-apply exactly the sub-ops that failed (a bulk) or the whole patch (anything
+// else) once the cause is gone, e.g. a backend deploy that added the op. Success trashes the
+// file and drops the record; a second failure files the retry itself like any patch.
+function tsgFindFiledInboxFile_(name) {
+  var inbox = DriveApp.getFolderById(INBOX_FOLDER_ID);
+  var prefixes = ['PARTIAL-', 'FAILED-', 'MALFORMED-'];
+  for (var i = 0; i < prefixes.length; i++) { var it = inbox.getFilesByName(prefixes[i] + name); if (it && it.hasNext()) return it.next(); }
+  return null;
+}
+function tsgBareFiledName_(v) { return String(v || '').replace(/^(PARTIAL|FAILED|MALFORMED)-/, ''); }
+function tsgRetryFiled_(doc, patch, now) {
+  var name = tsgBareFiledName_(patch.file);
+  var f = tsgFindFiledInboxFile_(name);
+  if (!f) throw new Error('retry_filed: no filed copy of "' + name + '" in _Inbox (filed copies are trashed after ' + TSG_INBOX_KEEP_DAYS + ' days)');
+  var body = JSON.parse(f.getBlob().getDataAsString());
+  if (body.target && body.target !== 'data') throw new Error('retry_filed: only data patches can be retried from the dashboard');
+  var errs = (doc.meta && doc.meta.inboxErrors) || [];
+  var entry = null;
+  for (var i = errs.length - 1; i >= 0; i--) { if (errs[i] && errs[i].file === name) { entry = errs[i]; break; } }
+  var toApply = body;
+  if (body.op === 'bulk' && entry && entry.failedSubOps && entry.failedSubOps.length) {
+    toApply = Object.assign({}, body, { ops: entry.failedSubOps.map(function(x) { return (body.ops || [])[x.index]; }).filter(Boolean) });
+  }
+  applyDataPatch_(doc, Object.assign({}, toApply, { ts: now, source: patch.source || body.source || 'retry' }));
+  f.setTrashed(true);
+  if (entry) doc.meta.inboxErrors = errs.filter(function(e) { return e !== entry; });
+}
+function tsgDismissInboxError_(doc, patch) {
+  var name = tsgBareFiledName_(patch.file);
+  var f = tsgFindFiledInboxFile_(name);
+  if (f) f.setTrashed(true);
+  if (doc.meta && Array.isArray(doc.meta.inboxErrors)) doc.meta.inboxErrors = doc.meta.inboxErrors.filter(function(e) { return !e || e.file !== name; });
+}
 function tsgRecordInboxError_(doc, entry) {
   if (!doc) return;
   doc.meta = doc.meta || {};
@@ -930,6 +965,10 @@ function applyDataPatch_(doc, patch) {
     if (want.length) tsgEnrichSteps_(doc, st, now, patch.source || 'unknown', want);
   } else if (patch.op === 'log_time') {
     tsgLogTime_(doc, patch, now);
+  } else if (patch.op === 'retry_filed') {
+    tsgRetryFiled_(doc, patch, now);
+  } else if (patch.op === 'dismiss_inbox_error') {
+    tsgDismissInboxError_(doc, patch);
   } else if (patch.op === 'request_tidy') {
     // The Tidy button (2026-09-16, per Durand: "the tidy should now just be automatic"): a
     // full re-run of the enrichment on one task, applied when the answer lands, no review

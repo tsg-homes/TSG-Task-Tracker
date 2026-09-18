@@ -1804,5 +1804,28 @@ section('A proposed due date is never a day that is already over (2026-09-17)');
   sandbox.tsgEarliestDueIso_ = savedNow;
 }
 
+section('Retry / dismiss a filed inbox patch (2026-09-17)');
+{
+  const doc = freshDoc();
+  doc.meta.inboxErrors = [{ ts: '2026-09-18T03:06:00Z', file: 'mixed.json', target: 'data', op: 'bulk[update_task,log_time]', error: 'bulk: 1 of 2 sub-op(s) failed', appliedSubOps: 1, failedSubOps: [{ index: 1, op: 'log_time', id: 1, error: 'Unknown data patch op: log_time' }] }];
+  const body = { target: 'data', op: 'bulk', source: 'Claude (raffle)', ops: [{ op: 'update_task', id: 1, fields: { notes: 'SHOULD NOT REAPPLY' } }, { op: 'log_time', id: 1, minutes: 20, kind: 'session' }] };
+  const filed = { name: 'PARTIAL-mixed.json', trashed: false, setTrashed(v) { this.trashed = v; }, getName() { return this.name; }, getBlob: () => ({ getDataAsString: () => JSON.stringify(body) }) };
+  const savedFolder = sandbox.DriveApp.getFolderById;
+  sandbox.DriveApp.getFolderById = () => ({ getFilesByName: (n) => { let i = 0; const items = n === 'PARTIAL-mixed.json' ? [filed] : []; return { hasNext: () => i < items.length, next: () => items[i++] }; } });
+  sandbox.applyDataPatch_(doc, { op: 'retry_filed', file: 'mixed.json', source: 'Durand', ts: '2026-09-18T03:40:00Z' });
+  const t = doc.tasks[0];
+  check('retry re-applies only the failed sub-op: the log lands, the already-applied update does not run again', t.actualHours === 0.25 && t.notes === 'existing notes');
+  check('the filed file is trashed and the error record dropped', filed.trashed === true && doc.meta.inboxErrors.length === 0);
+  let threw = ''; try { sandbox.applyDataPatch_(doc, { op: 'retry_filed', file: 'gone.json', ts: '2026-09-18T03:41:00Z' }); } catch (e) { threw = e.message; }
+  check('retrying a file that is no longer in _Inbox says so', /no filed copy/.test(threw));
+  doc.meta.inboxErrors = [{ file: 'junk.json', error: 'malformed' }];
+  const junk = { name: 'MALFORMED-junk.json', trashed: false, setTrashed(v) { this.trashed = v; } };
+  sandbox.DriveApp.getFolderById = () => ({ getFilesByName: (n) => { let i = 0; const items = n === 'MALFORMED-junk.json' ? [junk] : []; return { hasNext: () => i < items.length, next: () => items[i++] }; } });
+  sandbox.applyDataPatch_(doc, { op: 'dismiss_inbox_error', file: 'MALFORMED-junk.json', ts: '2026-09-18T03:42:00Z' });
+  check('dismiss trashes the filed file (prefix tolerated) and drops the record', junk.trashed === true && doc.meta.inboxErrors.length === 0);
+  check('the two ops are in the accepted list', sandbox.TSG_DATA_OPS.includes('retry_filed') && sandbox.TSG_DATA_OPS.includes('dismiss_inbox_error'));
+  sandbox.DriveApp.getFolderById = savedFolder;
+}
+
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
 if (FAILS) process.exitCode = 1;
