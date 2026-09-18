@@ -3618,3 +3618,93 @@ function raffleQaRun_(cleanUp) {
   Logger.log(msg);
   return msg;
 }
+
+// ---------- FUB smart lists (editor-run only; imported 2026-09-18 from the archived raffle session's branch, commit be3ad36) ----------
+// Durand, 2026-09-18: "just run the fixes here." The two smart lists the agents
+// need. FUB's docs are unreachable from the build environment. A first POST with
+// the obvious shape came back 400 "Invalid fields in the request body: filters."
+// which settles two things: the endpoint DOES create lists (a UI-only feature
+// would be 404/405), and FUB does not call its criteria "filters". So this runs
+// in two passes on one function. Pass 1 (no RAFFLE_FUB_LIST_SHAPE property):
+// read the existing lists in full and print their JSON, so the real key names
+// and the shape of one criterion are on screen; nothing is created. Pass 2
+// (property set to the JSON key that holds the criteria, e.g. "conditions"):
+// POST the two lists using that key, with criteria written in the shape the
+// dump showed. Templates are not attempted: /v1/emailTemplates is "not a valid
+// collection" (404), so there is nothing to post to.
+var RAFFLE_FUB_LIST_SHAPE_PROP = 'RAFFLE_FUB_LIST_SHAPE';
+
+function raffleFubSmartListRecipes_() {
+  return [
+    { name: 'Block Party 2026: my new consented contacts',
+      description: 'People who consented to hear from us through the Block Party raffle and are ' +
+        'assigned to you. Each row confirmed their own details on our consent page (or verified ' +
+        'their email to enter), so they are expecting contact. Work them within a week of the ' +
+        'party: send the "quick hello" template first, then a call. Excludes anyone who declined ' +
+        'or asked not to be contacted.',
+      criteria: [
+        { field: 'assignedTo', operator: 'is', value: 'me' },
+        { field: 'tags', operator: 'includesAll', value: ['Block Party 2026', 'Consented'] },
+        { field: 'tags', operator: 'excludesAny', value: ['Referral Declined', 'Do Not Contact'] },
+        { field: 'created', operator: 'onOrAfter', value: '2026-09-15' }
+      ] },
+    { name: 'Closed clients without a review',
+      description: 'Your past clients whose deal has closed but who have not left us a review ' +
+        'yet. Goal is one review request per client: ask, and when it lands, fill in Review ' +
+        'Rating so they drop off this list. If a client says no, tag "Review Declined" so nobody ' +
+        'asks twice. Check this list every Monday.',
+      criteria: [
+        { field: 'assignedTo', operator: 'is', value: 'me' },
+        { field: 'stage', operator: 'isAny', value: ['Closed Client', 'Past Client'] },
+        { field: 'customReviewRating', operator: 'isEmpty' },
+        { field: 'tags', operator: 'excludesAny', value: ['Review Declined'] }
+      ] }
+  ];
+}
+
+function raffleCreateFubSmartLists() {
+  var props = PropertiesService.getScriptProperties();
+  var apiKey = props.getProperty('FUB_API_KEY');
+  var shapeKey = String(props.getProperty(RAFFLE_FUB_LIST_SHAPE_PROP) || '').trim();
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+  var base = 'https://api.followupboss.com/v1/smartLists';
+
+  if (!shapeKey) {
+    say('PASS 1: reading existing smart lists in full (nothing is created).');
+    var idx = raffleFubCall_(base + '?limit=100', 'get', null, apiKey);
+    say('GET /v1/smartLists -> ' + idx.code);
+    if (!idx.ok || !idx.body) { say('  ' + String(idx.text).slice(0, 300)); return out.join('\n'); }
+    var arrKey = Object.keys(idx.body).filter(function (k) {
+      return Object.prototype.toString.call(idx.body[k]) === '[object Array]'; })[0];
+    var lists = arrKey ? idx.body[arrKey] : [];
+    say('  index record keys: ' + (lists.length ? Object.keys(lists[0]).join(', ') : '(none)'));
+    // The three most-recently-created lists are the likeliest to have been built
+    // by a person with real criteria; dump each one whole.
+    lists.slice(-3).forEach(function (l) {
+      var one = raffleFubCall_(base + '/' + l.id, 'get', null, apiKey);
+      say('GET /v1/smartLists/' + l.id + ' -> ' + one.code);
+      say('  ' + String(one.text).slice(0, 2500));
+    });
+    say('');
+    say('Next: find the key in the JSON above that holds the criteria (it will be an array');
+    say('or object that is not id/name/created/updated). Set script property');
+    say(RAFFLE_FUB_LIST_SHAPE_PROP + ' to that key name, then paste this whole output back so');
+    say('the criteria can be rewritten in the shape FUB uses, and run this function again.');
+    return out.join('\n');
+  }
+
+  say('PASS 2: creating the two lists with criteria under "' + shapeKey + '".');
+  raffleFubSmartListRecipes_().forEach(function (recipe) {
+    var body = { name: recipe.name, description: recipe.description, shared: true };
+    body[shapeKey] = recipe.criteria;
+    var r = raffleFubCall_(base, 'post', body, apiKey);
+    say('POST /v1/smartLists "' + recipe.name + '" -> ' + r.code + '  ' + String(r.text).slice(0, 400));
+  });
+  say('');
+  say('2xx above = built; open FUB and check the filters landed as intended. 400 = the');
+  say('criteria shape is still off; paste this output back. Fallback is the FUB UI with');
+  say('exactly the names, descriptions and criteria in raffleFubSmartListRecipes_.');
+  return out.join('\n');
+}
+
