@@ -239,8 +239,10 @@ file after a minute: the answered ids are gone from `meta.judgments`.
 ## The Routine's prompt lives in the repo (2026-09-18)
 
 `routines/judgment-routine-prompt.md` is the full prompt for the "Task Tracker Judgement
-Call" Routine: judgment queue, comments, and the work delegated to Claude (outward-facing
-actions drafted only, never sent). Agents cannot edit the Routine, so Durand pastes the block
+Call" Routine: judgment queue, comments, the work delegated to Claude (outward-facing
+actions drafted only, never sent), and the inbox and meeting-notes scan that replaced the
+Google Tasks import (state in `meta.scanned_email_thread_ids` / `scanned_drive_file_ids` /
+the two scan watermarks, written with `set_meta`; new work as `add_task` ops). Agents cannot edit the Routine, so Durand pastes the block
 from that file; edit the file first. It reads the data file from Drive by id and never
 carries the exec URL or the API token. The dashboard's "Judge now" prompt carries the same
 three steps in short form, and both it and "Send open comments" open the working session

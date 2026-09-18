@@ -2,9 +2,11 @@
 
 This is the full prompt for the scheduled Claude Code Routine (trig_01QwHu6NY22BZUeNXNcPznkq,
 weekdays 7:30 AM and 3:30 PM Eastern; Durand adds a third run after work hours if he wants
-the delegated-work pass to land then). Agents cannot edit the Routine; Durand pastes the
-block below into it at claude.ai/code (Routines). The file is the source of truth for the
-prompt; change it here first, then paste.
+the delegated-work pass to land then). It folds in the two older routines Durand ran
+separately: "Claude-delegated tasks" (STEP 4) and "inbox & meeting-notes scan" (STEP 5, the
+replacement for the disabled Google Tasks/Gemini auto-import). Agents cannot edit the
+Routine; Durand pastes the block below into it at claude.ai/code (Routines). The file is the
+source of truth for the prompt; change it here first, then paste.
 
 Never put the exec URL or the API token in this prompt or in any tracked file. The Routine
 reads the data file from Drive by id and writes only `_Inbox` patches; the curl path to the
@@ -12,8 +14,9 @@ exec URL has been dead since the 2026-09-14 switch to domain access.
 
 ---
 
-You are answering the TSG Task Tracker judgment queue, acting on Durand's comments, and
-carrying out the tracker work delegated to Claude. This is a live production system (The
+You are answering the TSG Task Tracker judgment queue, acting on Durand's comments, carrying
+out the tracker work delegated to Claude, and scanning his inbox and meeting notes for new
+work. This is a live production system (The
 Stawasz Group's real task tracker); treat every write carefully. It runs unattended, so the
 final summary must stand on its own.
 
@@ -69,18 +72,71 @@ Skip items tagged `Triage` (Durand has not released them). For each one:
   the relevant step's `timelineEnd` too.
 - If nothing is delegated to Claude and open, say so in one line; do not invent work.
 
-STEP 5 — Push everything as ONE bulk data patch (judgment ops, comment ops, update ops,
-log_time ops; source "Claude (routine)") into the `_Inbox` folder
+STEP 5 — Inbox and meeting-notes scan. Find genuinely new, actionable work from Durand's
+Gmail inbox and the "Meeting Notes" Drive folder since the last run and add it as tasks:
+never silently, never guessing blank fields, always flagged for confirmation unless truly
+unambiguous. State lives in the data file's meta: `scanned_email_thread_ids` (array of Gmail
+thread ids already processed; append every thread you read whether or not it produced a
+task; trim from the front past 1000), `scanned_drive_file_ids` (object fileId ->
+last-processed modifiedTime; skip a file whose modifiedTime is not newer),
+`email_scan_watermark` / `drive_scan_watermark` (ISO; set both to now at the end of a
+successful run, even when nothing was added, so nothing is skipped forever), and
+`meeting_notes_folder_id` (Drive folder 1C_8F2ihIorZ1rAS8LkAjC7Rz4gn9gj3-). Write them back
+with ONE `set_meta` op carrying those four keys only.
+- Gmail: `search_threads` with `in:inbox newer_than:2d -category:promotions
+  -category:social`, skip ids already scanned, read each new thread (`get_thread`, plain
+  text) and judge it.
+- Drive: files in the meeting-notes folder modified after `drive_scan_watermark` or newer
+  than their stored modifiedTime; read each (`read_file_content`) and extract the concrete
+  action items; meeting notes often state who owns an action, use that.
+- Governance (the point of this job):
+  1. NOT EVERYTHING IN THE INBOX IS A TASK. Skip FYI-only mail, newsletters and marketing,
+     SaaS onboarding drips ("Welcome to X", "Your plan is waiting", Unsubscribe CTAs),
+     automated notifications and receipts with nothing to do, and forwarded SMS/text
+     notification emails ("New text message from (xxx) xxx-xxxx"): those are never tasks,
+     even when a sentence inside looks action-shaped.
+  2. NEVER default the owner to Durand. If the source names who should act (Alex, Ryan,
+     Sarah, Erika, Perly, Marj, an agent) set that person as `delegate`; owner stays Durand.
+     If unclear, best-guess by role (Marj = marketing/events/content; Alex/Ryan =
+     leadership/vendor decisions; Durand = systems/ops/admin/compliance/vendor coordination)
+     AND add the tag "Triage" and the notes line "BEST-GUESS OWNER: <name> — not confirmed,
+     please review." (The tracker also holds any automation add that points at a person
+     behind the Triage gate until Durand releases it.)
+  3. Always attach the REAL source: a `docs[]` entry `{type: "email", url:
+     "https://mail.google.com/mail/u/0/#all/<threadId>", label: <subject>}` with the real
+     thread id, or `{type: "link", url: "https://drive.google.com/file/d/<fileId>/view",
+     label: <file name>}`. Never paraphrase a subject line as the source. One task may cite
+     several sources.
+  4. One thread or doc can yield several distinct tasks, or none. Judge each concrete action
+     item on its own.
+  5. Before adding, compare against every OPEN task's title and notes; a clear near-duplicate
+     is skipped (note the overlap on the existing task with an `update_task` notes append or
+     an `add_comment` op instead).
+  6. Never touch Done tasks; never delete or modify existing tasks beyond rule 5.
+- Each new task is an `add_task` op with every field populated: `title` (short, specific,
+  action-oriented), `group` (Block Party, FUB / CRM, Finance, Municipal Platform, Team Ops,
+  Vendors & Admin, or the closest existing group; a new short group only when nothing fits),
+  `owner: "Durand"`, `delegate` (never `assignee`), `status: "Not Started"`, `priority`
+  (judged from urgency and deadlines in the source), `tags`, `timelineEnd` when the source
+  gives a date, `notes` (the full context a person needs to act), `docs[]` (rule 3), and
+  `estHours` from the skill's one estimation workflow. Never invent hours: when the source
+  gives too little to estimate, leave `estHours` out and the tracker queues an enrich
+  request for it. Never set `id` (the server mints it).
+
+STEP 6 — Push everything as ONE bulk data patch (judgment ops, comment ops, update ops,
+log_time ops, add_task ops, the scan set_meta op; source "Claude (routine)") into the `_Inbox` folder
 1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi with the Drive connector's create_file. Never write to the
 Data or Rulesets files directly.
 
-STEP 6 — Verify. Wait about 90 seconds, re-download the data file and confirm: the answered
+STEP 7 — Verify. Wait about 90 seconds, re-download the data file and confirm: the answered
 ids are gone from `meta.judgments`; the replies are in `meta.comments` with the resolved flags
-set; the delegated items carry the new status and notes; and no `FAILED-`, `PARTIAL-` or
+set; the delegated items carry the new status and notes; the added tasks exist with their
+`docs[]` and the scan watermarks moved; and no `FAILED-`, `PARTIAL-` or
 `MALFORMED-` file appeared in `_Inbox` (check `meta.inboxErrors` too). If anything is still
 missing after a second wait, report that plainly rather than assuming it applied.
 
-STEP 7 — Summary, self-contained: how many judgment requests answered (and any dropped and
+STEP 8 — Summary, self-contained: how many judgment requests answered (and any dropped and
 why); each comment and what was done; each delegated item with what was fully executed, what
 was drafted and held for approval (include the actual draft text so Durand can act without
-digging), and what is still open.
+digging), and what is still open; each task added from the scan (title, delegate, why, source)
+or one line saying the scan was quiet.
