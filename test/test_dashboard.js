@@ -974,6 +974,21 @@ setTimeout(async () => {
     if (t.depends !== '2' || t.dependsNone) throw new Error('add did not lift: ' + t.depends + ' ' + t.dependsNone);
     t.depends = ''; w.closeTaskCard();
   });
+  tryCall('an At Risk tag renders a chip naming where the steps end, on the row and in the card\'s Due row (2026-09-18)', () => {
+    const t = w.findTask(1);
+    t.tags.push('At Risk'); t.realisticEnd = '2026-09-24'; t.timelineEnd = '2026-09-18'; t.dueOverride = true;
+    w.setView('board'); w.renderAll();
+    const chip = doc.querySelector('tr.task-row[data-id="1"] .tag-risk');
+    if (!chip || !/At Risk/.test(chip.textContent) || !/9\/24/.test(chip.textContent)) throw new Error('no At Risk chip: ' + (chip && chip.textContent));
+    chip.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+    const html = doc.getElementById('modalMeta').innerHTML;
+    if (!html.includes('open steps run to 2026-09-24') || !html.includes('your date is kept')) throw new Error('Due row note missing');
+    if (doc.querySelector('#modalMeta .modal-due').value !== '2026-09-18') throw new Error('due date changed');
+    w.closeTaskCard();
+    w.setView('cards'); w.renderAll();
+    if (!doc.querySelector('.tag-risk')) throw new Error('no chip on the card view');
+    t.tags = t.tags.filter(x => x !== 'At Risk'); delete t.realisticEnd; w.setView('board'); w.renderAll();
+  });
   tryCall('a Review tag renders a "Claude disagrees" chip that opens the card with the flag row', () => {
     const t = w.findTask(1);
     t.tags.push('Review');

@@ -566,6 +566,8 @@
   .icon-btn:hover { background: var(--surface-2); color: var(--text-primary); }
   .pin-btn { font-size: 12px; opacity: 0.35; margin-right: 4px; vertical-align: middle; }
   .tag-chip.tag-review { background: rgba(120, 90, 220, 0.15); color: #7a5cd6; border-color: rgba(120, 90, 220, 0.4); cursor: pointer; }
+  .tag-chip.tag-risk { background: rgba(214, 82, 46, 0.14); color: #c9502e; border-color: rgba(214, 82, 46, 0.45); cursor: pointer; }
+  .risk-note { color: #c9502e; font-weight: 700; }
   .review-flags { display: flex; flex-direction: column; gap: 6px; }
   .review-flag { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
   .review-flag code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
@@ -1585,7 +1587,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.13';
+  const UI_VERSION = '2026-09-18.14';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -3450,7 +3452,7 @@
     // Empty fields get a fillable ghost affordance instead of just vanishing — a card
     // with no tags/type/estimate should visibly invite filling them in, not look identical
     // to one where those fields were deliberately left blank on purpose.
-    const tagsHtml = (t.tags || []).length ? (t.tags || []).map(tag => tagChipHtml(tag)).join('') : '<span class="tc-empty-field">+ tags</span>';
+    const tagsHtml = (t.tags || []).length ? (t.tags || []).map(tag => tag === 'At Risk' ? atRiskChipHtml(t) : tagChipHtml(tag)).join('') : '<span class="tc-empty-field">+ tags</span>';
     const typeHtml = typeBadgeHtml(t) || '<span class="tc-empty-field">+ type</span>';
     const estHtml = t.estHours ? `<span class="tc-est">${t.estHours}h est</span>` : '<span class="tc-empty-field">+ estimate</span>';
     const locHtml = t.location ? `<span class="tc-est" title="${escapeHtml(t.location)}">&#128205; ${travelMinutesFor_(t) ? travelModeLabel_(t) + (t.estHours ? ' · ' + fmtHours_(t.estHours + travelMinutesFor_(t) / 60) + ' total' : '') : (typeof t.travelMin === 'number' && t.travelMin > 0 ? 'no travel counted' : 'located')}</span>` : '';
@@ -5143,6 +5145,19 @@
   function disagreeChipHtml(id) {
     return `<button type="button" class="tag-chip tag-review review-chip" onclick="event.stopPropagation(); openTaskCard(${id})" title="Claude proposed a materially different value for a field you set by hand. Open the card to keep yours or take Claude's.">Claude disagrees</button>`;
   }
+  // At Risk (2026-09-18, per Durand: flag a date that cannot be met, never quietly force it): the
+  // server keeps a hand-set due date whose open steps run past it, tags the task 'At Risk' and
+  // stamps realisticEnd (the latest open step's end). The chip names that date and opens the card.
+  function atRiskLabel_(t) {
+    const m = String((t && t.realisticEnd) || '').match(/^\d{4}-(\d{2})-(\d{2})$/);
+    return m ? 'At Risk \u00b7 steps run to ' + Number(m[1]) + '/' + Number(m[2]) : 'At Risk';
+  }
+  function atRiskChipHtml(t) {
+    return `<button type="button" class="tag-chip tag-risk review-chip" onclick="event.stopPropagation(); openTaskCard(${t.id})" title="The open steps run past the due date you set (they end ${escapeHtml(t.realisticEnd || 'later')}). Your date is kept. Re-estimate a step, drop one, or move the date.">${escapeHtml(atRiskLabel_(t))}</button>`;
+  }
+  function atRiskDueNoteHtml_(t) {
+    return t && t.realisticEnd ? `<span class="modal-source risk-note">At Risk: open steps run to ${escapeHtml(t.realisticEnd)}; your date is kept</span>` : '';
+  }
   function stripReviewNotes_(notes) { return String(notes || '').replace(/\n*REVIEW \(\d{4}-\d{2}-\d{2}\): Claude proposed [^\n]*/g, '').trim(); }
   function reviewFlagsRowHtml_(t) {
     const flags = (t.reviewFlags || []).filter(Boolean);
@@ -5201,7 +5216,7 @@
     const pct = taskProgress(t);
     const hasSubs = t.subitems && t.subitems.length > 0;
     const subOpen = hasSubs && expandedSubtasks.has(t.id);
-    const tagsHtml = (t.tags || []).map(tag => tag === 'Triage' ? reviewChipHtml(t.id) : tag === 'Review' ? disagreeChipHtml(t.id) : tagChipHtml(tag)).join('');
+    const tagsHtml = (t.tags || []).map(tag => tag === 'Triage' ? reviewChipHtml(t.id) : tag === 'Review' ? disagreeChipHtml(t.id) : tag === 'At Risk' ? atRiskChipHtml(t) : tagChipHtml(tag)).join('');
     let html = `
       <tr class="task-row" data-id="${t.id}" onclick="onRowClick(event, ${t.id})">
         <td>${hasSubs ? `<button class="icon-btn" onclick="toggleSub(${t.id})">${subOpen ? '▾' : '▸'}</button>` : ''}</td>
@@ -6611,7 +6626,7 @@
       `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}</div>`,
       `<div class="modal-row"><b>Priority</b>${modalPillSelect('priority', t.priority, id)}</div>`,
       `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Actionable Task')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,
-      `<div class="modal-row"><b>Due</b><span class="modal-est-wrap"><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)">${timeSelectHtml_(t.dueTime || '', `modalDueTimeChange(${id}, v)`)}${reminderControlHtml_(t, id, null)}</span></div>`,
+      `<div class="modal-row"><b>Due</b><span class="modal-est-wrap"><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)">${timeSelectHtml_(t.dueTime || '', `modalDueTimeChange(${id}, v)`)}${reminderControlHtml_(t, id, null)}${atRiskDueNoteHtml_(t)}</span></div>`,
       (t.timelineEnd ? `<div class="modal-row"><b>Countdown</b>${bonusCountdownHtml_(t)}</div>` : ''),
       `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button>${t.location ? `<a class="btn small" href="${escapeHtml(directionsUrl_(t))}" target="_blank" rel="noopener" title="Open directions in Google Maps">&#128506; Directions</a><button type="button" class="btn small" onclick="sendDirections(${id}, this)" title="Email the Maps directions link to your phone">&#128241; Send to phone</button>` : ''}</span></div>`,
       `<div class="modal-row"><b>Estimate</b><span class="modal-est-wrap"><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs${(pendingJudgment_(id, 'enrich') || pendingJudgment_(id, 'estimate')) ? ' <span class="hist-time" title="Queued for the hourly Claude Routine: the title, notes and fields update when it answers">· queued for Claude</span>' : ''}${travelRowHtml_(t)}</span></div>`,
