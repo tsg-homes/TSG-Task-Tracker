@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-17.7';
+const TSG_CODE_VERSION = '2026-09-18.1';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -69,19 +69,22 @@ function processInbox_() {
   try {
     const inbox = DriveApp.getFolderById(INBOX_FOLDER_ID);
     const it = inbox.getFiles();
-    const patches = [];
+    const patches = [], malformed = [];
     while (it.hasNext()) {
       const f = it.next();
       if (f.isTrashed()) continue;
+      // A file already filed as FAILED-/PARTIAL-/MALFORMED- stays in _Inbox as the record of
+      // what went wrong (2026-09-18); it is never re-read. Durand trashes it by hand.
+      if (/^(FAILED|PARTIAL|MALFORMED)-/.test(f.getName())) continue;
       try {
         patches.push({ file: f, patch: JSON.parse(f.getBlob().getDataAsString()), created: f.getDateCreated() });
       } catch (err) {
-        Logger.log('[inbox] malformed patch file "' + f.getName() + '" trashed: ' + err);
+        Logger.log('[inbox] malformed patch file "' + f.getName() + '" kept as MALFORMED-: ' + err);
+        malformed.push({ ts: new Date().toISOString(), file: f.getName(), target: null, op: null, error: 'malformed JSON: ' + String((err && err.message) || err) });
         try { f.setName('MALFORMED-' + f.getName()); } catch (e2) {}
-        f.setTrashed(true);
       }
     }
-    if (patches.length === 0) {
+    if (patches.length === 0 && malformed.length === 0) {
       tsgCachePut_('inboxEmptyUntil', '1', TSG_INBOX_EMPTY_TTL_SEC);
       return { ok: true, applied: 0 };
     }
@@ -104,19 +107,43 @@ function processInbox_() {
       return { ok: false, error: String(loadErr), applied: 0 };
     }
 
-    const applied = [], failed = [];
+    // applied: patches whose result is written; kept: files that stay in _Inbox under a
+    // prefix (FAILED- = rolled back and dropped, PARTIAL- = a bulk whose failing sub-ops
+    // were rolled back while the rest applied); errors: what meta.inboxErrors records.
+    const applied = [], kept = [], errors = malformed.slice();
     patches.forEach(function(p) {
       const patch = p.patch;
+      var target = patch.target === 'rulesets' ? rulesetsDoc : (patch.target === 'data' ? dataDoc : null);
+      var snap = target ? JSON.stringify(target) : null;
+      var opName = String(patch.op) + (patch.op === 'bulk' ? '[' + (patch.ops || []).map(function(x) { return x && x.op; }).join(',') + ']' : '');
       try {
         if (patch.target === 'rulesets') applyRulesetPatch_(rulesetsDoc, patch);
         else if (patch.target === 'data') applyDataPatch_(dataDoc, patch);
         else throw new Error('unknown target: ' + patch.target);
         applied.push(p);
       } catch (err) {
-        Logger.log('[inbox] patch "' + p.file.getName() + '" failed and was dropped: ' + err);
-        failed.push(p);
+        var entry = { ts: new Date().toISOString(), file: p.file.getName(), target: patch.target || null, op: opName, error: String((err && err.message) || err) };
+        if (err && err.partial) { entry.appliedSubOps = err.partial.applied; entry.failedSubOps = err.partial.errors; }
+        if (err && err.partial && err.partial.applied > 0) {
+          applied.push(p); kept.push({ p: p, prefix: 'PARTIAL-' });
+          Logger.log('[inbox] patch "' + p.file.getName() + '" applied in part, kept as PARTIAL-: ' + err);
+        } else {
+          if (target && snap) tsgRestoreDoc_(target, snap);
+          kept.push({ p: p, prefix: 'FAILED-' });
+          Logger.log('[inbox] patch "' + p.file.getName() + '" failed, rolled back, kept as FAILED-: ' + err);
+        }
+        errors.push(entry);
       }
     });
+    // The trace lives in the data file. A rulesets-only pass that failed loads it just for that.
+    var dataDirty = false;
+    if (errors.length) {
+      if (!dataDoc) {
+        try { dataFile = getTrackerFile_('data'); dataDoc = JSON.parse(dataFile.getBlob().getDataAsString()); }
+        catch (loadErr2) { Logger.log('[inbox] cannot load the data file to record ' + errors.length + ' error(s): ' + loadErr2); }
+      }
+      if (dataDoc) { errors.forEach(function(e) { tsgRecordInboxError_(dataDoc, e); }); dataDirty = true; }
+    }
 
     if (rulesetsDoc && applied.some(function(p) { return p.patch.target === 'rulesets'; })) {
       const rsJson = JSON.stringify(rulesetsDoc);
@@ -124,7 +151,7 @@ function processInbox_() {
       try { backupTrackerFile_('rulesets', rsJson); }
       catch (backupErr) { Logger.log('Backup snapshot failed for rulesets: ' + backupErr); }
     }
-    if (dataDoc && applied.some(function(p) { return p.patch.target === 'data'; })) {
+    if (dataDoc && (dataDirty || applied.some(function(p) { return p.patch.target === 'data'; }))) {
       tsgAutoScheduleDoc_(dataDoc);
       var hb = tsgCurrentHeartbeat_();
       if (hb) { dataDoc.meta = dataDoc.meta || {}; dataDoc.meta.lastLiveHeartbeat = hb; }
@@ -136,9 +163,12 @@ function processInbox_() {
     }
     // Trash only now, after the writes succeeded. A write that throws leaves every file in
     // place for the next pass: at-least-once, never silently lost.
-    applied.forEach(function(p) { p.file.setTrashed(true); });
-    failed.forEach(function(p) { try { p.file.setName('FAILED-' + p.file.getName()); } catch (e2) {} p.file.setTrashed(true); });
-    return { ok: true, applied: applied.length, failed: failed.length };
+    var keptFiles = kept.map(function(k) { return k.p; });
+    applied.forEach(function(p) { if (keptFiles.indexOf(p) === -1) p.file.setTrashed(true); });
+    kept.forEach(function(k) { try { k.p.file.setName(k.prefix + k.p.file.getName()); } catch (e2) {} });
+    var failedCount = kept.filter(function(k) { return k.prefix === 'FAILED-'; }).length;
+    var partialCount = kept.length - failedCount;
+    return { ok: true, applied: applied.length - partialCount, partial: partialCount, failed: failedCount, malformed: malformed.length };
   } finally {
     lock.releaseLock();
   }
@@ -380,6 +410,26 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
   }
 }
 
+// Every data op this backend accepts (2026-09-18): named in the unknown-op error so a
+// session that sends an op the DEPLOYED script does not know yet reads exactly why.
+var TSG_DATA_OPS = ['add_task', 'update_task', 'update_subitem', 'add_subitem', 'delete_task', 'bulk', 'set_meta',
+  'replace_all', 'add_comment', 'update_comment', 'judgment', 'request_tidy', 'clear_tidy_proposal', 'request_steps',
+  'log_time', 'remove_dismissed_google_task_ids'];
+// In-place restore of a document from a JSON snapshot: the caller's reference stays valid.
+function tsgRestoreDoc_(doc, snapJson) {
+  var snap = JSON.parse(snapJson);
+  Object.keys(doc).forEach(function(k) { delete doc[k]; });
+  Object.keys(snap).forEach(function(k) { doc[k] = snap[k]; });
+}
+// A dropped or partially applied patch leaves a trace in the data file (2026-09-18, after a
+// raffle-session bulk was consumed with nothing recorded): newest last, capped at 30.
+function tsgRecordInboxError_(doc, entry) {
+  if (!doc) return;
+  doc.meta = doc.meta || {};
+  doc.meta.inboxErrors = Array.isArray(doc.meta.inboxErrors) ? doc.meta.inboxErrors : [];
+  doc.meta.inboxErrors.push(entry);
+  if (doc.meta.inboxErrors.length > 30) doc.meta.inboxErrors = doc.meta.inboxErrors.slice(-30);
+}
 function applyDataPatch_(doc, patch) {
   const now = patch.ts || new Date().toISOString();
   TSG_CURRENT_DOC = doc;
@@ -397,13 +447,26 @@ function applyDataPatch_(doc, patch) {
     // Board context computed ONCE per push so every sibling's estimator call carries the
     // identical (prompt-cached) block — see tsgEstimatePrompt_.
     var batchContext = tsgBoardContext_(doc);
-    (patch.ops || []).forEach(function(sub) {
+    // Per sub-op (2026-09-18): a sub-op that throws is rolled back on its own (snapshot +
+    // in-place restore) and recorded; the others still apply. Before this one unknown
+    // sub-op (log_time on a backend without it) took the whole bulk down, and the sub-ops
+    // already applied in memory could leak into a write if another patch in the pass
+    // succeeded. The error thrown at the end carries `partial` so processInbox_ keeps the
+    // applied part and files the rest under PARTIAL-.
+    var bulkErrors = [], bulkApplied = 0;
+    (patch.ops || []).forEach(function(sub, i) {
       // A bulk envelope's own top-level source (if any) applies to every sub-op unless
       // that sub-op sets its own — Object.assign's key ordering means `sub`'s own
       // `source`, if present, wins over the spread-in default.
       var subPatch = Object.assign({ ts: now, source: patch.source }, sub);
       if (subPatch.op === 'add_task') { subPatch.__batchSiblingTitles = batchTitles; subPatch.__batchContext = batchContext; }
-      applyDataPatch_(doc, subPatch);
+      var snap = JSON.stringify(doc);
+      try { applyDataPatch_(doc, subPatch); bulkApplied++; }
+      catch (subErr) {
+        tsgRestoreDoc_(doc, snap);
+        TSG_CURRENT_DOC = doc;
+        bulkErrors.push({ index: i, op: subPatch.op, id: (subPatch.id != null ? subPatch.id : undefined), error: String((subErr && subErr.message) || subErr) });
+      }
     });
     // Knowing the right title isn't enough on its own when it belongs to a sibling added
     // LATER in this same batch — that sibling doesn't have an id yet at the moment its
@@ -421,6 +484,12 @@ function applyDataPatch_(doc, patch) {
       }
     });
     doc.meta.last_updated = now;
+    if (bulkErrors.length) {
+      var bulkErr = new Error('bulk: ' + bulkErrors.length + ' of ' + (patch.ops || []).length + ' sub-op(s) failed: ' +
+        bulkErrors.map(function(e) { return '#' + e.index + ' ' + e.op + ': ' + e.error; }).join('; '));
+      bulkErr.partial = { applied: bulkApplied, errors: bulkErrors };
+      throw bulkErr;
+    }
     return;
   }
 
@@ -830,7 +899,7 @@ function applyDataPatch_(doc, patch) {
     var metaFields = Object.assign({}, patch.fields || {});
     // comments is server-owned too (2026-09-16): use add_comment / update_comment so two
     // writers (the dashboard, a Claude session) never overwrite each other's threads.
-    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals'].forEach(function(k) { delete metaFields[k]; });  // server-owned
+    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion'].forEach(function(k) { delete metaFields[k]; });  // server-owned
     Object.assign(doc.meta, metaFields);
     if (Object.prototype.hasOwnProperty.call(metaFields, 'homeBase')) {
       try { PropertiesService.getScriptProperties().setProperty('TSG_HOME_BASE', String(metaFields.homeBase || '')); } catch (err) {}
@@ -920,7 +989,7 @@ function applyDataPatch_(doc, patch) {
       if (Object.prototype.hasOwnProperty.call(metaIn, k)) doc.meta[k] = metaIn[k];
     });
   } else {
-    throw new Error('Unknown data patch op: ' + patch.op);
+    throw new Error('Unknown data patch op: ' + patch.op + ' (backend ' + TSG_CODE_VERSION + ' accepts: ' + TSG_DATA_OPS.join(', ') + ')');
   }
   doc.meta.last_updated = now;
   doc.meta.docVersion = (doc.meta.docVersion || 0) + 1;
@@ -5465,6 +5534,9 @@ function tsgItemHours_(r) {
 }
 
 function tsgAutoScheduleDoc_(doc) {
+  // Which backend wrote this document: a session reads it to know which ops the DEPLOYED
+  // script accepts before sending them (2026-09-18).
+  if (doc && doc.meta) doc.meta.backendVersion = TSG_CODE_VERSION;
   try { tsgIndexReminders_(doc); } catch (remErr) { Logger.log('[reminders] index failed: ' + remErr.message); }
   var tasks = doc.tasks || [];
 

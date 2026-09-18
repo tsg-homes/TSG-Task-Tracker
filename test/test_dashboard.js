@@ -1042,6 +1042,13 @@ setTimeout(async () => {
     if (items.length !== 1 || !items[0].ids.includes(t3.id)) throw new Error('items ' + JSON.stringify(items));
     if (items[0].ids.includes(2)) throw new Error('task with logged time listed');
   });
+  tryCall('inbox errors: a recent entry raises a warn alert that opens Settings, and Settings lists it', () => {
+    w.eval("RAW_META.inboxErrors = [{ ts: new Date().toISOString(), file: 'mixed.json', op: 'bulk[update_task,log_time]', error: 'bulk: 1 of 2 sub-op(s) failed' }]");
+    const a = w.computeAlerts().find(x => x.openSettings);
+    if (!a || !/1 inbox patch failed/.test(a.text)) throw new Error('no inbox alert: ' + JSON.stringify(w.computeAlerts().map(x => x.text)));
+    if (!w.inboxErrorsHtml_().includes('mixed.json')) throw new Error('settings list missing the entry');
+    w.eval('RAW_META.inboxErrors = []');
+  });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

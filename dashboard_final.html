@@ -1567,7 +1567,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-17.10';
+  const UI_VERSION = '2026-09-18.1';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2515,6 +2515,12 @@
   }
   function computeAlerts() {
     const alerts = [];
+    // Dropped or partially applied inbox patches (meta.inboxErrors, 2026-09-18): the files
+    // stay in _Inbox under FAILED-/PARTIAL-/MALFORMED-; the details are in Settings.
+    const inboxErrs = (RAW_META.inboxErrors || []).filter(e => e && String(e.ts || '').slice(0, 10) >= addDays(todayISO(), -7));
+    if (inboxErrs.length) {
+      alerts.push({ level: 'warn', text: inboxErrs.length + ' inbox patch' + (inboxErrs.length === 1 ? '' : 'es') + ' failed in the last 7 days (kept in _Inbox as FAILED-/PARTIAL-; details in Settings).', ids: [], openSettings: true });
+    }
     const overdueImportant = TASKS.filter(function(t) {
       return t.status !== 'Done' && isOverdue(t) && (t.priority === 'Critical' || t.priority === 'High');
     });
@@ -2629,6 +2635,7 @@
   }
   function openAlertTasks(index) {
     const a = LAST_ALERTS[index];
+    if (a && a.openSettings) { openSettings(); return; }
     if (!a) return;
     openMultiTaskModal(a.text, a.ids);
   }
@@ -7190,6 +7197,11 @@
     document.querySelectorAll('.settings-tab').forEach(function(b) { b.classList.toggle('active', b.dataset.tab === tab); });
     renderSettings();
   }
+  function inboxErrorsHtml_() {
+    const errs = (RAW_META.inboxErrors || []).slice(-10).reverse();
+    if (!errs.length) return '<div class="history-empty">None recorded.</div>';
+    return errs.map(e => `<div class="history-row"><span class="hist-time">${escapeHtml(String(e.ts || '').replace('T', ' ').slice(0, 16))}</span> <b>${escapeHtml(e.file || '')}</b> · ${escapeHtml(e.op || '')}<div class="hist-time">${escapeHtml(e.error || '')}</div></div>`).join('');
+  }
   function renderSettings() {
     const body = document.getElementById('settingsBody');
     if (!RULESETS) { body.innerHTML = '<div class="history-empty">Loading&hellip;</div>'; return; }
@@ -7229,6 +7241,11 @@
         <div class="history-empty" style="margin-bottom:6px;">Optional owner/repo the "Code" and "Code (cloud)" buttons on a Claude task open on (e.g. tsg-homes/task-tracker). Cowork sessions never need one.</div>
         <input type="text" class="text-input" id="claudeRepoInput" placeholder="owner/repo" value="${escapeHtml(CLAUDE_REPO)}" onblur="setClaudeRepo(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
         <input type="text" class="text-input" id="homeBaseInput" placeholder="Street address, city, state" value="${escapeHtml(HOME_BASE)}" onblur="setHomeBase(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+      </div>
+      <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Inbox errors</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Patches the tracker could not apply (backend ${escapeHtml(String(RAW_META.backendVersion || 'unknown'))}). The file stays in _Inbox under FAILED- (rolled back), PARTIAL- (a bulk whose failing sub-ops were rolled back while the rest applied) or MALFORMED-; trash it once read.</div>
+        <div id="inboxErrorsList">${inboxErrorsHtml_()}</div>
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Team Roster</h3><button class="btn small" onclick="syncFubRoster(false)">&#8635; Sync from FUB</button></div>

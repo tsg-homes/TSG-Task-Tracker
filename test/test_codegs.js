@@ -960,7 +960,41 @@ section('Inbox pipeline: lock busy, trash-after-write, unreadable document, whit
   const good = fakePatchFile('good.json', { target: 'data', op: 'update_task', id: 1, fields: { notes: 'w' } });
   sandbox.DriveApp.getFolderById = () => fakeInbox([bad, good]);
   r = sandbox.processInbox_();
-  check('a failing patch is dropped and named FAILED-, the good one still applies', r.applied === 1 && r.failed === 1 && bad.name === 'FAILED-bad.json' && bad.trashed && good.trashed && JSON.parse(dataOnDisk).tasks[0].notes === 'w');
+  check('a failing patch is rolled back and KEPT in _Inbox as FAILED- (not trashed); the good one still applies', r.applied === 1 && r.failed === 1 && bad.name === 'FAILED-bad.json' && !bad.trashed && good.trashed && JSON.parse(dataOnDisk).tasks[0].notes === 'w');
+  {
+    const errs = JSON.parse(dataOnDisk).meta.inboxErrors || [];
+    check('the failure is recorded in meta.inboxErrors with file, op and message', errs.length >= 1 && errs[errs.length - 1].file === 'bad.json' && errs[errs.length - 1].op === 'update_task' && /999|not found/i.test(errs[errs.length - 1].error));
+    check('the written document carries meta.backendVersion', /^\d{4}-\d{2}-\d{2}\.\d+$/.test(String(JSON.parse(dataOnDisk).meta.backendVersion)));
+    // next pass: the FAILED- file is skipped, nothing re-applied, no new error
+    sandbox.DriveApp.getFolderById = () => fakeInbox([bad]);
+    const before = writes.length;
+    r = sandbox.processInbox_();
+    check('a FAILED- file is never re-read on a later pass', r.applied === 0 && writes.length === before && bad.name === 'FAILED-bad.json');
+    // bulk with one unknown sub-op (the raffle case): the known sub-ops apply, the file is PARTIAL-, the error names the sub-op
+    const mixed = fakePatchFile('mixed.json', { target: 'data', op: 'bulk', source: 'Claude (raffle)', ops: [
+      { op: 'update_task', id: 1, fields: { notes: 'from bulk' } },
+      { op: 'log_time_future', id: 1, minutes: 20 },
+      { op: 'update_task', id: 1, fields: { priority: 'Low' } }
+    ] });
+    sandbox.DriveApp.getFolderById = () => fakeInbox([mixed]);
+    r = sandbox.processInbox_();
+    const d = JSON.parse(dataOnDisk);
+    check('bulk: the two good sub-ops applied, the bad one was rolled back, the file is kept as PARTIAL-', r.partial === 1 && r.applied === 0 && mixed.name === 'PARTIAL-mixed.json' && !mixed.trashed && d.tasks[0].notes === 'from bulk' && d.tasks[0].priority === 'Low');
+    const last = d.meta.inboxErrors[d.meta.inboxErrors.length - 1];
+    check('...and meta.inboxErrors names the failing sub-op by index and op, with the accepted-ops list', last.file === 'mixed.json' && last.appliedSubOps === 2 && last.failedSubOps[0].index === 1 && last.failedSubOps[0].op === 'log_time_future' && /accepts: .*log_time/.test(last.failedSubOps[0].error));
+    // bulk where every sub-op fails: rolled back whole, FAILED-
+    const allBad = fakePatchFile('allbad.json', { target: 'data', op: 'bulk', ops: [{ op: 'nope' }] });
+    sandbox.DriveApp.getFolderById = () => fakeInbox([allBad]);
+    r = sandbox.processInbox_();
+    check('bulk with no applicable sub-op is FAILED-, not PARTIAL-', r.failed === 1 && r.partial === 0 && allBad.name === 'FAILED-allbad.json');
+    // malformed JSON stays in place as MALFORMED- and is recorded
+    const junk = fakePatchFile('junk.json', '{not json');
+    sandbox.DriveApp.getFolderById = () => fakeInbox([junk]);
+    r = sandbox.processInbox_();
+    const d2 = JSON.parse(dataOnDisk);
+    check('a malformed file is kept as MALFORMED- and recorded', r.malformed === 1 && junk.name === 'MALFORMED-junk.json' && !junk.trashed && d2.meta.inboxErrors[d2.meta.inboxErrors.length - 1].file === 'junk.json');
+    check('set_meta cannot write inboxErrors or backendVersion', (() => { const doc = freshDoc(); doc.meta.inboxErrors = [{ file: 'keep' }]; sandbox.applyDataPatch_(doc, { op: 'set_meta', fields: { inboxErrors: [], backendVersion: 'x' }, ts: '2026-09-18T00:00:00Z' }); return doc.meta.inboxErrors.length === 1 && doc.meta.backendVersion !== 'x'; })());
+  }
 
   // empty inbox sets the throttle flag; the tick honours it
   sandbox.DriveApp.getFolderById = () => fakeInbox([]);
@@ -1430,9 +1464,15 @@ section('Links every update: Gmail candidates, web links, meeting slots, directi
   guestCalendarEvents = [];
   const fb = sandbox.tsgMeetingSlots_('marj@thestawaszgroup.com', dIso, dIso, 30);
   check('second window Mon-Thu 8-4 only when 9-2 has nothing: slots at 8:00 and 8:30', fb.window === 'second' && fb.slots.length === 2 && new Date(fb.slots[0].startISO).getHours() === 8 && new Date(fb.slots[0].startISO).getMinutes() === 0 && new Date(fb.slots[1].startISO).getMinutes() === 30);
-  calendarEventsFixture = [{ id: 'blk2', title: 'Blocked 8-4', start: new Date(dIso + 'T08:00:00'), end: new Date(dIso + 'T16:00:00') }];
   const fri = new Date(dIso + 'T12:00:00'); fri.setDate(fri.getDate() + (5 - fri.getDay()));
   const friIso = fri.getFullYear() + '-' + pad(fri.getMonth() + 1) + '-' + pad(fri.getDate());
+  // Block 8-4 on EVERY Mon-Thu day between dIso and that Friday (dIso is only the first of
+  // them when today is a Friday, which made this test date-dependent before 2026-09-18).
+  calendarEventsFixture = [];
+  for (let d = new Date(dIso + 'T12:00:00'); d < fri; d.setDate(d.getDate() + 1)) {
+    const iso = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    calendarEventsFixture.push({ id: 'blk2-' + iso, title: 'Blocked 8-4', start: new Date(iso + 'T08:00:00'), end: new Date(iso + 'T16:00:00') });
+  }
   const third = sandbox.tsgMeetingSlots_('', dIso, friIso, 30);
   check('third window adds Friday 10-2 only when Mon-Thu 8-4 has nothing', third.window === 'third' && third.slots.length > 0 && third.slots.every(sl => new Date(sl.startISO).getDay() === 5 && new Date(sl.startISO).getHours() >= 10 && new Date(sl.startISO).getHours() < 14));
   calendarEventsFixture = [];

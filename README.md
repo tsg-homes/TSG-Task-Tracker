@@ -231,6 +231,25 @@ url is already on the item (Gmail as type `email`, sites as type `web`);
 every change gets its own history line with the answer's source. Verify by re-reading the data
 file after a minute: the answered ids are gone from `meta.judgments`.
 
+## Inbox trace (2026-09-18): a dropped patch is never silent
+
+`processInbox_` used to rename a failing patch `FAILED-` and then trash it, so from a session's
+side it was "consumed with nothing recorded". Now:
+
+- A patch that throws is rolled back (JSON snapshot, in-place restore) and its file stays in
+  `_Inbox` renamed `FAILED-<name>`; a file that is not JSON stays as `MALFORMED-<name>`. Prefixed
+  files are never re-read; Durand trashes them once read.
+- `bulk` applies sub-op by sub-op: a sub-op that throws is rolled back on its own and the rest
+  still apply. If at least one applied, the file stays as `PARTIAL-<name>`; if none did, `FAILED-`.
+- Every failure is recorded in the data file at `meta.inboxErrors[]` (server-owned, last 30):
+  `{ts, file, target, op, error, appliedSubOps?, failedSubOps?: [{index, op, id, error}]}`. The
+  dashboard raises a warn alert for the last 7 days and lists them in Settings > Inbox errors.
+- `meta.backendVersion` is stamped on every write. A session MUST read it before sending an op
+  the deployed backend may not have yet (e.g. `log_time` needs `>= 2026-09-17.7`); an unknown op's
+  error names the accepted ops (`TSG_DATA_OPS`).
+- Verify a write by re-reading the data file: the change is there, or the file name in `_Inbox`
+  and `meta.inboxErrors` say why not. Nothing else counts as evidence.
+
 ## Actual time (2026-09-17): one log, three ways in
 
 Nothing measured actual time before this. Now every item (task or step) carries `timeLog[]`
