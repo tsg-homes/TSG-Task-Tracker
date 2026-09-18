@@ -769,6 +769,14 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   seven small Claude steps landed on seven workdays and pushed the parent to 9/28. To hold a
   parent to a date, set `timelineEnd` on every open step too (a step with an explicit end is
   never rescheduled: line "!r.timelineEnd && !(r.scheduledStart && r.estDays)").
+- Deployed 2026-09-18 01:38 EDT: web app @75 = backend 2026-09-18.9 / UI 2026-09-18.12 = commit
+  47835ca, `main` fast-forwarded to it. ONE SESSION DEPLOYS AT A TIME: two sessions deployed in
+  parallel that night (@72 from this branch overwrote @69-71 from `affectionate-planck`, @73 from
+  there overwrote @72, @74 overwrote @73) because `clasp push` ships whatever the pushing branch
+  holds. Before any deploy: `git fetch origin` and confirm `git log HEAD..origin/main` is empty;
+  if not, merge main, test, then deploy. The clasp login for a cloud session is done as
+  durand@ (the script's owner); `.clasp.json` is written by hand with the Script ID and
+  `.tracker-ids.json` from `clasp deployments` (the non-@HEAD id), both gitignored.
 - Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
   Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
   repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
