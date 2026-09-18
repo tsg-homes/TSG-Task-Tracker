@@ -1034,3 +1034,8 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   the three new ids that appeared were Durand's own edits and another session's). The Drive
   connector's `read_file_content` returns the JSON with markdown escapes (`\_`, `\[`); use
   `download_file_content` (base64) for the data file. Task-title chat rule kept.
+- GOTCHA (2026-09-18 queue pass): a deferred `steps[]` answer is matched to the request's
+  `currentSteps` titles; a step whose TITLE Durand edited after the request was queued (the FUB
+  records task's two key-rotation steps, retitled in the review pass) is silently skipped by the
+  answer. Set such steps with a direct `update_subitem` (index + expectTitle) instead. A judgment
+  `answer: null` on an `add_subitem`-queued request is the clean way to drop it.
