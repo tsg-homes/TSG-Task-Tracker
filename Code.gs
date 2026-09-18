@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.11';
+const TSG_CODE_VERSION = '2026-09-18.12';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -1987,6 +1987,11 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
   // is never overwritten by an answer, unless this is a forced Tidy re-run. Title / notes /
   // progress additionally give way to anything he touched after the request was queued.
   var keep = function(field) { return !o.force && tsgUserTouched_(task, field, null); };
+  // The total on the task before this pass and whether the pass touched its steps: used at the
+  // end to keep a hand-set (or simply pre-existing) total stable when steps are minted or
+  // re-estimated without a new total being answered (2026-09-18, per Durand).
+  var totalBefore = (typeof task.estHours === 'number' && isFinite(task.estHours)) ? task.estHours : null;
+  var stepsTouched = false;
   var touchedSince = function(field) { return !o.force && o.sinceTs && tsgUserTouched_(task, field, o.sinceTs); };
   // A hand-set value that Claude would have set materially differently is flagged, never
   // overwritten (2026-09-17 per Durand: "flag it for manual review and explain everything in
@@ -2077,6 +2082,7 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
         history: [{ ts: now, field: 'created', from: null, to: null, source: o.source || 'unknown' }] };
     }));
     applied.push('subitems (+' + est.subitems.length + ')');
+    stepsTouched = true;
   }
   // Existing open steps answered in the same call (2026-09-17, per Durand: "wait for that
   // before enriching them on their own so there's only 1 call, not 2"). Each step's answer
@@ -2099,7 +2105,7 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
         sinceTs: o.sinceTs, force: o.force, reqNotes: guard ? String(guard.notes || '') : String(sub.notes || '').trim() });
       stepsApplied++;
     });
-    if (stepsApplied) applied.push('steps (' + stepsApplied + ' re-judged)');
+    if (stepsApplied) { applied.push('steps (' + stepsApplied + ' re-judged)'); stepsTouched = true; }
   }
   var fallbackFixed = false;
   if (need.indexOf('priority') !== -1 && est.priority && !keep('priority')) { if (task.priority !== est.priority) { fallbackFixed = true; task.history.push({ ts: now, field: 'priority', from: task.priority || null, to: est.priority, source: o.source || 'unknown' }); } task.priority = est.priority; applied.push('priority'); }
@@ -2227,7 +2233,13 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
   // edit gets through tsgCaptureOwnHours_. Runs after new steps are minted and existing ones
   // answered so the split sees their hours. Without it the roll-up added the steps on top of a
   // stale own figure (task 239: answered 2 h with a 1 h step rolled up to 3 h).
-  if (!o.subitem && totalApplied != null && task.subitems && task.subitems.length) tsgCaptureOwnHours_(task, totalApplied);
+  if (!o.subitem && task.subitems && task.subitems.length) {
+    if (totalApplied != null) tsgCaptureOwnHours_(task, totalApplied);
+    // No new total (hand-set and kept, or not asked for) but steps were minted or re-estimated:
+    // the total the task already showed stays the total, and the steps subdivide it. Without
+    // this a hand-set 1.5 h task that gained 0.5 h of steps rolled up to 2 h.
+    else if (stepsTouched && totalBefore != null) tsgCaptureOwnHours_(task, totalBefore);
+  }
   tsgSyncReviewNotes_(task);
   return applied;
 }

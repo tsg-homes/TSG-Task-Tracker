@@ -1886,6 +1886,30 @@ section('An answered estimate on a task with steps is the TOTAL: own share = tot
   sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J11', ts: NOW, source: 'Claude (queue)', answer: { estHours: 1.5 } });
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('a subtask answer changes the step and the roll-up, never the parent\'s own share', d.tasks[0].estHoursOwn === own && d.tasks[0].subitems[0].estHours === 1.5 && d.tasks[0].estHours === 2.5);
+  // A hand-set total is kept, and steps minted in the same pass subdivide it instead of adding to it.
+  d = { meta: { docVersion: 1, judgments: [{ id: 'J12', kind: 'enrich', taskId: 282, need: ['estHours', 'subitems'], ts: NOW }] },
+    tasks: [{ id: 282, title: 'Buy the gift card', status: 'In Progress', priority: 'Critical', estHours: 1.5, tags: [], subitems: [],
+      history: [{ ts: '2026-09-18T01:34:00Z', field: 'estHours', from: null, to: 1.5, source: 'Durand' }] }] };
+  sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J12', ts: NOW, source: 'Claude (queue)', answer: { estHours: 3,
+    subitems: [{ title: 'Call Citi about the decline', estHours: 0.25, taskType: 'Call', priority: 'Critical' }, { title: 'Buy the card', estHours: 0.25, taskType: 'Actionable Task', priority: 'Critical' }] } });
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('hand-set total kept: minted steps subdivide it (own 1 h, total still 1.5 h, the answered 3 h ignored)', d.tasks[0].estHours === 1.5 && d.tasks[0].estHoursOwn === 1 && d.tasks[0].subitems.length === 2);
+  // A request that does not ask for hours but mints steps: the existing total stays, steps subdivide it.
+  d = { meta: { docVersion: 1, judgments: [{ id: 'J13', kind: 'enrich', taskId: 300, need: ['subitems'], ts: NOW }] },
+    tasks: [{ id: 300, title: 'Four hours of work', status: 'Not Started', priority: 'Medium', estHours: 4, tags: [], history: [], subitems: [] }] };
+  sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J13', ts: NOW, source: 'Claude (queue)', answer: { subitems: [{ title: 'First hour', estHours: 1, taskType: 'Actionable Task', priority: 'Medium' }] } });
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('no total asked for: the existing 4 h stays the total, own becomes 3 h', d.tasks[0].estHours === 4 && d.tasks[0].estHoursOwn === 3);
+  // Steps re-judged to more hours under a kept total: own shrinks, total holds.
+  d = { meta: { docVersion: 1, judgments: [{ id: 'J14', kind: 'enrich', taskId: 301, need: ['estHours', 'steps'], ts: NOW,
+      currentSteps: [{ index: 0, title: 'step a', notes: '', estHours: 0.5, taskType: 'Actionable Task', priority: 'Medium', progress: 0, location: '', due: '', delegate: '' }] }] },
+    tasks: [{ id: 301, title: 'Two hours hand-set', status: 'Not Started', priority: 'Medium', estHours: 2, estHoursOwn: 1.5, tags: [],
+      history: [{ ts: '2026-09-18T01:00:00Z', field: 'estHours', from: null, to: 2, source: 'Durand' }],
+      subitems: [{ title: 'step a', done: false, estHours: 0.5, taskType: 'Actionable Task', priority: 'Medium', history: [] }] }] };
+  sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J14', ts: NOW, source: 'Claude (queue)', answer: { estHours: 5,
+    steps: [{ index: 0, title: 'step a', notes: '', estHours: 1, taskType: 'Actionable Task', priority: 'Medium', tags: [], progress: 0, location: null, due: null }] } });
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('step re-judged to 1 h under a hand-set 2 h total: own drops to 1 h, total holds at 2 h', d.tasks[0].estHours === 2 && d.tasks[0].estHoursOwn === 1 && d.tasks[0].subitems[0].estHours === 1);
 }
 
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
