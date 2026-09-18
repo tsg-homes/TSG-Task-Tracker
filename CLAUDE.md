@@ -990,3 +990,15 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
 - Deployed 2026-09-18 13:20 EDT: web app @85 = backend 2026-09-18.15 (reorder_subitems) / UI
   2026-09-18.17 = commit 23c6d6d, `main` fast-forwarded. The SOP task's steps were then sorted by
   due date with a one-line `reorder_subitems` patch.
+- LOST-SAVE FIX (dashboard UI 2026-09-18.18, per Durand "fix it"): a `replace_all` save refused as
+  `stale_version` no longer drops the edit. The page keeps `BASELINE_DOC` (snapshot of the document
+  it last loaded or saved, taken in `applyLoadedDoc_`, after a successful save and after
+  `createTask`); on `conflict` `replayAfterConflict_` captures baseline + local together (before any
+  await), fetches the latest document, `replayLocalChanges_` re-applies the field-level diff (tasks
+  by id; steps by index when the step list length is unchanged else by title; history lines
+  appended; non-server meta keys; `SERVER_OWNED_META` never), installs the merged document and
+  `doSaveNow_` saves again with the fresh version (at most 2 replays per save, then the old
+  reload-and-tell path). Success shows a "Saved after a merge" toast. Test: dashboard "a conflicted
+  save replays the local edit...". The dashboard test harness exits synchronously after the last
+  `tryCall`, so async tests placed late in the file never run their post-await checks; a test that
+  awaits must sit before them (the inbox-error Retry test's General-tab check fails when awaited).
