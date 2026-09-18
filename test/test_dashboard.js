@@ -395,6 +395,7 @@ setTimeout(async () => {
     w.eval("RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true;");
     w.setSettingsTab('general');
     if (!doc.getElementById('homeBaseInput') || !doc.getElementById('claudeRepoInput') || !doc.getElementById('inboxErrorsList')) throw new Error('General tab missing home base / repo / inbox errors');
+    if (!doc.getElementById('claudeSessionInput')) throw new Error('General tab missing the working session field');
     w.setSettingsTab('team');
     if (doc.getElementById('homeBaseInput') || !doc.getElementById('newRosterName')) throw new Error('Team tab should hold only the roster');
   });
@@ -829,6 +830,30 @@ setTimeout(async () => {
       if (!/copyText_\(location\.origin/.test(w.eval('renderGeneralTab.toString()')) || !/copyText_\(/.test(w.eval('copyClaudePrompt.toString()'))) throw new Error('copy sites not routed through copyText_');
       console.log('OK   - copyText_: every copy flips the button to Copied and raises a toast; a refused clipboard falls back to a prompt');
     } catch (e) { console.log('FAIL - copyText_ ->', e.message); FAILS++; }
+  })();
+  await (async () => {
+    try {
+      w.eval("navigator.clipboard = { writeText: t => { window.__clipWrites.push(t); return Promise.resolve(); } }; window.__clipWrites = []; window.__opened = []; window.open = (u, n) => { window.__opened.push([u, n]); return {}; };");
+      w.eval("delete RAW_META.claudeSession; CLAUDE_SESSION = ''; COMMENTS = [{ id: 'C1', text: 'move this to Friday', author: 'Durand', ts: '2026-09-18T12:00:00Z', anchor: { kind: 'task', id: 1 } }];");
+      let r = await w.routePromptToClaude_('hello', { shiftKey: true }, null, 'x');
+      if (r !== 'cloud' || !/claude\.ai\/code\?prompt=hello/.test(w.eval('window.__opened')[0][0])) throw new Error('shift should open a new cloud session');
+      w.__posts = [];
+      await w.setClaudeSession('https://claude.ai/code/session_TEST');
+      const post = (w.__posts || []).map(x => { try { return JSON.parse(x.body); } catch (e) { return null; } }).find(x => x && x.op === 'set_meta');
+      if (!post || post.fields.claudeSession !== 'https://claude.ai/code/session_TEST') throw new Error('set_meta not posted');
+      w.eval("window.__alerts = []; window.alert = m => window.__alerts.push(m);");
+      await w.setClaudeSession('http://evil.example/x');
+      if (w.eval('CLAUDE_SESSION') !== 'https://claude.ai/code/session_TEST' || !w.eval('window.__alerts').length) throw new Error('non-claude.ai link accepted');
+      r = await w.sendCommentsToClaude({ shiftKey: false, currentTarget: null });
+      const opened = w.eval('window.__opened');
+      if (r !== 'session' || opened[opened.length - 1][0] !== 'https://claude.ai/code/session_TEST' || !/move this to Friday/.test(w.eval('window.__clipWrites').pop())) throw new Error('did not copy + open the working session: ' + r);
+      if (!/Copied/.test(doc.getElementById('tsgToasts').textContent)) throw new Error('no copied toast');
+      w.openCommentsPanel();
+      if (!/open to this session/.test(doc.body.innerHTML)) throw new Error('button label should name the session');
+      if (!/delegated to Claude/.test(w.judgePromptFor_()) || !/DRAFTED ONLY/.test(w.judgePromptFor_())) throw new Error('judge prompt lacks the delegated-work step');
+      w.eval("CLAUDE_SESSION = ''; delete RAW_META.claudeSession; COMMENTS = [];"); doc.getElementById('tsgToasts').innerHTML = '';
+      console.log('OK   - Judge now / Send comments route to the working session (copy + open) when one is set; shift = new cloud session; only claude.ai links accepted');
+    } catch (e) { console.log('FAIL - working session routing ->', e.message); FAILS++; }
   })();
   tryCall('a preset reminder follows a due-date or due-time change; clearing removes it', () => {
     w.modalDueChange(1, '2026-09-26');

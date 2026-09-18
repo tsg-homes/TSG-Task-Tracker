@@ -805,3 +805,15 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   did not open for him. Judge-now / Send-to-Claude deep links (`claude://…/new`,
   `claude.ai/code?prompt=`) can only start NEW sessions; nothing routes a prompt into an
   existing session by URL (same limit as "Open linked session": open + copied prompt).
+- UI 2026-09-18.12 (per Durand "wrap this into the judgement routine" / "why cant the submit all to
+  claude button open this thread with the correct prompt on the clipboard?"): `meta.claudeSession`
+  (Settings > General "Working Claude session", `setClaudeSession`, claude.ai links only) is where
+  `routePromptToClaude_` sends board-level prompts: prompt copied through `copyText_`, session
+  opened in the named window `tsgClaudeSession`; shift-click = new cloud Code session; no
+  session set = new Cowork session as before. `judgePromptFor_` step 5 = work delegated to
+  Claude (draft-only boundary, log_time, update_subitem). The full Routine prompt is
+  `routines/judgment-routine-prompt.md` (Durand pastes it; agents cannot edit the Routine).
+  The prompt Durand pasted on 2026-09-18 carried the exec URL and SCRIPT_TOKEN in a curl step:
+  that path is dead under DOMAIN access and neither value may enter a tracked file; rotating
+  SCRIPT_TOKEN is his call. clasp needed a fresh `clasp login --no-localhost` this session
+  (Google `invalid_rapt` reauth) before @72 could ship.

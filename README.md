@@ -236,6 +236,16 @@ url is already on the item (Gmail as type `email`, sites as type `web`);
 every change gets its own history line with the answer's source. Verify by re-reading the data
 file after a minute: the answered ids are gone from `meta.judgments`.
 
+## The Routine's prompt lives in the repo (2026-09-18)
+
+`routines/judgment-routine-prompt.md` is the full prompt for the "Task Tracker Judgement
+Call" Routine: judgment queue, comments, and the work delegated to Claude (outward-facing
+actions drafted only, never sent). Agents cannot edit the Routine, so Durand pastes the block
+from that file; edit the file first. It reads the data file from Drive by id and never
+carries the exec URL or the API token. The dashboard's "Judge now" prompt carries the same
+three steps in short form, and both it and "Send open comments" open the working session
+set under Settings > General (prompt copied, session opened) when one is set.
+
 ## Git mirrors what is live (2026-09-17)
 
 `npm run deploy` refuses a dirty tree (uncommitted changes in the four pushed files) unless

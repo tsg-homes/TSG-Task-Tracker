@@ -1584,7 +1584,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.11';
+  const UI_VERSION = '2026-09-18.12';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2061,7 +2061,7 @@
     document.getElementById('dayViewTitle').textContent = taskId ? 'Comments on #' + taskId : 'Comments';
     setDayViewAdd_(null);
     const openCount = COMMENTS.filter(c => c && !c.resolved && String(c.author || '').toLowerCase() !== 'claude').length;
-    const sendBar = openCount ? `<div class="cp-actions" style="margin-bottom:10px;"><button type="button" class="btn small primary" onclick="sendCommentsToClaude(event)" title="Open a Cowork session on this computer with every open comment (shift-click: Claude Code in the cloud). The session acts, replies in the thread and resolves what it finished.">Send ${openCount} open to Claude</button></div>` : '';
+    const sendBar = openCount ? `<div class="cp-actions" style="margin-bottom:10px;"><button type="button" class="btn small primary" onclick="sendCommentsToClaude(event)" title="${CLAUDE_SESSION ? 'Copies the prompt with every open comment and opens your working Claude session (Settings > General); paste it there. Shift-click: a new Claude Code session in the cloud.' : 'Open a Cowork session on this computer with every open comment (shift-click: Claude Code in the cloud). The session acts, replies in the thread and resolves what it finished.'}">Send ${openCount} open to ${CLAUDE_SESSION ? 'this session' : 'Claude'}</button></div>` : '';
     document.getElementById('dayViewBody').innerHTML = sendBar + (list.length ? '<div class="comment-list">' + list.map(c => `
       <div class="comment-item ${c.resolved ? 'resolved' : ''}" data-cid="${escapeHtml(c.id)}">
         <div class="comment-head"><b>${escapeHtml(c.author || '')}</b> · ${escapeHtml(formatDateTime(c.ts))} · <span class="comment-anchor" ${c.anchor && c.anchor.id ? `onclick="closeDayView(); openTaskCard(${c.anchor.id})"` : ''}>${escapeHtml(c.anchor ? c.anchor.label : '')}</span></div>
@@ -2088,10 +2088,25 @@
       '4. Wait one minute, re-read the data file, confirm the replies are in meta.comments, the resolved flags are set and no FAILED-, PARTIAL- or MALFORMED- file appeared in _Inbox, and report per comment what was done.\n\n' +
       'COMMENTS:\n' + (lines.length ? lines.join('\n') : '(none)');
   }
-  function sendCommentsToClaude(ev) {
-    const q = encodeURIComponent(commentsPromptFor_());
-    if (ev && ev.shiftKey) { window.open('https://claude.ai/code?prompt=' + q, '_blank'); return; }
+  // Board-level prompts (Judge now, Send comments) go to the working session when one is set
+  // in Settings > General (2026-09-18, per Durand "why cant the submit all to claude button
+  // open this thread with the correct prompt on the clipboard?"): the prompt is copied, the
+  // session opens in a new tab, and Durand pastes. No URL form injects a prompt into an
+  // existing session. Shift-click always starts a NEW cloud Code session with the prompt;
+  // with no working session a plain click starts a new Cowork session as before.
+  async function routePromptToClaude_(prompt, ev, btn, what) {
+    const q = encodeURIComponent(prompt);
+    if (ev && ev.shiftKey) { window.open('https://claude.ai/code?prompt=' + q, '_blank'); return 'cloud'; }
+    if (CLAUDE_SESSION) {
+      await copyText_(prompt, btn, what || 'The prompt');
+      window.open(safeUrl(CLAUDE_SESSION), 'tsgClaudeSession');
+      return 'session';
+    }
     window.location.href = 'claude://cowork/new?q=' + q;
+    return 'cowork';
+  }
+  function sendCommentsToClaude(ev) {
+    return routePromptToClaude_(commentsPromptFor_(), ev, ev && ev.currentTarget, 'The comments prompt');
   }
   async function setCommentResolved_(cid, resolved) {
     const c = COMMENTS.find(x => x.id === cid); if (!c) return;
@@ -2937,6 +2952,7 @@
   // Each opens the composer with the prompt filled; the user still presses Enter. The desktop
   // app truncates q at ~14k characters, so the prompt caps its notes at 4000.
   let CLAUDE_REPO = '';
+  let CLAUDE_SESSION = ''; // Settings > General: the claude.ai session prompts are routed to (open + prompt copied)
   function claudeLinksFor_(t) {
     const q = encodeURIComponent(claudePromptFor_(t));
     const repo = (CLAUDE_REPO || '').trim();
@@ -2960,7 +2976,8 @@
       '2. Answer each request under your own judgment, exactly in the answer shapes documented in README.md "Judgment queue" of the GitHub repo tsg-homes/task-tracker: only the fields in need; polish the notes first and derive the rest from the polished text; steps as one entry per index in currentSteps; hours from the one estimation workflow in the skill (measured actuals, then the calibration table); run a web search to confirm every webLinks url; null for a match you are not confident in.\n' +
       '3. Push all answers as ONE bulk data patch of judgment ops (source "Claude (judge now)") into the _Inbox folder 1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi with the Drive connector\'s create_file. Timestamps in America/New_York.\n' +
       '4. Then read meta.comments: every unresolved comment not authored by Claude is a note from Durand for you. Do what it asks when it is within the tracker (a field change goes in the same bulk patch as an update_task / update_subitem op), reply with an add_comment op (author "Claude", replyTo the comment id, anchored to the same item) saying what you did or why not, and resolve it with update_comment {id, fields: {resolved: true}} only once it is done.\n' +
-      '5. Wait one minute, re-read the data file, confirm the answered ids are gone from meta.judgments and that no FAILED-, PARTIAL- or MALFORMED- file appeared in _Inbox, and report per id what changed on the task.';
+      '5. Then carry out the work delegated to Claude: every task or step whose delegate (or owner, when no delegate) is "Claude", not Done and not tagged Triage. Do what is reasonably executable; anything outward-facing (email, message, calendar event that notifies others) is DRAFTED ONLY into the item\'s notes under "DRAFT — AWAITING APPROVAL", never sent; internal/read-only work is completed and marked Done; log the attention with a log_time op. Use update_subitem for steps, never resend a whole subitems or history array. Say so in one line when nothing is delegated.\n' +
+      '6. Wait one minute, re-read the data file, confirm the answered ids are gone from meta.judgments and that no FAILED-, PARTIAL- or MALFORMED- file appeared in _Inbox, and report per id what changed on the task, per comment what was done, and per delegated item what was executed, drafted (with the draft text) or left open.';
   }
   function renderJudgeChip_() {
     const el = document.getElementById('judgeChip'); if (!el) return;
@@ -2970,9 +2987,7 @@
     el.innerHTML = '&#9878; ' + n + ' judgment' + (n === 1 ? '' : 's') + ' queued <span class="hist-time">· Judge now</span>';
   }
   function judgeNow(ev) {
-    const q = encodeURIComponent(judgePromptFor_());
-    if (ev && ev.shiftKey) { window.open('https://claude.ai/code?prompt=' + q, '_blank'); return; }
-    window.location.href = 'claude://cowork/new?q=' + q;
+    return routePromptToClaude_(judgePromptFor_(), ev, null, 'The judgment prompt');
   }
   // Every copy goes through here (2026-09-18, per Durand "anytime something is copied to
   // clipboard there needs to be a success indicator"): the button reads "Copied" for 1.5 s
@@ -7205,6 +7220,7 @@
     ERRANDS = (doc.meta && doc.meta.errands) || {};
     HOME_BASE = (doc.meta && doc.meta.homeBase) || '';
     CLAUDE_REPO = (doc.meta && doc.meta.claudeRepo) || '';
+    CLAUDE_SESSION = (doc.meta && doc.meta.claudeSession) || '';
     setTimeout(checkReminderNotifications_, 0);
     STANDING_ITEMS = (doc.meta && doc.meta.standingItems) || [];
     dataLoaded = true;
@@ -7503,6 +7519,11 @@
         <select class="pill-select" id="remindDefaultSelect" onchange="setRemindDefault(this.value)">${REMIND_PRESETS.filter(p => p[0] !== 'custom').map(p => `<option value="${p[0]}" ${remindDefault_() === p[0] ? 'selected' : ''}>${escapeHtml(p[1])}</option>`).join('')}</select>
       </div>
       <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Working Claude session</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Optional claude.ai session link (Code or Cowork). When set, "Judge now" and "Send open comments" copy the prompt and open this session instead of starting a new one; paste the prompt there. Shift-click still starts a new cloud session.</div>
+        <input type="text" class="text-input" id="claudeSessionInput" placeholder="https://claude.ai/code/session_…" value="${escapeHtml(CLAUDE_SESSION)}" onblur="setClaudeSession(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+      </div>
+      <div class="modal-section">
         <div class="ruleset-block-head"><h3>Claude Code repo</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">Optional owner/repo the "Code" and "Code (cloud)" buttons on a Claude task open on (e.g. tsg-homes/TSG-Task-Tracker). Cowork sessions never need one.</div>
         <input type="text" class="text-input" id="claudeRepoInput" placeholder="owner/repo" value="${escapeHtml(CLAUDE_REPO)}" onblur="setClaudeRepo(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
@@ -7564,6 +7585,15 @@
           <button class="btn small primary" onclick="addRosterMember()">+ Add delegate</button>
         </div>
       </div>`;
+  }
+  async function setClaudeSession(value) {
+    const val = (value || '').trim();
+    if (val === CLAUDE_SESSION) return;
+    if (val && !/^https:\/\/claude\.ai\//.test(val)) { alert('Paste a claude.ai session link (https://claude.ai/…).'); return; }
+    CLAUDE_SESSION = val;
+    RAW_META.claudeSession = val;
+    await postCommentOp_({ op: 'set_meta', fields: { claudeSession: val }, source: 'Durand' });
+    setSyncStatus('saved', 'Working session saved');
   }
   async function setClaudeRepo(value) {
     const val = (value || '').trim();
