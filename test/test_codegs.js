@@ -1953,3 +1953,152 @@ section('Steps share a day; a hand-set parent date is flagged, never moved (2026
 
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
 if (FAILS) process.exitCode = 1;
+
+section('Write amplification: slim judgments, coalesced step requests, history retention, failure mail (2026-09-18)');
+{
+  // --- slimming ---
+  const twenty = []; for (let i = 0; i < 20; i++) twenty.push({ date: '2026-09-2' + (i % 9), start: '09:00', end: '10:00', htmlLink: 'https://cal/' + i, label: 'Event ' + i });
+  const eight = []; for (let i = 0; i < 8; i++) eight.push({ url: 'https://drive/' + i, label: 'File ' + i, excerpt: 'x'.repeat(600) });
+  const six = []; for (let i = 0; i < 6; i++) six.push({ url: 'https://mail/' + i, label: 'Thread ' + i, from: 'a@b', date: '2026-09-10', excerpt: 'y'.repeat(300) });
+  let r = sandbox.tsgSlimJudgmentRequest_({ kind: 'enrich', taskId: 1, need: ['estHours', 'meetingMatch', 'driveMatch'], current: { taskType: 'Email' }, calendarCandidates: twenty.slice(), driveCandidates: eight.slice(), mailCandidates: six.slice() });
+  check('a typed non-Meeting task drops its calendar candidates and the meetingMatch need', r.calendarCandidates === null && r.need.indexOf('meetingMatch') === -1 && r.need.indexOf('driveMatch') !== -1);
+  check('Drive candidates are capped at 6 with 240-char excerpts; Gmail at 4 with 160-char excerpts', r.driveCandidates.length === 6 && r.driveCandidates[0].excerpt.length === 240 && r.mailCandidates.length === 4 && r.mailCandidates[0].excerpt.length === 160);
+  r = sandbox.tsgSlimJudgmentRequest_({ kind: 'enrich', taskId: 1, subIdx: 2, need: ['meetingMatch'], current: { taskType: '', subtask: true }, calendarCandidates: twenty.slice() });
+  check('an untyped STEP never carries calendar candidates', r.calendarCandidates === null && r.need.length === 0);
+  r = sandbox.tsgSlimJudgmentRequest_({ kind: 'enrich', taskId: 1, need: ['meetingMatch'], current: { taskType: '' }, calendarCandidates: twenty.slice(), notes: 'n'.repeat(9000) });
+  check('an untyped TASK keeps 10 calendar events; the notes as typed are never cut', r.calendarCandidates.length === 10 && r.need[0] === 'meetingMatch' && r.notes.length === 9000);
+  r = sandbox.tsgSlimJudgmentRequest_({ kind: 'enrich', taskId: 1, need: ['meetingMatch'], current: { taskType: 'Meeting' }, calendarCandidates: twenty.slice() });
+  check('a Meeting keeps them too', r.calendarCandidates.length === 10);
+
+  // --- the calendar gather itself: a step of unknown type is not offered events (queue mode) ---
+  const savedKey = apiKeyPresent; apiKeyPresent = false;
+  const savedProps = sandbox.PropertiesService.getScriptProperties;
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (k === 'ANTHROPIC_API_KEY' ? null : (scriptProps[k] == null ? null : scriptProps[k])), setProperty: (k, v) => { scriptProps[k] = v; } });
+  calendarEventsFixture = [{ id: 'e1', title: 'Marketing Update', start: new Date(Date.now() + 86400000), end: new Date(Date.now() + 90000000) }];
+  driveFilesFixture = []; gmailThreadsFixture = [];
+  let doc = freshDoc();
+  doc.tasks[0].taskType = 'Actionable Task';
+  doc.tasks[0].subitems = [
+    { title: 'Draft the postcard copy', status: 'Not Started', notes: '', history: [] },
+    { title: 'Order the print run', status: 'Not Started', notes: '', history: [] },
+    { title: 'Confirm the mailing list', status: 'Not Started', notes: '', history: [] }
+  ];
+  sandbox.applyDataPatch_(doc, { op: 'update_subitem', id: 1, index: 0, fields: { notes: 'first draft written' }, source: 'Claude session', ts: '2026-09-18T16:00:00Z' });
+  let reqs = doc.meta.judgments.filter(q => q.kind === 'enrich');
+  check('a single step update queues one step request without calendar candidates', reqs.length === 1 && reqs[0].subIdx === 0 && reqs[0].calendarCandidates == null && reqs[0].need.indexOf('meetingMatch') === -1);
+
+  // --- bulk coalescing: several steps of one task -> ONE steps-only request ---
+  doc = freshDoc();
+  doc.tasks[0].taskType = 'Actionable Task';
+  doc.tasks[0].subitems = [
+    { title: 'Draft the postcard copy', status: 'Not Started', notes: '', history: [] },
+    { title: 'Order the print run', status: 'Not Started', notes: '', history: [] },
+    { title: 'Confirm the mailing list', status: 'Not Started', notes: '', history: [] }
+  ];
+  const seq0 = doc.meta.judgmentSeq || 0;
+  sandbox.applyDataPatch_(doc, { op: 'bulk', source: 'Claude session', ts: '2026-09-18T16:05:00Z', ops: [
+    { op: 'update_subitem', id: 1, index: 0, fields: { notes: 'copy drafted' } },
+    { op: 'update_subitem', id: 1, index: 1, fields: { notes: 'print quote in' } },
+    { op: 'update_subitem', id: 1, index: 2, fields: { notes: 'list pulled from FUB' } },
+    { op: 'log_time', id: 1, minutes: 15, kind: 'session', source: 'Claude session' }
+  ] });
+  reqs = doc.meta.judgments.filter(q => q.kind === 'enrich' && q.taskId === 1);
+  check('three step updates in one bulk collapse into ONE steps-only request for the parent', reqs.length === 1 && reqs[0].subIdx == null && reqs[0].need.length === 1 && reqs[0].need[0] === 'steps');
+  check('...carrying exactly those steps with their new notes and no candidate lists', reqs[0].currentSteps.length === 3 && reqs[0].currentSteps.map(s => s.index).join(',') === '0,1,2' && reqs[0].currentSteps[2].notes === 'list pulled from FUB' && !reqs[0].driveCandidates && !reqs[0].mailCandidates);
+  check('the bulk still applied every op (notes, history, log_time)', doc.tasks[0].subitems[1].notes === 'print quote in' && doc.tasks[0].actualHours === 0.25);
+  // a pending parent request absorbs later step updates instead of being replaced
+  sandbox.applyDataPatch_(doc, { op: 'update_task', id: 1, fields: { notes: 'parent notes moved on' }, source: 'Durand', ts: '2026-09-18T16:06:00Z' });
+  reqs = doc.meta.judgments.filter(q => q.kind === 'enrich' && q.taskId === 1);
+  check('a parent notes change replaces the steps request with the parent\'s full request (steps ride along)', reqs.length === 1 && reqs[0].subIdx == null && reqs[0].need.indexOf('title') !== -1 && reqs[0].need.indexOf('steps') !== -1);
+  const parentId = reqs[0].id;
+  sandbox.applyDataPatch_(doc, { op: 'bulk', source: 'Claude session', ts: '2026-09-18T16:07:00Z', ops: [
+    { op: 'update_subitem', id: 1, index: 1, fields: { notes: 'print run ORDERED' } },
+    { op: 'update_subitem', id: 1, index: 2, fields: { notes: 'list confirmed' } }
+  ] });
+  reqs = doc.meta.judgments.filter(q => q.kind === 'enrich' && q.taskId === 1);
+  check('a later bulk on two steps merges into the pending parent request (same id, fresh step notes), no per-step requests', reqs.length === 1 && reqs[0].id === parentId && reqs[0].currentSteps.filter(s => s.index === 1)[0].notes === 'print run ORDERED' && reqs[0].currentSteps.length === 3);
+  // one step alone is untouched (no coalescing needed)
+  sandbox.applyDataPatch_(doc, { op: 'bulk', source: 'Claude session', ts: '2026-09-18T16:08:00Z', ops: [{ op: 'update_subitem', id: 1, index: 0, fields: { notes: 'copy final' } }] });
+  check('a single step in a bulk keeps its own request', doc.meta.judgments.filter(q => q.kind === 'enrich' && q.taskId === 1 && q.subIdx === 0).length === 1);
+  apiKeyPresent = savedKey; calendarEventsFixture = []; sandbox.PropertiesService.getScriptProperties = savedProps;
+
+  // --- lenient envelope ---
+  doc = freshDoc();
+  sandbox.applyDataPatch_(doc, { target: 'data', ops: [{ op: 'update_task', id: 1, fields: { notes: 'lenient' } }], source: 'Claude (routine)', ts: '2026-09-18T16:09:00Z' });
+  check('an envelope with ops but no op is applied as a bulk', doc.tasks[0].notes === 'lenient');
+
+  // --- history value truncation on every write ---
+  doc = freshDoc();
+  doc.tasks[0].history.push({ ts: '2026-09-18T10:00:00Z', field: 'notes', from: 'a'.repeat(5000), to: 'b'.repeat(3000), source: 'Claude (queue)' });
+  doc.tasks[0].subitems = [{ title: 'S', status: 'Not Started', history: [{ ts: '2026-09-18T10:00:00Z', field: 'notes', from: null, to: 'c'.repeat(1000), source: 'Durand' }] }];
+  sandbox.tsgAutoScheduleDoc_(doc);
+  const nl = doc.tasks[0].history.filter(h => h.field === 'notes')[0];
+  check('a notes history line keeps 240 chars of each value plus an ellipsis, on tasks and steps', nl.from.length === 241 && nl.to.length === 241 && /…$/.test(nl.to) && doc.tasks[0].subitems[0].history[0].to.length === 241);
+
+  // --- history archive: over-cap lines leave for a dated file, the lines protection needs stay ---
+  const archives = [];
+  const folderStub = { getFoldersByName: () => ({ hasNext: () => true, next: () => ({ createFile: (name, content, mime) => { archives.push({ name, content, mime }); return { getName: () => name }; } }) }), createFolder: () => { throw new Error('not expected'); } };
+  const savedFolder2 = sandbox.DriveApp.getFolderById;
+  sandbox.DriveApp.getFolderById = () => folderStub;
+  doc = freshDoc();
+  const t = doc.tasks[0];
+  t.history = [{ ts: '2026-09-01T00:00:00Z', field: 'created', from: null, to: null, source: 'Claude' }];
+  for (let i = 1; i <= 60; i++) t.history.push({ ts: '2026-09-0' + (1 + (i % 9)) + 'T00:00:' + String(i).padStart(2, '0') + 'Z', field: (i === 3 ? 'estHours' : (i % 2 ? 'timelineEnd' : 'subitem-scheduled')), from: null, to: String(i), source: (i === 3 ? 'Durand' : (i % 2 ? 'Claude (queue)' : undefined)) });
+  t.subitems = [{ title: 'S', status: 'Not Started', history: [] }];
+  for (let i = 0; i < 20; i++) t.subitems[0].history.push({ ts: '2026-09-02T00:00:' + String(i).padStart(2, '0') + 'Z', field: 'status', from: 'a', to: 'b' + i, source: 'Claude' });
+  const archivedLines = sandbox.tsgArchiveHistory_(doc, '2026-09-18T16:10:00.000Z');
+  check('an over-cap task is pruned to well under the cap and a step to its own cap', t.history.length <= 40 && t.history.length >= 24 && t.subitems[0].history.length <= 12);
+  check('created, the hand-set estHours line and the newest lines survive; tsgUserTouched_ still sees the hand edit', t.history[0].field === 'created' && t.history.some(h => h.field === 'estHours' && h.source === 'Durand') && t.history[t.history.length - 1].to === '60' && sandbox.tsgUserTouched_(t, 'estHours') === true);
+  const payload = JSON.parse(archives[0].content);
+  check('the pruned lines went to one dated JSON file in the History folder, by task and step', archives.length === 1 && /^history-2026-09-18T16-10-00-000Z\.json$/.test(archives[0].name) && archives[0].mime === 'application/json' && payload.lines === archivedLines && payload.items.length === 2 && payload.items[0].taskId === 1 && payload.items[0].subIdx === null && payload.items[1].subIdx === 0 && payload.items[0].lines.length + t.history.length === 61);
+  check('meta.historyArchive counts the files and lines', doc.meta.historyArchive.files === 1 && doc.meta.historyArchive.lines === archivedLines && doc.meta.historyArchive.lastFile === archives[0].name);
+  check('a second pass with everything under the cap writes nothing', sandbox.tsgArchiveHistory_(doc, '2026-09-18T16:11:00.000Z') === 0 && archives.length === 1);
+  // archive write fails -> nothing pruned
+  const before = JSON.stringify(doc);
+  doc.tasks[0].history = doc.tasks[0].history.concat(doc.tasks[0].history);
+  const lenBefore = doc.tasks[0].history.length;
+  sandbox.DriveApp.getFolderById = () => ({ getFoldersByName: () => ({ hasNext: () => true, next: () => ({ createFile: () => { throw new Error('Drive quota'); } }) }) });
+  let threw = ''; try { sandbox.tsgArchiveHistory_(doc, '2026-09-18T16:12:00.000Z'); } catch (e) { threw = e.message; }
+  check('when the archive write throws, the history is left intact (the caller logs and moves on)', /quota/.test(threw) && doc.tasks[0].history.length === lenBefore);
+  sandbox.DriveApp.getFolderById = savedFolder2;
+
+  // --- failure mail from processInbox_ ---
+  {
+    const origLock = sandbox.LockService.getScriptLock, origGetFolderById = sandbox.DriveApp.getFolderById, origGetFileById = sandbox.DriveApp.getFileById;
+    const FILE_IDS = vm.runInContext('FILE_IDS', sandbox);
+    function fakePatchFile(name, obj) {
+      const f = { name, trashed: false, isTrashed: () => f.trashed, getName: () => f.name, setName: (n) => { f.name = n; }, setTrashed: (v) => { f.trashed = v; }, getDateCreated: () => new Date('2026-09-18T14:44:46Z'), getBlob: () => ({ getDataAsString: () => (typeof obj === 'string' ? obj : JSON.stringify(obj)) }) };
+      return f;
+    }
+    function fakeInbox(files) {
+      return { getFiles: () => { let i = 0; return { hasNext: () => i < files.length, next: () => files[i++] }; }, createFile: () => {}, getFilesByName: () => ({ hasNext: () => false }), getFoldersByName: () => ({ hasNext: () => true, next: () => ({ createFile: (n) => ({ getName: () => n }) }) }) };
+    }
+    let dataOnDisk = JSON.stringify({ meta: { docVersion: 10, next_id: 5 }, tasks: [{ id: 1, title: 'A', status: 'Not Started', history: [], subitems: [] }] });
+    sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS.data ? dataOnDisk : '{}') }), setContent: (c) => { if (id === FILE_IDS.data) dataOnDisk = c; } });
+    sandbox.LockService.getScriptLock = () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} });
+    sentMail = []; cacheStore = {};
+    const badJson = '{"target":"data","op":"bulk","ops":[{"op":"judgment","id":"J49","answer":{"notes":"Ryan said "no" to the plan"}}]}';
+    const malformed = fakePatchFile('claude-tracker-routine-patch4-j49.json', badJson);
+    const failing = fakePatchFile('nosuch.json', { target: 'data', op: 'update_task', id: 999, fields: {} });
+    sandbox.DriveApp.getFolderById = () => fakeInbox([malformed, failing]);
+    let res = sandbox.processInbox_();
+    const errs = JSON.parse(dataOnDisk).meta.inboxErrors;
+    check('a malformed file is filed MALFORMED-, recorded with the parse position, the text around it and its size', res.malformed === 1 && malformed.name === 'MALFORMED-claude-tracker-routine-patch4-j49.json' && errs[0].file === 'claude-tracker-routine-patch4-j49.json' && /position \d+/.test(errs[0].error) && /near: /.test(errs[0].error) && errs[0].bytes === badJson.length);
+    check('ONE email to the owner names every filed patch of the pass with its error', sentMail.length === 1 && sentMail[0].to === 'durand@thestawaszgroup.com' && /2 inbox patches failed/.test(sentMail[0].subject) && sentMail[0].body.includes('claude-tracker-routine-patch4-j49.json') && sentMail[0].body.includes('nosuch.json') && /999|not found/.test(sentMail[0].body) && sentMail[0].body.includes('malformed JSON'));
+    // the same file names failing again within the TTL do not mail twice
+    const again = fakePatchFile('nosuch.json', { target: 'data', op: 'update_task', id: 999, fields: {} });
+    sandbox.DriveApp.getFolderById = () => fakeInbox([again]);
+    res = sandbox.processInbox_();
+    check('a repeat of the same file name within 6 h is recorded but not mailed again', res.failed === 1 && sentMail.length === 1 && JSON.parse(dataOnDisk).meta.inboxErrors.length === 3);
+    // a mail failure never blocks the pass
+    const savedSend = sandbox.MailApp.sendEmail;
+    sandbox.MailApp.sendEmail = () => { throw new Error('mail quota'); };
+    const third = fakePatchFile('third.json', { target: 'data', op: 'update_task', id: 999, fields: {} });
+    sandbox.DriveApp.getFolderById = () => fakeInbox([third]);
+    res = sandbox.processInbox_();
+    check('a failing mail send is logged and the pass still files and records the patch', res.failed === 1 && third.name === 'FAILED-third.json' && JSON.parse(dataOnDisk).meta.inboxErrors.length === 4);
+    sandbox.MailApp.sendEmail = savedSend;
+    sandbox.LockService.getScriptLock = origLock; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.DriveApp.getFileById = origGetFileById;
+    sentMail = []; cacheStore = {};
+  }
+}

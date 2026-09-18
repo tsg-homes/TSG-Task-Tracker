@@ -181,7 +181,15 @@ judgment, and writes the answers back as inbox ops. Until an answer lands a new 
   (`[{url, label, from, date, excerpt}]` recent Gmail threads, or null), `currentSteps` (the task's open
   steps `[{index, title, notes, estHours, taskType, priority, progress, location, due, delegate}]`
   when `need` has `steps`; a request with `need: ["steps"]` alone is a steps-only re-judge), `personCreated`.
-  Candidates are gathered on EVERY pass, whatever is already linked (2026-09-17).
+  Candidates are gathered on EVERY pass, whatever is already linked (2026-09-17), and every
+  request is slimmed to caps when queued and again on every write (2026-09-18, backend
+  2026-09-18.14): 6 Drive candidates with 240-char excerpts, 4 Gmail threads with 160-char
+  excerpts, 10 calendar events, and calendar candidates only for a Meeting or a TASK whose type
+  is still open (a step never carries them). The queue holds 80 requests. A `bulk` that touched
+  several steps of one task queues ONE steps-only request for that parent (`need: ["steps"]`,
+  `currentSteps` = those steps) instead of one full request per step; when the parent already
+  has a pending request the steps are merged into it. Link matching for those steps rides the
+  parent's next pass. The notes as typed are never cut.
   Read `EXISTING_GROUPS` / `OPEN_TASK_TITLES` / `EXISTING_TAGS` from the data file itself.
 - `kind: "progress"` — legacy; answer `{progress}` from the notes only.
 - `kind: "comment"` (2026-09-18) — one of Durand's comments (`commentId`, `text`, `anchor`,
@@ -276,13 +284,41 @@ side it was "consumed with nothing recorded". Now:
 - `bulk` applies sub-op by sub-op: a sub-op that throws is rolled back on its own and the rest
   still apply. If at least one applied, the file stays as `PARTIAL-<name>`; if none did, `FAILED-`.
 - Every failure is recorded in the data file at `meta.inboxErrors[]` (server-owned, last 30):
-  `{ts, file, target, op, error, appliedSubOps?, failedSubOps?: [{index, op, id, error}]}`. The
-  dashboard raises a warn alert for the last 7 days and lists them in Settings > Inbox errors.
+  `{ts, file, target, op, error, appliedSubOps?, failedSubOps?: [{index, op, id, error}]}`; a
+  malformed file's `error` carries the parse position and the 60 characters around it, plus
+  `bytes`. The dashboard raises a CRITICAL alert naming the newest file when anything was dropped
+  entirely (FAILED-/MALFORMED-), a warn alert for PARTIAL- only, and lists them in Settings >
+  General. Every newly filed file is also EMAILED to the owner in the same pass (backend
+  2026-09-18.14; one mail per file per 6 h), so a dropped patch reaches a human without the
+  dashboard being open.
+- An envelope with `ops` but no `op` is applied as a `bulk` (2026-09-18). Everything else about
+  the envelope is unchanged; a file that is not valid JSON is still MALFORMED-, so serialize
+  with a real JSON encoder and parse the exact text before uploading it.
 - `meta.backendVersion` is stamped on every write. A session MUST read it before sending an op
   the deployed backend may not have yet (e.g. `log_time` needs `>= 2026-09-17.7`); an unknown op's
   error names the accepted ops (`TSG_DATA_OPS`).
 - Verify a write by re-reading the data file: the change is there, or the file name in `_Inbox`
   and `meta.inboxErrors` say why not. Nothing else counts as evidence.
+
+## History retention (2026-09-18): the hot file stays small
+
+Measured 2026-09-18 on the live data file (930 KB): 1,328 history lines held 405 KB, notes lines
+alone (the whole old and new notes text per line) 231 KB, and `meta.judgments` 284 KB; one 2 KB
+bulk grew the file by 36 KB (17.5x). Now, on every write (`tsgAutoScheduleDoc_`):
+
+- A history line's `from` / `to` string is cut at 240 characters (`TSG_HISTORY_VALUE_CHARS`).
+  Nothing reads old notes text back out of `history[]`; the notes live on the item.
+- Pending judgment requests are slimmed to the caps above (`tsgCompactJudgments_`).
+
+And before every data write from `processInbox_` (`tsgArchiveHistory_`): an item over its cap
+(task 40 lines, Done task 12, step 12; `TSG_HISTORY_KEEP`) keeps `created`, the latest line per
+field, the latest PERSON-sourced line per field (what hand-set protection reads) and the newest
+24 / 8 / 8 lines; the rest are written to a dated file `history-<ISO>.json` in the tracker
+folder's `History` subfolder (`{archivedAt, backendVersion, lines, items: [{taskId, subIdx,
+title, lines}]}`) and only then removed. A failed archive write prunes nothing.
+`meta.historyArchive` counts files and lines. Replayed offline against the live file, the first
+write after deploy shrinks it by ~328 KB and a 2.3 KB bulk touching four steps then costs 3.7 KB
+(1.6x).
 
 ## Comments are the Durand-to-Claude channel (2026-09-17)
 

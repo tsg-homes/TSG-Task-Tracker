@@ -924,3 +924,55 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   token hits Workspace reauth (`invalid_rapt`) within hours: the Drive API cannot be driven from
   the session's clasp credentials; large inbox patches go through the Drive connector, split
   under ~30 KB per file (the Bash output cap that keeps them in context).
+
+## Write amplification and silent MALFORMED patches (2026-09-18, backend 2026-09-18.14, dashboard UI 2026-09-18.16)
+
+Per Durand's two-defect report (tracked as steps 9 and 10 on task 285). MEASURED FIRST, offline,
+by replaying a bulk (4 update_subitem + 1 add_subitem + 1 log_time on task 274) through the test
+sandbox against the live file (930 KB): 2,074 B patch -> +36,208 B (17.5x); 89% was
+`meta.judgments` (five enrich requests at ~8.4 KB, ~6.8 KB each of identical calendar/mail/Drive
+candidate lists), the rest history lines. Across the file: 1,328 history lines = 405 KB (notes
+lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines), judgments
+284 KB for 30 pending requests. Fixes, all in `Code.gs`:
+- `tsgSlimJudgmentRequest_` (caps `TSG_JUDGMENT_CAPS`: Drive 6 x 240 chars, Gmail 4 x 160,
+  calendar 10, calendar only for a Meeting or an untyped TASK, never a step; notes never cut) runs
+  in `tsgQueueJudgment_` and, as `tsgCompactJudgments_`, on every write over every pending
+  request; queue cap 200 -> 80. `tsgEnrichItem_` gathers calendar candidates under the same rule
+  (the old "or taskType is in need" clause made it every pass).
+- `tsgCoalesceStepRequests_` after a `bulk`: 2+ per-step enrich requests on one parent collapse
+  into ONE steps-only request (the `request_steps` shape) or merge into the parent's pending
+  request. Link matching for those steps rides the parent's next pass.
+- History: `tsgTruncateHistoryValues_` (every write, from/to cut at 240 chars,
+  `TSG_HISTORY_VALUE_CHARS`; nothing in Code.gs reads history values back) and
+  `tsgArchiveHistory_` (processInbox_ only, before the data write; `TSG_HISTORY_KEEP` task 40 /
+  Done 12 / step 12, keeping `created`, the latest line per field, the latest PERSON line per field
+  via `tsgIsPersonSource_` so `tsgUserTouched_` still holds, and the newest 24/8/8; pruned lines go
+  to `History/history-<ISO>.json` under the tracker folder; a failed archive write prunes nothing;
+  `meta.historyArchive` counts). Result on the replay: first write after deploy shrinks the file
+  by 328 KB (930 -> 602 KB); the same bulk on the compacted file then costs 3.7 KB for a 2.3 KB
+  patch (1.6x).
+- MALFORMED J49 (`claude-tracker-routine-patch4-j49-20260918T144600.json`): the envelope was a
+  correct `op:"bulk"`; the file failed JSON.parse at position 3463 inside the `notes` string (an
+  unescaped quote written by the routine). `meta.inboxErrors` DID record it; the dashboard's warn
+  row was the only surface. Now: every filed patch is EMAILED to OWNER_EMAIL in the same pass
+  (`tsgNotifyInboxErrors_`, one mail per file per 6 h via the script cache), the malformed record
+  carries `near: "<60 chars around the position>"` and `bytes` (`tsgJsonErrorExcerpt_`), the
+  dashboard alert is CRITICAL naming the newest file when anything was dropped entirely (warn for
+  PARTIAL- only), and an envelope with `ops` but no `op` is applied as a bulk. The routine prompt
+  and the skill now require serializing with a real JSON encoder and parsing the exact text
+  before upload. J49 was written off: superseded by J52 (289 step 6) and J53 (289 parent), and
+  its correction paragraph already sits in 289's notes.
+- Scratch replay harness: `replay.js` in the session scratchpad (sandbox from test_codegs.js
+  lines 1-146 + fixtures); not in the repo.
+- CLASP LOGIN RULE (Durand, 2026-09-18: "make it a rule to use the method where you launch the
+  page, i sign in, then it auto reports"). LOCAL session (Cowork / Claude Code on his computer):
+  plain `clasp login`; clasp listens on localhost:8888, Google redirects the browser there and the
+  code is captured with no paste. CLOUD session (this container): port 8888 is inside the
+  container, so auto-capture cannot work; use `clasp login --no-localhost` and run it as a
+  PERSISTENT BACKGROUND Bash task holding an input fifo (`mkfifo login.in; (sleep 1500 > login.in &);
+  npx clasp login --no-localhost < login.in > login.out`; `run_in_background: true`), print the URL
+  from login.out, and when Durand pastes the redirect URL write it into the fifo. A login started
+  with `( … &)` inside a foreground call dies when that call ends, which voided one pasted code on
+  2026-09-18; never `pkill -f "clasp login"` (it matches the calling shell and kills it, exit 144).
+  Google Workspace expires the refresh token often (`invalid_rapt`), so expect a fresh login per
+  cloud session.

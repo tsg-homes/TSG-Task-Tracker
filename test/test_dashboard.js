@@ -1168,6 +1168,16 @@ setTimeout(async () => {
     if (!w.inboxErrorsHtml_().includes('mixed.json')) throw new Error('settings list missing the entry');
     w.eval('RAW_META.inboxErrors = []');
   });
+  tryCall('inbox errors: a MALFORMED-/FAILED- entry (nothing applied) is a CRITICAL alert naming the file; a PARTIAL- alone stays a warning (2026-09-18)', () => {
+    w.eval("RAW_META.inboxErrors = [{ ts: new Date().toISOString(), file: 'claude-tracker-routine-patch4-j49.json', op: null, error: 'malformed JSON: Expected \\',\\' or \\'}\\' after property value in JSON at position 3463 near: \"...\"' }]");
+    let a = w.computeAlerts().find(x => x.openSettings);
+    if (!a || a.level !== 'critical') throw new Error('malformed entry not critical: ' + JSON.stringify(a));
+    if (!/patch4-j49\.json/.test(a.text) || !/dropped entirely/.test(a.text)) throw new Error('alert text does not name the file: ' + a.text);
+    w.eval("RAW_META.inboxErrors = [{ ts: new Date().toISOString(), file: 'mixed.json', op: 'bulk[update_task,log_time]', error: 'bulk: 1 of 2 sub-op(s) failed', appliedSubOps: 1, failedSubOps: [{ index: 1, op: 'log_time', error: 'x' }] }]");
+    a = w.computeAlerts().find(x => x.openSettings);
+    if (!a || a.level !== 'warn' || !/applied in part/.test(a.text)) throw new Error('partial entry not a warning: ' + JSON.stringify(a));
+    w.eval('RAW_META.inboxErrors = []');
+  });
   tryCall('judge-now chip: hidden with an empty queue, counts pending judgments, prompt names the ids and the data file', () => {
     w.eval('RAW_META.judgments = []'); w.renderJudgeChip_();
     if (doc.getElementById('judgeChip').style.display !== 'none') throw new Error('chip shown with nothing queued');
