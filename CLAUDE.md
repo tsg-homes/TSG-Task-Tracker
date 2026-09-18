@@ -792,6 +792,15 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   hand-set and kept, or not in `need`), `tsgApplyEstimateToTask_` re-splits the parent's own share
   from the total the task already showed (`totalBefore`, `stepsTouched`), so steps subdivide the
   figure instead of adding to it. Three tests in "An answered estimate on a task with steps".
+- Deployed 2026-09-18 03:00 EDT: web app @80 = backend 2026-09-18.13 = commit 4e29426, `main`
+  fast-forwarded. STEP CHAINING (per Durand "fix the step chaining so steps land before the parent
+  due date"): a step blocked by the previous one may start the SAME day that step ends
+  (`earliestStartFor`, was +1 day); the day's capacity decides whether it fits, so small steps
+  share a day and a 2.5 h step spills to the next. A HAND-SET parent date (`dueOverride`) is never
+  moved by its steps: `tsgRollupDue_` keeps it and `tsgFlagDueRisk_` sets/clears the reserved tag
+  `At Risk` plus `realisticEnd` (latest open step end) with an `at-risk` history line each way.
+  Durand's rule: flag a date that cannot be met, never quietly force it. Existing tasks whose steps
+  already carry explicit dates are unaffected until re-scheduled.
 - Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
   Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
   repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
