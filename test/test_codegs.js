@@ -88,11 +88,20 @@ const sandbox = {
     GuestStatus: { YES: 'yes', OWNER: 'owner', NO: 'no' }
   },
   Utilities: {
+    // Formats in the REQUESTED zone like the real Utilities.formatDate does. The old stub
+    // used the Node process's local clock (UTC in a cloud session), so the due-date floor
+    // tests failed after 16:30 UTC = 12:30 PM Eastern (found 2026-09-18).
     formatDate: (date, tz, fmt) => {
       const pad = (n) => String(n).padStart(2, '0');
-      if (fmt === 'yyyy-MM-dd') return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
-      if (fmt === 'HH:mm') return pad(date.getHours()) + ':' + pad(date.getMinutes());
-      if (fmt === 'yyyy-MM-dd-HHmmss') return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + '-' + pad(date.getHours()) + pad(date.getMinutes()) + pad(date.getSeconds());
+      let p = { y: date.getFullYear(), M: date.getMonth() + 1, d: date.getDate(), H: date.getHours(), m: date.getMinutes(), s: date.getSeconds() };
+      try {
+        const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(date);
+        const g = (t) => Number(parts.find(x => x.type === t).value);
+        p = { y: g('year'), M: g('month'), d: g('day'), H: g('hour') % 24, m: g('minute'), s: g('second') };
+      } catch (e) { /* unknown zone: fall back to the local clock */ }
+      if (fmt === 'yyyy-MM-dd') return p.y + '-' + pad(p.M) + '-' + pad(p.d);
+      if (fmt === 'HH:mm') return pad(p.H) + ':' + pad(p.m);
+      if (fmt === 'yyyy-MM-dd-HHmmss') return p.y + '-' + pad(p.M) + '-' + pad(p.d) + '-' + pad(p.H) + pad(p.m) + pad(p.s);
       return date.toISOString();
     },
     base64EncodeWebSafe: (s) => Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
@@ -1822,7 +1831,7 @@ section('Reviewing delegated work is an admin-block item, not a capacity slice (
 
 section('A proposed due date is never a day that is already over (2026-09-17)');
 {
-  const fri1630 = new Date('2026-09-18T16:30:00'), fri1000 = new Date('2026-09-18T10:00:00'), sat = new Date('2026-09-19T09:00:00');
+  const fri1630 = new Date('2026-09-18T16:30:00-04:00'), fri1000 = new Date('2026-09-18T10:00:00-04:00'), sat = new Date('2026-09-19T09:00:00-04:00'); // Eastern, the script's zone
   check('during the workday the floor is today', sandbox.tsgEarliestDueIso_(fri1000) === '2026-09-18');
   check('at 16:30 or later the floor is the next workday (Fri -> Mon)', sandbox.tsgEarliestDueIso_(fri1630) === '2026-09-21');
   check('on a weekend the floor is Monday', sandbox.tsgEarliestDueIso_(sat) === '2026-09-21');

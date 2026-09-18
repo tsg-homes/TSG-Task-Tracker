@@ -231,6 +231,17 @@ setTimeout(async () => {
       if (!last || last.op !== 'add_comment' || last.comment.anchor.id !== 2 || last.comment.text !== 'Check with Marj first') throw new Error('add_comment not posted: ' + JSON.stringify(last));
       if (!doc.querySelector('tr.task-row[data-id="2"] .comment-badge')) throw new Error('no comment badge on the row');
       if (doc.getElementById('commentCount').textContent !== '1') throw new Error('toolbar count wrong');
+      // nothing clicks through in comment mode (2026-09-18): a toolbar button and a row select are comment targets, and mousedown is swallowed
+      const tb = doc.querySelector('.toolbar button, .toolbar select') || doc.querySelector('#btnNewTask');
+      const md = new w.MouseEvent('mousedown', { bubbles: true, cancelable: true }); tb.dispatchEvent(md);
+      if (!md.defaultPrevented) throw new Error('mousedown not swallowed in comment mode');
+      tb.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true, clientX: 50, clientY: 50 }));
+      if (!doc.getElementById('commentPopover')) throw new Error('toolbar element not commentable');
+      w.closeCommentPopover_();
+      const sel = doc.querySelector('tr.task-row[data-id="2"] select');
+      if (sel) { const md2 = new w.MouseEvent('mousedown', { bubbles: true, cancelable: true }); sel.dispatchEvent(md2); if (!md2.defaultPrevented) throw new Error('row select still opens in comment mode'); }
+      const cb = doc.getElementById('btnComments'); const md3 = new w.MouseEvent('mousedown', { bubbles: true, cancelable: true }); cb.dispatchEvent(md3);
+      if (md3.defaultPrevented) throw new Error('the Comments button must stay live');
       // hover highlight + Esc ends commenting (2026-09-18)
       const hdr = doc.querySelector('header.masthead .wordmark');
       hdr.dispatchEvent(new w.MouseEvent('mouseover', { bubbles: true }));

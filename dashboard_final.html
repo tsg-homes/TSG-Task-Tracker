@@ -1587,7 +1587,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.15';
+  const UI_VERSION = '2026-09-18.16';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1993,7 +1993,7 @@
   let COMMENT_HOVER = null;
   function commentHoverTarget_(el) {
     if (!el || !el.closest) return null;
-    if (el.closest('#commentPopover, #btnCommentMode, #btnComments, .toolbar, #dayViewModal, .modal-header-actions')) return null;
+    if (el.closest(COMMENT_MODE_PASSTHROUGH)) return null;
     if (!el.closest('.wrap, .modal-card')) return null;
     return el.closest('.sub-item[data-sub-idx], tr.task-row[data-id], .task-card[data-id], .stat-tile, .group-head, .card-group-title') || el;
   }
@@ -2028,13 +2028,27 @@
     for (let i = 0; i < 4 && cur && cur !== document.body; i++) { path.unshift(cur.tagName.toLowerCase() + (cur.id ? '#' + cur.id : '') + (cur.classList.length ? '.' + Array.from(cur.classList).slice(0, 2).join('.') : '')); cur = cur.parentElement; }
     return { kind: 'element', label: text || el.tagName.toLowerCase(), path: path.join(' > ') };
   }
-  document.addEventListener('click', function(e) {
-    if (!commentMode) return;
+  // In comment mode NOTHING clicks through (2026-09-18, per Durand "shouldnt be clicking
+  // through in comment mode / not all elements are highlighting and letting me comment on
+  // them"): every element inside the page or an open card is a comment target, toolbar,
+  // chips, selects, timeline bars and modal header buttons included. Only the comment
+  // buttons themselves and the open comment pop-over stay live. mousedown/pointerdown are
+  // swallowed too, so selects do not open and drags do not start under the click.
+  const COMMENT_MODE_PASSTHROUGH = '#commentPopover, #btnCommentMode, #btnComments';
+  function commentModeSwallow_(e) {
+    if (!commentMode) return false;
     const el = e.target;
-    if (el.closest('#commentPopover, #btnCommentMode, #btnComments, .toolbar, #dayViewModal, .modal-header-actions')) return;
-    if (!el.closest('.wrap, .modal-card')) return;
+    if (!el || !el.closest || el.closest(COMMENT_MODE_PASSTHROUGH)) return false;
+    if (!el.closest('.wrap, .modal-card')) return false;
     e.preventDefault(); e.stopPropagation();
-    openCommentPopover_(commentAnchorFor_(el), e.clientX, e.clientY);
+    return true;
+  }
+  ['mousedown', 'pointerdown', 'dblclick', 'contextmenu'].forEach(function(type) {
+    document.addEventListener(type, function(e) { commentModeSwallow_(e); }, true);
+  });
+  document.addEventListener('click', function(e) {
+    if (!commentModeSwallow_(e)) return;
+    openCommentPopover_(commentAnchorFor_(e.target), e.clientX, e.clientY);
   }, true);
   function openCommentPopover_(anchor, x, y) {
     closeCommentPopover_();
