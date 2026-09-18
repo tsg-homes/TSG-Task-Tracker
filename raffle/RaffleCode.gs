@@ -956,8 +956,8 @@ function raffleHandleSubmission_(d) {
   // Resolved by setQaTestModeFromPayload_ in doPost, before this hook is
   // reached. Read once here so every branch below agrees on which mode it is.
   var test = isQaTestMode_();
+  var step = String((d && d.step) || 'request').toLowerCase();
   try {
-    var step = String((d && d.step) || 'request').toLowerCase();
     if (step === 'verify')   return raffleVerifyCode_(d, test);
     if (step === 'referral') return raffleSubmitReferral_(d, test);
     if (step === 'invite')   return raffleSendReferralInvite_(d, test);
@@ -968,15 +968,166 @@ function raffleHandleSubmission_(d) {
     // is an admin surface reached through the same public doPost as everything
     // else, so it carries its own gate rather than trusting the route.
     if (step === 'console')  return raffleConsoleAction_(d);
+    // A page telling us one of its requests failed (see report() in the form).
+    if (step === 'report')   return raffleRecordClientFailure_(d, test);
     return raffleRequestCode_(d, test);
   } catch (err) {
     if (err && err.isValidation) return jsonOut({ ok: false, error: err.message });
-    Logger.log('raffleHandleSubmission_ error: ' + (err && err.stack ? err.stack : err));
+    // A real exception. Until 2026-09-18 the guest got "Something went wrong" and
+    // nothing else, and only Durand's alert email said what. Now the response
+    // carries the message (scrubbed of anything that looks like a URL, an address
+    // or a key) and a short reference that the alert, the log and the sheet all
+    // share, and serverError:true tells the page to offer a Retry.
+    var ref = raffleRef_();
+    var detail = raffleSafeErrorText_(err);
+    Logger.log('raffleHandleSubmission_ error [' + ref + '] step=' + step + ': ' +
+      (err && err.stack ? err.stack : err));
     try {
-      sendErrorAlert('Raffle: submission exception', (err && err.stack ? err.stack : String(err)));
+      raffleRecordFailureRow_(test, [raffleFmt_(raffleNow_()), 'server', step, ref, detail,
+        String(err && err.stack ? err.stack : err).slice(0, 1000), '', test ? 'test' : 'live']);
+    } catch (rowErr) { Logger.log('Failure row not written: ' + rowErr); }
+    try {
+      sendErrorAlert('Raffle: submission exception [' + ref + '] in step "' + step + '"',
+        'Reference ' + ref + ' (the guest saw this reference on screen).\n\n' +
+        (err && err.stack ? err.stack : String(err)));
     } catch (alertErr) { /* never let the alert swallow the response */ }
-    return jsonOut({ ok: false, error: 'Something went wrong. Grab someone from TSG and we will get you entered.' });
+    return jsonOut({ ok: false, serverError: true, ref: ref,
+      error: 'Something went wrong on our side: ' + detail + '.' });
   }
+}
+
+// ---------- Failure plumbing (2026-09-18) ----------
+// Durand's 9/17 rehearsal: a guest saw "Could not reach us — check your signal",
+// which was the page's catch firing on a server-side error; the draw console
+// showed "Could not reach the server." beside a button that merely looked
+// disabled. Nothing was logged where anyone would look and nobody was alerted.
+// Everything below exists so that a failure is (1) described in the words the
+// server actually used, (2) written down where it can be found afterwards and
+// (3) alerts a person -- Durand for entry-path problems, Durand and Ryan for
+// anything to do with the draw or the winner email.
+
+var RAFFLE_CLIENT_ERROR_TAB = 'Client Errors';
+var RAFFLE_CLIENT_ERROR_HEADERS = ['Timestamp (ET)', 'Where', 'Step', 'Reference / Kind',
+  'What the guest saw', 'Detail', 'Device', 'Mode'];
+// Client-failure alerts are batched: at most one email per window, so a bad
+// minute at the table cannot itself burn the email quota.
+var RAFFLE_CLIENT_ALERT_KEY = 'raffle_client_fail_alert';
+var RAFFLE_CLIENT_ALERT_WINDOW_SECONDS = 600;
+var RAFFLE_REPORT_STEPS = ['request', 'verify', 'referral', 'invite', 'consent', 'console', 'unknown'];
+
+// A short reference shared by the on-screen message, the log line, the sheet
+// row and the alert email, so a "what happened to Dana?" can be answered.
+function raffleRef_() {
+  return 'E-' + Utilities.getUuid().replace(/-/g, '').slice(0, 6).toUpperCase();
+}
+
+// An exception message a stranger may read: no URLs, no email addresses, nothing
+// that looks like a token or key, and short. The full stack still goes to the
+// log and to the alert.
+function raffleSafeErrorText_(err) {
+  var msg = String((err && err.message) || err || 'unknown error');
+  msg = msg.replace(/https?:\/\/\S+/g, '[url]')
+           .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[email]')
+           .replace(/\b[A-Za-z0-9_-]{24,}\b/g, '[token]')
+           .replace(/\s+/g, ' ').trim();
+  if (msg.length > 200) msg = msg.slice(0, 197) + '…';
+  return msg || 'unknown error';
+}
+
+// Appends one row to the Client Errors tab. Best-effort by construction: if the
+// sheet is what is failing, this must not turn a logged failure into a second one.
+function raffleRecordFailureRow_(test, cells) {
+  var ss = SpreadsheetApp.openById(
+    PropertiesService.getScriptProperties().getProperty(RAFFLE_SHEET_PROP));
+  var sh = ss.getSheetByName(RAFFLE_CLIENT_ERROR_TAB);
+  if (!sh) {
+    sh = ss.insertSheet(RAFFLE_CLIENT_ERROR_TAB);
+    sh.appendRow(RAFFLE_CLIENT_ERROR_HEADERS);
+  }
+  sh.appendRow(cells.map(raffleSafeCell_));
+}
+
+// The `report` step. A page posts this after one of its own requests failed
+// (no connection, or an HTML error page where JSON was expected). Every field
+// is bounded and written through raffleSafeCell_: it is public input like any
+// other. Returns ok:true whatever happened to the row, because the guest's own
+// retry is what matters and this must never get in its way.
+function raffleRecordClientFailure_(d, test) {
+  var failedStep = String((d && d.failedStep) || '').toLowerCase();
+  if (RAFFLE_REPORT_STEPS.indexOf(failedStep) === -1) failedStep = 'unknown';
+  var kind = String((d && d.kind) || '').toLowerCase();
+  if (['network', 'server', 'page'].indexOf(kind) === -1) kind = 'unknown';
+  var status = Math.max(0, Math.min(999, parseInt(d && d.status, 10) || 0));
+  var detail = collapseSpaces(d && d.detail).slice(0, 300);
+  var ua = collapseSpaces(d && d.ua).slice(0, 200);
+  var attempt = Math.max(1, Math.min(99, parseInt(d && d.attempt, 10) || 1));
+  var kiosk = String((d && d.kiosk) || '') === '1';
+  var where = kiosk ? 'kiosk' : 'phone';
+  var line = 'CLIENT FAILURE (' + kind + (status ? ' HTTP ' + status : '') + ') at step "' +
+    failedStep + '" on ' + where + ', attempt ' + attempt + ': ' + detail;
+  Logger.log('Raffle: ' + line);
+  try {
+    raffleRecordFailureRow_(test, [raffleFmt_(raffleNow_()), where, failedStep,
+      kind + (status ? ' / HTTP ' + status : ''), detail, 'attempt ' + attempt, ua,
+      test ? 'test' : 'live']);
+  } catch (rowErr) { Logger.log('Client failure row not written: ' + rowErr); }
+  // One alert per window. A network failure is the guest's signal and is only
+  // logged; a server-kind failure is ours and somebody should know now.
+  if (kind !== 'network') {
+    try {
+      var cache = CacheService.getScriptCache();
+      if (!cache.get(RAFFLE_CLIENT_ALERT_KEY)) {
+        cache.put(RAFFLE_CLIENT_ALERT_KEY, '1', RAFFLE_CLIENT_ALERT_WINDOW_SECONDS);
+        sendErrorAlert('Raffle: a guest\'s request failed (' + kind + ')',
+          line + '\n\nDevice: ' + ua + '\nMode: ' + (test ? 'test' : 'live') +
+          '\n\nEvery failure is on the "' + RAFFLE_CLIENT_ERROR_TAB + '" tab of the entries ' +
+          'sheet. Further alerts are held for ' + Math.round(RAFFLE_CLIENT_ALERT_WINDOW_SECONDS / 60) +
+          ' minutes; check the tab and the Executions log for the rest.');
+      }
+    } catch (alertErr) { Logger.log('Client failure alert failed: ' + alertErr); }
+  }
+  return jsonOut({ ok: true, logged: true });
+}
+
+// An alert that reaches BOTH Durand and Ryan (RAFFLE_NOTIFY_EMAIL): for the
+// draw and the winner email, the two things on Saturday that cannot quietly not
+// happen. sendErrorAlert (the host project's channel) is Durand-only, so this
+// sends its own message and calls that too. Never throws.
+function raffleAlertOps_(subject, body, test) {
+  var to = raffleQaRecipients_(RAFFLE_NOTIFY_EMAIL.split(','), test).join(',');
+  try {
+    MailApp.sendEmail({
+      to: to,
+      name: 'TSG Block Party Raffle',
+      subject: (test ? QA_TEST_PREFIX : '') + '⚠️ ' + subject,
+      body: body + '\n\nSent to: ' + to + '\nTime: ' + raffleFmt_(raffleNow_()) + ' ET'
+    });
+  } catch (mailErr) { Logger.log('raffleAlertOps_ email failed: ' + mailErr); }
+  try { sendErrorAlert('Raffle: ' + subject, body); }
+  catch (alertErr) { Logger.log('raffleAlertOps_ sendErrorAlert failed: ' + alertErr); }
+  Logger.log('RAFFLE ALERT: ' + subject + ' — ' + String(body).split('\n')[0]);
+}
+
+// Wall-clock laps for the slow steps, so a rehearsal can see where the seconds
+// go instead of guessing between Apps Script cold start, Follow Up Boss and the
+// Sheet. Each lap charges the time since the previous lap to its label; done()
+// adds the total. The result rides in the JSON as `timing` (the form shows it in
+// test mode only) and is logged.
+function raffleTimer_(step) {
+  var t0 = Date.now(), last = t0, marks = {};
+  return {
+    lap: function (label) {
+      var now = Date.now();
+      marks[label] = (marks[label] || 0) + (now - last);
+      last = now;
+    },
+    done: function () {
+      marks.total = Date.now() - t0;
+      Logger.log('Raffle timing ' + step + ': ' + Object.keys(marks).map(function (k) {
+        return k + '=' + marks[k] + 'ms'; }).join(' '));
+      return marks;
+    }
+  };
 }
 
 // ---------- Step 1: validate, then email a code ----------
@@ -1027,7 +1178,9 @@ function raffleRequestCode_(d, test) {
   // The per-address send cap. It matters more now that a returning visitor is no
   // longer short-circuited: without it, somebody could request codes to the same
   // address all afternoon.
+  var timer = raffleTimer_('request');
   raffleCheckCodeSendQuota_(raffleEmailKey_(email));
+  timer.lap('quota');
 
   var code = String(Math.floor(100000 + Math.random() * 900000));
   var vid  = Utilities.getUuid();
@@ -1057,8 +1210,9 @@ function raffleRequestCode_(d, test) {
     ].join('\n')
   });
 
+  timer.lap('mail');
   Logger.log('Raffle: verification code emailed (vid ' + vid + ', test=' + !!test + ').');
-  return jsonOut({ ok: true, needsCode: true, vid: vid,
+  return jsonOut({ ok: true, needsCode: true, vid: vid, timing: timer.done(),
     message: 'We emailed a 6-digit code to ' + email + '.' });
 }
 
@@ -1365,7 +1519,19 @@ function raffleVerifyCode_(d, test) {
   // This also means a visitor who verifies and then wanders off is still captured
   // as a lead -- they gave their details and accepted the rules before the code
   // was ever sent.
+  //
+  // TIMING (2026-09-18, "why does checking take so long"): this is the slow step
+  // of the whole flow, and it is slow by construction. Before the response can
+  // go back it makes up to four Follow Up Boss calls in series (search by email,
+  // search by phone, create or update, note), then opens the Sheet, reads every
+  // row to dedupe the self-entry, and appends -- on top of Apps Script's own
+  // per-request start-up. The laps below say how much of each; the form shows
+  // them in test mode. Collapsing it means deferring the FUB push to after the
+  // row is written (a sweep, like raffleRetryFubFailures), which changes when a
+  // contact appears in FUB and is Durand's call, not a Friday-night change.
+  var timer = raffleTimer_('verify');
   var fub = rafflePushToFub_(name, email, phone, isTest);
+  timer.lap('fub');
   if (!fub.ok) {
     try {
       sendErrorAlert('Raffle: entrant FUB write failed for ' + name,
@@ -1386,6 +1552,7 @@ function raffleVerifyCode_(d, test) {
   // Written under the lock and only once per person: somebody who comes back to
   // refer a second friend must not collect a second self-entry.
   raffleEnsureSelfEntry_(name, email, phone, (fub && fub.personId) || '', isTest);
+  timer.lap('sheet');
 
   // The verified session. This is what proves, on the NEXT request, that whoever
   // is submitting a referral owns the email address it will be attributed to.
@@ -1401,6 +1568,7 @@ function raffleVerifyCode_(d, test) {
     ok: true,
     verified: true,
     vid: vid,
+    timing: timer.done(),
     firstName: String(name).split(' ')[0],
     message: 'You are in, ' + String(name).split(' ')[0] + '. Now multiply your odds: ' +
       'refer one person and you get ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries.'
@@ -1895,6 +2063,15 @@ function raffleDrawWinner_(test, force) {
     try { raffleWriteDrawTab_(result, test); } catch (tabErr) { Logger.log('Draw tab write failed: ' + tabErr); }
     try { raffleEmailResult_(result, test); } catch (mailErr) {
       Logger.log('Draw email failed: ' + mailErr);
+      // The draw itself is recorded; only the result email failed. Say so to
+      // both of them in the plainest message MailApp can carry, with the names.
+      raffleAlertOps_('The draw ran but its result email FAILED',
+        'The winner is recorded (script property and the Draw Result tab) but the HTML ' +
+        'result email did not send: ' + mailErr + '\n\n' +
+        'WINNER: ' + result.winner.name + ' — ' + result.winner.phone + ' — ' + result.winner.email +
+        '\n' + result.backups.map(function (b, i) {
+          return 'BACKUP ' + (i + 1) + ': ' + b.name + ' — ' + b.phone + ' — ' + b.email; }).join('\n') +
+        '\n\nOpen the draw console (raffleAdminLinks() in the editor prints the URL).', test);
       return { ok: true, alreadyDrawn: false, result: result, emailFailed: true };
     }
     return { ok: true, alreadyDrawn: false, result: result };
@@ -1906,13 +2083,19 @@ function raffleDrawWinner_(test, force) {
 // The 6:15 trigger target. Thin on purpose: all the logic (and the
 // already-drawn guard) lives in raffleDrawWinner_.
 function raffleScheduledDraw() {
-  var res = raffleDrawWinner_(false, true);   // the 6:15 trigger is always the LIVE draw
+  var res;
+  try {
+    res = raffleDrawWinner_(false, true);   // the 6:15 trigger is always the LIVE draw
+  } catch (err) {
+    // An exception here (the Sheet unreadable, a quota) used to die inside the
+    // trigger with nobody told. Ryan is announcing at 6:30 either way.
+    res = { ok: false, error: 'exception: ' + (err && err.stack ? err.stack : err) };
+  }
   if (!res.ok) {
     Logger.log('Scheduled draw did not complete: ' + res.error);
-    try {
-      sendErrorAlert('Raffle: 6:15 draw did NOT complete', res.error +
-        '\n\nDraw manually from the admin link (raffleAdminLinks() in the editor).');
-    } catch (alertErr) { /* nothing more we can do */ }
+    raffleAlertOps_('The 6:15 draw did NOT complete', res.error +
+      '\n\nNothing has been drawn. Draw by hand from the admin link before 6:30 ' +
+      '(raffleAdminLinks() in the editor prints it; add &force=1 if it is before 6:15).', false);
   }
 }
 

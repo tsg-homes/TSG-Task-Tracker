@@ -1829,6 +1829,174 @@ const noteBody = s => JSON.parse(s.__fetches.filter(f => /\/v1\/notes/.test(f.ur
   eq('and the row is still pending', s.__data('Entries').filter(r => String(r[9]) === 'PENDING' || /PENDING/i.test(r.join('|'))).length >= 1, true);
 }
 
+// ---- Failure handling (2026-09-18, after Durand's 9/17 rehearsal) ------------
+// A guest saw "Could not reach us — check your signal" for a server-side error,
+// and the console showed "Could not reach the server." with no retry and no
+// alert. These lock in: the report endpoint, the reference on a caught
+// exception, alerts that reach Durand AND Ryan for draw and send failures, a
+// winner send that fails cleanly and can be retried, and timing on the slow steps.
+const NOTIFY_BOTH = 'durand@thestawaszgroup.com,ryan@tsg.homes';
+const opsMail = s => s.__sent.filter(m => m.to === NOTIFY_BOTH && /⚠️/.test(String(m.subject)));
+
+{ // The `report` step: a page telling the server one of its requests failed.
+  const s = makeSandbox();
+  const r1 = J(at(DURING, () => s.raffleHandleSubmission_({
+    step: 'report', failedStep: 'verify', kind: 'server', status: 200, attempt: 2, kiosk: '1',
+    detail: 'HTTP 200 · Google Apps Script · Script function not found: doPost',
+    ua: 'Mozilla/5.0 (iPad)' })));
+  check('report: answers ok whatever else happens', r1.ok === true && r1.logged === true, JSON.stringify(r1));
+  const tab = s.__tabs['Client Errors'];
+  check('report: a Client Errors tab is created with a header', !!tab && tab.rows.length === 2);
+  const row = tab.rows[1].map(String);
+  check('report: the row says where, which step and what the guest saw',
+    row.indexOf('kiosk') !== -1 && row.indexOf('verify') !== -1 &&
+    row.some(c => /Script function not found/.test(c)), row.join(' | '));
+  check('report: the device string is kept', row.some(c => /iPad/.test(c)));
+  eq('report: a server-kind failure alerts Durand', s.__alerts.length, 1);
+  check('report: the alert names the tab and the failing step',
+    /Client Errors/.test(s.__alerts[0].detail) && /verify/.test(s.__alerts[0].detail));
+
+  J(at(DURING, () => s.raffleHandleSubmission_({ step: 'report', failedStep: 'request',
+    kind: 'server', status: 500, detail: 'HTTP 500', ua: 'x' })));
+  eq('report: a second server failure inside the window is logged', tab.rows.length, 3);
+  eq('report: but does not alert again (one per 10 minutes)', s.__alerts.length, 1);
+
+  J(at(DURING, () => s.raffleHandleSubmission_({ step: 'report', failedStep: 'invite',
+    kind: 'network', status: 0, detail: 'Failed to fetch', ua: 'x' })));
+  eq('report: a network failure is logged', tab.rows.length, 4);
+  eq('report: and never alerts (that is the guest\'s signal, not ours)', s.__alerts.length, 1);
+
+  J(at(DURING, () => s.raffleHandleSubmission_({ step: 'report', failedStep: '<script>',
+    kind: 'weird', status: 'abc', detail: '=HYPERLINK("https://evil","x")', ua: 'x'.repeat(900) })));
+  const last = tab.rows[4].map(String);
+  check('report: an unknown step and kind are normalised', last.indexOf('unknown') !== -1 &&
+    last.some(c => /^unknown/.test(c)), last.join(' | '));
+  check('report: a formula in the detail is neutralised on the sheet',
+    last.some(c => c.charAt(0) === "'" && /HYPERLINK/.test(c)), last.join(' | '));
+  check('report: the device string is capped', last.every(c => c.length <= 300));
+}
+
+{ // A caught exception: the guest gets the real message, a reference, and a Retry.
+  const s = makeSandbox();
+  const realSend = s.MailApp.sendEmail;
+  s.MailApp.sendEmail = () => { throw new Error('Service invoked too many times for one day: email. ' +
+    'See https://developers.google.com/apps-script/guides/services/quotas (durand@thestawaszgroup.com, key abcdefghijklmnopqrstuvwxyz0123)'); };
+  const r = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));
+  s.MailApp.sendEmail = realSend;
+  check('exception: the response is a failure the page can retry', r.ok === false && r.serverError === true, JSON.stringify(r));
+  check('exception: it carries a reference', /^E-[0-9A-F]{6}$/.test(String(r.ref)), r.ref);
+  check('exception: the guest sees what actually failed', /Service invoked too many times/.test(r.error), r.error);
+  check('exception: with URLs, addresses and key-shaped strings scrubbed',
+    !/https?:/.test(r.error) && !/@/.test(r.error) && !/abcdefghijklmnop/.test(r.error), r.error);
+  check('exception: the alert to Durand carries the same reference and the stack',
+    s.__alerts.length === 1 && s.__alerts[0].context.indexOf(r.ref) !== -1 &&
+    /Service invoked/.test(s.__alerts[0].detail), JSON.stringify(s.__alerts));
+  const tab = s.__tabs['Client Errors'];
+  check('exception: it is on the Client Errors tab with the reference',
+    !!tab && tab.rows.length === 2 && tab.rows[1].map(String).indexOf(r.ref) !== -1,
+    tab && tab.rows[1] && tab.rows[1].join(' | '));
+  check('exception: a validation error is still a plain refusal, not a server error',
+    (() => { const v = J(at(DURING, () => s.raffleHandleSubmission_(
+      Object.assign({ step: 'request' }, entry({ fullName: 'Cher' })))));
+      return v.ok === false && !v.serverError && !v.ref; })());
+}
+
+{ // The 6:15 trigger: a draw that cannot run alerts BOTH of them.
+  const s = makeSandbox();                                  // no entries at all
+  at(AFTER, () => s.raffleScheduledDraw());
+  const m = opsMail(s);
+  eq('draw failure: one email to Durand and Ryan', m.length, 1);
+  check('draw failure: it says the draw did not complete and what to do',
+    /did NOT complete/.test(m[0].subject) && /Draw by hand/.test(m[0].body), JSON.stringify(m[0]));
+  check('draw failure: the host project\'s alert channel fires too', s.__alerts.length === 1);
+
+  const s2 = makeSandbox();
+  enterFull(s2, entry(), DURING);
+  s2.SpreadsheetApp.openById = () => { throw new Error('Sheets service unavailable'); };
+  at(AFTER, () => s2.raffleScheduledDraw());
+  const m2 = opsMail(s2);
+  check('draw exception: an exception inside the trigger still alerts both',
+    m2.length === 1 && /Sheets service unavailable/.test(m2[0].body), JSON.stringify(m2));
+}
+
+{ // The result email failing after a successful draw.
+  const s = makeSandbox();
+  ['a', 'b'].forEach((n, i) => enterFull(s, entry({
+    fullName: 'Person ' + n, email: n + '@mail-test.co', phone: '(215) 555-830' + i }), DURING));
+  const realSend = s.MailApp.sendEmail;
+  s.MailApp.sendEmail = m => { if (/Raffle Winner/.test(String(m.subject))) throw new Error('Mail quota exceeded'); return realSend(m); };
+  const res = at(AFTER, () => s.raffleDrawWinner_(false));
+  s.MailApp.sendEmail = realSend;
+  check('result mail failure: the draw is still recorded', res.ok === true && res.emailFailed === true, JSON.stringify(res));
+  const m = opsMail(s);
+  check('result mail failure: Durand and Ryan get the names in a plain email',
+    m.length === 1 && /result email FAILED/.test(m[0].subject) &&
+    m[0].body.indexOf(res.result.winner.name) !== -1 && /BACKUP 1/.test(m[0].body), JSON.stringify(m));
+}
+
+{ // The winner email: a send that fails is a clean failure, alerts both, and can be retried.
+  const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'secret', RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  ['a', 'b', 'c'].forEach((n, i) => enterFull(s, entry({
+    fullName: 'Person ' + n, email: n + '@mail-test.co', phone: '(215) 555-840' + i }), DURING));
+  const drawn = at(AFTER, () => s.raffleDrawWinner_(false));
+  check('winner send: draw ran (setup)', drawn.ok === true);
+  const realSend = s.MailApp.sendEmail;
+  s.MailApp.sendEmail = m => { if (/You won/.test(String(m.subject))) throw new Error('Mail service unavailable'); return realSend(m); };
+  const failed = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'send', pick: 1, key: 'secret', reason: 'pick 1 is a TSG agent and is not eligible' })));
+  check('winner send: the console is told it failed, with the reason', failed.ok === false &&
+    /did not send/.test(String(failed.error)) && /Mail service unavailable/.test(String(failed.error)), JSON.stringify(failed));
+  check('winner send: nothing is stamped as sent', !s.__props.RAFFLE_WINNER_EMAILED_AT);
+  const m = opsMail(s);
+  check('winner send: Durand and Ryan are alerted, with the winner\'s phone',
+    m.length === 1 && /winner email FAILED/.test(m[0].subject) && /Retry/.test(m[0].body) &&
+    m[0].body.indexOf(drawn.result.backups[0].phone) !== -1, JSON.stringify(m));
+  check('winner send: no ALTERNATE PICK audit line for a send that never went',
+    !s.__tabs['Draw Audit'] || !s.__tabs['Draw Audit'].rows.some(r => /ALTERNATE PICK/.test(r.join('|'))));
+
+  s.MailApp.sendEmail = realSend;
+  const retried = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'send', pick: 1, key: 'secret', reason: 'pick 1 is a TSG agent and is not eligible' })));
+  check('winner send: the retry sends', retried.ok === true, JSON.stringify(retried));
+  eq('winner send: exactly one winner email went out', s.__sent.filter(x => /You won/.test(x.subject)).length, 1);
+  check('winner send: now it is stamped', !!s.__props.RAFFLE_WINNER_EMAILED_AT);
+  check('winner send: and the ALTERNATE PICK audit line exists once, after the real send',
+    s.__tabs['Draw Audit'].rows.filter(r => /ALTERNATE PICK/.test(r.join('|'))).length === 1);
+  const again = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'send', pick: 1, key: 'secret', reason: 'pick 1 is a TSG agent and is not eligible' })));
+  check('winner send: a second retry after success is refused (no double send)', again.ok === false && /already emailed/.test(String(again.error)));
+}
+
+{ // A redraw whose new draw fails alerts both, and says the old result is on the audit tab.
+  const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'secret', RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  ['a', 'b'].forEach((n, i) => enterFull(s, entry({
+    fullName: 'Person ' + n, email: n + '@mail-test.co', phone: '(215) 555-850' + i }), DURING));
+  check('redraw failure: draw ran (setup)', at(AFTER, () => s.raffleDrawWinner_(false)).ok === true);
+  const realOpen = s.SpreadsheetApp.openById;
+  let calls = 0;
+  // The audit write (first open) succeeds; the redraw's read of the entries fails.
+  s.SpreadsheetApp.openById = id => { calls++; if (calls > 1) throw new Error('Sheets unavailable'); return realOpen(id); };
+  const r = J(at(AFTER, () => s.raffleHandleSubmission_({
+    step: 'console', consoleAction: 'redraw', key: 'secret', reason: 'winner is an employee of the sponsor' })));
+  s.SpreadsheetApp.openById = realOpen;
+  check('redraw failure: the console is told, with the fallback', r.ok === false && /Draw Audit/.test(String(r.error)), JSON.stringify(r));
+  const m = opsMail(s);
+  check('redraw failure: Durand and Ryan are alerted', m.length === 1 && /redraw FAILED/.test(m[0].subject), JSON.stringify(m));
+}
+
+{ // Timing rides in the JSON of the slow steps (the form shows it in test mode).
+  const s = makeSandbox();
+  const r1 = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));
+  check('timing: the request step reports its laps', r1.timing && typeof r1.timing.total === 'number' && 'mail' in r1.timing, JSON.stringify(r1.timing));
+  const v = verifySession(s, entry(), DURING);
+  check('timing: the verify step reports fub and sheet laps',
+    v.timing && typeof v.timing.total === 'number' && 'fub' in v.timing && 'sheet' in v.timing, JSON.stringify(v.timing));
+  const staged = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'referral', vid: v.vid }, referral()))));
+  check('timing: the referral step reports its laps', staged.timing && 'sheet+fub' in staged.timing, JSON.stringify(staged.timing));
+  const invited = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'invite', vid: v.vid, token: staged.token })));
+  check('timing: the invite step reports its laps', invited.timing && 'invite-mail' in invited.timing, JSON.stringify(invited.timing));
+}
+
 const { passes, fails } = counts();
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
 process.exit(fails ? 1 : 0);

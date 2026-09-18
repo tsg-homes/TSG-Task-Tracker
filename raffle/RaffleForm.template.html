@@ -40,8 +40,9 @@ main{max-width:520px;margin:0 auto;padding:18px 16px 40px;}
 .prize .marks .tm svg{width:100%;height:auto;display:block;}
 .prize .marks .x{color:var(--eagles-silver);font-size:15px;font-weight:700;opacity:.75;}
 .prize .kicker{font-size:11px;letter-spacing:2.5px;text-transform:uppercase;opacity:.8;}
-.prize .amount{font-family:'Playfair Display',serif;font-weight:700;font-size:52px;line-height:1;margin:4px 0 2px;}
-.prize .desc{font-size:15px;font-weight:700;}
+.prize .amount{font-family:'Playfair Display',serif;font-weight:700;font-size:52px;line-height:1;margin:4px 0 0;}
+/* Breathing room under the amount: the two lines sat flush (Durand's 9/17 rehearsal). */
+.prize .desc{font-size:15px;font-weight:700;margin-top:10px;}
 .prize .when{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.18);font-size:13px;opacity:.92;}
 .prize .multi{margin-top:10px;font-size:13px;line-height:1.5;opacity:.95;}
 .prize .multi b{color:#fff;}
@@ -53,8 +54,15 @@ legend{font-family:'Playfair Display',serif;font-weight:700;font-size:17px;color
 .field:first-of-type{margin-top:4px;}
 label{display:block;font-weight:700;font-size:14px;margin-bottom:6px;}
 .req{color:var(--tsg-red);}
-input[type=text],input[type=email],input[type=tel]{width:100%;padding:12px 12px;border:1px solid var(--tsg-gray-border);border-radius:6px;font-size:16px;font-family:inherit;background:var(--tsg-white);}
-input:focus{outline:2px solid var(--tsg-green);outline-offset:1px;}
+input[type=text],input[type=email],input[type=tel],select{width:100%;padding:12px 12px;border:1px solid var(--tsg-gray-border);border-radius:6px;font-size:16px;font-family:inherit;background:var(--tsg-white);color:#1c1c1c;}
+/* The native <select> rendered at the browser's default size, visibly smaller and
+   more cramped than the text fields beside it (rehearsal, 9/17). It now takes the
+   same box as the inputs: 16px so iOS does not zoom, 50px tall for a thumb on the
+   kiosk iPad, and its own chevron because the native one goes with appearance. */
+select{-webkit-appearance:none;-moz-appearance:none;appearance:none;min-height:50px;padding-right:42px;
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='10' viewBox='0 0 16 10'%3E%3Cpath d='M1 1l7 7 7-7' fill='none' stroke='%2315464A' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 14px center;background-size:16px 10px;}
+input:focus,select:focus{outline:2px solid var(--tsg-green);outline-offset:1px;}
 .errmsg{font-size:12px;color:var(--tsg-red);margin-top:4px;min-height:14px;}
 
 /* ---- Consent ---- */
@@ -74,6 +82,34 @@ button:active{background:var(--tsg-green-dark);}
 button:disabled{opacity:.5;cursor:not-allowed;}
 #submitErr{font-size:13px;color:var(--tsg-red);margin-top:10px;text-align:center;min-height:16px;}
 #website{position:absolute;left:-9999px;top:-9999px;}
+
+/* Secondary actions. A text link for "No thanks": declining to refer is not an
+   action worth a button, and three stacked full-width buttons read as three equal
+   choices (rehearsal, 9/17). The kiosk's "Start over" is a bordered button that
+   only exists when the page is served with kiosk=1. */
+.linkish{background:none;border:none;color:var(--tsg-green);text-decoration:underline;
+  font-size:14px;cursor:pointer;padding:12px 10px;width:auto;font-weight:700;letter-spacing:0;
+  display:inline-block;}
+.linkish:active{background:none;}
+.actions{margin-top:14px;text-align:center;}
+.secondary{background:var(--tsg-white);color:var(--tsg-green);border:1.5px solid var(--tsg-green);
+  margin-top:14px;}
+.secondary:active{background:var(--tsg-gray);}
+.kiosk-only{display:none !important;}
+body.kiosk .kiosk-only{display:block !important;}
+
+/* A failed request. Not a line of small red text next to a button that merely
+   looks disabled: a block that says what failed, what the server actually said,
+   and offers the retry -- with everything already typed still in place. */
+.fail{display:none;background:#fbf1f0;border:1px solid #e3b9b5;border-left:4px solid var(--tsg-red);
+  border-radius:6px;padding:12px 14px;margin-top:12px;text-align:left;font-size:14px;line-height:1.45;color:#1c1c1c;}
+.fail.on{display:block;}
+.fail .t{font-weight:700;color:var(--tsg-red);}
+.fail .d{margin-top:4px;color:#4a5252;font-size:13px;word-break:break-word;}
+.fail .alt{margin-top:8px;font-size:12.5px;color:#5c6666;}
+.fail button{margin-top:10px;padding:14px;font-size:15px;}
+/* The in-progress line under a busy button: what is happening and for how long. */
+.busy-note{font-size:13px;color:#5c6666;margin-top:8px;text-align:center;min-height:16px;}
 
 /* ---- Panels ---- */
 .panel{display:none;background:var(--tsg-white);border:1px solid var(--tsg-gray-border);border-radius:10px;padding:34px 22px;text-align:center;}
@@ -98,10 +134,8 @@ footer .fine{font-size:10.5px;color:#9aa3a3;margin-top:16px;line-height:1.5;}
 #codeInput{width:100%;max-width:260px;margin:18px auto 4px;display:block;text-align:center;
   font-size:30px;letter-spacing:10px;font-weight:700;padding:14px 10px;border-radius:8px;
   border:1px solid var(--tsg-gray-border);font-family:'Lato',Arial,sans-serif;}
-#codePanel .hint{font-size:12px;color:#8a9494;margin-top:10px;}
-#codePanel .linkish{background:none;border:none;color:var(--tsg-green);text-decoration:underline;
-  font-size:13px;cursor:pointer;padding:8px;width:auto;font-weight:700;margin-top:6px;}
-#codeErr{font-size:13px;color:var(--tsg-red);min-height:18px;margin-top:8px;}
+#codePanel .hint,.panel .hint{font-size:12px;color:#8a9494;margin-top:10px;}
+#codeErr,#referErr,#inviteErr{font-size:13px;color:var(--tsg-red);min-height:18px;margin-top:8px;}
 
 /* QA TEST MODE banner. Same treatment as the Open House Sign-In page: loud,
    fixed, deliberately outside the TSG palette so it cannot be mistaken for part
@@ -192,8 +226,10 @@ body.qa-test{padding-top:62px;}
            maxlength="6" placeholder="------" aria-label="6-digit code">
     <div id="codeErr" role="alert"></div>
     <button type="button" id="codeBtn">Confirm &amp; Enter</button>
+    <div class="busy-note" id="codeBusy"></div>
+    <div class="fail" id="codeFail" role="alert"></div>
     <div class="hint">It can take a few seconds. Check spam if you don't see it.</div>
-    <button type="button" class="linkish" id="startOverBtn">Wrong email? Start over</button>
+    <div class="actions"><button type="button" class="linkish" id="startOverBtn">Wrong email? Start over</button></div>
   </div>
 
   <!-- Step 3: who are you referring -->
@@ -233,7 +269,7 @@ body.qa-test{padding-top:62px;}
       <select id="refTimeframe"><option value="">Select&hellip;</option></select>
     </div>
 
-    <div class="hint" style="text-align:left;margin:0 0 14px">
+    <div class="hint" style="text-align:left;margin:12px 0 14px">
       We&rsquo;ll email them to confirm their details and ask their permission &mdash; and we&rsquo;ll
       copy you on it. <b>Confirming enters them in the drawing too</b>, so it is worth their
       twenty seconds as well as yours. Please only refer someone who would be glad to hear
@@ -242,8 +278,12 @@ body.qa-test{padding-top:62px;}
 
     <div id="referErr" role="alert"></div>
     <button type="button" id="referBtn">Continue</button>
-    <button type="button" class="linkish" id="doneBtn">No thanks &mdash; I&rsquo;m done</button>
-    <button type="button" class="linkish" id="startOverBtn2">Start over</button>
+    <div class="busy-note" id="referBusy"></div>
+    <div class="fail" id="referFail" role="alert"></div>
+    <div class="actions"><button type="button" class="linkish" id="doneBtn">No thanks &mdash; I&rsquo;m done</button></div>
+    <!-- Kiosk only: the iPad on the table has no other way to hand the page to the
+         next guest. On a shared link it is hidden; closing the page is the reset. -->
+    <button type="button" class="secondary kiosk-only" id="startOverBtn2">Start over for the next guest</button>
   </div>
 
   <!-- Step 4: send the confirmation email -->
@@ -255,6 +295,8 @@ body.qa-test{padding-top:62px;}
       as well, with one entry of their own. You&rsquo;ll be copied on the email.</p>
     <div id="inviteErr" role="alert"></div>
     <button type="button" id="inviteBtn">Send it &mdash; give me 5 more entries</button>
+    <div class="busy-note" id="inviteBusy"></div>
+    <div class="fail" id="inviteFail" role="alert"></div>
     <div class="hint">Nothing is sent until you tap the button.</div>
   </div>
 
@@ -419,7 +461,9 @@ body.qa-test{padding-top:62px;}
       </div>
 
       <button type="submit" id="submitBtn">Enter the Drawing</button>
+      <div class="busy-note" id="submitBusy"></div>
       <div id="submitErr" role="alert"></div>
+      <div class="fail" id="submitFail" role="alert"></div>
     </form>
   </div>
 </main>
@@ -563,14 +607,28 @@ body.qa-test{padding-top:62px;}
   // reload either way.
   setInterval(render, 1000);
 
-  // Live US phone formatting — this is a party, on a phone, one-handed.
+  if (KIOSK) document.body.classList.add('kiosk');
+
+  // Live US phone formatting — this is a party, on a phone, one-handed. Both
+  // phone fields: until 2026-09-18 only the entrant's own had the mask and the
+  // referral's did not, which is what the rehearsal saw. A leading 1 (a pasted
+  // +1 number, or iOS contact autofill) is dropped so the mask still lands.
+  function formatUsPhone(raw){
+    var d = String(raw || '').replace(/\D/g,'');
+    if (d.length === 11 && d.charAt(0) === '1') d = d.slice(1);
+    d = d.slice(0,10);
+    return d.length > 6 ? '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6)
+         : d.length > 3 ? '(' + d.slice(0,3) + ') ' + d.slice(3)
+         : d.length > 0 ? '(' + d : '';
+  }
+  function attachPhoneMask(el){
+    var apply = function(){ var v = formatUsPhone(el.value); if (el.value !== v) el.value = v; };
+    el.addEventListener('input', apply);
+    el.addEventListener('change', apply);
+  }
   var phoneEl = document.getElementById('phone');
-  phoneEl.addEventListener('input', function(){
-    var d = phoneEl.value.replace(/\D/g,'').slice(0,10);
-    phoneEl.value = d.length > 6 ? '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6)
-                  : d.length > 3 ? '(' + d.slice(0,3) + ') ' + d.slice(3)
-                  : d.length > 0 ? '(' + d : '';
-  });
+  attachPhoneMask(phoneEl);
+  attachPhoneMask(document.getElementById('refPhone'));
 
   function setErr(id, msg){ document.getElementById(id).textContent = msg || ''; }
 
@@ -597,14 +655,160 @@ body.qa-test{padding-top:62px;}
   var codeAddr  = document.getElementById('codeAddr');
   var codeErr   = document.getElementById('codeErr');
 
+  // ---- Transport ----------------------------------------------------------
+  // Every request goes through post(). It resolves with the server's JSON, or
+  // rejects with an Error whose `kind` says which of two different things went
+  // wrong:
+  //   'network' -- fetch itself failed: no signal, DNS, a captive portal.
+  //   'server'  -- the server answered, but not with JSON: Apps Script's own
+  //                error page (an authorization prompt, "Sorry, unable to open
+  //                the file", a script exception outside doPost), or an HTTP
+  //                error status.
+  // Until 2026-09-18 both fell into one catch that said "check your signal" --
+  // blaming the guest's phone for a server-side failure and giving them nowhere
+  // to go. `detail` keeps what the server actually sent, so the guest sees it and
+  // so does the report that goes back to the server (see report()).
   function post(payload){
+    var t0 = Date.now();
     return fetch(API, {
       method: 'POST',
       // text/plain keeps this a CORS "simple request" — Apps Script web apps
       // do not answer preflight OPTIONS, so application/json would fail here.
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(payload)
-    }).then(function(r){ return r.json(); });
+    }).then(function(r){
+      return r.text().then(function(text){
+        var data = null;
+        try { data = JSON.parse(text); } catch (e) { data = null; }
+        if (data && typeof data === 'object') { data.__ms = Date.now() - t0; return data; }
+        var err = new Error('server');
+        err.kind = 'server'; err.status = r.status; err.detail = describeResponse_(text, r.status);
+        throw err;
+      }, function(readErr){
+        var err = new Error('network'); err.kind = 'network';
+        err.detail = 'the reply was cut off (' + String((readErr && readErr.message) || readErr) + ')';
+        throw err;
+      });
+    }, function(netErr){
+      var err = new Error('network'); err.kind = 'network';
+      err.detail = String((netErr && netErr.message) || netErr || 'fetch failed');
+      throw err;
+    });
+  }
+
+  // What an HTML (or otherwise non-JSON) answer said, in one line: status, the
+  // page title, and the first stretch of visible text. Apps Script's error pages
+  // carry the real message in the body ("Script function not found",
+  // "Authorization is required", "Sorry, unable to open the file at this time").
+  function describeResponse_(text, status){
+    var s = String(text || '');
+    var title = ((s.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '').replace(/\s+/g,' ').trim();
+    var body = s.replace(/<head[\s\S]*?<\/head>/gi, ' ').replace(/<title[\s\S]*?<\/title>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ').trim();
+    var out = 'HTTP ' + status;
+    if (title) out += ' · ' + title;
+    if (body) out += ' · ' + body.slice(0, 240) + (body.length > 240 ? '…' : '');
+    return out.replace(/[.\s]+$/, '');
+  }
+
+  // The words for a failure. A server-side exception the script caught arrives as
+  // JSON with serverError:true and a reference the alert email to Durand carries.
+  function failFor_(err, res){
+    if (res) {
+      return { title: 'Something went wrong on our side.',
+               detail: (res.error || '') + (res.ref ? ' Reference ' + res.ref + '.' : '') };
+    }
+    if (!err.kind) {
+      return { title: 'This page hit an error.',
+               detail: String((err && err.message) || err) + '. Retry, or reload the page.' };
+    }
+    if (err.kind === 'network') {
+      return { title: 'We could not reach our server.',
+               detail: 'Your phone had no connection when we tried (' + err.detail + '). ' +
+                       'Check your signal and retry. Everything you typed is still here.' };
+    }
+    return { title: 'Our server returned an error.',
+             detail: 'It answered with an error page instead of a result: ' + err.detail +
+                     '. That is on our side, not your phone. Retry in a moment.' };
+  }
+
+  // The failed state: the message, the server's words, one Retry that re-sends
+  // exactly what was sent before (nothing is retyped), and the fallback.
+  function showFail(id, info, retry, attempt){
+    var box = document.getElementById(id);
+    box.innerHTML = '';
+    var t = document.createElement('div'); t.className = 't'; t.textContent = info.title;
+    box.appendChild(t);
+    if (info.detail) {
+      var d = document.createElement('div'); d.className = 'd'; d.textContent = info.detail;
+      box.appendChild(d);
+    }
+    var b = document.createElement('button'); b.type = 'button';
+    b.textContent = attempt > 1 ? 'Retry (attempt ' + (attempt + 1) + ')' : 'Retry';
+    b.addEventListener('click', function(){ clearFail(id); retry(); });
+    box.appendChild(b);
+    var alt = document.createElement('div'); alt.className = 'alt';
+    alt.textContent = 'If it fails again, find someone from TSG at the table. We will enter you by hand.';
+    box.appendChild(alt);
+    box.classList.add('on');
+    try { box.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+  }
+  function clearFail(id){
+    var box = document.getElementById(id);
+    box.classList.remove('on');
+    box.innerHTML = '';
+  }
+
+  // Tell the server a request failed on this page, so a failure a guest saw is
+  // visible afterwards (Client Errors tab, Executions log, an alert to Durand).
+  // Fire-and-forget: it must never block or fail the guest's own retry, and if
+  // the server is what is down this simply goes nowhere.
+  function report(failedStep, err, attempt){
+    try {
+      var body = {
+        formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN, website: '',
+        step: 'report', failedStep: failedStep, kind: err.kind || 'page',
+        status: err.status || 0, detail: String(err.detail || err.message || '').slice(0, 300),
+        attempt: attempt || 1, kiosk: KIOSK ? '1' : '',
+        ua: String(navigator.userAgent || '').slice(0, 200)
+      };
+      fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                   body: JSON.stringify(body), keepalive: true }).catch(function(){});
+    } catch (e) { /* reporting must never throw */ }
+  }
+
+  // A busy button plus a line under it saying what is happening and for how
+  // long. Returns the function that puts the button back; in test mode that line
+  // then shows the server's own timing so a rehearsal can read where the seconds
+  // went (see raffleTimer_ in RaffleCode.gs).
+  function busy(button, label, noteId, what){
+    button.disabled = true;
+    button.textContent = label;
+    var note = document.getElementById(noteId);
+    var t0 = Date.now();
+    note.textContent = what;
+    var iv = setInterval(function(){
+      var s = Math.round((Date.now() - t0) / 1000);
+      note.textContent = what + ' ' + s + ' s' +
+        (s >= 8 ? '. Still working. Our server is slow, not your phone. Keep this page open.' : '.');
+    }, 1000);
+    return function(resetLabel, res){
+      clearInterval(iv);
+      button.disabled = false;
+      button.textContent = resetLabel;
+      note.textContent = (IS_TEST && res && res.timing) ? timingLine_(res) : '';
+    };
+  }
+  function timingLine_(res){
+    var t = res.timing || {}, parts = [];
+    Object.keys(t).forEach(function(k){
+      if (k !== 'total') parts.push(k + ' ' + (Number(t[k]) / 1000).toFixed(1) + ' s');
+    });
+    return 'TEST MODE timing — server ' + (Number(t.total) / 1000).toFixed(1) + ' s' +
+      (parts.length ? ' (' + parts.join(', ') + ')' : '') +
+      ', round trip ' + (Number(res.__ms) / 1000).toFixed(1) + ' s';
   }
 
 
@@ -653,6 +857,39 @@ body.qa-test{padding-top:62px;}
   }
 
   // ---- Step 1: details -> emailed code ----
+  // Each step is a function of its payload so a Retry re-sends the same payload:
+  // the form is never reset and never re-validated on the way back.
+  var requestAttempt = 0;
+  function requestCode(payload){
+    requestAttempt++;
+    clearFail('submitFail');
+    document.getElementById('submitErr').textContent = '';
+    var done = busy(btn, 'Sending code…', 'submitBusy', 'Emailing your code.');
+    post(payload).then(function(res){
+      done('Enter the Drawing', res);
+      if (res && res.ok && res.needsCode) {
+        pendingVid = res.vid;
+        codeAddr.textContent = payload.email;
+        codeErr.textContent = '';
+        codeInput.value = '';
+        clearFail('codeFail');
+        show(codePanel);
+        try { codeInput.focus(); } catch (e) {}
+      } else if (res && res.ok) {
+        enteredOk(res);                       // already entered
+      } else if (res && res.serverError) {
+        showFail('submitFail', failFor_(null, res), function(){ requestCode(payload); }, requestAttempt);
+      } else {
+        document.getElementById('submitErr').textContent =
+          (res && res.error) || 'Something went wrong. Grab someone from TSG.';
+      }
+    }).catch(function(err){
+      done('Enter the Drawing');
+      report('request', err, requestAttempt);
+      showFail('submitFail', failFor_(err), function(){ requestCode(payload); }, requestAttempt);
+    });
+  }
+
   form.addEventListener('submit', function(ev){
     ev.preventDefault();
     document.getElementById('submitErr').textContent = '';
@@ -670,32 +907,8 @@ body.qa-test{padding-top:62px;}
     };
     if (!validate(payload)) return;
     if (phase() !== 'open') { lastPhase = null; render(); return; }
-
-    btn.disabled = true;
-    btn.textContent = 'Sending code…';
-
-    post(payload).then(function(res){
-      btn.disabled = false;
-      btn.textContent = 'Enter the Drawing';
-      if (res && res.ok && res.needsCode) {
-        pendingVid = res.vid;
-        codeAddr.textContent = payload.email;
-        codeErr.textContent = '';
-        codeInput.value = '';
-        show(codePanel);
-        try { codeInput.focus(); } catch (e) {}
-      } else if (res && res.ok) {
-        enteredOk(res);                       // already entered
-      } else {
-        document.getElementById('submitErr').textContent =
-          (res && res.error) || 'Something went wrong. Grab someone from TSG.';
-      }
-    }).catch(function(){
-      btn.disabled = false;
-      btn.textContent = 'Enter the Drawing';
-      document.getElementById('submitErr').textContent =
-        'Could not reach us — check your signal and try again, or find someone from TSG.';
-    });
+    requestAttempt = 0;
+    requestCode(payload);
   });
 
   // ---- Step 2: confirm the code ----
@@ -704,49 +917,69 @@ body.qa-test{padding-top:62px;}
     codeErr.textContent = '';
   });
 
-  function submitCode(){
-    var code = codeInput.value.replace(/\D/g,'');
-    if (code.length !== 6) { codeErr.textContent = 'Enter the 6-digit code from your email.'; return; }
-    codeBtn.disabled = true;
-    codeBtn.textContent = 'Checking…';
-    post({
-      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
-      step: 'verify', vid: pendingVid, code: code
-    }).then(function(res){
-      codeBtn.disabled = false;
-      codeBtn.textContent = 'Confirm & Enter';
+  var verifyAttempt = 0;
+  function verifyCode(payload){
+    verifyAttempt++;
+    clearFail('codeFail');
+    codeErr.textContent = '';
+    // The slow step. The server matches the entrant against Follow Up Boss,
+    // creates or updates the contact, and writes the entry row before it answers.
+    var done = busy(codeBtn, 'Checking…', 'codeBusy', 'Checking your code and writing your entry.');
+    post(payload).then(function(res){
+      done('Confirm & Enter', res);
       if (res && res.ok && res.verified) {
         pendingVid = res.vid || pendingVid;
         document.getElementById('entrantFirst').textContent = res.firstName || '';
         document.getElementById('referErr').textContent = '';
+        clearFail('referFail');
         show(referPanel);
       } else if (res && res.ok) {
         enteredOk(res);
+      } else if (res && res.serverError) {
+        showFail('codeFail', failFor_(null, res), function(){ verifyCode(payload); }, verifyAttempt);
       } else {
         codeErr.textContent = (res && res.error) || 'That did not work. Try again.';
       }
-    }).catch(function(){
-      codeBtn.disabled = false;
-      codeBtn.textContent = 'Confirm & Enter';
-      codeErr.textContent = 'Could not reach us — check your signal and try again.';
+    }).catch(function(err){
+      done('Confirm & Enter');
+      report('verify', err, verifyAttempt);
+      showFail('codeFail', failFor_(err), function(){ verifyCode(payload); }, verifyAttempt);
+    });
+  }
+
+  function submitCode(){
+    var code = codeInput.value.replace(/\D/g,'');
+    if (code.length !== 6) { codeErr.textContent = 'Enter the 6-digit code from your email.'; return; }
+    verifyAttempt = 0;
+    verifyCode({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'verify', vid: pendingVid, code: code
     });
   }
 
   codeBtn.addEventListener('click', submitCode);
   codeInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') submitCode(); });
 
-  document.getElementById('startOverBtn').addEventListener('click', function(){
+  // "Wrong email? Start over" keeps what was typed (they are fixing one field);
+  // the kiosk's "Start over for the next guest" clears everything, referral
+  // fields included, because the next person must not see the last one's details.
+  function startOver(clearAll){
     pendingVid = null;
     pendingToken = null;
     lastPhase = null;
+    ['submitFail', 'codeFail', 'referFail', 'inviteFail'].forEach(clearFail);
+    if (clearAll === true) {
+      form.reset();
+      ['refName', 'refPhone', 'refEmail'].forEach(function(id){ document.getElementById(id).value = ''; });
+      Array.prototype.forEach.call(document.querySelectorAll('input[name="refRole"]'), function(r){ r.checked = false; });
+      var tf = document.getElementById('refTimeframe');
+      tf.value = DEFAULT_TIMEFRAME;
+      if (tf.value !== DEFAULT_TIMEFRAME) tf.selectedIndex = 0;
+    }
     render();
-  });
-  document.getElementById('startOverBtn2').addEventListener('click', function(){
-    pendingVid = null;
-    pendingToken = null;
-    lastPhase = null;
-    render();
-  });
+  }
+  document.getElementById('startOverBtn').addEventListener('click', function(){ startOver(false); });
+  document.getElementById('startOverBtn2').addEventListener('click', function(){ startOver(true); });
   // Declining to refer is not an error and needs no server round-trip: the entry
   // was written when the code was verified. This only closes the panel.
   document.getElementById('doneBtn').addEventListener('click', function(){
@@ -769,53 +1002,71 @@ body.qa-test{padding-top:62px;}
     if (!role) { setErr('refRoleErr','Pick buy or sell.'); ok = false; }
     if (!ok) return;
 
-    referBtn.disabled = true;
-    referBtn.textContent = 'Checking…';
-    post({
+    referAttempt = 0;
+    stageReferral({
       formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
       step: 'referral', vid: pendingVid, consent: 'Yes',
       referralName: name, referralPhone: phone, referralEmail: email,
       referralRole: role,
       referralTimeframe: document.getElementById('refTimeframe').value
-    }).then(function(res){
-      referBtn.disabled = false;
-      referBtn.textContent = 'Continue';
+    });
+  });
+
+  var referAttempt = 0;
+  function stageReferral(payload){
+    referAttempt++;
+    clearFail('referFail');
+    document.getElementById('referErr').textContent = '';
+    var done = busy(referBtn, 'Checking…', 'referBusy', 'Checking that they are new to us.');
+    post(payload).then(function(res){
+      done('Continue', res);
       if (res && res.ok && res.staged) {
         pendingToken = res.token;
         document.getElementById('inviteName').textContent = res.referralEmail || res.referralName;
         document.getElementById('inviteErr').textContent = '';
+        clearFail('inviteFail');
         show(invitePanel);
+      } else if (res && res.serverError) {
+        showFail('referFail', failFor_(null, res), function(){ stageReferral(payload); }, referAttempt);
       } else {
         document.getElementById('referErr').textContent =
           (res && res.error) || 'That did not work. Try again.';
       }
-    }).catch(function(){
-      referBtn.disabled = false;
-      referBtn.textContent = 'Continue';
-      document.getElementById('referErr').textContent =
-        'Could not reach us — check your signal and try again.';
+    }).catch(function(err){
+      done('Continue');
+      report('referral', err, referAttempt);
+      showFail('referFail', failFor_(err), function(){ stageReferral(payload); }, referAttempt);
     });
-  });
+  }
 
   // ---- Step 4: send the confirmation email ----
-  inviteBtn.addEventListener('click', function(){
+  // A retry here is safe: the server marks the row the moment the invite goes
+  // out and answers "already sent" to a second press, so a lost reply cannot
+  // mail the referred person twice.
+  var inviteAttempt = 0;
+  function sendInvite(payload){
+    inviteAttempt++;
+    clearFail('inviteFail');
     document.getElementById('inviteErr').textContent = '';
-    inviteBtn.disabled = true;
-    inviteBtn.textContent = 'Sending…';
-    post({
+    var done = busy(inviteBtn, 'Sending…', 'inviteBusy', 'Emailing them and your copy.');
+    post(payload).then(function(res){
+      done('Send it — give me 5 more entries', res);
+      if (res && res.ok) enteredOk(res);
+      else if (res && res.serverError) {
+        showFail('inviteFail', failFor_(null, res), function(){ sendInvite(payload); }, inviteAttempt);
+      } else document.getElementById('inviteErr').textContent =
+        (res && res.error) || 'That did not work. Try again.';
+    }).catch(function(err){
+      done('Send it — give me 5 more entries');
+      report('invite', err, inviteAttempt);
+      showFail('inviteFail', failFor_(err), function(){ sendInvite(payload); }, inviteAttempt);
+    });
+  }
+  inviteBtn.addEventListener('click', function(){
+    inviteAttempt = 0;
+    sendInvite({
       formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
       step: 'invite', vid: pendingVid, token: pendingToken
-    }).then(function(res){
-      inviteBtn.disabled = false;
-      inviteBtn.textContent = 'Send it — give me 5 more entries';
-      if (res && res.ok) enteredOk(res);
-      else document.getElementById('inviteErr').textContent =
-        (res && res.error) || 'That did not work. Try again.';
-    }).catch(function(){
-      inviteBtn.disabled = false;
-      inviteBtn.textContent = 'Send it — give me 5 more entries';
-      document.getElementById('inviteErr').textContent =
-        'Could not reach us — check your signal and try again.';
     });
   });
 

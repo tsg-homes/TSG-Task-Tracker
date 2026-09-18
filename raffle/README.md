@@ -422,6 +422,93 @@ lose only the logo.
 existing deployment (`clasp deploy -i <id>`, or Manage deployments → Edit → New
 version). Creating a *new* deployment mints a new URL and kills every printed QR.
 
+## Failure handling (2026-09-18, after the 9/17 rehearsal)
+
+Two things the rehearsal found: a guest saw *"Could not reach us — check your
+signal and try again"* for what was almost certainly a server-side error, and
+the draw console showed *"Could not reach the server."* beside a button that
+merely looked disabled — no retry, no alert, nothing logged anywhere a person
+would look. Every lost entry is a lost FUB lead, so this is what changed.
+
+**The pages tell the truth about what failed.** Every page (entry form, consent
+page, draw console) reads the reply as text and parses it. A JSON answer is an
+answer. Anything else — Apps Script's own HTML pages (*Authorization is
+required…*, *Sorry, unable to open the file at this time*, *Script function not
+found*), an HTTP error — is shown as **"Our server returned an error"** with the
+page's title and first line of text. Only a failed `fetch` (no signal, DNS, a
+captive portal) is called a connection problem. The old message blamed the
+guest's phone for both.
+
+**Every failure is a failed state with a Retry.** A red block under the button:
+what failed, the server's words, one **Retry** that re-sends the identical
+payload (nothing is retyped, the form is never reset on the way back), and the
+fallback ("find someone from TSG"). The button goes back to live, never stuck
+disabled; in the console it reads *Send failed — retry*. Retries are safe on
+every step: the invite marks its row before answering and refuses a second send,
+the winner email is stamped only after `MailApp` accepted it and refuses once
+stamped, so a lost reply can never mail anybody twice.
+
+**A caught server exception is no longer "Something went wrong".** The JSON
+carries `serverError: true`, the exception's message scrubbed of URLs,
+addresses and key-shaped strings (`raffleSafeErrorText_`), and a reference
+`E-XXXXXX` that the guest sees, the Executions log line carries, the alert email
+to Durand carries, and the sheet row carries — so "what happened to Dana?" has
+an answer.
+
+**It is written down.** A new `Client Errors` tab on the entries sheet: one row
+per failure, whether the server caught it (reference, step, message, stack) or a
+page reported it. Pages report their own transport failures with a
+fire-and-forget `step: 'report'` POST (`raffleRecordClientFailure_`; every field
+bounded, formula-safe): where (phone/kiosk), which step, kind, HTTP status, what
+the guest saw, device. A network failure is logged only; a server-kind failure
+also emails Durand, at most once per 10 minutes.
+
+**Draw and send failures reach Durand AND Ryan** (`raffleAlertOps_`, to
+`RAFFLE_NOTIFY_EMAIL`, plus the host project's `sendErrorAlert`): the 6:15
+trigger not completing (including an exception inside it, which used to die
+silently), the draw running but its result email failing (the alert carries the
+three names and phones in plain text), the winner email failing to send
+(nothing stamped, so Retry sends), and a redraw whose new draw fails (the old
+result is on the Draw Audit tab). The alternate-pick audit line is now written
+*after* a successful send, not before.
+
+### The "checking" step — measured, not guessed
+
+Durand asked why *Checking…* takes so long. The two buttons that say it:
+
+| Step | What the server does before it can answer |
+|---|---|
+| **Confirm & Enter** (`verify`) | Up to four Follow Up Boss calls in series (search by email, search by phone, create or update, note), then open the Sheet, read every row to dedupe the self-entry, append the row, and before the party a second full read for the milestone count — plus Apps Script's own per-request start-up. |
+| **Continue** on the referral (`referral`) | One full read of the Sheet (the claim check), two FUB searches, the append. |
+
+Each of those calls is a few hundred milliseconds and they run one after
+another, so 4–8 seconds is the shape of it, not a bug. Rather than change the
+order on a Friday night, the steps now **measure themselves**: `raffleTimer_`
+laps `fub` / `sheet` / `mail` and the JSON carries `timing` (also in the
+Executions log as `Raffle timing verify: fub=…ms sheet=…ms total=…ms`). In
+**test mode** the form prints it under the button after each step, so a
+rehearsal reads the real numbers from the real deployment. Live, the button
+shows *Checking…* with a line underneath that says what is happening and counts
+the seconds, and after 8 s adds that it is the server, not the phone.
+
+The collapse worth doing, once the numbers say FUB is the bulk of it: write the
+sheet row first and push to FUB afterwards from a sweep (`raffleRetryFubFailures`
+already exists for the failure case). That changes *when* a contact appears in
+FUB — Durand's call, not a code change to make unasked.
+
+### Kiosk and form polish, same batch
+
+- Both phone fields mask as you type — `(610) 380-8225` — and a leading `1`
+  (iOS contact autofill, a pasted `+1`) is dropped so the mask still lands. The
+  referral phone had no mask at all.
+- The timeframe `<select>` takes the same box as the text fields (16px, 50px
+  tall, full width, own chevron).
+- The referral step ends with one button. *No thanks — I'm done* is a text
+  link. *Start over for the next guest* exists only with `&kiosk=1` and clears
+  every field, referral fields included; on the shared link closing the page is
+  the reset.
+- A gap under `$300`.
+
 ## Tests
 
 ```

@@ -379,15 +379,20 @@ function raffleSubmitReferral_(d, test) {
 
   raffleReferralLookupQuota_(raffleEmailKey_(entrant.email));
 
+  // TIMING: "Checking…" on the page is this. One full read of the sheet (the
+  // claim check), two Follow Up Boss searches (email, phone), then the append.
+  var timer = raffleTimer_('referral');
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) {
     throw makeValidationError('We are busy for a moment — tap Submit again.');
   }
+  timer.lap('lock');
   var appended, token;
   try {
     // Re-checked inside the lock: two people referring the same person at the
     // same moment is exactly the race this exists for.
     var eligibility = raffleReferralEligibility_(refEmail, refPhone, test);
+    timer.lap('sheet+fub');
     if (!eligibility.ok) {
       return jsonOut({ ok: false, error: raffleReferralRefusal_(), refused: 'referral' });
     }
@@ -398,6 +403,7 @@ function raffleSubmitReferral_(d, test) {
       role: role, timeframe: timeframe, token: token,
       unchecked: !!eligibility.unchecked
     }, test);
+    timer.lap('append');
   } finally {
     try { lock.releaseLock(); } catch (releaseErr) { /* non-fatal */ }
   }
@@ -420,6 +426,7 @@ function raffleSubmitReferral_(d, test) {
     staged: true,
     row: appended.row,
     token: token,
+    timing: timer.done(),
     referralName: refName,
     referralEmail: refEmail,
     message: 'Almost. Send ' + refName.split(' ')[0] + ' the confirmation email — ' +
@@ -894,6 +901,7 @@ function raffleSendReferralInvite_(d, test) {
   }
   raffleCheckCodeSendQuota_(raffleEmailKey_(found.entry.referralEmail),
                             raffleSendWeight_(test));
+  var timer = raffleTimer_('invite');
 
   var url = raffleConsentUrl_(token);
   // Lead with what THEY get. "X referred you" is the referrer's news; a referral
@@ -928,13 +936,16 @@ function raffleSendReferralInvite_(d, test) {
     body: raffleInvitePlain_(entrant, found.entry, url)   // for text-only clients
   });
 
+  timer.lap('invite-mail');
   raffleSheet_(found.test).getRange(found.row, RAFFLE_COL['Referral Emailed At'] + 1)
     .setValue(raffleFmt_(raffleNow_()));
+  timer.lap('sheet');
 
   // The referral has no FUB contact yet -- referrals only reach FUB on consent --
   // so this lands on the ENTRANT's timeline, which is whose behalf it went out on.
   raffleLogEmailToFub_(entrant.personId, subject,
     raffleInvitePlain_(entrant, found.entry, url), test);
+  timer.lap('fub');
 
   // Best-effort, and deliberately after the row is marked: the invite is the
   // thing that had to happen, and a failed receipt must not make the entrant
@@ -957,8 +968,9 @@ function raffleSendReferralInvite_(d, test) {
   } catch (receiptErr) {
     Logger.log('Invite receipt to the entrant failed (non-fatal): ' + receiptErr);
   }
+  timer.lap('receipt');
 
-  return jsonOut({ ok: true, sent: true,
+  return jsonOut({ ok: true, sent: true, timing: timer.done(),
     message: 'Sent to ' + found.entry.referralEmail + '. We have emailed you a copy of it. ' +
              'You get ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
              ' more entries as soon as they confirm.' });
@@ -1773,19 +1785,6 @@ function raffleSendWinnerEmail_(test, pickIndex, reason) {
   var picks = rafflePicks_(stored);
   var idx = Math.max(0, Math.min(picks.length - 1, Number(pickIndex) || 0));
   var w = picks[idx];
-  if (idx > 0) {
-    props.setProperty(rafflePickReasonProp_(test),
-      'Sent to pick ' + (idx + 1) + ' (' + (w && w.name) + ') instead of the drawn winner (' +
-      stored.winner.name + '). Reason given: ' + (reason || '(none)'));
-    Logger.log('RAFFLE: winner email sent to ALTERNATE pick ' + (idx + 1) + '. Reason: ' + reason);
-    raffleAppendDrawAudit_(test, [
-      raffleFmt_(raffleNow_()),
-      'ALTERNATE PICK',
-      'Prize awarded to pick ' + (idx + 1) + ': ' + (w && w.name) + ' (' + (w && w.email) + ')',
-      'Drawn winner was ' + stored.winner.name + ' (' + stored.winner.email + ')',
-      reason || '(none)'
-    ]);
-  }
   if (!w || !w.email) {
     return { ok: false, message: 'The stored winner has no email address on it. ' +
       'Something is wrong with the draw record — tell Claude before doing anything else.' };
@@ -1797,22 +1796,51 @@ function raffleSendWinnerEmail_(test, pickIndex, reason) {
   // was the one new surface that had been left out. (test_redteam.js T9,
   // 2026-09-17.) The `to` needs no such treatment: in test mode the winner IS a
   // QA entry, so w.email is already a QA address.
-  MailApp.sendEmail({
-    to: w.email,
-    cc: raffleQaRecipients_(RAFFLE_RESULT_EMAIL.split(','), test).join(','),
-    // Ryan fields winner replies, so that is where a reply lands -- plus the
-    // shared inbox, per the standing rule that a reply never reaches only one place.
-    replyTo: raffleReplyTo_(RAFFLE_WINNER_REPLY_TO),
-    name: 'The Stawasz Group',
-    subject: (test ? QA_TEST_PREFIX : '🎉 ') + 'You won! ' + RAFFLE_PRIZE_SHORT +
-             ' — TSG Block Party',
-    htmlBody: raffleWinnerHtml_(w, stored, test),
-    body: raffleWinnerPlain_(w, stored)
-  });
+  try {
+    MailApp.sendEmail({
+      to: w.email,
+      cc: raffleQaRecipients_(RAFFLE_RESULT_EMAIL.split(','), test).join(','),
+      // Ryan fields winner replies, so that is where a reply lands -- plus the
+      // shared inbox, per the standing rule that a reply never reaches only one place.
+      replyTo: raffleReplyTo_(RAFFLE_WINNER_REPLY_TO),
+      name: 'The Stawasz Group',
+      subject: (test ? QA_TEST_PREFIX : '🎉 ') + 'You won! ' + RAFFLE_PRIZE_SHORT +
+               ' — TSG Block Party',
+      htmlBody: raffleWinnerHtml_(w, stored, test),
+      body: raffleWinnerPlain_(w, stored)
+    });
+  } catch (mailErr) {
+    // The send failed and nothing is stamped, so the console's Retry can send
+    // again. Both of them hear about it now, not when somebody asks the winner.
+    var why = raffleSafeErrorText_(mailErr);
+    Logger.log('Raffle: winner email FAILED to ' + w.email + ': ' + mailErr);
+    raffleAlertOps_('The winner email FAILED to send',
+      'MailApp refused the winner email to ' + w.name + ' <' + w.email + '>: ' + mailErr +
+      '\n\nNothing was sent and nothing is stamped, so Retry in the draw console sends it ' +
+      'again. If it keeps failing, call the winner: ' + w.phone + '.', test);
+    return { ok: false, sendFailed: true,
+      message: 'The email to ' + w.name + ' did not send: ' + why +
+               '. Nothing went out. Retry, or call them at ' + w.phone + '.' };
+  }
 
   var when = raffleFmt_(raffleNow_());
   props.setProperty(raffleWinnerEmailedProp_(test), when);
   Logger.log('Raffle: winner email sent to ' + w.email + ' at ' + when + ' (test=' + !!test + ').');
+  // Recorded AFTER the send (moved 2026-09-18): an audit line saying the prize
+  // went to pick 2 must not exist for a send that failed and was retried.
+  if (idx > 0) {
+    props.setProperty(rafflePickReasonProp_(test),
+      'Sent to pick ' + (idx + 1) + ' (' + w.name + ') instead of the drawn winner (' +
+      stored.winner.name + '). Reason given: ' + (reason || '(none)'));
+    Logger.log('RAFFLE: winner email sent to ALTERNATE pick ' + (idx + 1) + '. Reason: ' + reason);
+    raffleAppendDrawAudit_(test, [
+      when,
+      'ALTERNATE PICK',
+      'Prize awarded to pick ' + (idx + 1) + ': ' + w.name + ' (' + w.email + ')',
+      'Drawn winner was ' + stored.winner.name + ' (' + stored.winner.email + ')',
+      reason || '(none)'
+    ]);
+  }
   return { ok: true, when: when, pick: idx,
     message: 'Sent to ' + w.name + ' <' + w.email + '> at ' + when + ' ET, copied to ' +
              RAFFLE_RESULT_EMAIL + '.' +
@@ -2346,9 +2374,18 @@ function raffleRedraw_(test, reason) {
 
   props.deleteProperty(raffleWinnerProp_(test));
   props.deleteProperty(rafflePickReasonProp_(test));
-  var fresh = raffleDrawWinner_(test, true);
+  var fresh;
+  try { fresh = raffleDrawWinner_(test, true); }
+  catch (drawErr) { fresh = { ok: false, error: 'exception: ' + raffleSafeErrorText_(drawErr) }; }
   if (!fresh.ok) {
-    return { ok: false, message: 'Redraw failed: ' + fresh.error };
+    // The previous result is gone (it is on the audit tab) and no new one exists:
+    // that is the worst state the console can be in, so both of them hear now.
+    raffleAlertOps_('A redraw FAILED and no winner is recorded',
+      'The previous result (' + previous.winner.name + ') was discarded for this reason: ' +
+      reason + '\n\nThe new draw then failed: ' + fresh.error +
+      '\n\nRetry the redraw from the console, or draw from the admin link.', test);
+    return { ok: false, message: 'Redraw failed: ' + fresh.error +
+      '. The previous result is on the Draw Audit tab; retry, or draw from the admin link.' };
   }
   return { ok: true, message: 'Redrawn. New winner: ' + fresh.result.winner.name +
     '. The previous result and your reason are recorded on the draw tab.' };

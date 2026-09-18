@@ -399,6 +399,235 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
     check('the script block does use force-print tags', /<\?!=/.test(scripts.join('')));
   }
 
+  // ---- 16. The 9/18 fixes (Durand's 9/17 rehearsal) ----
+  const LIVE = () => page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000 });
+  const VID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const fillEntry = async () => {
+    await p.fill('#fullName', 'Dana Reid');
+    await p.fill('#phone', '2155558123');
+    await p.fill('#email', 'dana@mail-test.co');
+    await p.check('#consent');
+  };
+  // Drives the page to the referral step with a stub server.
+  const toReferStep = async () => {
+    await p.route('**/exec', r => {
+      const b = JSON.parse(r.request().postData());
+      if (b.step === 'request') return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, needsCode: true, vid: VID }) });
+      if (b.step === 'verify')  return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, verified: true, vid: VID, firstName: 'Dana' }) });
+      return r.fulfill({ status: 200, body: '{"ok":true}' });
+    });
+    await fillEntry();
+    await p.click('#submitBtn');
+    await p.waitForTimeout(400);
+    await p.fill('#codeInput', '654321');
+    await p.click('#codeBtn');
+    await p.waitForTimeout(400);
+  };
+
+  // (3) The referral phone formats itself as they type, like the entrant's.
+  await p.goto(LIVE()); await p.waitForTimeout(250);
+  await p.type('#phone', '+1 (610) 380 8225');
+  check('fix 3: the entrant phone handles a pasted +1 number', (await p.inputValue('#phone')) === '(610) 380-8225');
+  await toReferStep();
+  check('fix 3: referral step reached (setup)', await p.locator('#referPanel').isVisible());
+  await p.type('#refPhone', '6103808225');
+  check('fix 3: referral phone masks to (610) 380-8225 as typed', (await p.inputValue('#refPhone')) === '(610) 380-8225');
+  await p.fill('#refPhone', '');
+  await p.type('#refPhone', '16103808225');
+  check('fix 3: a leading 1 is dropped so the mask still lands', (await p.inputValue('#refPhone')) === '(610) 380-8225');
+
+  // (4) The timeframe select matches the other fields.
+  const sel = await p.locator('#refTimeframe').evaluate(e => {
+    const c = getComputedStyle(e); return { fs: c.fontSize, h: e.getBoundingClientRect().height,
+      w: e.getBoundingClientRect().width, app: c.appearance || c.webkitAppearance }; });
+  const nameBox = await p.locator('#refName').evaluate(e => e.getBoundingClientRect().width);
+  check('fix 4: select is 16px (no iOS zoom)', sel.fs === '16px', JSON.stringify(sel));
+  check('fix 4: select is at least 48px tall for a thumb', sel.h >= 48, JSON.stringify(sel));
+  check('fix 4: select is as wide as the name field', Math.abs(sel.w - nameBox) < 2, sel.w + ' vs ' + nameBox);
+  check('fix 4: native chrome is replaced', sel.app === 'none', JSON.stringify(sel));
+  const labelSizes = await p.locator('#referPanel .field > label').evaluateAll(els => els.map(e => getComputedStyle(e).fontSize));
+  check('fix 4: every referral label is the same size', labelSizes.every(s => s === labelSizes[0]), labelSizes.join(','));
+
+  // (5) One obvious action at the bottom: Continue; "No thanks" a link; no Start over on the shared link.
+  const done = await p.locator('#doneBtn').evaluate(e => { const c = getComputedStyle(e);
+    return { bg: c.backgroundColor, deco: c.textDecorationLine, w: e.getBoundingClientRect().width,
+             panel: e.closest('.panel').getBoundingClientRect().width }; });
+  check('fix 5: "No thanks" has no button background', /rgba\(0, 0, 0, 0\)|transparent/.test(done.bg), done.bg);
+  check('fix 5: "No thanks" is underlined like a link', /underline/.test(done.deco), done.deco);
+  check('fix 5: "No thanks" is not full-width', done.w < done.panel * 0.7, done.w + ' of ' + done.panel);
+  check('fix 5: Start over is NOT on the shared link', !(await p.locator('#startOverBtn2').isVisible()));
+  check('fix 5: Continue is the one full-width button on the step',
+    (await p.locator('#referPanel button:visible').evaluateAll(els =>
+      els.filter(e => e.getBoundingClientRect().width > 300).length)) === 1);
+
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000, vals: { kiosk: '1' } }));
+  await p.waitForTimeout(250);
+  await toReferStep();
+  check('fix 5: kiosk=1 shows Start over on the referral step', await p.locator('#startOverBtn2').isVisible());
+  await p.click('#startOverBtn2');
+  await p.waitForTimeout(300);
+  check('fix 5: kiosk Start over returns to a clean form', await p.locator('#raffleForm').isVisible() &&
+    (await p.inputValue('#fullName')) === '');
+
+  // (6) Space under $300.
+  await p.goto(LIVE()); await p.waitForTimeout(250);
+  const gap = await p.evaluate(() => {
+    const a = document.querySelector('.prize .amount').getBoundingClientRect();
+    const d = document.querySelector('.prize .desc').getBoundingClientRect();
+    return d.top - a.bottom; });
+  check('fix 6: a visible gap between $300 and the prize line', gap >= 8, 'gap ' + gap);
+
+  // (1) A server-side error page is reported as what it is, with a Retry that re-sends the same payload.
+  await p.goto(LIVE()); await p.waitForTimeout(250);
+  let posts = [];
+  let mode = 'html';
+  await p.route('**/exec', r => {
+    const b = JSON.parse(r.request().postData());
+    posts.push(b);
+    if (b.step === 'report') return r.fulfill({ status: 200, body: '{"ok":true,"logged":true}' });
+    if (mode === 'html') return r.fulfill({ status: 200, contentType: 'text/html',
+      body: '<html><head><title>Google Apps Script</title></head><body><div>Script function not found: doPost</div></body></html>' });
+    if (mode === 'abort') return r.abort('failed');
+    if (mode === 'serverError') return r.fulfill({ status: 200, body: JSON.stringify({ ok: false, serverError: true, ref: 'E-ABC123',
+      error: 'Something went wrong on our side: Service invoked too many times for one day: email.' }) });
+    return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, needsCode: true, vid: VID }) });
+  });
+  await fillEntry();
+  await p.click('#submitBtn');
+  await p.waitForTimeout(500);
+  const failText = await p.locator('#submitFail').textContent();
+  check('fix 1: an HTML error page shows as a server error, not a signal problem',
+    await p.locator('#submitFail').isVisible() && /Our server returned an error/.test(failText), failText);
+  check('fix 1: the server\'s own words are on screen', /Script function not found/.test(failText), failText);
+  check('fix 1: it never blames the guest\'s phone', !/check your signal/i.test(failText), failText);
+  check('fix 1: a Retry button is offered', (await p.locator('#submitFail button').count()) === 1);
+  check('fix 1: the fields are untouched', (await p.inputValue('#fullName')) === 'Dana Reid' &&
+    (await p.inputValue('#email')) === 'dana@mail-test.co' && (await p.isChecked('#consent')));
+  check('fix 1: the button is live again, not stuck disabled',
+    !(await p.locator('#submitBtn').isDisabled()) && (await p.locator('#submitBtn').textContent()) === 'Enter the Drawing');
+  const rep = posts.find(b => b.step === 'report');
+  check('fix 1: the failure is reported to the server', !!rep && rep.failedStep === 'request' && rep.kind === 'server' &&
+    /Script function not found/.test(rep.detail), JSON.stringify(rep));
+  check('fix 1: the report carries the form token', !!rep && rep.formToken === 'tok');
+
+  mode = 'ok';
+  const before = posts.filter(b => b.step === 'request').length;
+  await p.click('#submitFail button');
+  await p.waitForTimeout(500);
+  const reqs = posts.filter(b => b.step === 'request');
+  check('fix 1: Retry re-sends the request', reqs.length === before + 1);
+  check('fix 1: with the identical payload', JSON.stringify(reqs[reqs.length - 1]) === JSON.stringify(reqs[0]));
+  check('fix 1: and the flow continues to the code step', await p.locator('#codePanel').isVisible());
+  check('fix 1: the failure block is gone', !(await p.locator('#submitFail').isVisible()));
+
+  // A real network failure still says so, and still offers the retry.
+  mode = 'abort';
+  await p.fill('#codeInput', '654321');
+  await p.click('#codeBtn');
+  await p.waitForTimeout(500);
+  const netText = await p.locator('#codeFail').textContent();
+  check('fix 1: a dropped connection is named as one', /could not reach our server/i.test(netText) && /signal/.test(netText), netText);
+  check('fix 1: with a Retry', (await p.locator('#codeFail button').count()) === 1);
+  check('fix 1: the code typed is still there', (await p.inputValue('#codeInput')) === '654321');
+  check('fix 1: a network failure is reported too', posts.some(b => b.step === 'report' && b.failedStep === 'verify' && b.kind === 'network'));
+
+  // A caught server exception (JSON with serverError) shows its message and reference, with a Retry.
+  mode = 'serverError';
+  await p.click('#codeFail button');
+  await p.waitForTimeout(500);
+  const seText = await p.locator('#codeFail').textContent();
+  check('fix 1: a caught server exception shows the real message', /Service invoked too many times/.test(seText), seText);
+  check('fix 1: and its reference', /E-ABC123/.test(seText), seText);
+  check('fix 1: with a Retry counting the attempt', /Retry \(attempt 3\)/.test(seText), seText);
+
+  // (7) A clear in-progress state while the slow step runs; test mode prints the server timing.
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000,
+    vals: { qaTestToken: 'b1f0c2d3-4e5f-6a7b-8c9d-0e1f2a3b4c5d', isTest: '1' } }));
+  await p.waitForTimeout(250);
+  await p.route('**/exec', async r => {
+    const b = JSON.parse(r.request().postData());
+    if (b.step === 'request') return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, needsCode: true, vid: VID }) });
+    if (b.step === 'verify') {
+      await new Promise(res => setTimeout(res, 1600));
+      return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, verified: true, vid: VID, firstName: 'Dana',
+        timing: { fub: 2100, sheet: 1400, total: 3700 } }) });
+    }
+    return r.fulfill({ status: 200, body: '{"ok":true}' });
+  });
+  await fillEntry();
+  await p.click('#submitBtn');
+  await p.waitForTimeout(400);
+  await p.fill('#codeInput', '654321');
+  await p.click('#codeBtn');
+  await p.waitForTimeout(1200);
+  const busyText = await p.locator('#codeBusy').textContent();
+  check('fix 7: the button says Checking…', (await p.locator('#codeBtn').textContent()) === 'Checking…');
+  check('fix 7: and the line under it says what is happening and for how long',
+    /Checking your code/.test(busyText) && /\d+ s/.test(busyText), busyText);
+  await p.waitForTimeout(1200);
+  check('fix 7: the referral step opens when the server answers', await p.locator('#referPanel').isVisible());
+  const timingText = await p.locator('#codeBusy').textContent();
+  check('fix 7: test mode shows the server\'s timing breakdown',
+    /TEST MODE timing/.test(timingText) && /fub 2\.1 s/.test(timingText) && /sheet 1\.4 s/.test(timingText), timingText);
+
+  // (2) The draw console: a failed send is a failed state with a retry, not a disabled button.
+  {
+    const raw = fs.readFileSync(path.join(__dirname, '../RaffleConsole.html'), 'utf8');
+    const vals = {
+      adminKeyJson: JSON.stringify('secret'), submitTokenJson: JSON.stringify('tok'),
+      isTestJson: JSON.stringify(''), sentAtJson: JSON.stringify(''), hasDrawJson: JSON.stringify('1'),
+      isTest: '', hasDraw: true, noDraw: false, sentAt: '', drawnAt: '2026-09-19 18:15:00',
+      totalEligible: '9', totalPeople: '4', totalTickets: '21', drawArmedAt: '', announceAt: '6:30 PM',
+      budget: '<div class="bq"></div>',
+      cards: '<label class="pick" for="p0"><input type="radio" name="pick" id="p0" value="0" checked><div class="nm">Dana Reid</div></label>' +
+             '<label class="pick" for="p1"><input type="radio" name="pick" id="p1" value="1"><div class="nm">Robin Vale</div></label>'
+    };
+    let out = raw
+      .replace(/<\?\s*if\s*\(\s*(\w+)\s*\)\s*\{\s*\?>([\s\S]*?)<\?\s*\}\s*\?>/g, (m, k, body) => (vals[k] ? body : ''))
+      .replace(/<\?!=\s*(\w+)\s*\?>/g, (m, n) => String(vals[n]))
+      .replace(/<\?=\s*(\w+)\s*\?>/g, (m, n) => String(vals[n]));
+    if (/<\?/.test(out)) throw new Error('console: unsubstituted tag');
+    const f = path.join(OUT, 'console.html');
+    fs.writeFileSync(f, out);
+    await p.goto('file://' + f + '?form=raffle');
+    await p.waitForTimeout(250);
+    p.on('dialog', d => d.accept());
+    let cposts = [];
+    let cmode = 'ok';
+    await p.route('**/console.html?form=raffle', r => {
+      const b = JSON.parse(r.request().postData());
+      cposts.push(b);
+      if (b.step === 'report') return r.fulfill({ status: 200, body: '{"ok":true}' });
+      if (b.consoleAction === 'preview') return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, pick: 0, name: 'Dana Reid', email: 'dana@mail-test.co', html: '<p>hi</p>' }) });
+      if (cmode === 'html') return r.fulfill({ status: 200, contentType: 'text/html', body: '<html><title>Sorry</title><body>Sorry, unable to open the file at this time.</body></html>' });
+      if (cmode === 'refused') return r.fulfill({ status: 200, body: JSON.stringify({ ok: false, error: 'The email to Dana Reid did not send: Mail service unavailable. Nothing went out. Retry, or call them at (215) 555-8123.' }) });
+      return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, message: 'Sent to Dana Reid <dana@mail-test.co> at 18:31 ET.' }) });
+    });
+    await p.click('#previewBtn');
+    await p.waitForTimeout(400);
+    check('fix 2: preview arms the send (setup)', !(await p.locator('#sendBtn').isDisabled()));
+    cmode = 'html';
+    await p.click('#sendBtn');
+    await p.waitForTimeout(500);
+    check('fix 2: a failed send reads as FAILED on the button', (await p.locator('#sendBtn').textContent()) === 'Send failed — retry');
+    check('fix 2: and the button is live, not disabled', !(await p.locator('#sendBtn').isDisabled()));
+    const box = await p.locator('#msg .failbox').textContent();
+    check('fix 2: the failure block says what the server sent', /error page/.test(box) && /unable to open the file/.test(box), box);
+    check('fix 2: with a retry button', (await p.locator('#msg .failbox button').count()) === 1);
+    check('fix 2: the console reports the failure to the server',
+      cposts.some(b => b.step === 'report' && b.failedStep === 'console' && /console send/.test(b.detail)));
+    cmode = 'refused';
+    await p.click('#msg .failbox button');
+    await p.waitForTimeout(500);
+    const box2 = await p.locator('#msg .failbox').textContent();
+    check('fix 2: a server-refused send shows the server\'s reason', /Mail service unavailable/.test(box2) && /call them at/.test(box2), box2);
+    cmode = 'ok';
+    await p.click('#msg .failbox button');
+    await p.waitForTimeout(500);
+    check('fix 2: the retry sends', (await p.locator('#sendBtn').textContent()) === 'Sent' && /Sent to Dana Reid/.test(await p.locator('#msg').textContent()));
+    check('fix 2: three send attempts went to the server', cposts.filter(b => b.consoleAction === 'send').length === 3);
+  }
+
   await b.close();
   fs.rmSync(OUT, { recursive: true, force: true });
   console.log(fails ? '\n' + fails + ' FAILED' : '\nAll form tests passed.');

@@ -44,6 +44,16 @@
   .danger { background:#fff; color:var(--red); border-color:#f0c4c0; font-weight:600; font-size:14px; }
   .err { color:var(--red); font-weight:600; font-size:14px; margin:10px 0 0; }
   .ok { color:#1e7a45; font-weight:600; font-size:15px; margin:10px 0 0; }
+  /* A failed request: what failed, what the server said, and the retry. Until
+     2026-09-18 a failure was one line of red text beside a button that merely
+     looked disabled. */
+  .failbox { background:#fbf1f0; border:1px solid #e3b9b5; border-left:4px solid var(--red);
+             border-radius:8px; padding:12px 14px; margin:12px 0 0; font-size:14px; line-height:1.45; }
+  .failbox .t { color:var(--red); font-weight:700; }
+  .failbox .d { margin-top:4px; color:var(--muted); font-size:13px; word-break:break-word; }
+  .failbox .alt { margin-top:8px; font-size:12.5px; color:var(--muted); }
+  .failbox button { margin-top:10px; }
+  .busy { font-size:13px; color:var(--muted); margin:8px 0 0; min-height:1px; }
   .preview { border:1px solid var(--line); border-radius:8px; overflow:hidden; margin-top:14px;
              background:var(--bg); }
   .preview .ph { background:#eef3f3; padding:9px 12px; font-size:12px; color:var(--muted);
@@ -109,7 +119,8 @@
 
     <button type="button" class="ghost" id="previewBtn">Preview the email</button>
     <button type="button" class="primary" id="sendBtn" disabled>Preview it first</button>
-    <div id="msg"></div>
+    <div class="busy" id="busyNote"></div>
+    <div id="msg" role="alert"></div>
 
     <div class="preview" id="preview" style="display:none">
       <div class="ph" id="previewHead">Exactly what will be sent</div>
@@ -153,35 +164,136 @@ var IS_TEST = <?!= isTestJson ?>;
 var ALREADY_SENT = <?!= sentAtJson ?> !== '';
 var HAS_DRAW = <?!= hasDrawJson ?> !== '';
 
+var ENDPOINT = window.location.href.split('?')[0] + '?form=raffle';
+
+// Same transport rules as the entry form (RaffleForm.template.html, post()):
+// the reply is read as text and parsed, so an HTML error page from Apps Script
+// is reported as what it is -- with its title and text -- and not as "could not
+// reach the server", which is only true when fetch itself fails.
 function post(payload) {
-  return fetch(window.location.href.split('?')[0] + '?form=raffle', {
+  return fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify(Object.assign({
       formType: 'raffle', formToken: FORMTK, website: '',
       step: 'console', key: KEY, test: IS_TEST
     }, payload))
-  }).then(function (r) { return r.json(); });
+  }).then(function (r) {
+    return r.text().then(function (text) {
+      var data = null;
+      try { data = JSON.parse(text); } catch (e) { data = null; }
+      if (data && typeof data === 'object') return data;
+      var err = new Error('server');
+      err.kind = 'server'; err.status = r.status; err.detail = describeResponse_(text, r.status);
+      throw err;
+    }, function (readErr) {
+      var err = new Error('network'); err.kind = 'network';
+      err.detail = 'the reply was cut off (' + String((readErr && readErr.message) || readErr) + ')';
+      throw err;
+    });
+  }, function (netErr) {
+    var err = new Error('network'); err.kind = 'network';
+    err.detail = String((netErr && netErr.message) || netErr || 'fetch failed');
+    throw err;
+  });
+}
+function describeResponse_(text, status) {
+  var s = String(text || '');
+  var title = ((s.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '').replace(/\s+/g, ' ').trim();
+  var body = s.replace(/<head[\s\S]*?<\/head>/gi, ' ').replace(/<title[\s\S]*?<\/title>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ').trim();
+  var out = 'HTTP ' + status;
+  if (title) out += ' · ' + title;
+  if (body) out += ' · ' + body.slice(0, 240) + (body.length > 240 ? '…' : '');
+  return out.replace(/[.\s]+$/, '');
+}
+function failInfo_(err, res) {
+  if (res) {
+    return { title: 'The server could not do that.',
+             detail: (res.error || 'No reason was given.') + (res.ref ? ' Reference ' + res.ref + '.' : '') };
+  }
+  if (!err.kind) return { title: 'This page hit an error.', detail: String((err && err.message) || err) };
+  if (err.kind === 'network') {
+    return { title: 'No connection to the server.',
+             detail: 'fetch failed (' + err.detail + '). Check the signal and retry; nothing was changed.' };
+  }
+  return { title: 'The server returned an error page instead of a result.',
+           detail: err.detail + ' — retry in a moment. If it keeps failing, the admin link ' +
+                   '(raffleAdminLinks() in the editor) and the Executions log are the fallback.' };
+}
+// Renders the failed state into a container: title, detail, one Retry button
+// that re-runs the action, and what to do if that fails too.
+function showFail(container, info, retryLabel, retry) {
+  container.className = '';
+  container.innerHTML = '';
+  var box = document.createElement('div'); box.className = 'failbox';
+  var t = document.createElement('div'); t.className = 't'; t.textContent = info.title; box.appendChild(t);
+  var d = document.createElement('div'); d.className = 'd'; d.textContent = info.detail || ''; box.appendChild(d);
+  var b = document.createElement('button'); b.type = 'button'; b.className = 'primary';
+  b.textContent = retryLabel; b.addEventListener('click', function () { retry(); });
+  box.appendChild(b);
+  var alt = document.createElement('div'); alt.className = 'alt';
+  alt.textContent = 'Durand and Ryan are emailed when a draw or a send fails on the server. ' +
+                    'A failure to reach the server at all is only visible here.';
+  box.appendChild(alt);
+  container.appendChild(box);
+  try { box.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+}
+// Tell the server this page could not complete a request, so the failure is on
+// the Client Errors tab and in an alert. Fire-and-forget.
+function report(action, err) {
+  try {
+    fetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      keepalive: true,
+      body: JSON.stringify({ formType: 'raffle', formToken: FORMTK, website: '', step: 'report',
+        failedStep: 'console', kind: err.kind || 'page', status: err.status || 0,
+        detail: ('console ' + action + ': ' + String(err.detail || err.message || '')).slice(0, 300),
+        attempt: 1, ua: String(navigator.userAgent || '').slice(0, 200) })
+    }).catch(function () {});
+  } catch (e) { /* never throws */ }
+}
+function busy(button, label, what) {
+  button.disabled = true; button.textContent = label;
+  var note = document.getElementById('busyNote');
+  var t0 = Date.now();
+  if (note) note.textContent = what;
+  var iv = setInterval(function () {
+    var s = Math.round((Date.now() - t0) / 1000);
+    if (note) note.textContent = what + ' ' + s + ' s' + (s >= 8 ? '. Still working; keep this page open.' : '.');
+  }, 1000);
+  return function () { clearInterval(iv); if (note) note.textContent = ''; };
 }
 
 // The Email budget button is on the page whether or not there has been a draw.
 var raiseBtn = document.getElementById('raiseBtn');
 if (raiseBtn) {
-  raiseBtn.addEventListener('click', function () {
+  var raiseCeiling = function () {
     var rm = document.getElementById('raiseMsg');
     rm.className = 'err'; rm.textContent = '';
-    if (!window.confirm('Raise our six-hour send ceiling by 500?\n\nThis loosens the abuse cap; it cannot raise Google\'s 1,500 a day.')) return;
     raiseBtn.disabled = true;
+    raiseBtn.textContent = 'Raising…';
     post({ consoleAction: 'raiseceiling' }).then(function (res) {
       raiseBtn.disabled = false;
+      raiseBtn.textContent = 'Raise the ceiling by 500';
       if (res && res.ok) {
         rm.className = 'ok'; rm.textContent = res.message;
         var c = document.getElementById('ceilingNow');
         if (c && res.ceiling) c.textContent = res.ceiling;
       } else {
-        rm.textContent = (res && res.error) || 'That did not work.';
+        showFail(rm, failInfo_(null, res), 'Retry raising the ceiling', raiseCeiling);
       }
-    }).catch(function () { raiseBtn.disabled = false; rm.textContent = 'Could not reach the server.'; });
+    }).catch(function (err) {
+      raiseBtn.disabled = false;
+      raiseBtn.textContent = 'Raise the ceiling by 500';
+      report('raiseceiling', err);
+      showFail(rm, failInfo_(err), 'Retry raising the ceiling', raiseCeiling);
+    });
+  };
+  raiseBtn.addEventListener('click', function () {
+    if (!window.confirm('Raise our six-hour send ceiling by 500?\n\nThis loosens the abuse cap; it cannot raise Google\'s 1,500 a day.')) return;
+    raiseCeiling();
   });
 }
 
@@ -215,15 +327,19 @@ function armSend(on, label) {
   sendBtn.textContent = label || (on ? 'Confirm & send this email' : 'Preview it first');
 }
 
-previewBtn.addEventListener('click', function () {
+function loadPreview() {
   say('');
-  previewBtn.disabled = true;
-  previewBtn.textContent = 'Loading…';
+  var done = busy(previewBtn, 'Loading…', 'Building the preview.');
   var want = pick();
   post({ consoleAction: 'preview', pick: want }).then(function (res) {
+    done();
     previewBtn.disabled = false;
     previewBtn.textContent = 'Preview the email';
-    if (!res || !res.ok) { say((res && res.error) || 'Could not build the preview.'); return; }
+    if (!res || !res.ok) {
+      showFail(msg, failInfo_(null, res || { error: 'Could not build the preview.' }),
+               'Retry the preview', loadPreview);
+      return;
+    }
     document.getElementById('previewHead').textContent =
       'Exactly what will be sent to ' + res.name + ' <' + res.email + '>';
     // srcdoc + sandbox="" so the preview renders but can run nothing.
@@ -232,13 +348,42 @@ previewBtn.addEventListener('click', function () {
     previewed = want;
     if (ALREADY_SENT) { armSend(false, 'Already sent'); }
     else { armSend(true); }
-  }).catch(function () {
+  }).catch(function (err) {
+    done();
     previewBtn.disabled = false;
     previewBtn.textContent = 'Preview the email';
-    say('Could not reach the server.');
+    report('preview', err);
+    showFail(msg, failInfo_(err), 'Retry the preview', loadPreview);
   });
-});
+}
+previewBtn.addEventListener('click', loadPreview);
 
+// The send. A failed send is a FAILED state -- the button reads "Send failed",
+// stays live, and the box beside it says why and offers the retry. A retry is
+// safe: the server stamps the send only after MailApp accepted it, and refuses
+// a second one once stamped, so a lost reply cannot produce two winner emails.
+function sendWinner(p, reason) {
+  say('');
+  var done = busy(sendBtn, 'Sending…', 'Sending the winner email.');
+  post({ consoleAction: 'send', pick: p, reason: reason }).then(function (res) {
+    done();
+    if (res && res.ok) {
+      say(res.message, 'ok');
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Sent';
+      previewBtn.disabled = true;
+    } else {
+      armSend(true, 'Send failed — retry');
+      showFail(msg, failInfo_(null, res || { error: 'That did not work.' }),
+               'Retry the send', function () { sendWinner(p, reason); });
+    }
+  }).catch(function (err) {
+    done();
+    armSend(true, 'Send failed — retry');
+    report('send', err);
+    showFail(msg, failInfo_(err), 'Retry the send', function () { sendWinner(p, reason); });
+  });
+}
 sendBtn.addEventListener('click', function () {
   say('');
   var p = pick();
@@ -249,40 +394,37 @@ sendBtn.addEventListener('click', function () {
   }
   var who = document.getElementById('previewHead').textContent.replace('Exactly what will be sent to ', '');
   if (!window.confirm('Send the winner email to ' + who + '?\n\nThis cannot be unsent.')) return;
-  sendBtn.disabled = true;
-  sendBtn.textContent = 'Sending…';
-  post({ consoleAction: 'send', pick: p, reason: reason }).then(function (res) {
-    if (res && res.ok) {
-      say(res.message, 'ok');
-      sendBtn.textContent = 'Sent';
-      previewBtn.disabled = true;
-    } else {
-      say((res && res.error) || 'That did not work.');
-      armSend(true);
-    }
-  }).catch(function () { say('Could not reach the server.'); armSend(true); });
+  sendWinner(p, reason);
 });
 
-redrawBtn.addEventListener('click', function () {
+function redraw(why) {
   say('');
-  var why = document.getElementById('redrawReason').value.trim();
-  if (why.length < 10) { say('A redraw needs a reason — a few words is enough.'); return; }
-  if (!window.confirm('Discard this result and draw again?\n\nThis cannot be undone.')) return;
-  redrawBtn.disabled = true;
-  redrawBtn.textContent = 'Redrawing…';
+  var done = busy(redrawBtn, 'Redrawing…', 'Drawing again.');
   post({ consoleAction: 'redraw', reason: why }).then(function (res) {
+    done();
     redrawBtn.disabled = false;
     redrawBtn.textContent = 'Redraw';
     if (res && res.ok) {
       say(res.message + ' Reload the page to see the new picks.', 'ok');
     } else {
-      say((res && res.error) || 'That did not work.');
+      redrawBtn.textContent = 'Redraw failed — retry';
+      showFail(msg, failInfo_(null, res || { error: 'That did not work.' }),
+               'Retry the redraw', function () { redraw(why); });
     }
-  }).catch(function () {
+  }).catch(function (err) {
+    done();
     redrawBtn.disabled = false;
-    redrawBtn.textContent = 'Redraw';
-    say('Could not reach the server.');
+    redrawBtn.textContent = 'Redraw failed — retry';
+    report('redraw', err);
+    showFail(msg, failInfo_(err), 'Retry the redraw', function () { redraw(why); });
   });
+}
+redrawBtn.addEventListener('click', function () {
+  say('');
+  var why = document.getElementById('redrawReason').value.trim();
+  if (why.length < 10) { say('A redraw needs a reason — a few words is enough.'); return; }
+  if (!window.confirm('Discard this result and draw again?\n\nThis cannot be undone.')) return;
+  redraw(why);
 });
 
 onPickChange();

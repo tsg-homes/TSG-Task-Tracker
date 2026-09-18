@@ -42,6 +42,13 @@
   .ghost { background:#fff; color:var(--muted); border-color:var(--line); font-weight:600;
            font-size:14px; margin-top:10px; }
   .err { color:#b3271e; font-size:14px; font-weight:600; margin:0 0 10px; min-height:1px; }
+  .failbox { background:#fbf1f0; border:1px solid #e3b9b5; border-left:4px solid #b3271e;
+             border-radius:8px; padding:12px 14px; margin:0 0 14px; font-size:14px; line-height:1.45;
+             font-weight:400; color:var(--ink); }
+  .failbox .t { color:#b3271e; font-weight:700; }
+  .failbox .d { margin-top:4px; color:var(--muted); font-size:13px; word-break:break-word; }
+  .failbox .alt { margin-top:8px; font-size:12.5px; color:var(--muted); }
+  .failbox button { margin-top:10px; }
   .locknote { margin:-8px 0 14px; font-size:13px; color:var(--muted); font-weight:400; line-height:1.45; }
   input[readonly] { cursor:not-allowed; }
   .done { text-align:center; padding:8px 0 4px; }
@@ -98,24 +105,101 @@ function role() {
   return picked ? picked.value : '';
 }
 
-function post(payload, onDone) {
+var ENDPOINT = window.location.href.split('?')[0] + '?form=raffle';
+
+// Same transport rules as the entry form: the reply is read as text and parsed,
+// so an Apps Script error page is reported with its own words, and only a
+// failed fetch is called a connection problem. onFail(info, retry) renders the
+// failed state; `retry` re-sends the identical payload.
+function post(payload, onDone, onFail) {
   var body = Object.assign({
     formType: 'raffle',
     formToken: FORMTK,
     token: TOKEN,
     website: ''            // honeypot, deliberately empty
   }, payload);
-  fetch(window.location.href.split('?')[0] + '?form=raffle', {
+  var again = function () { post(payload, onDone, onFail); };
+  fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify(body)
   })
-  .then(function (r) { return r.json(); })
-  .then(onDone)
-  .catch(function () {
-    setErr('Could not reach us — check your signal and try again.');
-    if (go) { go.disabled = false; go.textContent = 'Confirm my details'; }
+  .then(function (r) {
+    return r.text().then(function (text) {
+      var data = null;
+      try { data = JSON.parse(text); } catch (e) { data = null; }
+      if (data && typeof data === 'object') return data;
+      var err = new Error('server');
+      err.kind = 'server'; err.status = r.status; err.detail = describeResponse_(text, r.status);
+      throw err;
+    });
+  }, function (netErr) {
+    var err = new Error('network'); err.kind = 'network';
+    err.detail = String((netErr && netErr.message) || netErr || 'fetch failed');
+    throw err;
+  })
+  .then(function (res) {
+    if (res && res.serverError) {
+      onFail({ title: 'Something went wrong on our side.',
+               detail: (res.error || '') + (res.ref ? ' Reference ' + res.ref + '.' : '') }, again);
+      return;
+    }
+    onDone(res);
+  })
+  .catch(function (err) {
+    if (!err || !err.kind) {
+      onFail({ title: 'This page hit an error.', detail: String((err && err.message) || err) }, again);
+      return;
+    }
+    report(err);
+    onFail(err.kind === 'network'
+      ? { title: 'We could not reach our server.',
+          detail: 'Your connection dropped when we tried (' + err.detail + '). Check your signal and retry. Nothing was recorded.' }
+      : { title: 'Our server returned an error.',
+          detail: 'It answered with an error page instead of a result: ' + err.detail + '. That is on our side. Retry in a moment.' },
+      again);
   });
+}
+function describeResponse_(text, status) {
+  var s = String(text || '');
+  var title = ((s.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '').replace(/\s+/g, ' ').trim();
+  var body = s.replace(/<head[\s\S]*?<\/head>/gi, ' ').replace(/<title[\s\S]*?<\/title>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ').trim();
+  var out = 'HTTP ' + status;
+  if (title) out += ' · ' + title;
+  if (body) out += ' · ' + body.slice(0, 240) + (body.length > 240 ? '…' : '');
+  return out.replace(/[.\s]+$/, '');
+}
+function report(err) {
+  try {
+    fetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      keepalive: true,
+      body: JSON.stringify({ formType: 'raffle', formToken: FORMTK, website: '', step: 'report',
+        failedStep: 'consent', kind: err.kind || 'page', status: err.status || 0,
+        detail: String(err.detail || err.message || '').slice(0, 300), attempt: 1,
+        ua: String(navigator.userAgent || '').slice(0, 200) })
+    }).catch(function () {});
+  } catch (e) { /* never throws */ }
+}
+// The failed state, in place of the one-line error: what failed, what the
+// server said, a Retry that re-sends the same answer, and the fallback.
+function showFail(info, retry, retryLabel) {
+  var e = el('err');
+  if (!e) return;
+  e.innerHTML = '';
+  var box = document.createElement('div'); box.className = 'failbox';
+  var t = document.createElement('div'); t.className = 't'; t.textContent = info.title; box.appendChild(t);
+  var d = document.createElement('div'); d.className = 'd'; d.textContent = info.detail || ''; box.appendChild(d);
+  var b = document.createElement('button'); b.type = 'button'; b.className = 'primary';
+  b.textContent = retryLabel || 'Retry';
+  b.addEventListener('click', function () { setErr(''); retry(); });
+  box.appendChild(b);
+  var alt = document.createElement('div'); alt.className = 'alt';
+  alt.textContent = 'If it fails again, reply to the email that brought you here and we will record your answer by hand.';
+  box.appendChild(alt);
+  e.appendChild(box);
 }
 
 function finish(title, message) {
@@ -136,6 +220,7 @@ if (go) {
     if (!role()) { setErr('Let us know whether you are looking to buy or to sell.'); return; }
     go.disabled = true;
     go.textContent = 'Confirming…';
+    var resetGo = function () { go.disabled = false; go.textContent = 'Confirm my details'; };
     post({
       step: 'consent',
       decision: 'confirm',
@@ -151,9 +236,13 @@ if (go) {
         finish('You are confirmed', res.message || 'Thank you.');
       } else {
         setErr((res && res.error) || 'That did not work. Try again.');
-        go.disabled = false;
-        go.textContent = 'Confirm my details';
+        resetGo();
       }
+    }, function (info, retry) {
+      resetGo();
+      go.textContent = 'Confirm failed — retry';
+      showFail(info, function () { go.disabled = true; go.textContent = 'Confirming…'; retry(); },
+               'Retry confirming');
     });
   });
 }
@@ -163,14 +252,18 @@ if (no) {
     setErr('');
     no.disabled = true;
     no.textContent = 'Saving…';
+    var resetNo = function () { no.disabled = false; no.textContent = 'No thanks — do not contact me'; };
     post({ step: 'consent', decision: 'decline' }, function (res) {
       if (res && res.ok) {
         finish('Understood', res.message || 'We will not contact you.');
       } else {
         setErr((res && res.error) || 'That did not work. Try again.');
-        no.disabled = false;
-        no.textContent = 'No thanks — do not contact me';
+        resetNo();
       }
+    }, function (info, retry) {
+      resetNo();
+      showFail(info, function () { no.disabled = true; no.textContent = 'Saving…'; retry(); },
+               'Retry');
     });
   });
 }

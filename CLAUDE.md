@@ -432,6 +432,35 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   text. Travel (`tsgApplyTravelTimes_`) runs over subtasks too; the subtask row shows its
   location and travel. Legacy `progress` requests still apply.
 
+## Block Party raffle (raffle/, 2026-09-18)
+
+- `raffle/` is a SEPARATE Apps Script project: "TSG Open House Sign-In + Client Intake Forms",
+  script id `1ZPZIHv8ocQyN23ikKf3rTgpyIU9pktRqjlaFJEGamwNziWWjUqLGvBRf`, owned and deployed by
+  `info@tsg.homes` (the web app runs as the deploying account and that is what MailApp sends
+  from; redeploying as durand@ silently moves the sending identity). Not the tracker's script,
+  not `npm run deploy`. Read `raffle/README.md` first. The folder was imported to this branch on
+  2026-09-18 from `claude/inspiring-brown-d0r5kr` (its last raffle commit 1a08d4f); that branch
+  is an older tracker snapshot and is not merged.
+- Deploying: from a scratch clone of that project (`clasp clone <script id>` as info@), pull the
+  live project first (`Code.js`, `OpenHouseForm.html`, `ClientIntake.html` have no other version
+  control), copy `RaffleCode.gs`, `RaffleReferral.gs`, `RaffleForm.html` (BUILT: run
+  `npm run build:form`, never hand-edit), `RaffleConsole.html`, `RaffleConsent.html` over, push,
+  then Deploy > Manage deployments > edit the existing deployment > New version. A new deployment
+  mints a new URL and kills the printed QR. The two `PATCH-Code.gs.md` hooks in the host
+  `Code.gs` are already live. `setupRaffle()` must be re-run as info@ after any deploy that adds
+  a trigger. The cloud proxy blocks script.google.com, so Durand loads the live pages.
+- Tests: `npm run test:raffle` (templates + 583 server + 199 red-team, in `npm test`) and
+  `npm run test:form` (Playwright against the built page and the console; needs
+  `npm i --no-save playwright` matching `/opt/pw-browsers`, not in `npm test`).
+- Failure handling batch (2026-09-18, Durand's 9/17 rehearsal): pages parse the reply as text
+  and name an HTML error page as a server error; every failure is a `.fail` / `.failbox` block
+  with a Retry that re-sends the same payload; caught exceptions return `serverError`, a scrubbed
+  message and an `E-XXXXXX` ref; `step: 'report'` writes the `Client Errors` sheet tab and alerts
+  Durand (10-min throttle); `raffleAlertOps_` mails Durand AND Ryan (`RAFFLE_NOTIFY_EMAIL`) on
+  draw / result-email / winner-email / redraw failures; `raffleTimer_` puts `timing` on the
+  request/verify/referral/invite JSON (shown in test mode). Kiosk: `Start over for the next
+  guest` only with `&kiosk=1`. Full write-up: README "Failure handling".
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs
