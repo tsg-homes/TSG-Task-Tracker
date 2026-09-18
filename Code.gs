@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.7';
+const TSG_CODE_VERSION = '2026-09-18.8';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -872,6 +872,11 @@ function applyDataPatch_(doc, patch) {
     const pt = doc.tasks.find(function(x) { return x.id === patch.id; });
     if (!pt) throw new Error('update_subitem: task id not found: ' + patch.id);
     const subs = Array.isArray(pt.subitems) ? pt.subitems : [];
+    // The key is `index`; `subIdx` (the key log_time and the judgment queue use) is accepted
+    // too, because the protocol skill documented it that way and a session writing to the docs
+    // threw "no subitem at index undefined" and was filed FAILED- (found 2026-09-18).
+    if (patch.index == null && typeof patch.subIdx === 'number') patch.index = patch.subIdx;
+    if (typeof patch.index !== 'number') throw new Error('update_subitem: missing index (a number; `subIdx` is accepted as an alias) on task ' + patch.id);
     const sub = subs[patch.index];
     if (!sub) throw new Error('update_subitem: no subitem at index ' + patch.index + ' on task ' + patch.id);
     if (patch.expectTitle != null && String(sub.title || '') !== String(patch.expectTitle)) {

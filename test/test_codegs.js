@@ -1166,6 +1166,13 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   d = personDoc();
   let stale = false; try { sandbox.applyDataPatch_(d, { op: 'update_subitem', id: 1, index: 0, expectTitle: 'Something else', fields: { notes: 'x' } }); } catch (e) { stale = true; }
   check('update_subitem refuses when the subitem at that index has changed title', stale);
+  // subIdx alias (2026-09-18): the skill documented `subIdx`, the handler read only `index`
+  d = personDoc();
+  const aliasTitle = d.tasks[0].subitems[0].title;
+  sandbox.applyDataPatch_(d, { op: 'update_subitem', id: 1, subIdx: 0, expectTitle: aliasTitle, fields: { timelineEnd: '2026-10-09' }, source: 'Durand' });
+  check('update_subitem accepts subIdx as an alias for index', d.tasks[0].subitems[0].timelineEnd === '2026-10-09');
+  let noIdx = false; try { sandbox.applyDataPatch_(d, { op: 'update_subitem', id: 1, fields: { notes: 'x' } }); } catch (e) { noIdx = /missing index/.test(String(e && e.message)); }
+  check('update_subitem without index or subIdx is refused with a clear error', noIdx);
 
   // identity gates and the owner's preview
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'nobody@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };

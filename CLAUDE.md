@@ -758,6 +758,17 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
 - Backend 2026-09-18.7 / UI 2026-09-18.6 (c9e4b8e, the Settings-tabs commit below) is LIVE: the
   data file stamped `backendVersion` 2026-09-18.7 at 04:10Z on 2026-09-18, and `main` is at the
   same commit. `meta.backendVersion` remains the check for what the script accepts.
+- `update_subitem` KEY MISMATCH (backend 2026-09-18.8, found 2026-09-18 01:10 EDT): the handler
+  and every in-script caller use `index`; the protocol skill said `subIdx` (the key `log_time`
+  and the judgment queue use), so a patch written to the skill threw "no subitem at index
+  undefined" and was filed FAILED-. The handler now takes `subIdx` as an alias and refuses a
+  patch with neither key by name; the skill says `index`. Not yet deployed (needs the checkpoint).
+- Task 289 due date (2026-09-18): a parent with open steps takes its end from the LATEST open
+  step (`tsgRollupDue_`; a dueOverride only wins when it is LATER), and the scheduler chains a
+  task's steps one after another (`tsgSubitemBlockedByIdx_`), each paced at its chunk rate, so
+  seven small Claude steps landed on seven workdays and pushed the parent to 9/28. To hold a
+  parent to a date, set `timelineEnd` on every open step too (a step with an explicit end is
+  never rescheduled: line "!r.timelineEnd && !(r.scheduledStart && r.estDays)").
 - Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
   Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
   repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
