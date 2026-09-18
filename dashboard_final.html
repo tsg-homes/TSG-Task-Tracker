@@ -788,7 +788,8 @@
   .history-entry:last-child { border-bottom: none; padding-bottom: 0; }
   .hist-time { color: var(--text-muted); white-space: nowrap; flex: none; min-width: 108px; }
   /* Inbox errors (Settings > General): long messages wrap instead of running off the card */
-  select.time-select { width: auto; max-width: 92px; padding: 2px 4px; font-size: 12px; }
+  .time-pick { display: inline-flex; gap: 2px; align-items: center; }
+  .time-pick select { width: auto; padding: 2px 3px; font-size: 12px; }
   #inboxErrorsList .history-row { display: block; }
   #inboxErrorsList .hist-time { white-space: normal; min-width: 0; }
   #inboxErrorsList .inbox-err { color: var(--text-muted); white-space: pre-wrap; word-break: break-word; font-size: 12px; margin-top: 2px; }
@@ -1575,7 +1576,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.8';
+  const UI_VERSION = '2026-09-18.9';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -5801,7 +5802,7 @@
         <label>Title<input type="text" class="text-input" id="mfTitle" value="${escapeHtml(item.title || '')}"></label>
         <div class="meeting-form-row">
           <label>Date<input type="date" class="due-input" id="mfDate" value="${defaultDate}"></label>
-          <label>Start<select class="due-input time-select" id="mfStart">${(() => { const o = []; for (let m = 6 * 60; m <= 20 * 60; m += 15) { const hm = String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); o.push(`<option value="${hm}" ${hm === '10:00' ? 'selected' : ''}>${timeLabel12_(hm)}</option>`); } return o.join(''); })()}</select></label>
+          <label>Start${timeSelectHtml_('10:00', '', '', 'mfStart')}</label>
           <label>Duration (min)<input type="number" class="due-input" id="mfDuration" value="${meetingBucket_(item.estHours)}" min="15" step="15"></label>
         </div>
         <div class="sched-detail-note">Suggested times — Mon–Thu 9–2 when free for both of you, before the due date, ${meetingBucket_(item.estHours)} min from the estimate <label class="mf-blocks"><input type="checkbox" id="mfBlocks" checked onchange="onMfGuestChange_()"> skip errand and break blocks</label></div>
@@ -5861,7 +5862,7 @@
     const dt = isoToLocalDateHm_(sl.startISO), dtEnd = isoToLocalDateHm_(sl.endISO);
     if (!dt) return;
     document.getElementById('mfDate').value = dt.date;
-    document.getElementById('mfStart').value = dt.hm;
+    setTimePick_('mfStart', dt.hm);
     if (dtEnd) document.getElementById('mfDuration').value = Math.round((new Date(sl.endISO) - new Date(sl.startISO)) / 60000);
     document.querySelectorAll('#mfSlots .meeting-row').forEach((row, j) => row.classList.toggle('meeting-row-guess', j === i));
   }
@@ -6005,7 +6006,8 @@
     if (state === 'granted') return 'granted: native notifications are on for this page.';
     if (state === 'unsupported') return 'not available in this frame: the tracker uses in-page toasts and email reminders instead.';
     if (state === 'denied') return 'blocked by the browser (Apps Script pages run in a frame that Chrome does not let ask): in-page toasts and email reminders are used instead.';
-    return 'not decided yet: click Enable. If nothing appears, the browser refused to show the prompt inside the Apps Script frame and toasts plus email are used instead.';
+    if (typeof window !== 'undefined' && window.top !== window) return 'no prompt possible inside the Apps Script frame: in-page toasts and email reminders are used instead.';
+    return 'not decided yet: click Enable.';
   }
   async function enableNotificationsClick_() {
     const before = notifyPermission_();
@@ -6107,27 +6109,38 @@
     if (h > 23 || mm > 59) return null;
     return String(h).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
   }
-  function timeSelectHtml_(value, onchangeExpr, extraClass) {
-    const opts = ['<option value="">no time</option>'];
-    let seen = false;
-    for (let mins = 6 * 60; mins <= 20 * 60; mins += 15) {
-      const hm = String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
-      if (hm === value) seen = true;
-      opts.push(`<option value="${hm}" ${hm === value ? 'selected' : ''}>${timeLabel12_(hm)}</option>`);
-    }
-    if (value && !seen) opts.push(`<option value="${escapeHtml(value)}" selected>${escapeHtml(timeLabel12_(value))}</option>`);
-    opts.push('<option value="__other__">other…</option>');
-    return `<select class="due-input time-select ${extraClass || ''}" title="Time of day" onchange="onTimeSelect_(this, function(v){ ${onchangeExpr} })">${opts.join('')}</select>`;
+  function timeSelectHtml_(value, onchangeExpr, extraClass, hiddenId) {
+    // Two short lists instead of one long one (Durand, 2026-09-17: "fewer selections should be
+    // shown when it's opened"): an hour list (none, then 6 AM to 8 PM) and a minutes list
+    // (:00 :15 :30 :45). A stored value off either grid is shown as its own option. The
+    // combined value is HH:mm; with hiddenId it is also mirrored into a hidden input.
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(value || ''));
+    const h = m ? Number(m[1]) : null, mm = m ? m[2] : '00';
+    const hourLabel = hh => ((hh % 12) || 12) + (hh < 12 ? ' AM' : ' PM');
+    const hours = ['<option value="">—</option>'];
+    for (let hh = 6; hh <= 20; hh++) hours.push(`<option value="${hh}" ${h === hh ? 'selected' : ''}>${hourLabel(hh)}</option>`);
+    if (h !== null && (h < 6 || h > 20)) hours.push(`<option value="${h}" selected>${hourLabel(h)}</option>`);
+    const mins = ['00', '15', '30', '45']; if (m && mins.indexOf(mm) === -1) { mins.push(mm); mins.sort(); }
+    const minOpts = mins.map(x => `<option value="${x}" ${x === mm ? 'selected' : ''}>:${x}</option>`).join('');
+    const handler = `onTimePick_(this, function(v){ ${onchangeExpr} })`;
+    return `<span class="time-pick ${extraClass || ''}" title="Time of day"><select class="due-input time-hour" onchange="${handler}">${hours.join('')}</select><select class="due-input time-min" onchange="${handler}">${minOpts}</select>${hiddenId ? `<input type="hidden" id="${hiddenId}" value="${escapeHtml(value || '')}">` : ''}</span>`;
   }
-  function onTimeSelect_(sel, apply) {
-    let v = sel.value;
-    if (v === '__other__') {
-      const typed = prompt('Time (e.g. 11:15, 2:30 pm, 14:30):', '');
-      const parsed = parseTimeInput_(typed);
-      if (parsed === null) { alert('Could not read that time.'); sel.value = ''; return; }
-      v = parsed;
-    }
+  function timePickValue_(wrap) {
+    const h = wrap.querySelector('.time-hour').value, mm = wrap.querySelector('.time-min').value;
+    return h === '' ? '' : String(Number(h)).padStart(2, '0') + ':' + mm;
+  }
+  function onTimePick_(sel, apply) {
+    const wrap = sel.closest('.time-pick'); const v = timePickValue_(wrap);
+    const hid = wrap.querySelector('input[type=hidden]'); if (hid) hid.value = v;
     apply(v);
+  }
+  function setTimePick_(hiddenId, hm) {
+    const hid = document.getElementById(hiddenId); if (!hid) return;
+    hid.value = hm || '';
+    const wrap = hid.closest('.time-pick'); if (!wrap) return;
+    const m = /^(\d{1,2}):(\d{2})$/.exec(hm || '');
+    wrap.querySelector('.time-hour').value = m ? String(Number(m[1])) : '';
+    const minSel = wrap.querySelector('.time-min'); if (m) { if (![...minSel.options].some(o => o.value === m[2])) minSel.add(new Option(':' + m[2], m[2])); minSel.value = m[2]; }
   }
   function onDueTimeChange_(id, idx, val) {
     const ctx = itemFor_(id, idx); if (!ctx || !ctx.item) return;
@@ -7360,7 +7373,18 @@
   function inboxErrorsHtml_() {
     const errs = (RAW_META.inboxErrors || []).slice(-10).reverse();
     if (!errs.length) return '<div class="history-empty">None recorded.</div>';
-    return errs.map(e => `<div class="history-row"><span class="hist-time">${escapeHtml(String(e.ts || '').replace('T', ' ').slice(0, 16))}</span> <b>${escapeHtml(e.file || '')}</b> · ${escapeHtml(e.op || '')}<div class="inbox-err">${escapeHtml(e.error || '')}</div></div>`).join('');
+    return errs.map(e => `<div class="history-row"><span class="hist-time">${escapeHtml(String(e.ts || '').replace('T', ' ').slice(0, 16))}</span> <b>${escapeHtml(e.file || '')}</b> · ${escapeHtml(e.op || '')} <button type="button" class="btn small" onclick="retryInboxError_('${jsAttr(e.file || '')}')" title="Re-apply the failed part of the filed patch (works once the backend accepts it)">Retry</button> <button type="button" class="btn small" onclick="dismissInboxError_('${jsAttr(e.file || '')}')" title="Drop this record and trash the filed file">Dismiss</button><div class="inbox-err">${escapeHtml(e.error || '')}</div></div>`).join('');
+  }
+  // Retry re-applies only the failed sub-ops of the filed patch (the file is still in _Inbox for
+  // 7 days); Dismiss trashes the file and drops the record (Durand, 2026-09-17: "why just look at
+  // the error message instead of running a fix?").
+  async function retryInboxError_(file) {
+    await postCommentOp_({ op: 'retry_filed', file: file, source: 'Durand' });
+    await loadData(true, true); renderSettings();
+  }
+  async function dismissInboxError_(file) {
+    await postCommentOp_({ op: 'dismiss_inbox_error', file: file, source: 'Durand' });
+    await loadData(true, true); renderSettings();
   }
   function renderSettings() {
     const body = document.getElementById('settingsBody');
@@ -7381,7 +7405,7 @@
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Reminder notifications</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b> ${notifyPermission_() === 'granted' ? '' : '<button type="button" class="btn small" onclick="enableNotificationsClick_()">Enable</button>'}<div class="history-empty" id="notifyWhy" style="margin-top:4px;">${escapeHtml(notifyStateText_(notifyPermission_()))}</div></div>
+        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b>${(notifyPermission_() === 'default' && window.top === window) ? ' <button type="button" class="btn small" onclick="enableNotificationsClick_()">Enable</button>' : ''}<div class="history-empty" id="notifyWhy" style="margin-top:4px;">${escapeHtml(notifyStateText_(notifyPermission_()))}</div></div>
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Claude Code repo</h3></div>

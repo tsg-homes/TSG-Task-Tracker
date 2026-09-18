@@ -780,7 +780,7 @@ setTimeout(async () => {
     t.timelineEnd = '2026-09-25'; delete t.dueTime; delete t.remindAt;
     w.openTaskCard(1);
     const html = doc.getElementById('modalMeta').innerHTML;
-    if (!html.includes('time-select') || !html.includes('remind-select')) throw new Error('controls missing');
+    if (!html.includes('time-pick') || !html.includes('remind-select')) throw new Error('controls missing');
     w.modalDueTimeChange(1, '14:00');
     if (w.findTask(1).dueTime !== '14:00') throw new Error('dueTime not set');
     w.onRemindPreset(1, null, '60');
@@ -1112,28 +1112,32 @@ setTimeout(async () => {
     w.closeTaskCard();
     w.setNeedsApproval(1, 0, false); w.setNeedsApproval(1, null, false);
   });
-  tryCall('time picker: quarter-hour select with 12-hour labels replaces the native time input', () => {
+  tryCall('time picker: an hour list (none, 6 AM to 8 PM) and a minutes list; off-grid values kept; combined value is HH:mm', () => {
     const html = w.timeSelectHtml_('11:15', 'x(v)');
-    if (!/<option value="11:15" selected>11:15 AM<\/option>/.test(html) || !/no time/.test(html) || !/other…/.test(html)) throw new Error('select html ' + html.slice(0, 200));
-    if (!/value="14:30"[^>]*>2:30 PM</.test(html)) throw new Error('12-hour labels missing');
-    if (!/value="07:07" selected>7:07 AM</.test(w.timeSelectHtml_('07:07', 'x(v)'))) throw new Error('off-grid value not kept');
-    if (w.parseTimeInput_('2:30 pm') !== '14:30' || w.parseTimeInput_('1430') !== '14:30' || w.parseTimeInput_('12 am') !== '00:00' || w.parseTimeInput_('nope') !== null || w.parseTimeInput_('') !== '') throw new Error('parse');
+    if (!/time-hour/.test(html) || !/<option value="11" selected>11 AM<\/option>/.test(html) || !/<option value="15" selected>:15<\/option>/.test(html)) throw new Error('html ' + html.slice(0, 300));
+    if (!/<option value="7" selected>7 AM<\/option>/.test(w.timeSelectHtml_('07:07', 'x(v)')) || !/value="07" selected>:07/.test(w.timeSelectHtml_('07:07', 'x(v)'))) throw new Error('off-grid minute not kept');
+    const host = doc.createElement('div'); host.innerHTML = w.timeSelectHtml_('14:30', 'x(v)');
+    if (w.timePickValue_(host.querySelector('.time-pick')) !== '14:30') throw new Error('combined value');
+    host.querySelector('.time-hour').value = ''; if (w.timePickValue_(host.querySelector('.time-pick')) !== '') throw new Error('none');
     w.openTaskCard(1);
-    if (doc.querySelector('#taskModal input[type="time"]')) throw new Error('native time input still on the card');
-    if (!doc.querySelector('#taskModal select.time-select')) throw new Error('no time select on the card');
+    if (doc.querySelector('#taskModal input[type="time"]') || !doc.querySelector('#taskModal .time-pick')) throw new Error('card picker');
     w.closeTaskCard();
   });
-  tryCall('notifications: the Enable button explains the outcome; inbox errors wrap; the alert lands on the General tab', async () => {
-    if (!/toasts and email/.test(w.notifyStateText_('denied')) || !/granted/.test(w.notifyStateText_('granted'))) throw new Error('state text');
-    w.eval("RAW_META.inboxErrors = [{ ts: new Date().toISOString(), file: 'x.json', op: 'bulk', error: 'a very long error message that must wrap ' + 'x'.repeat(300) }]");
-    if (!/class="inbox-err"/.test(w.inboxErrorsHtml_())) throw new Error('error text not in the wrapping element');
+  tryCall('inbox error rows carry Retry and Dismiss; Retry posts retry_filed; errors wrap; the alert lands on General', async () => {
+    w.eval("RAW_META.inboxErrors = [{ ts: new Date().toISOString(), file: 'mixed.json', op: 'bulk', error: 'a very long error message that must wrap ' + 'x'.repeat(300) }]");
+    const html = w.inboxErrorsHtml_();
+    if (!/retryInboxError_\('mixed.json'\)/.test(html) || !/dismissInboxError_\('mixed.json'\)/.test(html) || !/class="inbox-err"/.test(html)) throw new Error('buttons/wrap ' + html.slice(0, 200));
     if (!/#inboxErrorsList \.inbox-err \{[^}]*pre-wrap/.test(doc.querySelector('style').textContent)) throw new Error('no wrapping rule');
+    w.__posts = []; w.retryInboxError_('mixed.json');
+    const p = (w.__posts || []).find(x => x.body && x.body.includes('retry_filed'));
+    if (!p || JSON.parse(p.body).file !== 'mixed.json') throw new Error('no retry post');
     const a = w.computeAlerts().find(x => x.openSettings); const i = w.computeAlerts().indexOf(a);
     w.eval('LAST_ALERTS = computeAlerts()');
     w.openAlertTasks(i);
     await new Promise(r => setTimeout(r, 30));
     const active = doc.querySelector('.settings-tab.active');
     if (!active || active.dataset.tab !== 'general' || !doc.getElementById('inboxErrorsList')) throw new Error('did not land on General: ' + (active && active.dataset.tab));
+    if (!/toasts and email/.test(w.notifyStateText_('denied'))) throw new Error('state text');
     w.closeSettings(); w.eval('RAW_META.inboxErrors = []');
   });
   tryCall('setView(table)', () => w.setView('table'));

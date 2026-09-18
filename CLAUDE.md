@@ -776,3 +776,11 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   act, reply with add_comment (author Claude, replyTo) and resolve with update_comment. The
   Routine's own prompt is Durand's to edit (agents cannot); it needs the same step. Time select
   is narrower (`select.time-select`, 92 px max).
+- UI 2026-09-18.9 / backend 2026-09-18.8 (per Durand): the time picker is two short lists
+  (`timeSelectHtml_`: hour none/6 AM–8 PM, minutes :00/:15/:30/:45, off-grid values kept,
+  `timePickValue_`, `onTimePick_`, `setTimePick_` for the meeting form's hidden `mfStart`); the
+  notifications block is a status line (Enable shows only when the page is top-level and
+  undecided: Chrome never prompts inside the Apps Script frame, so a reload cannot trigger it
+  either); inbox error rows carry Retry (`retry_filed {file}`: re-applies only the failed sub-ops
+  of the filed PARTIAL-/FAILED- copy, trashes it and drops the record on success) and Dismiss
+  (`dismiss_inbox_error {file}`), both in `TSG_DATA_OPS`.
