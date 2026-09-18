@@ -697,3 +697,10 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   post the backend/UI versions, the commits since the `live` tag, the test result and anything
   that changes live behavior for the team, then wait for Durand's explicit go in that exchange.
   Never deploy on a standing approval from an earlier turn.
+- "Judge now" chip (dashboard UI 2026-09-18.2, per Durand "build the chip"): toolbar `#judgeChip`
+  shows "N judgments queued · Judge now" from `meta.judgments` (`pendingJudgments_`,
+  `renderJudgeChip_` on every load); click opens a Cowork session with `judgePromptFor_()` (a
+  standalone queue-answering prompt: data file id, pending ids, README answer shapes, one bulk
+  patch, verify), shift-click opens claude.ai/code with the same prompt. The page never answers
+  judgments itself. The Routine cannot be edited by an agent (created via http_api); Durand
+  edits its schedule at claude.ai/code/routines.

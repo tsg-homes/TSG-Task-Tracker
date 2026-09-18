@@ -1406,6 +1406,7 @@
     <button class="btn" id="btnCommentMode" type="button" onclick="toggleCommentMode()" title="Comment mode: click anything on the board to leave a note on it">&#128172; Comment</button>
     <button class="btn" id="btnComments" type="button" onclick="openCommentsPanel()" title="All comments">Comments <span class="count-badge" id="commentCount"></span></button>
     <button class="btn" id="timerChip" type="button" style="display:none" onclick="openTimerTask_()" title="Timer running — click to open the task"></button>
+    <button class="btn" id="judgeChip" type="button" style="display:none" onclick="judgeNow(event)" title="Judgments waiting for Claude. Click: answer them now in a Cowork session on this computer. Shift-click: Claude Code in the cloud. The 7:30 AM Routine is the backstop."></button>
     <span class="toolbar-sep"></span>
     <span class="team-views" id="teamViews" title="A team member's tasks and delegated steps, as a pop-up. Shift-click opens the page they see."></span>
     <span class="count" id="resultCount"></span>
@@ -1567,7 +1568,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.1';
+  const UI_VERSION = '2026-09-18.2';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2905,6 +2906,32 @@
     };
   }
   function claudeUrlFor_(t) { return claudeLinksFor_(t).cloud; }
+  // "Judge now" (2026-09-17, per Durand "build the chip"): the queue is answered by a Claude
+  // session, never by this page (no API key), so the chip hands a standalone prompt to a Cowork
+  // session on this computer (shift: Claude Code in the cloud). You are the trigger, only when
+  // something is waiting; the weekday Routine stays the backstop.
+  function pendingJudgments_() { return ((RAW_META && RAW_META.judgments) || []).filter(r => r && r.id && r.id !== 'pending'); }
+  function judgePromptFor_() {
+    const pend = pendingJudgments_();
+    const ids = pend.map(r => r.id + ' (task #' + r.taskId + (r.subIdx != null ? ' step ' + r.subIdx : '') + ', ' + r.kind + ')').join(', ');
+    return 'Answer the TSG Task Tracker judgment queue. Use the tsg-task-tracker-protocol skill.\n\n' +
+      '1. Read the tracker data file (Google Drive file id 1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt) with the Drive connector. Note meta.backendVersion and read every pending request in meta.judgments. Pending when this was opened: ' + (pend.length ? ids : 'none') + '.\n' +
+      '2. Answer each request under your own judgment, exactly in the answer shapes documented in README.md "Judgment queue" of the GitHub repo tsg-homes/task-tracker: only the fields in need; polish the notes first and derive the rest from the polished text; steps as one entry per index in currentSteps; hours from the one estimation workflow in the skill (measured actuals, then the calibration table); run a web search to confirm every webLinks url; null for a match you are not confident in.\n' +
+      '3. Push all answers as ONE bulk data patch of judgment ops (source "Claude (judge now)") into the _Inbox folder 1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi with the Drive connector\'s create_file. Timestamps in America/New_York.\n' +
+      '4. Wait one minute, re-read the data file, confirm the answered ids are gone from meta.judgments and that no FAILED-, PARTIAL- or MALFORMED- file appeared in _Inbox, and report per id what changed on the task.';
+  }
+  function renderJudgeChip_() {
+    const el = document.getElementById('judgeChip'); if (!el) return;
+    const n = pendingJudgments_().length;
+    if (!n) { el.style.display = 'none'; el.textContent = ''; return; }
+    el.style.display = '';
+    el.innerHTML = '&#9878; ' + n + ' judgment' + (n === 1 ? '' : 's') + ' queued <span class="hist-time">· Judge now</span>';
+  }
+  function judgeNow(ev) {
+    const q = encodeURIComponent(judgePromptFor_());
+    if (ev && ev.shiftKey) { window.open('https://claude.ai/code?prompt=' + q, '_blank'); return; }
+    window.location.href = 'claude://cowork/new?q=' + q;
+  }
   async function copyClaudePrompt(id, btn) {
     const t = findTask(id);
     if (!t) return;
@@ -6987,6 +7014,7 @@
     TASKS = doc.tasks;
     tsgNormalizeTaskDates_(TASKS);
     RAW_META = doc.meta || {};
+    renderJudgeChip_();
     COMMENTS = Array.isArray(RAW_META.comments) ? RAW_META.comments : [];
     renderCommentCount_();
     TEAM_ROSTER = normalizeRoster(RAW_META.teamRoster);

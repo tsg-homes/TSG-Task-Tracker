@@ -1049,6 +1049,17 @@ setTimeout(async () => {
     if (!w.inboxErrorsHtml_().includes('mixed.json')) throw new Error('settings list missing the entry');
     w.eval('RAW_META.inboxErrors = []');
   });
+  tryCall('judge-now chip: hidden with an empty queue, counts pending judgments, prompt names the ids and the data file', () => {
+    w.eval('RAW_META.judgments = []'); w.renderJudgeChip_();
+    if (doc.getElementById('judgeChip').style.display !== 'none') throw new Error('chip shown with nothing queued');
+    w.eval("RAW_META.judgments = [{ id: 'J21', kind: 'enrich', taskId: 281 }, { id: 'J22', kind: 'enrich', taskId: 287, subIdx: 2 }, { id: 'pending', kind: 'enrich', taskId: 1 }]");
+    w.renderJudgeChip_();
+    const chip = doc.getElementById('judgeChip');
+    if (chip.style.display === 'none' || !/2 judgments queued/.test(chip.textContent)) throw new Error('chip: ' + chip.textContent);
+    const p = w.judgePromptFor_();
+    if (!p.includes('J21 (task #281, enrich)') || !p.includes('J22 (task #287 step 2, enrich)') || !p.includes('1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt') || !p.includes('tsg-task-tracker-protocol')) throw new Error('prompt: ' + p.slice(0, 200));
+    w.eval('RAW_META.judgments = []'); w.renderJudgeChip_();
+  });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));
