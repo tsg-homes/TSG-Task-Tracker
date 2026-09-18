@@ -49,3 +49,12 @@ identifiers and environment facts that are otherwise only known from chat.
   smoke-tested from a cloud session, and the README's `curl ... ?target=html` dashboard
   deploy must run from a local machine. clasp works because it uses googleapis.com.
 - Work on the branch the session names; never push to main without being told.
+
+## Email and other outward actions
+
+- **Draft, never send.** An email goes out only when Durand's message for that specific
+  email says "send". Choosing a recipient, a channel or a method is not a send instruction;
+  "draft", "write", "prepare" and silence all mean draft — create it in Gmail and say where
+  it is. Same bar for any outward action that cannot be undone: a post, a share, a delete.
+  (Established 2026-09-18 after a session sent a brief to Marj and Ryan when Durand had only
+  picked the send method for a different email.)
