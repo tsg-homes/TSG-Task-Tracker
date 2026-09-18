@@ -1020,3 +1020,17 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   the data file reported backendVersion 2026-09-18.16 at 13:10 EDT.) Live data at that point:
   docVersion 1310, 50 pending enrich judgments, 20 stale_version rejections in
   `meta.rejectedSaves` (all before this deploy).
+- Queue pass 2026-09-18 13:20-14:10 EDT (AskUserQuestion, four per round, three inbox patches
+  `patch-2026-09-18-judgments-batch1/2/3.json`): of the 50 pending enrich requests, 11 were answered
+  with real changes agreed with Durand (raffle fixes 7/8 steps done; gift card still Blocked with the
+  next action; Farina call done, pickup Sat 11-12, sternos rented, 2 h heating, update email to Ryan
+  DRAFTED in Gmail for Durand to send; Erika payment 0.25 h for the 9/22 touch base; GCP review
+  pipeline 3 h; automation audit 9 steps 5.5 h dated 9/21-9/25; client-asset process 4 Marj steps;
+  FUB records task and all 5 steps delegated to Claude, 4.25 h, dated to 10/9; Q4 content 3 steps
+  0.5 h due 9/21; new task 300 = "Design the FUB tag scheme for team leads vs personal leads",
+  Claude, 1.5 h, due 9/25) and 38 were dropped with `answer: null` as no-change echoes (every field
+  already set, candidates were backup/patch files). The lost-save step on the tracker feature task
+  was marked Done. A judgment answer that changes notes does NOT re-queue an enrich request (checked:
+  the three new ids that appeared were Durand's own edits and another session's). The Drive
+  connector's `read_file_content` returns the JSON with markdown escapes (`\_`, `\[`); use
+  `download_file_content` (base64) for the data file. Task-title chat rule kept.
