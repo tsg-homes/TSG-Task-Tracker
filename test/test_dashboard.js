@@ -787,6 +787,49 @@ setTimeout(async () => {
     if (w.findTask(1).remindAt !== '2026-09-25T13:00') throw new Error('remindAt ' + w.findTask(1).remindAt);
     if (!w.findTask(1).history.some(h => h.field === 'remindAt')) throw new Error('no history');
   });
+  tryCall('adding a due time to an item with no reminder applies the default preset (Settings > General, 15 min before unless changed)', () => {
+    const t = w.findTask(1);
+    t.timelineEnd = '2026-09-25'; delete t.dueTime; delete t.remindAt; delete t.reminderSentAt;
+    w.eval("delete RAW_META.remindDefault");
+    w.modalDueTimeChange(1, '14:00');
+    if (t.remindAt !== '2026-09-25T13:45') throw new Error('default not applied: ' + t.remindAt);
+    if (!t.history.some(h => h.field === 'remindAt' && h.source === 'Durand')) throw new Error('no history line');
+    w.onRemindPreset(1, null, '60'); // hand-picked preset follows later time changes, never the default
+    w.modalDueTimeChange(1, '15:00');
+    if (t.remindAt !== '2026-09-25T14:00') throw new Error('preset did not follow: ' + t.remindAt);
+    delete t.remindAt; w.eval("RAW_META.remindDefault = ''");
+    w.modalDueTimeChange(1, '16:00');
+    if (t.remindAt) throw new Error('no default should mean no reminder');
+    w.eval("RAW_META.remindDefault = '1440'");
+    delete t.dueTime; w.modalDueTimeChange(1, '09:00');
+    if (t.remindAt !== '2026-09-24T09:00') throw new Error('1 day default: ' + t.remindAt);
+    w.eval("delete RAW_META.remindDefault; RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true;");
+    w.setSettingsTab('general');
+    const sel = doc.getElementById('remindDefaultSelect');
+    if (!sel || sel.value !== '15' || [...sel.options].some(o => o.value === 'custom')) throw new Error('Settings default reminder select');
+    w.__posts = [];
+    w.setRemindDefault('60');
+    const post = (w.__posts || []).map(x => { try { return JSON.parse(x.body); } catch (e) { return null; } }).find(x => x && x.op === 'set_meta');
+    if (!post || post.fields.remindDefault !== '60' || w.eval('RAW_META.remindDefault') !== '60') throw new Error('set_meta not posted ' + JSON.stringify(post));
+    w.eval("delete RAW_META.remindDefault");
+    t.timelineEnd = '2026-09-25'; t.dueTime = '14:00'; t.remindAt = '2026-09-25T13:00'; // state the next tests build on
+  });
+  await (async () => {
+    try {
+      w.eval("navigator.clipboard = { writeText: t => { window.__clipWrites.push(t); return Promise.resolve(); } }; window.__clipWrites = [];");
+      const btn = doc.createElement('button'); btn.textContent = 'Copy address'; doc.body.appendChild(btn);
+      const ok = await w.copyText_('hello', btn, 'The tracker address');
+      if (!ok || w.eval('window.__clipWrites')[0] !== 'hello' || btn.textContent !== 'Copied' || !btn.classList.contains('copied')) throw new Error('no success indicator');
+      const toasts = doc.getElementById('tsgToasts');
+      if (!toasts || !/Copied/.test(toasts.textContent) || !/tracker address/.test(toasts.textContent)) throw new Error('no toast');
+      w.eval("navigator.clipboard = { writeText: () => Promise.reject(new Error('denied')) }; window.__prompted = null; window.prompt = (m, v) => { window.__prompted = v; return null; };");
+      const ok2 = await w.copyText_('again', btn, 'x');
+      if (ok2 || w.eval('window.__prompted') !== 'again' || !/Copy failed/.test(doc.getElementById('tsgToasts').textContent)) throw new Error('no fallback');
+      btn.remove(); doc.getElementById('tsgToasts').innerHTML = '';
+      if (!/copyText_\(location\.origin/.test(w.eval('renderGeneralTab.toString()')) || !/copyText_\(/.test(w.eval('copyClaudePrompt.toString()'))) throw new Error('copy sites not routed through copyText_');
+      console.log('OK   - copyText_: every copy flips the button to Copied and raises a toast; a refused clipboard falls back to a prompt');
+    } catch (e) { console.log('FAIL - copyText_ ->', e.message); FAILS++; }
+  })();
   tryCall('a preset reminder follows a due-date or due-time change; clearing removes it', () => {
     w.modalDueChange(1, '2026-09-26');
     if (w.findTask(1).remindAt !== '2026-09-26T13:00') throw new Error('did not follow date: ' + w.findTask(1).remindAt);
@@ -1112,7 +1155,7 @@ setTimeout(async () => {
     w.closeTaskCard();
     w.setNeedsApproval(1, 0, false); w.setNeedsApproval(1, null, false);
   });
-  tryCall('time picker: a button opens a pop-over with scroll-capped hour and minute columns; picking hour then minute applies HH:mm; no time clears', () => {
+  tryCall('time picker: a button opens a pop-over with scroll-capped hour and minute columns; picking hour then minute applies HH:mm; no "no time" option', () => {
     const html = w.timeSelectHtml_('11:15', 'x(v)');
     if (!/time-btn/.test(html) || !/data-value="11:15"/.test(html) || !/>11:15 AM</.test(html)) throw new Error('button html ' + html.slice(0, 200));
     if (!/\.time-pop-col \{[^}]*max-height: 168px[^}]*overflow-y: auto/.test(doc.querySelector('style').textContent)) throw new Error('columns not scroll-capped');
@@ -1125,8 +1168,8 @@ setTimeout(async () => {
     if (got[got.length - 1] !== '14:15' || btn.dataset.value !== '14:15' || !doc.body.contains(pop)) throw new Error('hour pick ' + JSON.stringify(got));
     pop.querySelector('.mins [data-m="30"]').click();
     if (got[got.length - 1] !== '14:30' || btn.textContent !== '2:30 PM' || doc.body.contains(pop)) throw new Error('minute pick ' + JSON.stringify(got));
-    const pop2 = w.openTimePop_(btn, v => got.push(v)); pop2.querySelector('[data-none]').click();
-    if (got[got.length - 1] !== '' || btn.textContent !== '—') throw new Error('no time');
+    const pop2 = w.openTimePop_(btn, v => got.push(v));
+    if (pop2.querySelector('[data-none]') || /no time/.test(pop2.textContent)) throw new Error('"no time" option is back'); w.closeTimePop_();
     host.innerHTML = w.timeSelectHtml_('10:00', '', '', 'mfStartTest'); w.setTimePick_('mfStartTest', '13:45');
     if (doc.getElementById('mfStartTest').value !== '13:45' || host.querySelector('.time-btn').textContent !== '1:45 PM') throw new Error('setTimePick_');
     host.remove();

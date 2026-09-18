@@ -295,6 +295,7 @@
   .btn.primary { background: var(--brand); color: #fff; border-color: var(--brand); }
   .btn.primary:hover { opacity: 0.92; }
   .btn.small { padding: 3px 9px; font-size: 11px; }
+  .btn.copied { background: var(--ok, #2e7d32); color: #fff; border-color: transparent; }
   .btn.danger { color: var(--status-critical); }
   /* Pop-out per-person views (2026-09-15): one small button per roster member. */
   .team-views { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -797,7 +798,6 @@
   .time-opt { padding: 3px 8px; cursor: pointer; border-radius: 4px; font-size: 12px; line-height: 18px; white-space: nowrap; }
   .time-opt:hover { background: var(--gray-accent); }
   .time-opt.on { background: var(--brand); color: #fff; }
-  .time-pop-none { align-self: stretch; color: var(--text-muted); }
   #inboxErrorsList .history-row { display: block; }
   #inboxErrorsList .hist-time { white-space: normal; min-width: 0; }
   #inboxErrorsList .inbox-err { color: var(--text-muted); white-space: pre-wrap; word-break: break-word; font-size: 12px; margin-top: 2px; }
@@ -1584,7 +1584,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.10';
+  const UI_VERSION = '2026-09-18.11';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2974,11 +2974,27 @@
     if (ev && ev.shiftKey) { window.open('https://claude.ai/code?prompt=' + q, '_blank'); return; }
     window.location.href = 'claude://cowork/new?q=' + q;
   }
+  // Every copy goes through here (2026-09-18, per Durand "anytime something is copied to
+  // clipboard there needs to be a success indicator"): the button reads "Copied" for 1.5 s
+  // and a toast says what was copied; when the clipboard API refuses, a prompt shows the text.
+  async function copyText_(text, btn, what) {
+    const label = btn ? btn.textContent : '';
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('no clipboard API');
+      await navigator.clipboard.writeText(text);
+      if (btn) { btn.textContent = 'Copied'; btn.classList.add('copied'); setTimeout(() => { btn.textContent = label; btn.classList.remove('copied'); }, 1500); }
+      toast_('Copied', (what || 'Text') + ' is on the clipboard.');
+      return true;
+    } catch (err) {
+      toast_('Copy failed', 'The browser refused clipboard access; the text is shown to copy by hand.');
+      prompt('Copy this:', text);
+      return false;
+    }
+  }
   async function copyClaudePrompt(id, btn) {
     const t = findTask(id);
     if (!t) return;
-    try { await navigator.clipboard.writeText(claudePromptFor_(t)); if (btn) { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy prompt'; }, 1500); } }
-    catch (err) { prompt('Copy this prompt:', claudePromptFor_(t)); }
+    await copyText_(claudePromptFor_(t), btn, 'The prompt for #' + t.id);
   }
   async function openInClaude(id, btn, where) {
     const t = findTask(id);
@@ -6172,15 +6188,13 @@
       const hours = []; for (let hh = 6; hh <= 20; hh++) hours.push(hh); if (p.h !== null && hours.indexOf(p.h) === -1) hours.push(p.h);
       const mins = ['00', '15', '30', '45']; if (mins.indexOf(p.mm) === -1) { mins.push(p.mm); mins.sort(); }
       pop.innerHTML = `<div class="time-pop-col hours">${hours.map(hh => `<div class="time-opt ${p.h === hh ? 'on' : ''}" data-h="${hh}">${hourLabel(hh)}</div>`).join('')}</div>` +
-        `<div class="time-pop-col mins">${mins.map(x => `<div class="time-opt ${p.mm === x ? 'on' : ''}" data-m="${x}">:${x}</div>`).join('')}</div>` +
-        `<div class="time-opt time-pop-none" data-none="1">no time</div>`;
+        `<div class="time-pop-col mins">${mins.map(x => `<div class="time-opt ${p.mm === x ? 'on' : ''}" data-m="${x}">:${x}</div>`).join('')}</div>`;
       const on = pop.querySelector('.hours .on'); if (on && on.scrollIntoView) { try { on.scrollIntoView({ block: 'nearest' }); } catch (e) {} }
     };
     const set = v => { cur = v; setTimePickButton_(btn, v); apply(v); };
     pop.addEventListener('click', ev => {
       const el = ev.target.closest('.time-opt'); if (!el) return;
       ev.stopPropagation();
-      if (el.dataset.none) { set(''); closeTimePop_(); return; }
       const p = timePickParts_(cur);
       if (el.dataset.h) { set(String(el.dataset.h).padStart(2, '0') + ':' + p.mm); render(); return; }
       if (el.dataset.m) { set(String(p.h == null ? 9 : p.h).padStart(2, '0') + ':' + el.dataset.m); closeTimePop_(); }
@@ -6205,9 +6219,29 @@
     if (val) ctx.item.dueTime = val; else delete ctx.item.dueTime;
     delete ctx.item.dueTimeAuto; // typed by hand: the scheduler leaves it alone from now on
     if (before !== (val || '')) logHistory(ctx.t, idx == null ? 'dueTime' : 'subitem-dueTime', before || null, val || null);
-    // A preset reminder follows the due time.
+    // A preset reminder follows the due time; an item with no reminder yet gets the default
+    // one (Settings > General) the moment a time is set (2026-09-18, per Durand "reminder
+    // should be set to defaults when a time is added").
     if (preset && preset !== 'custom') { ctx.item.remindAt = remindAtFor_(ctx.item, preset); delete ctx.item.reminderSentAt; }
+    else if (val && !ctx.item.remindAt && remindDefault_() && dueDateTime_(ctx.item)) {
+      ctx.item.remindAt = remindAtFor_(ctx.item, remindDefault_()); delete ctx.item.reminderSentAt;
+      logHistory(ctx.t, idx == null ? 'remindAt' : 'subitem-remindAt', null, ctx.item.remindAt);
+    }
     renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+  // Default reminder preset (minutes before the due time as a string; '' = none), stored in
+  // meta.remindDefault; 15 min before when unset.
+  function remindDefault_() {
+    const v = RAW_META.remindDefault;
+    if (v === undefined || v === null) return '15';
+    const s = String(v);
+    return REMIND_PRESETS.some(p => p[0] === s && s !== 'custom') ? s : '';
+  }
+  async function setRemindDefault(val) {
+    const v = String(val || '');
+    RAW_META.remindDefault = v;
+    await postCommentOp_({ op: 'set_meta', fields: { remindDefault: v }, source: 'Durand' });
+    setSyncStatus('saved', 'Default reminder saved');
   }
   function modalDueTimeChange(id, val) { onDueTimeChange_(id, null, val); }
   function modalDueChange(id, val) {
@@ -7461,7 +7495,12 @@
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Reminder notifications</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b>${(notifyPermission_() === 'default' && window.top === window) ? ' <button type="button" class="btn small" onclick="enableNotificationsClick_()">Enable</button>' : ''}${notifyPermission_() === 'granted' ? ' <button type="button" class="btn small" onclick="testNotification_()">Test</button>' : ''}<div class="history-empty" id="notifyWhy" style="margin-top:4px;">${escapeHtml(notifyStateText_(notifyPermission_()))}${window.top !== window && notifyPermission_() !== 'granted' ? ' <button type="button" class="btn small" onclick="navigator.clipboard && navigator.clipboard.writeText(location.origin)">Copy address</button>' : ''}</div></div>
+        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b>${(notifyPermission_() === 'default' && window.top === window) ? ' <button type="button" class="btn small" onclick="enableNotificationsClick_()">Enable</button>' : ''}${notifyPermission_() === 'granted' ? ' <button type="button" class="btn small" onclick="testNotification_()">Test</button>' : ''}<div class="history-empty" id="notifyWhy" style="margin-top:4px;">${escapeHtml(notifyStateText_(notifyPermission_()))}${window.top !== window && notifyPermission_() !== 'granted' ? ' <button type="button" class="btn small" onclick="copyText_(location.origin, this, \'The tracker address\')">Copy address</button>' : ''}</div></div>
+      </div>
+      <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Default reminder</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Set on a task or step the moment it gets a due time and has no reminder yet. A reminder you pick by hand is never changed.</div>
+        <select class="pill-select" id="remindDefaultSelect" onchange="setRemindDefault(this.value)">${REMIND_PRESETS.filter(p => p[0] !== 'custom').map(p => `<option value="${p[0]}" ${remindDefault_() === p[0] ? 'selected' : ''}>${escapeHtml(p[1])}</option>`).join('')}</select>
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Claude Code repo</h3></div>
