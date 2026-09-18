@@ -675,3 +675,8 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   through .8: one links field, uploads, actual time, inbox trace). After that: drop the log_time
   patch for tasks 281/287 (scratchpad `patch-logtime-281-287.json`) and the deliberately bad
   patch (`patch-verify-bad.json`) to verify a PARTIAL- file + `meta.inboxErrors` entry appear.
+- Roll-up fix (backend 2026-09-18.2): the 0.5 h confirm-the-handoff slice (`tsgOpenSubitemHours_`
+  and the scheduler's `tsgReserveConfirmCapacity_` sites) applies only to steps delegated to a
+  PERSON (`tsgHandoffConfirmNeeded_`), never to Claude or Durand: a Claude step's estimate is
+  already his attention. Task 287 rolled up to 4.5 h instead of 2.5 h before this; the next write
+  after deploy recomputes it.

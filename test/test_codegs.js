@@ -1743,5 +1743,18 @@ section('Actual time: log_time op and ACTUALS_BY_TYPE (2026-09-17)');
   check('actualHours is a diffed field on tasks and subtasks', sandbox.TSG_TASK_DIFF_FIELDS.includes('actualHours') && sandbox.TSG_SUBITEM_DIFF_FIELDS.includes('actualHours'));
 }
 
+section('Confirm-the-handoff slice is for people, not Claude (2026-09-18)');
+{
+  const t = { subitems: [
+    { title: 'Claude step', estHours: 1, delegate: 'Claude' },
+    { title: 'Marj step', estHours: 1, delegate: 'Marj' },
+    { title: 'Own step', estHours: 1, delegate: 'Durand' },
+    { title: 'Unassigned step', estHours: 1 }
+  ] };
+  const r = sandbox.tsgOpenSubitemHours_(t);
+  check('roll-up adds 0.5 h only for the person-delegated step: 4 h of steps + 0.5 = 4.5', r.hours === 4.5 && r.any === true);
+  check('tsgHandoffConfirmNeeded_: Marj yes, Claude no, Durand no, none no', sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Marj' }) && !sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Claude' }) && !sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Durand' }) && !sandbox.tsgHandoffConfirmNeeded_({}));
+}
+
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
 if (FAILS) process.exitCode = 1;

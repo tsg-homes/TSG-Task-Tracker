@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.1';
+const TSG_CODE_VERSION = '2026-09-18.2';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -5121,6 +5121,16 @@ function tsgScheduledSpan_(t) {
 function tsgIsDurandDelegate_(s) {
   return String((s && s.delegate) || '').trim().toLowerCase() === 'durand';
 }
+function tsgIsClaudeDelegate_(s) {
+  return String((s && s.delegate) || '').trim().toLowerCase() === 'claude';
+}
+// The 0.5 h "confirm the handoff" slice belongs to a PERSON delegate: Durand checks their
+// work the day after. A Claude-delegated step's estimate already IS his attention on it
+// (turns x minutes), so charging a confirm slice on top double-counted him (seen 2026-09-18
+// on task 287: five steps worth 2.5 h rolled up to 4.5 h).
+function tsgHandoffConfirmNeeded_(s) {
+  return !!(s && s.delegate) && !tsgIsDurandDelegate_(s) && !tsgIsClaudeDelegate_(s);
+}
 
 /**
  * Mirrors the dashboard's subitemBlockedBy() EXACTLY (dash_fixed2.html) — same default
@@ -5220,7 +5230,7 @@ function tsgOpenSubitemHours_(t) {
     if (hadInfo) any = true;
     if (!s.done) {
       if (s.estHours != null && !isNaN(s.estHours)) hours += Number(s.estHours);
-      if (s.delegate && !tsgIsDurandDelegate_(s)) hours += 0.5; // confirm-the-handoff cost, invisible
+      if (tsgHandoffConfirmNeeded_(s)) hours += 0.5; // confirm-the-handoff cost, invisible (people only)
       if (s.timelineEnd && (!latestOpenEnd || s.timelineEnd > latestOpenEnd)) latestOpenEnd = s.timelineEnd;
     }
   });
@@ -5589,7 +5599,7 @@ function tsgAutoScheduleDoc_(doc) {
       // still needs to be reserved on his calendar the day after, same as a freshly
       // placed one below.
       var existingSpan = tsgScheduledSpan_(r);
-      if (existingSpan) tsgReserveConfirmCapacity_(addLoad, today, existingSpan.end);
+      if (existingSpan && tsgHandoffConfirmNeeded_(r)) tsgReserveConfirmCapacity_(addLoad, today, existingSpan.end);
       return;
     }
     var hours = tsgItemHours_(r);
@@ -5800,10 +5810,10 @@ function tsgAutoScheduleDoc_(doc) {
       item.parent.history = item.parent.history || [];
       item.parent.history.push({ ts: new Date().toISOString(), field: 'subitem-scheduled', from: null,
         to: 'Auto-scheduled ' + item.label + ' for ' + t.timelineEnd, note: 'auto-scheduled' });
-      if (!isDurandWork) {
-        // Freshly placed non-Durand step — reserve the 0.5h "confirm this is done" slice
-        // on Durand's capacity pool now, so any items still left in the queue this same
-        // run see that slice of his day as already spoken for.
+      if (!isDurandWork && tsgHandoffConfirmNeeded_(r)) {
+        // Freshly placed step delegated to a PERSON — reserve the 0.5h "confirm this is done"
+        // slice on Durand's capacity pool now, so any items still left in the queue this same
+        // run see that slice of his day as already spoken for. Claude steps get no slice.
         tsgReserveConfirmCapacity_(addLoad, today, t.timelineEnd);
       }
     }
