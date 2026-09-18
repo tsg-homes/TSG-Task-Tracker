@@ -2326,6 +2326,15 @@ function raffleConsoleAction_(d) {
     return jsonOut(raffleRaiseCeiling_(test));
   }
 
+  // The monitoring page's "Remove from draw" / "Restore" (Durand, 2026-09-18:
+  // "allow me to remove accidentally captured test submissions"). Nothing is
+  // deleted: the row's Eligible cell becomes No (or Yes again), which is the
+  // same by-hand disqualification the draw has always honoured, so the row
+  // stays on the sheet and on the page, marked, and the FUB side is untouched.
+  if (action === 'disqualify' || action === 'restore') {
+    return jsonOut(raffleSetRowEligible_(test, d.row, action === 'restore'));
+  }
+
   if (action === 'redraw') {
     var why = collapseSpaces(d.reason);
     if (why.length < 10) {
@@ -3287,4 +3296,27 @@ function raffleAppendSelfEntry_(name, email, phone, personId, test) {
   }
   sh.appendRow(row);
   return { row: sh.getLastRow() };
+}
+
+// Flip one sheet row's Eligible cell from the monitoring page. Refused once a
+// winner is recorded: the draw is not re-run by this, so a removal then would
+// only make the page disagree with the result (the console's redraw is the tool
+// for that, and it leaves a trail).
+function raffleSetRowEligible_(test, rowParam, eligible) {
+  var row = parseInt(rowParam, 10);
+  if (!row || row < 2) throw makeValidationError('Which row? The request carried no sheet row number.');
+  if (raffleStoredWinner_(test)) {
+    throw makeValidationError('A winner is already recorded for this ' + (test ? 'rehearsal' : 'raffle') +
+      '. Removing entries now would not change that result; use the console\'s redraw instead.');
+  }
+  var sh = raffleSheet_(test);
+  if (row > sh.getLastRow()) throw makeValidationError('Row ' + row + ' is not on the sheet any more.');
+  var nameCell = sh.getRange(row, RAFFLE_COL['Full Name'] + 1).getValue();
+  var name = String(nameCell || '').replace(/^'/, '').trim();
+  if (!name) throw makeValidationError('Row ' + row + ' is empty.');
+  sh.getRange(row, RAFFLE_COL['Eligible'] + 1).setValue(eligible ? 'Yes' : 'No');
+  Logger.log('raffle: row ' + row + ' (' + name + ') ' + (eligible ? 'restored to' : 'removed from') +
+    ' the ' + (test ? 'TEST ' : '') + 'draw from the monitoring page');
+  return { ok: true, row: row, name: name, eligible: eligible,
+           message: (eligible ? 'Restored ' : 'Removed ') + name + (eligible ? ' to' : ' from') + ' the draw.' };
 }

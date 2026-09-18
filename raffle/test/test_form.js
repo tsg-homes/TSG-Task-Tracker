@@ -867,6 +867,57 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
     await p2.close();
   }
 
+  // ---- 19. The monitoring page's Remove from draw / Restore buttons (2026-09-18) ----
+  // The page is built server-side (raffleStatusPage_); its one script is a
+  // hand-written string, so it is exercised here in a real browser against a
+  // google.script.run shim: the click confirms, sends the key-gated console
+  // action through raffleRpc, and reloads on ok.
+  {
+    const H = require('./harness');
+    const s = H.makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'secret', RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+    H.enterFull(s, H.entry(), H.DURING);
+    const statusHtml = String(H.at(H.DURING, () => s.raffleStatusPage_(false)));
+    const f = path.join(OUT, 'status.html');
+    fs.writeFileSync(f, statusHtml);
+    const p3 = await b.newPage({ viewport: { width: 1200, height: 900 } });
+    await p3.addInitScript(() => {
+      window.__rpc = [];
+      const run = {
+        _ok: null, _fail: null,
+        withSuccessHandler(fn) { const c = Object.create(run); c._ok = fn; c._fail = this._fail; return c; },
+        withFailureHandler(fn) { const c = Object.create(run); c._fail = fn; c._ok = this._ok; return c; },
+        raffleRpc(json) { const body = JSON.parse(json); window.__rpc.push(body);
+          try { localStorage.setItem('rpc', JSON.stringify(window.__rpc)); } catch (e) {}
+          const self = this; setTimeout(() => self._ok && self._ok(JSON.stringify(window.__rpcAnswer || { ok: true })), 50); }
+      };
+      window.google = { script: { run: run } };
+    });
+    const dialogs = [];
+    p3.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
+    let loads = 0; p3.on('load', () => loads++);
+    await p3.goto('file://' + f); await p3.waitForTimeout(200);
+    const buttons = await p3.locator('button[data-act="disqualify"]').count();
+    check('monitor: a Remove button per row', buttons === 3);
+    const loadsBefore = loads;
+    await p3.locator('button[data-act="disqualify"]').first().click();
+    await p3.waitForTimeout(600);
+    check('monitor: the click asks first, naming the entrant', dialogs.length === 1 && /Remove .+ from the draw\?/.test(dialogs[0]) && !/this row/.test(dialogs[0]), dialogs[0]);
+    const sent = JSON.parse(await p3.evaluate(() => localStorage.getItem('rpc') || '[]'));
+    check('monitor: the action goes through raffleRpc as the key-gated console action',
+      sent.length === 1 && sent[0].step === 'console' && sent[0].consoleAction === 'disqualify' && sent[0].key === 'secret' && sent[0].formToken === 'tok' && sent[0].formType === 'raffle' && /^\d+$/.test(String(sent[0].row)), JSON.stringify(sent));
+    check('monitor: an ok answer reloads the page', loads > loadsBefore);
+    // A refused answer stays on the page and shows the server's words.
+    await p3.evaluate(() => { localStorage.removeItem('rpc'); window.__rpcAnswer = { ok: false, error: 'A winner is already recorded.' }; });
+    await p3.reload(); await p3.waitForTimeout(200);
+    await p3.evaluate(() => { window.__rpcAnswer = { ok: false, error: 'A winner is already recorded.' }; });
+    dialogs.length = 0;
+    await p3.locator('button[data-act="disqualify"]').first().click();
+    await p3.waitForTimeout(600);
+    check('monitor: a refusal is shown in the server\'s words', dialogs.length === 2 && /already recorded/.test(dialogs[1]), JSON.stringify(dialogs));
+    check('monitor: and the button is live again', !(await p3.locator('button[data-act="disqualify"]').first().isDisabled()));
+    await p3.close();
+  }
+
   await b.close();
   fs.rmSync(OUT, { recursive: true, force: true });
   console.log(fails ? '\n' + fails + ' FAILED' : '\nAll form tests passed.');

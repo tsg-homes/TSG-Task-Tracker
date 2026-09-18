@@ -936,6 +936,11 @@ function raffleStatusRowsHtml_(rows) {
     var fub = r.isReferralRow
       ? (r.referralFubId ? 'FUB #' + raffleEsc_(r.referralFubId) : (r.referralLoggedAt ? 'logged, unconsented' : '<span style="color:#999">not in FUB</span>'))
       : (raffleEsc_(r.fubStatus) + (r.fubId ? muted('#' + r.fubId) : ''));
+    var act = r.disqualified
+      ? '<button type="button" data-act="restore" data-row="' + raffleEsc_(r.row) + '" ' +
+        'style="font:600 12px system-ui,sans-serif;padding:5px 9px;border:1px solid #15464A;border-radius:6px;background:#fff;color:#15464A;cursor:pointer;white-space:nowrap">Restore</button>'
+      : '<button type="button" data-act="disqualify" data-row="' + raffleEsc_(r.row) + '" ' +
+        'style="font:600 12px system-ui,sans-serif;padding:5px 9px;border:1px solid #b3271e;border-radius:6px;background:#fff;color:#b3271e;cursor:pointer;white-space:nowrap">Remove from draw</button>';
     return '<tr' + (r.disqualified ? ' style="opacity:.6"' : '') + '>' +
       cell(raffleEsc_(r.row - 1), 'color:#999;white-space:nowrap') +
       cell(raffleEsc_(when(r.timestamp)), 'white-space:nowrap;color:#666') +
@@ -943,17 +948,51 @@ function raffleStatusRowsHtml_(rows) {
       cell(who) + cell(referred) +
       cell(badge + muted(detail.join(' · '))) +
       cell(String(r.disqualified ? 0 : r.tickets), 'text-align:right;font-variant-numeric:tabular-nums') +
-      cell(fub) + '</tr>';
+      cell(fub) + cell(act) + '</tr>';
   }).join('');
   var th = function (t, extra) { return '<th style="text-align:left;padding:8px 10px;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#666;' + (extra || '') + '">' + t + '</th>'; };
   return '<div style="overflow-x:auto;margin-top:8px"><table style="border-collapse:collapse;width:100%;min-width:900px">' +
     '<thead><tr>' + th('#') + th('When (ET)') + th('Type') + th('Entrant') + th('Referred') + th('Status') +
-    th('Tickets', 'text-align:right') + th('FUB') + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    th('Tickets', 'text-align:right') + th('FUB') + th('') + '</tr></thead><tbody>' + body + '</tbody></table></div>';
 }
+
+// The monitoring page's ONLY script, as one constant so test_redteam.js can strip
+// it by exact string before asserting that nothing script-like reached the admin
+// page from an entrant. No inline handlers: one delegated click listener. The
+// key, page token and mode are read from #mon's data attributes (never an
+// entrant's text: a name in an attribute reads like a handler to the red-team
+// scan, so the confirm dialog takes the name from the row's cell), and the call
+// goes through google.script.run.raffleRpc like every other page's (the same
+// key-gated console action as the draw console).
+var RAFFLE_STATUS_SCRIPT = '<script>' +
+  '(function(){' +
+  'var mon=document.getElementById("mon");if(!mon)return;' +
+  'var busy=false;' +
+  'document.addEventListener("click",function(ev){' +
+    'var b=ev.target&&ev.target.closest?ev.target.closest("button[data-act]"):null;if(!b||busy)return;' +
+    'var act=b.getAttribute("data-act"),row=b.getAttribute("data-row");' +
+    'var tr=b.closest("tr"),nm=tr&&tr.querySelector("b");var name=(nm&&nm.textContent)||"this row";' +
+    'var q=act==="restore"?"Put "+name+" back in the draw?":"Remove "+name+" from the draw? The row stays on the sheet, marked, and can be restored. Nothing in FUB changes.";' +
+    'if(!window.confirm(q))return;' +
+    'if(!(window.google&&google.script&&google.script.run)){window.alert("This page has to be opened from its Apps Script link to do that.");return;}' +
+    'busy=true;b.disabled=true;b.textContent="Working\u2026";' +
+    'var body={formType:"raffle",formToken:mon.getAttribute("data-token"),website:"",step:"console",key:mon.getAttribute("data-key"),' +
+      'test:mon.getAttribute("data-test"),consoleAction:act,row:row};' +
+    'google.script.run.withSuccessHandler(function(text){var d=null;try{d=JSON.parse(text);}catch(e){}' +
+      'if(d&&d.ok){location.reload();return;}busy=false;b.disabled=false;b.textContent=act==="restore"?"Restore":"Remove from draw";' +
+      'window.alert((d&&d.error)||"That did not work. Reload and try again.");})' +
+    '.withFailureHandler(function(e){busy=false;b.disabled=false;b.textContent=act==="restore"?"Restore":"Remove from draw";' +
+      'window.alert("The script call failed: "+String((e&&e.message)||e));})' +
+    '.raffleRpc(JSON.stringify(body));' +
+  '});' +
+  'setTimeout(function(){ if(!busy) location.reload(); },60000);' +
+  '})();' +
+  '</script>';
 
 function raffleStatusPage_(test) {
   var rows = raffleReadEntries_(test, { all: true });
   var winner = raffleStoredWinner_(test);
+  var adminKey = PropertiesService.getScriptProperties().getProperty(RAFFLE_ADMIN_PROP) || '';
 
   // raffleReadEntries_ returns EVERY row, pending ones included, so the headline
   // number has to be computed rather than taken from rows.length -- that read
@@ -970,7 +1009,10 @@ function raffleStatusPage_(test) {
   });
   var peopleCount = Object.keys(people).length;
 
-  var html = '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:1100px">' +
+  // The key is already in this page's URL; the page token is the same one the
+  // entry form gets, because the row actions go through doPost's token check.
+  var html = '<div id="mon" data-key="' + raffleEsc_(adminKey) + '" data-token="' + raffleEsc_(getSubmitToken()) +
+    '" data-test="' + (test ? '1' : '') + '" style="font-family:system-ui,sans-serif;padding:24px;max-width:1200px">' +
     (test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
             'border-radius:6px;margin-bottom:14px">TEST DATA — not the live raffle</div>' : '') +
     '<h2 style="margin:0 0 4px">' + RAFFLE_EVENT_NAME + '</h2>' +
@@ -991,11 +1033,11 @@ function raffleStatusPage_(test) {
   html += '<h3 style="margin:28px 0 0">Every row' +
     '<span style="font-weight:400;color:#666;font-size:13px"> &middot; ' + rows.length + ' on the sheet, newest first' +
     ' &middot; as of ' + raffleEsc_(raffleFmt_(new Date())) + ' ET &middot; reloads itself every 60 s</span></h3>' +
+    (winner ? '' : '<p style="color:#666;font-size:13px;margin:6px 0 0">Caught a rehearsal entry on the live sheet? ' +
+      '<b>Remove from draw</b> marks its Eligible cell No; the row stays, marked, and <b>Restore</b> undoes it. ' +
+      'The FUB contact is not touched.</p>') +
     raffleStatusRowsHtml_(rows) +
-    // The page's ONLY script. test_redteam.js strips this exact string before it
-    // asserts that no <script> or on*= attribute reached the admin page, so any
-    // change here must be mirrored there.
-    '</div><script>setTimeout(function(){ location.reload(); }, 60000);</script>';
+    '</div>' + RAFFLE_STATUS_SCRIPT;
   return HtmlService.createHtmlOutput(html);
 }
 

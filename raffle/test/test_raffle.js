@@ -2168,6 +2168,48 @@ const linkTokenOf = mail => (String(mail.body).match(/action=confirm&t=([0-9a-f-
     !at(DURING, () => s.raffleReadEntries_(false)).some(r => r.name === 'Dana Reid' && !r.isReferralRow));
 }
 
+
+// ---- Remove from draw / Restore on the monitoring page (2026-09-18) ----------
+{
+  const s = makeSandbox({ props: { RAFFLE_ADMIN_KEY: 'secret', RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  enterFull(s, entry(), DURING);                                                        // Dana + Robin
+  verifySession(s, entry({ fullName: 'Oops Rehearsal', email: 'oops@mail-test.co', phone: '(215) 555-8800' }), DURING);
+  const oopsRow = s.__data().findIndex(r => cell(s, r, 'Full Name') === 'Oops Rehearsal') + 2;
+  const elig = () => cell(s, s.__data()[oopsRow - 2], 'Eligible');
+  const call = d => J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'console', key: 'secret' }, d))));
+
+  let page = String(at(DURING, () => s.raffleStatusPage_(false)));
+  check('remove: every live row offers Remove from draw', (page.match(/data-act="disqualify"/g) || []).length === s.__data().length);
+  check('remove: the page carries the key, token and mode for the script', /id="mon" data-key="secret" data-token="tok" data-test=""/.test(page));
+  check('remove: the page script is the one constant', page.indexOf(s.RAFFLE_STATUS_SCRIPT) !== -1 && (page.match(/<script/g) || []).length === 1);
+  check('remove: no entrant text rides in a button attribute', !/data-name=/.test(page));
+
+  const bad = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'console', key: 'wrong', consoleAction: 'disqualify', row: oopsRow })));
+  check('remove: the wrong key is Not found', bad.ok === false && /Not found/.test(bad.error) && elig() === 'Yes');
+  const noRow = call({ consoleAction: 'disqualify' });
+  check('remove: no row number is refused', noRow.ok === false && /Which row/.test(noRow.error));
+  const gone = call({ consoleAction: 'disqualify', row: 999 });
+  check('remove: a row past the sheet is refused', gone.ok === false && /not on the sheet/.test(gone.error));
+
+  const r1 = call({ consoleAction: 'disqualify', row: oopsRow });
+  check('remove: marks the Eligible cell No and names the entrant', r1.ok === true && r1.eligible === false && /Removed Oops Rehearsal/.test(r1.message) && elig() === 'No', JSON.stringify(r1));
+  check('remove: the draw reader no longer sees the row', !at(DURING, () => s.raffleReadEntries_(false)).some(r => r.name === 'Oops Rehearsal'));
+  page = String(at(DURING, () => s.raffleStatusPage_(false)));
+  check('remove: the page shows the row as Disqualified with a Restore button', /Disqualified/.test(page) && new RegExp('data-act="restore" data-row="' + oopsRow + '"').test(page));
+  check('remove: the sheet still has the row (Dana, her referral, Robin, Oops)', s.__data().length === 4);
+
+  const r2 = call({ consoleAction: 'restore', row: oopsRow });
+  check('restore: puts the Eligible cell back to Yes', r2.ok === true && r2.eligible === true && elig() === 'Yes');
+  check('restore: the draw reader sees the row again', at(DURING, () => s.raffleReadEntries_(false)).some(r => r.name === 'Oops Rehearsal'));
+
+  // After the draw the buttons are refused: the recorded result would not change.
+  at(AFTER, () => s.raffleDrawWinner_(false));
+  const late = call({ consoleAction: 'disqualify', row: oopsRow });
+  check('remove: refused once a winner is recorded, pointing at the console redraw', late.ok === false && /already recorded/.test(late.error) && /redraw/.test(late.error) && elig() === 'Yes', JSON.stringify(late));
+  page = String(at(AFTER, () => s.raffleStatusPage_(false)));
+  check('remove: the how-to line is gone after the draw', !/Caught a rehearsal entry/.test(page));
+}
+
 const { passes, fails } = counts();
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
 process.exit(fails ? 1 : 0);

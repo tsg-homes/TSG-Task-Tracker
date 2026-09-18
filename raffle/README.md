@@ -150,7 +150,7 @@ other than the 6:15 close.
 |---|---|
 | `<exec>?form=raffle` | **Yes** — this is the QR code. No key, safe to print. |
 | `<exec>?form=raffle&kiosk=1` | For the iPad at the table. Auto-resets 6s after each entry. |
-| `<exec>?form=raffle&action=status&key=…` | **Private.** The monitoring page: people entered, tickets in the draw, referrals still pending, then one row per entry and referral (who, whom they referred, status, invite/consent times, tickets, FUB), newest first, reloading every 60 s. Disqualified rows stay visible, marked. |
+| `<exec>?form=raffle&action=status&key=…` | **Private.** The monitoring page: people entered, tickets in the draw, referrals still pending, then one row per entry and referral (who, whom they referred, status, invite/consent times, tickets, FUB), newest first, reloading every 60 s. Each row has **Remove from draw** (marks Eligible No; the row stays, marked, with **Restore**; FUB untouched; refused once a winner is recorded) for a rehearsal entry caught on the live sheet. |
 | `<exec>?form=raffle&action=draw&key=…` | **Private.** Manual draw, if the trigger misfires. |
 | `<exec>?form=raffle&action=console&key=…` | **Private.** The 6:30 draw console: pick, preview, confirm, send. |
 | `<exec>?form=raffle&action=notifywinner&key=…` | **Private.** Sends the winner email. Pressed after the announcement, never before. |
