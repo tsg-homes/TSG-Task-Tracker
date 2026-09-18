@@ -197,22 +197,56 @@ var ENDPOINT = window.location.href.split('?')[0].split('#')[0]
 // the reply is read as text and parsed, so an HTML error page from Apps Script
 // is reported as what it is -- with its title and text -- and not as "could not
 // reach the server", which is only true when fetch itself fails.
+// When Apps Script serves the page, google.script.run calls raffleRpc() in the
+// script directly (2026-09-18): no cross-origin fetch, no Drive 404 for a
+// signed-in visitor. fetch() is only for the page opened from a file (tests).
+var RPC = !!(window.google && google.script && google.script.run);
+function parseAnswer_(text, status) {
+  var data = null;
+  try { data = JSON.parse(text); } catch (e) { data = null; }
+  if (data && typeof data === 'object') return data;
+  var err = new Error('server');
+  err.kind = 'server'; err.status = status; err.detail = describeResponse_(text, status);
+  throw err;
+}
+function rpcPost_(body) {
+  return new Promise(function (resolve, reject) {
+    google.script.run
+      .withSuccessHandler(function (text) {
+        try { resolve(parseAnswer_(String(text == null ? '' : text), 200)); } catch (err) { reject(err); }
+      })
+      .withFailureHandler(function (e) {
+        var msg = String((e && e.message) || e || 'the call failed');
+        var err = new Error('rpc');
+        err.kind = /network|offline|connect|timed out|timeout|unavailable|try again/i.test(msg) ? 'network' : 'server';
+        err.status = 0; err.detail = 'the script call failed (' + msg + ')';
+        reject(err);
+      })
+      .raffleRpc(JSON.stringify(body));
+  });
+}
+function sendQuiet_(body) {
+  if (RPC) {
+    google.script.run.withSuccessHandler(function () {}).withFailureHandler(function () {})
+      .raffleRpc(JSON.stringify(body));
+    return;
+  }
+  fetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    keepalive: true, body: JSON.stringify(body) }).catch(function () {});
+}
 function post(payload) {
+  var body = Object.assign({
+    formType: 'raffle', formToken: FORMTK, website: '',
+    step: 'console', key: KEY, test: IS_TEST
+  }, payload);
+  if (RPC) return rpcPost_(body);
   return fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(Object.assign({
-      formType: 'raffle', formToken: FORMTK, website: '',
-      step: 'console', key: KEY, test: IS_TEST
-    }, payload))
+    body: JSON.stringify(body)
   }).then(function (r) {
     return r.text().then(function (text) {
-      var data = null;
-      try { data = JSON.parse(text); } catch (e) { data = null; }
-      if (data && typeof data === 'object') return data;
-      var err = new Error('server');
-      err.kind = 'server'; err.status = r.status; err.detail = describeResponse_(text, r.status);
-      throw err;
+      return parseAnswer_(text, r.status);
     }, function (readErr) {
       var err = new Error('network'); err.kind = 'network';
       err.detail = 'the reply was cut off (' + String((readErr && readErr.message) || readErr) + ')';
@@ -278,13 +312,10 @@ function clearBanner() { document.getElementById('failBanner').classList.remove(
 // the Client Errors tab and in an alert. Fire-and-forget.
 function report(action, err) {
   try {
-    fetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      keepalive: true,
-      body: JSON.stringify({ formType: 'raffle', formToken: FORMTK, website: '', step: 'report',
-        failedStep: 'console', kind: err.kind || 'page', status: err.status || 0,
-        detail: ('console ' + action + ': ' + String(err.detail || err.message || '')).slice(0, 300),
-        attempt: 1, ua: String(navigator.userAgent || '').slice(0, 200) })
-    }).catch(function () {});
+    sendQuiet_({ formType: 'raffle', formToken: FORMTK, website: '', step: 'report',
+      failedStep: 'console', kind: err.kind || 'page', status: err.status || 0,
+      detail: ('console ' + action + ': ' + String(err.detail || err.message || '')).slice(0, 300),
+      attempt: 1, ua: String(navigator.userAgent || '').slice(0, 200), transport: RPC ? 'rpc' : 'fetch' });
   } catch (e) { /* never throws */ }
 }
 // Lockout while a request is in flight: the page sits behind an overlay that

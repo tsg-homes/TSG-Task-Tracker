@@ -136,7 +136,10 @@ var ENDPOINT = window.location.href.split('?')[0].split('#')[0]
 // failed fetch is called a connection problem. onFail(info, retry) renders the
 // failed state; `retry` re-sends the identical payload.
 // Lockout while a request is in flight, and the loud banner on a failure.
+// One request at a time: a second tap while one is in flight does nothing.
+var INFLIGHT = false;
 function lock(what) {
+  INFLIGHT = true;
   document.getElementById('failBanner').classList.remove('on');
   var overlay = document.getElementById('busyOverlay');
   var t0 = Date.now();
@@ -149,7 +152,58 @@ function lock(what) {
     document.getElementById('busySecs').textContent = s + ' s';
     if (s >= 8) document.getElementById('busySlow').textContent = 'Still working. Do not reload; our server is slow, not your connection.';
   }, 1000);
-  return function () { clearInterval(iv); overlay.classList.remove('on'); };
+  return function () { clearInterval(iv); INFLIGHT = false; overlay.classList.remove('on'); };
+}
+// When Apps Script serves the page, google.script.run calls raffleRpc() in the
+// script directly (2026-09-18, see RaffleForm.template.html). fetch() is only
+// for the page opened from a file (tests).
+var RPC = !!(window.google && google.script && google.script.run);
+function parseAnswer_(text, status) {
+  var data = null;
+  try { data = JSON.parse(text); } catch (e) { data = null; }
+  if (data && typeof data === 'object') return data;
+  var err = new Error('server');
+  err.kind = 'server'; err.status = status; err.detail = describeResponse_(text, status);
+  throw err;
+}
+function rpcPost_(body) {
+  return new Promise(function (resolve, reject) {
+    google.script.run
+      .withSuccessHandler(function (text) {
+        try { resolve(parseAnswer_(String(text == null ? '' : text), 200)); } catch (err) { reject(err); }
+      })
+      .withFailureHandler(function (e) {
+        var msg = String((e && e.message) || e || 'the call failed');
+        var err = new Error('rpc');
+        err.kind = /network|offline|connect|timed out|timeout|unavailable|try again/i.test(msg) ? 'network' : 'server';
+        err.status = 0; err.detail = 'the script call failed (' + msg + ')';
+        reject(err);
+      })
+      .raffleRpc(JSON.stringify(body));
+  });
+}
+function fetchPost_(body) {
+  return fetch(ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(body)
+  })
+  .then(function (r) {
+    return r.text().then(function (text) { return parseAnswer_(text, r.status); });
+  }, function (netErr) {
+    var err = new Error('network'); err.kind = 'network';
+    err.detail = String((netErr && netErr.message) || netErr || 'fetch failed');
+    throw err;
+  });
+}
+function sendQuiet_(body) {
+  if (RPC) {
+    google.script.run.withSuccessHandler(function () {}).withFailureHandler(function () {})
+      .raffleRpc(JSON.stringify(body));
+    return;
+  }
+  fetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    keepalive: true, body: JSON.stringify(body) }).catch(function () {});
 }
 function post(payload, onDone, onFail) {
   var body = Object.assign({
@@ -163,25 +217,7 @@ function post(payload, onDone, onFail) {
   var doneWrapped = onDone, failWrapped = onFail;
   onDone = function (res) { unlock(); doneWrapped(res); };
   onFail = function (info, retry) { unlock(); failWrapped(info, retry); };
-  fetch(ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(body)
-  })
-  .then(function (r) {
-    return r.text().then(function (text) {
-      var data = null;
-      try { data = JSON.parse(text); } catch (e) { data = null; }
-      if (data && typeof data === 'object') return data;
-      var err = new Error('server');
-      err.kind = 'server'; err.status = r.status; err.detail = describeResponse_(text, r.status);
-      throw err;
-    });
-  }, function (netErr) {
-    var err = new Error('network'); err.kind = 'network';
-    err.detail = String((netErr && netErr.message) || netErr || 'fetch failed');
-    throw err;
-  })
+  (RPC ? rpcPost_(body) : fetchPost_(body))
   .then(function (res) {
     if (res && res.serverError) {
       onFail({ title: 'Something went wrong on our side.',
@@ -218,13 +254,10 @@ function describeResponse_(text, status) {
 }
 function report(err) {
   try {
-    fetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      keepalive: true,
-      body: JSON.stringify({ formType: 'raffle', formToken: FORMTK, website: '', step: 'report',
-        failedStep: 'consent', kind: err.kind || 'page', status: err.status || 0,
-        detail: String(err.detail || err.message || '').slice(0, 300), attempt: 1,
-        ua: String(navigator.userAgent || '').slice(0, 200) })
-    }).catch(function () {});
+    sendQuiet_({ formType: 'raffle', formToken: FORMTK, website: '', step: 'report',
+      failedStep: 'consent', kind: err.kind || 'page', status: err.status || 0,
+      detail: String(err.detail || err.message || '').slice(0, 300), attempt: 1,
+      ua: String(navigator.userAgent || '').slice(0, 200), transport: RPC ? 'rpc' : 'fetch' });
   } catch (e) { /* never throws */ }
 }
 // The failed state, in place of the one-line error: what failed, what the
@@ -262,6 +295,7 @@ function finish(title, message) {
 
 if (go) {
   go.addEventListener('click', function () {
+    if (INFLIGHT) return;
     setErr('');
     if (!el('consent').checked) {
       setErr('Please tick the consent box so we know it is okay to get in touch.');
@@ -299,6 +333,7 @@ if (go) {
 
 if (no) {
   no.addEventListener('click', function () {
+    if (INFLIGHT) return;
     setErr('');
     no.disabled = true;
     no.textContent = 'Saving…';

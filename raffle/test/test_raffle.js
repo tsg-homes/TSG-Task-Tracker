@@ -2096,6 +2096,40 @@ const linkTokenOf = mail => (String(mail.body).match(/action=confirm&t=([0-9a-f-
   check('timing: the invite step reports its laps', invited.timing && 'invite-mail' in invited.timing, JSON.stringify(invited.timing));
 }
 
+
+// ---- raffleRpc: the google.script.run door into doPost (2026-09-18) ---------
+// The kiosk saw a Drive 404 for a request the server had completed (11:50 ET,
+// iPad Chrome, plain exec URL, signed-in Google account). The pages now call
+// raffleRpc() through google.script.run when Apps Script serves them; it hands
+// the same JSON to doPost so every host check (honeypot, sanitize, QA mode,
+// token, rate limit) still runs, and returns the reply as text.
+{
+  const s = makeSandbox();
+  const seen = [];
+  s.doPost = e => { seen.push(e); return s.raffleHandleSubmission_(JSON.parse(e.postData.contents)); };
+  const out = at(DURING, () => s.raffleRpc(JSON.stringify(Object.assign({ formType: 'raffle', step: 'request' }, entry()))));
+  check('rpc: returns the reply as a string', typeof out === 'string', typeof out);
+  const res = JSON.parse(out);
+  check('rpc: a request step goes through doPost and mints a code', res.ok === true && res.needsCode === true && !!res.vid, out);
+  check('rpc: doPost saw the JSON under postData.contents with form=raffle',
+    seen.length === 1 && seen[0].postData.type === 'text/plain' && seen[0].parameter.form === 'raffle' &&
+    JSON.parse(seen[0].postData.contents).step === 'request');
+  const poll = JSON.parse(at(DURING, () => s.raffleRpc(JSON.stringify({ formType: 'raffle', step: 'poll', vid: res.vid }))));
+  check('rpc: the poll step answers directly (never spends the rate limit)', poll.ok === true && poll.verified === false && seen.length === 1, JSON.stringify(poll));
+  let threw = '';
+  try { s.raffleRpc('not json'); } catch (e) { threw = String(e.message); }
+  check('rpc: a body that is not JSON is refused', /not JSON/.test(threw), threw);
+  threw = '';
+  try { s.raffleRpc(JSON.stringify({ formType: 'openhouse', step: 'request' })); } catch (e) { threw = String(e.message); }
+  check('rpc: only the raffle can come through this door', /Not found/.test(threw) && seen.length === 1, threw);
+  // A report sent over the rpc transport says so on the Client Errors row.
+  at(DURING, () => s.raffleRpc(JSON.stringify({ formType: 'raffle', step: 'report', failedStep: 'request',
+    kind: 'server', status: 0, detail: 'the script call failed (ScriptError)', ua: 'iPad', transport: 'rpc' })));
+  const tab = s.__tabs['Client Errors'];
+  check('rpc: a failure report names its transport', !!tab && tab.rows[1].map(String).some(c => /via rpc/.test(c)),
+    tab && tab.rows[1].join(' | '));
+}
+
 const { passes, fails } = counts();
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
 process.exit(fails ? 1 : 0);

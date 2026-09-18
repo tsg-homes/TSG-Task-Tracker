@@ -754,8 +754,49 @@ body.qa-test{padding-top:62px;}
   // blaming the guest's phone for a server-side failure and giving them nowhere
   // to go. `detail` keeps what the server actually sent, so the guest sees it and
   // so does the report that goes back to the server (see report()).
+  // Transport (2026-09-18, after the kiosk saw a 404 for a request the server
+  // had completed): when Apps Script serves this page it also gives it
+  // google.script.run, which calls the script directly inside Google's own
+  // session -- no cross-origin fetch, no 302 to googleusercontent, no Drive
+  // 404 or "Failed to fetch" for a visitor who happens to be signed in to a
+  // Google account. The server side is raffleRpc(json) in RaffleCode.gs, which
+  // hands the same JSON to doPost. fetch() stays only for a page opened from a
+  // file (the Playwright tests) where google.script.run does not exist.
+  var RPC = !!(window.google && google.script && google.script.run);
   function post(payload){
     var t0 = Date.now();
+    return (RPC ? rpcPost_(payload) : fetchPost_(payload)).then(function(data){
+      data.__ms = Date.now() - t0;
+      return data;
+    });
+  }
+  function parseAnswer_(text, status){
+    var data = null;
+    try { data = JSON.parse(text); } catch (e) { data = null; }
+    if (data && typeof data === 'object') return data;
+    var err = new Error('server');
+    err.kind = 'server'; err.status = status; err.detail = describeResponse_(text, status);
+    throw err;
+  }
+  function rpcPost_(payload){
+    return new Promise(function(resolve, reject){
+      google.script.run
+        .withSuccessHandler(function(text){
+          try { resolve(parseAnswer_(String(text == null ? '' : text), 200)); } catch (err) { reject(err); }
+        })
+        .withFailureHandler(function(e){
+          // google.script.run reports a thrown script error and a lost
+          // connection through the same handler; the message tells them apart.
+          var msg = String((e && e.message) || e || 'the call failed');
+          var err = new Error('rpc');
+          err.kind = /network|offline|connect|timed out|timeout|unavailable|try again/i.test(msg) ? 'network' : 'server';
+          err.status = 0; err.detail = 'the script call failed (' + msg + ')';
+          reject(err);
+        })
+        .raffleRpc(JSON.stringify(payload));
+    });
+  }
+  function fetchPost_(payload){
     return fetch(API, {
       method: 'POST',
       // text/plain keeps this a CORS "simple request" — Apps Script web apps
@@ -764,12 +805,7 @@ body.qa-test{padding-top:62px;}
       body: JSON.stringify(payload)
     }).then(function(r){
       return r.text().then(function(text){
-        var data = null;
-        try { data = JSON.parse(text); } catch (e) { data = null; }
-        if (data && typeof data === 'object') { data.__ms = Date.now() - t0; return data; }
-        var err = new Error('server');
-        err.kind = 'server'; err.status = r.status; err.detail = describeResponse_(text, r.status);
-        throw err;
+        return parseAnswer_(text, r.status);
       }, function(readErr){
         var err = new Error('network'); err.kind = 'network';
         err.detail = 'the reply was cut off (' + String((readErr && readErr.message) || readErr) + ')';
@@ -780,6 +816,16 @@ body.qa-test{padding-top:62px;}
       err.detail = String((netErr && netErr.message) || netErr || 'fetch failed');
       throw err;
     });
+  }
+  // Fire-and-forget send on whichever transport the page has.
+  function sendQuiet_(body){
+    if (RPC) {
+      google.script.run.withSuccessHandler(function(){}).withFailureHandler(function(){})
+        .raffleRpc(JSON.stringify(body));
+      return;
+    }
+    fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                 body: JSON.stringify(body), keepalive: true }).catch(function(){});
   }
 
   // What an HTML (or otherwise non-JSON) answer said, in one line: status, the
@@ -822,21 +868,50 @@ body.qa-test{padding-top:62px;}
 
   // The failed state: the message, the server's words, one Retry that re-sends
   // exactly what was sent before (nothing is retyped), and the fallback.
+  // Retry is on a cooldown so a mashed Retry cannot fire a burst: 3 s after
+  // the first failures, 30 s once the same step has failed 3 times in a row
+  // (STREAK counts failures per step until a request succeeds). The main
+  // buttons honour the same cooldown through canSend_(), so going around the
+  // Retry button does not help either.
+  var STREAK = {};
+  var RETRY_COOL_S = 3, RETRY_LOCK_AFTER = 3, RETRY_LOCK_S = 30;
   function showFail(id, info, retry, attempt){
     var box = document.getElementById(id);
     box.innerHTML = '';
-    var t = document.createElement('div'); t.className = 't'; t.textContent = info.title;
+    STREAK[id] = (STREAK[id] || 0) + 1;
+    var locked = STREAK[id] >= RETRY_LOCK_AFTER;
+    var coolS = locked ? RETRY_LOCK_S : RETRY_COOL_S;
+    COOL_UNTIL = Date.now() + coolS * 1000;
+    var t = document.createElement('div'); t.className = 't';
+    t.textContent = locked ? 'Stopped after ' + STREAK[id] + ' tries. ' + info.title : info.title;
     box.appendChild(t);
     if (info.detail) {
       var d = document.createElement('div'); d.className = 'd'; d.textContent = info.detail;
       box.appendChild(d);
     }
     var b = document.createElement('button'); b.type = 'button';
-    b.textContent = attempt > 1 ? 'Retry (attempt ' + (attempt + 1) + ')' : 'Retry';
-    b.addEventListener('click', function(){ clearFail(id); retry(); });
+    var label = attempt > 1 ? 'Retry (attempt ' + (attempt + 1) + ')' : 'Retry';
+    b.disabled = true;
+    b.textContent = label + ' in ' + coolS + ' s';
+    var coolIv = setInterval(function(){
+      var left = Math.ceil((COOL_UNTIL - Date.now()) / 1000);
+      if (!box.contains(b)) { clearInterval(coolIv); return; }
+      if (left > 0) { b.textContent = label + ' in ' + left + ' s'; return; }
+      clearInterval(coolIv);
+      b.disabled = false;
+      b.textContent = label;
+    }, 250);
+    b.addEventListener('click', function(){
+      if (!canSend_()) return;
+      clearInterval(coolIv);
+      clearFail(id);
+      retry();
+    });
     box.appendChild(b);
     var alt = document.createElement('div'); alt.className = 'alt';
-    alt.textContent = 'If it fails again, find someone from TSG at the table. We will enter you by hand.';
+    alt.textContent = locked
+      ? 'Find someone from TSG at the table now. We will enter you by hand. Retry unlocks in ' + coolS + ' seconds.'
+      : 'If it fails again, find someone from TSG at the table. We will enter you by hand.';
     box.appendChild(alt);
     box.classList.add('on');
     // Loud: a fixed banner at the top as well, a buzz where the phone allows it,
@@ -878,10 +953,10 @@ body.qa-test{padding-top:62px;}
         // connection (seen live 2026-09-18 10:58 ET, desktop Chrome).
         online: (typeof navigator.onLine === 'boolean') ? (navigator.onLine ? '1' : '0') : '',
         origin: String(location.origin || '').slice(0, 80),
-        ua: String(navigator.userAgent || '').slice(0, 200)
+        ua: String(navigator.userAgent || '').slice(0, 200),
+        transport: RPC ? 'rpc' : 'fetch'
       };
-      fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                   body: JSON.stringify(body), keepalive: true }).catch(function(){});
+      sendQuiet_(body);
     } catch (e) { /* reporting must never throw */ }
   }
 
@@ -893,8 +968,17 @@ body.qa-test{padding-top:62px;}
   // overlay that names the step, counts the seconds, and after 8 s says it is
   // our server and not their phone. Nothing can be tapped twice. The button
   // and the line under it are updated as well, for when the overlay closes.
+  // Button mashing (2026-09-18, kiosk rehearsal): one request at a time, ever.
+  // INFLIGHT is set here and cleared by the function busy() returns; every
+  // entry point asks canSend_() first, so a second tap, an Enter on top of a
+  // click, or a tap on a button the overlay has not covered yet does nothing.
+  // COOL_UNTIL is the Retry cooldown showFail() sets after a failure.
   var overlay = document.getElementById('busyOverlay');
+  var INFLIGHT = false, COOL_UNTIL = 0, busyIv = null;
+  function canSend_(){ return !INFLIGHT && Date.now() >= COOL_UNTIL; }
   function busy(button, label, noteId, what){
+    INFLIGHT = true;
+    if (busyIv) clearInterval(busyIv);
     button.disabled = true;
     button.textContent = label;
     var note = document.getElementById(noteId);
@@ -904,7 +988,7 @@ body.qa-test{padding-top:62px;}
     document.getElementById('busySecs').textContent = '0 s';
     document.getElementById('busySlow').textContent = '';
     overlay.classList.add('on');
-    var iv = setInterval(function(){
+    var iv = busyIv = setInterval(function(){
       var s = Math.round((Date.now() - t0) / 1000);
       document.getElementById('busySecs').textContent = s + ' s';
       if (s >= 8) document.getElementById('busySlow').textContent =
@@ -914,6 +998,9 @@ body.qa-test{padding-top:62px;}
     }, 1000);
     return function(resetLabel, res){
       clearInterval(iv);
+      if (busyIv === iv) busyIv = null;
+      INFLIGHT = false;
+      if (res && res.ok) STREAK = {};       // a success ends every failure streak
       overlay.classList.remove('on');
       button.disabled = false;
       button.textContent = resetLabel;
@@ -1022,6 +1109,7 @@ body.qa-test{padding-top:62px;}
 
   form.addEventListener('submit', function(ev){
     ev.preventDefault();
+    if (!canSend_()) return;
     document.getElementById('submitErr').textContent = '';
 
     var payload = {
@@ -1081,6 +1169,7 @@ body.qa-test{padding-top:62px;}
   }
 
   function submitCode(){
+    if (!canSend_()) return;
     var code = codeInput.value.replace(/\D/g,'');
     if (code.length !== 6) { codeErr.textContent = 'Enter the 6-digit code from your email.'; return; }
     verifyAttempt = 0;
@@ -1122,6 +1211,7 @@ body.qa-test{padding-top:62px;}
     });
   }
   confirmBtn.addEventListener('click', function(){
+    if (!canSend_()) return;
     confirmAttempt = 0;
     confirmLink({
       formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
@@ -1152,11 +1242,12 @@ body.qa-test{padding-top:62px;}
   function pollVerified(){
     if (!pendingVid || Date.now() - kioskPollStarted > 15 * 60000) { stopKioskPoll(); return; }
     var vid = pendingVid;
-    fetch(API + '?form=raffle&action=poll&vid=' + encodeURIComponent(vid), { method: 'GET' })
-      .then(function(r){ return r.text(); })
-      .then(function(text){
-        var data = null;
-        try { data = JSON.parse(text); } catch (e) { data = null; }
+    var ask = RPC
+      ? rpcPost_({ formType: 'raffle', step: 'poll', vid: vid })
+      : fetch(API + '?form=raffle&action=poll&vid=' + encodeURIComponent(vid), { method: 'GET' })
+          .then(function(r){ return r.text(); })
+          .then(function(text){ var d = null; try { d = JSON.parse(text); } catch (e) { d = null; } return d; });
+    ask.then(function(data){
         if (data && data.ok && data.verified && pendingVid === vid && kioskPoll) {
           stopKioskPoll();
           enteredOk({ ok: true, message: 'You confirmed from the email and you are entered. ' +
@@ -1199,6 +1290,7 @@ body.qa-test{padding-top:62px;}
 
   // ---- Step 3: the referral ----
   referBtn.addEventListener('click', function(){
+    if (!canSend_()) return;
     ['refNameErr','refPhoneErr','refEmailErr','refRoleErr'].forEach(function(id){ setErr(id,''); });
     document.getElementById('referErr').textContent = '';
 
@@ -1274,6 +1366,7 @@ body.qa-test{padding-top:62px;}
     });
   }
   inviteBtn.addEventListener('click', function(){
+    if (!canSend_()) return;
     inviteAttempt = 0;
     sendInvite({
       formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,

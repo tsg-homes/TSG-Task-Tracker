@@ -34,10 +34,12 @@ untouched — nothing public goes anywhere near its Anthropic key or script toke
 
 ## Deployment status
 
-**Live as version @77, deployed 2026-09-18 by `info@tsg.homes` from a Claude Code
+**Live as version @79, deployed 2026-09-18 by `info@tsg.homes` from a Claude Code
 cloud session** (@75: the 9/17 rehearsal fixes, real errors with retry and a loud banner,
 page lockout, error alerts to Durand only, phone mask, select, kiosk reset; @76: pages post
-to the plain exec URL; @77: the Confirm-my-entry button, kiosk poll, chain-link fix). The
+to the plain exec URL; @77: the Confirm-my-entry button, kiosk poll, chain-link fix; @78:
+one silent retry on a transport failure, device-neutral wording; @79: pages call the script
+through `google.script.run` instead of fetch, button-mash lockout and Retry cooldown). The
 live project also carries `Review.js`, `ReviewLogic.js` and `ReviewPage.html`, which
 are not this repo's and are pulled and pushed back untouched. Earlier: @63 on 2026-09-17.
 
@@ -478,6 +480,45 @@ three names and phones in plain text), the winner email failing to send
 (nothing stamped, so Retry sends), and a redraw whose new draw fails (the old
 result is on the Draw Audit tab). The alternate-pick audit line is now written
 *after* a successful send, not before.
+
+### The transport: `google.script.run`, not fetch (2026-09-18, @79)
+
+The 11:50 ET kiosk test: the page reported *Our server returned an error* (HTTP
+404, Google Drive's "Page Not Found") for a request the server had completed —
+the code email arrived, and the Retry went through 12 s later. Same family as
+the earlier *Failed to fetch* on desktop Chrome. Cause: a `fetch` POST to the
+exec URL is answered with a 302 to `script.googleusercontent.com`, and with a
+Google account signed in on the device that hop can come back as a Drive 404
+or without CORS headers, even on the plain `/macros/s/` URL. The script has
+already run by then, so a retry duplicates the work and the guest sees a
+failure that was not one.
+
+Every page now calls the script directly when Apps Script serves it:
+`google.script.run.raffleRpc(json)` (`RPC` flag on the page, `raffleRpc` in
+`RaffleCode.gs`). That runs inside Google's own page session — no cross-origin
+request, no redirect, no CORS. `raffleRpc` hands the same JSON to `doPost`, so
+the honeypot, sanitizer, QA mode, page token and rate limit all still apply; the
+kiosk poll (`step: 'poll'`) answers directly, as the GET did. The reply is
+returned as text and parsed exactly as before, so a non-JSON answer still reads
+as a server error page. A failed call (a thrown script error, or a lost
+connection) arrives through `withFailureHandler`; its message decides whether
+it is shown as a connection problem or as ours. `fetch` remains only for a page
+opened from a file (the Playwright tests). Client Errors rows now say `via rpc`
+or `via fetch` in the Device column, so the next report shows which path failed.
+
+### Button mashing (2026-09-18, @79)
+
+One request in flight at a time, ever: `busy()` sets `INFLIGHT`, and every entry
+point (the submit, the code button and its Enter key, the confirm button, the
+referral and invite buttons, Retry) asks `canSend_()` first. Six taps on *Enter
+the Drawing* send one request; Enter on top of a tap verifies once. On the
+consent page the same guard sits on both buttons.
+
+After a failure, Retry counts down 3 s before it can be pressed, and the main
+buttons honour the same cooldown so going around Retry does nothing. Three
+failures in a row on the same step (`STREAK`, reset by any success) lock that
+step for 30 s: *Stopped after 3 tries*, *Find someone from TSG at the table
+now*, Retry counts down from 30. Nothing typed is lost at any point.
 
 ### The button in the code email (2026-09-18, "build both")
 

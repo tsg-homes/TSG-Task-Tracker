@@ -1085,6 +1085,8 @@ function raffleRecordClientFailure_(d, test) {
   var origin = collapseSpaces(d && d.origin).slice(0, 80);
   if (online === '1' || online === '0') ua = 'online=' + (online === '1' ? 'yes' : 'no') + ' · ' + ua;
   if (origin) ua = ua + ' · from ' + origin;
+  var transport = String((d && d.transport) || '').toLowerCase();
+  if (transport === 'rpc' || transport === 'fetch') ua = ua + ' · via ' + transport;
   var attempt = Math.max(1, Math.min(99, parseInt(d && d.attempt, 10) || 1));
   var kiosk = String((d && d.kiosk) || '') === '1';
   var where = kiosk ? 'kiosk' : 'phone';
@@ -1255,6 +1257,38 @@ function raffleRequestCode_(d, test) {
   Logger.log('Raffle: verification code emailed (vid ' + vid + ', test=' + !!test + ').');
   return jsonOut({ ok: true, needsCode: true, vid: vid, timing: timer.done(),
     message: 'We emailed a 6-digit code to ' + email + '.' });
+}
+
+// ---------- In-page transport: google.script.run (2026-09-18) ----------
+// Every page this script serves calls the server through google.script.run
+// when it can, and only falls back to fetch() (local test pages). Why: a fetch
+// to the exec URL gets a 302 to script.googleusercontent.com, and with a Google
+// account signed in on the device that redirect intermittently comes back as a
+// Drive "Page Not Found" or a CORS-less error, so the page reports a failure
+// for a request that ran (the guest got the code email after the error: desktop
+// Chrome 10:58 ET, the kiosk iPad 11:50 ET, both 2026-09-18). google.script.run
+// has no redirect and no CORS, and its failure handler carries the real error.
+//
+// This is the same doPost, reached the other way: the event is rebuilt and
+// doPost runs its honeypot, sanitize, QA-token, submit-token and rate-limit
+// checks exactly as for a fetch. Only raffle payloads are accepted here, so the
+// other forms cannot be driven through it. The kiosk poll is answered directly
+// (read-only; it must not spend a rate-limit slot).
+function raffleRpc(json) {
+  var data;
+  try { data = JSON.parse(String(json || '')); } catch (parseErr) { data = null; }
+  if (!data || typeof data !== 'object') throw new Error('Bad request: not JSON.');
+  if (String(data.formType || '').toLowerCase() !== 'raffle') throw new Error('Not found.');
+  if (String(data.step || '').toLowerCase() === RAFFLE_POLL_ACTION) {
+    return rafflePollVerified_({ parameter: { vid: data.vid } }).getContent();
+  }
+  var out = doPost({
+    postData: { contents: JSON.stringify(data), type: 'text/plain', length: json.length },
+    parameter: { form: 'raffle' }, parameters: { form: ['raffle'] }, queryString: 'form=raffle',
+    contentLength: json.length
+  });
+  if (out && typeof out.getContent === 'function') return out.getContent();
+  return JSON.stringify(out);
 }
 
 // ---------- The confirm button in the code email (2026-09-18) ----------

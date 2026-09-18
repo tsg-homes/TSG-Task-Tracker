@@ -468,6 +468,14 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   behind `#busyOverlay` with a seconds counter; `raffleTimer_` puts `timing` on the
   request/verify/referral/invite JSON (shown in test mode). Kiosk: `Start over for the next
   guest` only with `&kiosk=1`. Full write-up: README "Failure handling".
+- Transport and mash lockout (2026-09-18, @79): every raffle page calls
+  `google.script.run.raffleRpc(json)` when Apps Script serves it (fetch only from a file, i.e.
+  the Playwright tests); `raffleRpc` hands the JSON to the host `doPost` (all host checks still
+  run) and answers `step: 'poll'` directly. Reason: the 11:50 ET kiosk test got a Drive 404 for
+  a request the server had completed (the 302 to googleusercontent with a signed-in Google
+  account). One request in flight at a time (`INFLIGHT` / `canSend_()` on every entry point),
+  Retry cooldown 3 s, 30 s lock after 3 failures in a row on a step (`STREAK`). Tests: server
+  "raffleRpc" section (doPost stubbed), form section 18 (google.script.run shim).
 - Confirm button (2026-09-18, @77): the code email carries a "Confirm my entry" button
   (`action=confirm&t=<link token>` -> form at `#confirmPanel`; the tap POSTs `confirmlink`,
   which runs `raffleVerifyCode_` with the server-held code; single use; a QA entry's link

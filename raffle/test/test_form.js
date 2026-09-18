@@ -727,6 +727,146 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
     check('fix 2: three send attempts went to the server', cposts.filter(b => b.consoleAction === 'send').length === 3);
   }
 
+  // ---- 18. google.script.run transport and the button-mash lockout (2026-09-18) ----
+  // The kiosk reported a Drive 404 for a request the server had completed. When
+  // Apps Script serves the page, google.script.run is present and every call
+  // goes through raffleRpc() instead of a cross-origin fetch. A shim stands in
+  // for it here; fetch must never be touched while it is present.
+  {
+    let fetches = 0;
+    await p.route('**/exec', r => { fetches++; r.fulfill({ status: 200, body: '{"ok":true}' }); });
+    await p.addInitScript(() => {
+      window.__rpcCalls = [];
+      window.__rpcMode = 'ok';
+      const run = {
+        _ok: null, _fail: null,
+        withSuccessHandler(f) { const c = Object.create(run); c._ok = f; c._fail = this._fail; return c; },
+        withFailureHandler(f) { const c = Object.create(run); c._fail = f; c._ok = this._ok; return c; },
+        raffleRpc(json) {
+          const b = JSON.parse(json); window.__rpcCalls.push(b);
+          const self = this;
+          setTimeout(() => {
+            if (window.__rpcMode === 'fail') return self._fail && self._fail(new Error('ScriptError: Not found.'));
+            if (window.__rpcMode === 'net')  return self._fail && self._fail(new Error('NetworkError: unable to connect'));
+            if (window.__rpcMode === 'html') return self._ok && self._ok('<html><title>Sorry</title><body>unable to open the file</body></html>');
+            if (b.step === 'request') return self._ok && self._ok(JSON.stringify({ ok: true, needsCode: true, vid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }));
+            if (b.step === 'verify')  return self._ok && self._ok(JSON.stringify({ ok: true, verified: true, vid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', firstName: 'Dana' }));
+            if (b.step === 'poll')    return self._ok && self._ok(JSON.stringify({ ok: true, verified: window.__pollVerified === true }));
+            return self._ok && self._ok('{"ok":true}');
+          }, 80);
+        }
+      };
+      window.google = { script: { run: run } };
+    });
+    await p.goto(LIVE()); await p.waitForTimeout(250);
+    const rpcCalls = () => p.evaluate(() => window.__rpcCalls);
+    await fillEntry();
+    await p.click('#submitBtn');
+    await p.waitForTimeout(500);
+    let calls = await rpcCalls();
+    check('rpc: the request goes through google.script.run.raffleRpc', calls.length === 1 && calls[0].step === 'request' && calls[0].formType === 'raffle', JSON.stringify(calls));
+    check('rpc: and never through fetch', fetches === 0);
+    check('rpc: the code step opens on the reply', await p.locator('#codePanel').isVisible());
+    // A thrown script error lands in the failed state, named as a server-side failure.
+    await p.evaluate(() => { window.__rpcMode = 'fail'; });
+    await p.fill('#codeInput', '654321');
+    await p.click('#codeBtn');
+    await p.waitForTimeout(600);
+    const rpcFail = await p.locator('#codeFail').textContent();
+    check('rpc: a failed script call shows as our error with its message', /server returned an error/i.test(rpcFail) && /ScriptError/.test(rpcFail), rpcFail);
+    calls = await rpcCalls();
+    check('rpc: the failure report rides the same transport and says so', calls.some(b => b.step === 'report' && b.failedStep === 'verify' && b.transport === 'rpc'), JSON.stringify(calls.slice(-2)));
+    check('rpc: still nothing through fetch', fetches === 0);
+    // An HTML answer is impossible over rpc, but a non-JSON string still reads as a server error page.
+    await p.evaluate(() => { window.__rpcMode = 'html'; });
+    await p.click('#codeFail button');
+    await p.waitForTimeout(600);
+    check('rpc: a non-JSON reply is described like an error page', /unable to open the file/.test(await p.locator('#codeFail').textContent()));
+    await p.evaluate(() => { window.__rpcMode = 'ok'; });
+    await p.click('#codeFail button');
+    await p.waitForTimeout(600);
+    check('rpc: the retry succeeds and moves on', await p.locator('#referPanel').isVisible());
+
+    // Kiosk poll over rpc: a poll call every 5 s, no fetch.
+    await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000, vals: { kiosk: '1' } }));
+    await p.waitForTimeout(250);
+    await fillEntry();
+    await p.click('#submitBtn');
+    await p.waitForTimeout(5600);
+    calls = await rpcCalls();
+    check('rpc: the kiosk polls through raffleRpc', calls.some(b => b.step === 'poll' && b.vid === 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'), JSON.stringify(calls));
+    check('rpc: the kiosk poll never uses fetch', fetches === 0);
+    await p.evaluate(() => { window.__pollVerified = true; });
+    await p.waitForTimeout(5300);
+    check('rpc: a confirmed poll moves the kiosk on', await p.locator('#successPanel').isVisible());
+    await p.unroute('**/exec');
+  }
+
+  // Button mashing: one request in flight at a time, a Retry cooldown, and a
+  // 30 s lock after three failures in a row on the same step.
+  {
+    // A fresh context without the rpc shim.
+    const p2 = await b.newPage({ viewport: { width: 420, height: 900 } });
+    const posts = [];
+    let mode = 'slow';
+    await p2.route('**/exec', async r => {
+      const body = JSON.parse(r.request().postData());
+      posts.push(body);
+      if (body.step === 'report') return r.fulfill({ status: 200, body: '{"ok":true}' });
+      if (mode === 'html') return r.fulfill({ status: 200, contentType: 'text/html', body: '<html><title>Sorry</title><body>unable to open the file</body></html>' });
+      await new Promise(res => setTimeout(res, 1200));
+      if (body.step === 'request') return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, needsCode: true, vid: VID }) });
+      if (body.step === 'verify')  return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, verified: true, vid: VID, firstName: 'Dana' }) });
+      return r.fulfill({ status: 200, body: '{"ok":true}' });
+    });
+    await p2.goto(LIVE()); await p2.waitForTimeout(250);
+    await p2.fill('#fullName', 'Dana Reid'); await p2.fill('#phone', '2155558123');
+    await p2.fill('#email', 'dana@mail-test.co'); await p2.check('#consent');
+    await p2.click('#submitBtn');
+    // Five more taps straight at the button and the form, past the overlay.
+    await p2.evaluate(() => { for (let i = 0; i < 5; i++) { document.getElementById('submitBtn').click();
+      document.getElementById('raffleForm').requestSubmit(); } });
+    await p2.waitForTimeout(1700);
+    check('mash: six taps on Enter the Drawing send one request', posts.filter(b => b.step === 'request').length === 1, String(posts.length));
+    check('mash: the code step opened once', await p2.locator('#codePanel').isVisible());
+    await p2.fill('#codeInput', '654321');
+    await p2.press('#codeInput', 'Enter');
+    await p2.evaluate(() => { const b = document.getElementById('codeBtn'); for (let i = 0; i < 4; i++) b.click();
+      const inp = document.getElementById('codeInput');
+      for (let i = 0; i < 3; i++) inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    await p2.waitForTimeout(1700);
+    check('mash: Enter plus seven more taps verify once', posts.filter(b => b.step === 'verify').length === 1, String(posts.filter(b => b.step === 'verify').length));
+    check('mash: the referral step opened', await p2.locator('#referPanel').isVisible());
+
+    // The cooldown: after a failure Retry counts down and the main button is dead meanwhile.
+    await p2.goto(LIVE()); await p2.waitForTimeout(250);
+    posts.length = 0; mode = 'html';
+    await p2.fill('#fullName', 'Dana Reid'); await p2.fill('#phone', '2155558123');
+    await p2.fill('#email', 'dana@mail-test.co'); await p2.check('#consent');
+    await p2.click('#submitBtn');
+    await p2.waitForTimeout(500);
+    const retry = p2.locator('#submitFail button');
+    check('cooldown: Retry is disabled right after a failure', await retry.isDisabled());
+    check('cooldown: and counts down', /Retry in [1-3] s/.test(await retry.textContent()), await retry.textContent());
+    await p2.evaluate(() => { document.getElementById('submitBtn').click(); document.getElementById('raffleForm').requestSubmit(); });
+    await p2.waitForTimeout(300);
+    check('cooldown: the main button sends nothing during the cooldown', posts.filter(b => b.step === 'request').length === 1);
+    await p2.waitForTimeout(3000);
+    check('cooldown: Retry is live after 3 s', !(await retry.isDisabled()) && (await retry.textContent()) === 'Retry', await retry.textContent());
+    await retry.click();               // failure 2
+    await p2.waitForTimeout(500);
+    check('cooldown: the second failure counts the attempt', /Retry \(attempt 3\) in [1-3] s/.test(await p2.locator('#submitFail button').textContent()), await p2.locator('#submitFail button').textContent());
+    await p2.locator('#submitFail button').click();   // waits for the cooldown; failure 3
+    await p2.waitForTimeout(500);
+    const lockText = await p2.locator('#submitFail').textContent();
+    check('lock: the third failure in a row stops and says so', /Stopped after 3 tries/.test(lockText), lockText);
+    check('lock: sends them to the table and names the 30 s unlock', /Find someone from TSG at the table now/.test(lockText) && /unlocks in 30 seconds/.test(lockText));
+    check('lock: Retry is on a 30 s countdown', /Retry \(attempt 4\) in (30|29|28) s/.test(await p2.locator('#submitFail button').textContent()), await p2.locator('#submitFail button').textContent());
+    check('lock: exactly three requests went out', posts.filter(b => b.step === 'request').length === 3);
+    check('lock: the typed details are still there', (await p2.inputValue('#email')) === 'dana@mail-test.co');
+    await p2.close();
+  }
+
   await b.close();
   fs.rmSync(OUT, { recursive: true, force: true });
   console.log(fails ? '\n' + fails + ' FAILED' : '\nAll form tests passed.');
