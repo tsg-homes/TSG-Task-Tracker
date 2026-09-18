@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.15';
+const TSG_CODE_VERSION = '2026-09-18.16';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -153,9 +153,8 @@ function processInbox_() {
         catch (loadErr2) { Logger.log('[inbox] cannot load the data file to record ' + errors.length + ' error(s): ' + loadErr2); }
       }
       if (dataDoc) { errors.forEach(function(e) { tsgRecordInboxError_(dataDoc, e); }); dataDirty = true; }
-      // A filed patch is also mailed to the owner (2026-09-18, per Durand: "a malformed inbox
-      // patch is dropped with no alert"). The dashboard alert only helps once the page is open.
-      tsgNotifyInboxErrors_(errors);
+      // No email (Durand 2026-09-18: "dont email me, just log and notify in tracker"): the record
+      // above is the log; the dashboard raises a critical alert row and a toast for a new entry.
     }
 
     if (rulesetsDoc && applied.some(function(p) { return p.patch.target === 'rulesets'; })) {
@@ -194,32 +193,11 @@ function processInbox_() {
 // Script-cache helpers: every call is best-effort, the cache is an optimization only.
 var TSG_INBOX_EMPTY_TTL_SEC = 50;
 var TSG_INBOX_KEEP_DAYS = 7;   // how long a FAILED-/PARTIAL-/MALFORMED- file stays in _Inbox
-var TSG_INBOX_MAIL_TTL_SEC = 21600;   // one mail per filed file per 6 h (retries never re-mail)
-/** Where a JSON parse failed, as text a person can act on: "... near: <60 chars around it>". */
 function tsgJsonErrorExcerpt_(text, err) {
   var m = /position (\d+)/.exec(String((err && err.message) || err || ''));
   if (!m || !text) return '';
   var at = Number(m[1]), from = Math.max(0, at - 30);
   return ' near: ' + JSON.stringify(String(text).slice(from, at + 30));
-}
-/** One email to the owner per pass naming every newly filed patch; a file already mailed within the TTL is skipped. */
-function tsgNotifyInboxErrors_(errors) {
-  var fresh = (errors || []).filter(function(e) { return e && e.file && !tsgCacheGet_('inboxErrMailed:' + e.file); });
-  if (!fresh.length) return 0;
-  try {
-    var lines = fresh.map(function(e) {
-      var s = '- ' + e.file + (e.op ? ' (' + e.op + ')' : '') + ': ' + e.error;
-      if (e.appliedSubOps != null) s += '\n    applied sub-ops: ' + e.appliedSubOps;
-      if (e.failedSubOps && e.failedSubOps.length) s += '\n    failed sub-ops: ' + e.failedSubOps.map(function(x) { return '#' + x.index + ' ' + x.op + (x.id != null ? ' id ' + x.id : '') + ': ' + x.error; }).join('; ');
-      return s;
-    });
-    MailApp.sendEmail(OWNER_EMAIL, 'Task Tracker: ' + fresh.length + ' inbox patch' + (fresh.length === 1 ? '' : 'es') + ' failed',
-      'These patches did not apply, or applied only in part. Each file stays in _Inbox under FAILED-/PARTIAL-/MALFORMED- for ' +
-      TSG_INBOX_KEEP_DAYS + ' days; the dashboard lists them under Settings > General with Retry and Dismiss.\n\n' + lines.join('\n') +
-      '\n\nBackend ' + TSG_CODE_VERSION);
-    fresh.forEach(function(e) { tsgCachePut_('inboxErrMailed:' + e.file, '1', TSG_INBOX_MAIL_TTL_SEC); });
-  } catch (mailErr) { Logger.log('[inbox] error mail failed: ' + mailErr.message); }
-  return fresh.length;
 }
 function tsgCachePut_(k, v, ttlSec) { try { CacheService.getScriptCache().put(k, v, ttlSec); } catch (err) {} }
 function tsgCacheGet_(k) { try { return CacheService.getScriptCache().get(k); } catch (err) { return null; } }

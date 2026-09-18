@@ -2101,20 +2101,11 @@ section('Write amplification: slim judgments, coalesced step requests, history r
     let res = sandbox.processInbox_();
     const errs = JSON.parse(dataOnDisk).meta.inboxErrors;
     check('a malformed file is filed MALFORMED-, recorded with the parse position, the text around it and its size', res.malformed === 1 && malformed.name === 'MALFORMED-claude-tracker-routine-patch4-j49.json' && errs[0].file === 'claude-tracker-routine-patch4-j49.json' && /position \d+/.test(errs[0].error) && /near: /.test(errs[0].error) && errs[0].bytes === badJson.length);
-    check('ONE email to the owner names every filed patch of the pass with its error', sentMail.length === 1 && sentMail[0].to === 'durand@thestawaszgroup.com' && /2 inbox patches failed/.test(sentMail[0].subject) && sentMail[0].body.includes('claude-tracker-routine-patch4-j49.json') && sentMail[0].body.includes('nosuch.json') && /999|not found/.test(sentMail[0].body) && sentMail[0].body.includes('malformed JSON'));
-    // the same file names failing again within the TTL do not mail twice
+    check('NO email is sent for a filed patch (Durand: "dont email me, just log and notify in tracker"); the record is the log', sentMail.length === 0 && errs.length === 2 && errs[1].file === 'nosuch.json');
     const again = fakePatchFile('nosuch.json', { target: 'data', op: 'update_task', id: 999, fields: {} });
     sandbox.DriveApp.getFolderById = () => fakeInbox([again]);
     res = sandbox.processInbox_();
-    check('a repeat of the same file name within 6 h is recorded but not mailed again', res.failed === 1 && sentMail.length === 1 && JSON.parse(dataOnDisk).meta.inboxErrors.length === 3);
-    // a mail failure never blocks the pass
-    const savedSend = sandbox.MailApp.sendEmail;
-    sandbox.MailApp.sendEmail = () => { throw new Error('mail quota'); };
-    const third = fakePatchFile('third.json', { target: 'data', op: 'update_task', id: 999, fields: {} });
-    sandbox.DriveApp.getFolderById = () => fakeInbox([third]);
-    res = sandbox.processInbox_();
-    check('a failing mail send is logged and the pass still files and records the patch', res.failed === 1 && third.name === 'FAILED-third.json' && JSON.parse(dataOnDisk).meta.inboxErrors.length === 4);
-    sandbox.MailApp.sendEmail = savedSend;
+    check('a repeat is filed and recorded again, still without mail', res.failed === 1 && sentMail.length === 0 && JSON.parse(dataOnDisk).meta.inboxErrors.length === 3);
     sandbox.LockService.getScriptLock = origLock; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.DriveApp.getFileById = origGetFileById;
     sentMail = []; cacheStore = {};
   }

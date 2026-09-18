@@ -1236,6 +1236,18 @@ setTimeout(async () => {
     if (!a || a.level !== 'warn' || !/applied in part/.test(a.text)) throw new Error('partial entry not a warning: ' + JSON.stringify(a));
     w.eval('RAW_META.inboxErrors = []');
   });
+  tryCall('inbox errors: a new entry raises ONE in-tracker toast naming the file, never repeated for the same entry (no email)', () => {
+    try { w.localStorage.removeItem('tsgSeenInboxErrorTs'); } catch (e) {}
+    w.eval("RAW_META.inboxErrors = [{ ts: '2026-09-18T14:45:24.521Z', file: 'claude-tracker-routine-patch4-j49.json', op: null, error: 'malformed JSON at position 3463' }]");
+    w.document.querySelectorAll('.tsg-toast').forEach(el => el.remove());
+    const n1 = w.checkInboxErrorToasts_();
+    const toasts = Array.from(w.document.querySelectorAll('.tsg-toast')).map(el => el.textContent);
+    if (n1 !== 1 || toasts.length !== 1 || !/dropped/.test(toasts[0]) || !/patch4-j49\.json/.test(toasts[0])) throw new Error('toast missing: ' + JSON.stringify(toasts));
+    const n2 = w.checkInboxErrorToasts_();
+    if (n2 !== 0 || w.document.querySelectorAll('.tsg-toast').length !== 1) throw new Error('toast repeated');
+    w.document.querySelectorAll('.tsg-toast').forEach(el => el.remove());
+    w.eval('RAW_META.inboxErrors = []');
+  });
   tryCall('judge-now chip: hidden with an empty queue, counts pending judgments, prompt names the ids and the data file', () => {
     w.eval('RAW_META.judgments = []'); w.renderJudgeChip_();
     if (doc.getElementById('judgeChip').style.display !== 'none') throw new Error('chip shown with nothing queued');
