@@ -801,6 +801,12 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   `At Risk` plus `realisticEnd` (latest open step end) with an `at-risk` history line each way.
   Durand's rule: flag a date that cannot be met, never quietly force it. Existing tasks whose steps
   already carry explicit dates are unaffected until re-scheduled.
+- Deployed 2026-09-18 03:15 EDT: web app @81 = backend 2026-09-18.13 / UI 2026-09-18.14 = commit
+  d2c08c6, `main` fast-forwarded. AT RISK CHIP (per Durand "add the at risk chip to the dashboard"):
+  the reserved tag `At Risk` renders as `atRiskChipHtml(t)` on board rows and cards ("At Risk ·
+  steps run to M/D" from `realisticEnd`, class `tag-risk`, opens the card) and the card's Due row
+  carries `atRiskDueNoteHtml_` ("open steps run to <date>; your date is kept"). Test: dashboard
+  "an At Risk tag renders a chip...". The Triage toolbar filter does not include At Risk.
 - Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
   Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
   repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
