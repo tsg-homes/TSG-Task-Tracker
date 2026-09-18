@@ -2198,6 +2198,55 @@ function raffleProbeFubSetup() {
   return out.join('\n');
 }
 
+// Durand, 2026-09-18: "just run the fixes here." The two smart lists the agents
+// need. FUB's docs are unreachable from the build environment and the API
+// listed smart lists (GET 200) but has never been seen to create one, so this
+// TRIES a POST with the obvious shape and reports exactly what FUB said. A 2xx
+// means done; a 404/405 means smart lists are UI-only and the recipes below
+// are what to build by hand. Templates are not attempted: /v1/emailTemplates
+// is "not a valid collection" (404), so there is nothing to post to.
+function raffleCreateFubSmartLists() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
+  var out = [];
+  function say(line) { out.push(line); Logger.log(line); }
+  var lists = [
+    { name: 'Block Party 2026: my new consented contacts',
+      description: 'People who consented to hear from us through the Block Party raffle and are ' +
+        'assigned to you. Each row confirmed their own details on our consent page (or verified ' +
+        'their email to enter), so they are expecting contact. Work them within a week of the ' +
+        'party: send the "quick hello" template first, then a call. Excludes anyone who declined ' +
+        'or asked not to be contacted.',
+      shared: true,
+      filters: [
+        { field: 'assignedTo', operator: 'is', value: 'me' },
+        { field: 'tags', operator: 'includesAll', value: ['Block Party 2026', 'Consented'] },
+        { field: 'tags', operator: 'excludesAny', value: ['Referral Declined', 'Do Not Contact'] },
+        { field: 'created', operator: 'onOrAfter', value: '2026-09-15' }
+      ] },
+    { name: 'Closed clients without a review',
+      description: 'Your past clients whose deal has closed but who have not left us a review ' +
+        'yet. Goal is one review request per client: ask, and when it lands, fill in Review ' +
+        'Rating so they drop off this list. If a client says no, tag "Review Declined" so nobody ' +
+        'asks twice. Check this list every Monday.',
+      shared: true,
+      filters: [
+        { field: 'assignedTo', operator: 'is', value: 'me' },
+        { field: 'stage', operator: 'isAny', value: ['Closed Client', 'Past Client'] },
+        { field: 'customReviewRating', operator: 'isEmpty' },
+        { field: 'tags', operator: 'excludesAny', value: ['Review Declined'] }
+      ] }
+  ];
+  lists.forEach(function (l) {
+    var r = raffleFubCall_('https://api.followupboss.com/v1/smartLists', 'post', l, apiKey);
+    say('POST /v1/smartLists "' + l.name + '" -> ' + r.code + '  ' + String(r.text).slice(0, 300));
+  });
+  say('');
+  say('2xx above = built; open FUB and check the filters landed as intended (the filter');
+  say('shape was a best guess). 404/405 = smart lists cannot be created through the API;');
+  say('build them in the FUB UI with exactly the names, descriptions and filters above.');
+  return out.join('\n');
+}
+
 function raffleProbeFubEmailSend() {
   var apiKey = PropertiesService.getScriptProperties().getProperty('FUB_API_KEY');
   var out = [];
