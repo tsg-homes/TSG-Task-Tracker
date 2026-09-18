@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.5';
+const TSG_CODE_VERSION = '2026-09-18.6';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -1889,9 +1889,16 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
     task.history.push({ ts: now, field: 'location', from: task.location || null, to: est.location, source: o.source || 'unknown' });
     task.location = est.location; applied.push('location (' + est.location + ')');
   }
-  if (need.indexOf('due') !== -1 && est.due && est.due !== (task.timelineEnd || '') && !keep('timelineEnd')) {
-    task.history.push({ ts: now, field: 'timelineEnd', from: task.timelineEnd || null, to: est.due, source: o.source || 'unknown' });
-    task.timelineEnd = est.due; task.dueOverride = true; applied.push('due (' + est.due + ')');
+  if (need.indexOf('due') !== -1 && est.due && !keep('timelineEnd')) {
+    // A proposed due date can never be a day that is already over (Durand, 2026-09-17 23:15
+    // EDT, on a Routine that set "today" after work hours from a UTC clock): anything earlier
+    // than the earliest workable day is pushed to it, and the history line says so.
+    var dueIso = est.due, floorIso = tsgEarliestDueIso_();
+    if (dueIso < floorIso) { dueIso = floorIso; applied.push('due moved from ' + est.due + ' to ' + floorIso + ' (that day was already over)'); }
+    if (dueIso !== (task.timelineEnd || '')) {
+      task.history.push({ ts: now, field: 'timelineEnd', from: task.timelineEnd || null, to: dueIso, source: o.source || 'unknown', note: dueIso !== est.due ? 'proposed ' + est.due + ', already past' : undefined });
+      task.timelineEnd = dueIso; task.dueOverride = true; applied.push('due (' + dueIso + ')');
+    }
   }
   if (need.indexOf('estHours') !== -1 && est.estHours != null && !keep('estHours')) {
     task.estHours = est.estHours;
@@ -5062,6 +5069,16 @@ function tsgFormatIsoDate_(d) {
 }
 
 function tsgIsoDate_(d) { return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd'); }
+// The earliest day a due date can honestly land on, in the script's time zone: today while the
+// workday (ends TSG_DAY_END_HM) is still running, otherwise the next workday.
+var TSG_DAY_END_HM = '16:30';
+function tsgEarliestDueIso_(now) {
+  var d = now || new Date();
+  var iso = tsgIsoDate_(d);
+  var hm = Utilities.formatDate(d, Session.getScriptTimeZone(), 'HH:mm');
+  if (hm >= TSG_DAY_END_HM || !tsgIsWorkdayIso_(iso)) { iso = tsgAddDays_(iso, 1); var guard = 0; while (!tsgIsWorkdayIso_(iso) && guard++ < 7) iso = tsgAddDays_(iso, 1); }
+  return iso;
+}
 
 /** Calendar-day arithmetic: setDate() steps whole days regardless of DST. */
 function tsgAddDays_(iso, n) {

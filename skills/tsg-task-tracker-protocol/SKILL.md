@@ -91,4 +91,5 @@ At every write-back for a tracker task the session worked on (progress, notes, D
 - Never fabricate `estHours`/`estDays`; follow the one workflow above or leave `estSource: "none"`.
 - Never set `Triage` or `Review` yourself, never unpin the bonus tasks, never write `assignee` or `doc`.
 - Never state a FUB go-live date: it is PENDING until Durand sets one.
+- Dates are America/New_York. A cloud session's clock is UTC, which is already "tomorrow" after 8 PM Eastern; compute TODAY and every `due` / `timelineEnd` in Eastern and never propose a due date on a day whose workday (ends 4:30 PM) is over. Stored `ts` values stay UTC ISO.
 - Check any op or field you have not used before against `applyDataPatch_` in `Code.gs`; a wrong name fails silently.

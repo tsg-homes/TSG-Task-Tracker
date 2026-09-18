@@ -744,3 +744,8 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   is the record of what is deployed; deploy.js now pushes main first and treats the tag as
   optional. Stored `ts` values stay UTC ISO (`...Z`, the format every history line and
   comparison uses); only chat and reports use America/New_York.
+- Due-date floor (backend 2026-09-18.6, per Durand 2026-09-17 23:15 EDT on task 288: "it's after
+  work hours so how could it be due today"): `tsgEarliestDueIso_` = today while the script-TZ
+  clock is before 16:30 on a workday, else the next workday; `tsgApplyEstimateToTask_` pushes any
+  proposed `due` below it to the floor with a history note. The Routine session runs on a UTC
+  clock, so README/skill now say dates are America/New_York.

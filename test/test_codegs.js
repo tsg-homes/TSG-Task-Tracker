@@ -1775,5 +1775,21 @@ section('Reviewing delegated work is an admin-block item, not a capacity slice (
   check('the old handoff helpers are gone', typeof sandbox.tsgHandoffConfirmNeeded_ === 'undefined' && typeof sandbox.tsgConfirmHoursFor_ === 'undefined');
 }
 
+section('A proposed due date is never a day that is already over (2026-09-17)');
+{
+  const fri1630 = new Date('2026-09-18T16:30:00'), fri1000 = new Date('2026-09-18T10:00:00'), sat = new Date('2026-09-19T09:00:00');
+  check('during the workday the floor is today', sandbox.tsgEarliestDueIso_(fri1000) === '2026-09-18');
+  check('at 16:30 or later the floor is the next workday (Fri -> Mon)', sandbox.tsgEarliestDueIso_(fri1630) === '2026-09-21');
+  check('on a weekend the floor is Monday', sandbox.tsgEarliestDueIso_(sat) === '2026-09-21');
+  const doc = freshDoc(); const t = doc.tasks[0]; t.timelineEnd = ''; t.history = [];
+  const savedNow = sandbox.tsgEarliestDueIso_;
+  sandbox.tsgEarliestDueIso_ = () => '2026-09-21';
+  sandbox.tsgApplyEstimateToTask_(doc, t, { due: '2026-09-18', source: 'claude' }, ['due'], { now: '2026-09-18T03:12:00Z', source: 'Claude (queue)' });
+  check('a due date earlier than the floor is moved to it and the history line says why', t.timelineEnd === '2026-09-21' && t.history.some(h => h.field === 'timelineEnd' && h.to === '2026-09-21' && /already past/.test(h.note || '')));
+  sandbox.tsgApplyEstimateToTask_(doc, t, { due: '2026-09-25', source: 'claude' }, ['due'], { now: '2026-09-18T03:13:00Z', source: 'Claude (queue)' });
+  check('a due date at or after the floor lands as proposed', t.timelineEnd === '2026-09-25');
+  sandbox.tsgEarliestDueIso_ = savedNow;
+}
+
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
 if (FAILS) process.exitCode = 1;

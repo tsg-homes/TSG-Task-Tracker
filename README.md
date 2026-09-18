@@ -202,6 +202,11 @@ judgment, and writes the answers back as inbox ops. Until an answer lands a new 
 ]}
 ```
 
+DATES ARE AMERICA/NEW_YORK: the tracker runs in the script's time zone, and a cloud session's clock
+is UTC, so "today" after 8 PM Eastern is already tomorrow in UTC. Compute TODAY and every `due` in
+America/New_York, and never propose a due date on a day whose workday (ends 4:30 PM) is over; the
+server pushes such a date to the next workday and notes it (2026-09-17).
+
 Rules are the estimator's own (`TSG_ESTIMATE_SYSTEM` in `Code.gs`): only fields in `need`;
 `title` one imperative line, max 80 chars, derived from a free-flow note when the title is a
 placeholder; `notes` rewritten as "Current state" + dated "Log" keeping every fact verbatim;
