@@ -749,3 +749,7 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   clock is before 16:30 on a workday, else the next workday; `tsgApplyEstimateToTask_` pushes any
   proposed `due` below it to the floor with a history note. The Routine session runs on a UTC
   clock, so README/skill now say dates are America/New_York.
+- Deployed 2026-09-17 23:30 EDT: web app @68 = backend 2026-09-18.6 (due-date floor), `main` at
+  ae02dd5. GitHub reports the repository RENAMED to `tsg-homes/TSG-Task-Tracker` (old name
+  redirects); the session's git remote and the CCR repo scope still use `tsg-homes/task-tracker`,
+  and Settings > Team > Claude Code repo should say the new name if it is set.
