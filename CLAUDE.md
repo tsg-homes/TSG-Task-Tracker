@@ -1000,3 +1000,9 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   refused by name otherwise); steps untouched, parent logs `subitems-reordered`. Built because the
   only other way to reorder was an `update_task` resending every step with its history (31 KB for the
   SOP task), which the Drive connector cannot carry safely. First use: the SOP task's 31 steps by date.
+- Deployed 2026-09-18 13:15 EDT: web app @86 = backend 2026-09-18.16 / UI 2026-09-18.18 = commit
+  79c89bc (merge of main @84 + no-email/toast), `main` fast-forwarded. `update_trigger` on the
+  Routine (trig_01QwHu6NY22BZUeNXNcPznkq) is refused for agents ("created via http_api"): only
+  Durand can edit it at claude.ai/code/routines/<id>. Proposed to him: a thin Routine prompt that
+  fetches `routines/judgment-routine-prompt.md` from the public repo on every run and follows the
+  text after the first `---`, so the file in git is the live prompt and no paste is needed again.
