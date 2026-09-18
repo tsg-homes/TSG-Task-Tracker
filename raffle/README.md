@@ -34,7 +34,11 @@ untouched — nothing public goes anywhere near its Anthropic key or script toke
 
 ## Deployment status
 
-**Live as version @63, deployed 2026-09-17 by `info@tsg.homes`.**
+**Live as version @75, deployed 2026-09-18 by `info@tsg.homes` from a Claude Code
+cloud session** (the 9/17 rehearsal fixes: real errors with retry and a loud banner,
+page lockout, error alerts to Durand only, phone mask, select, kiosk reset). The
+live project also carries `Review.js`, `ReviewLogic.js` and `ReviewPage.html`, which
+are not this repo's and are pulled and pushed back untouched. Earlier: @63 on 2026-09-17.
 
 All nine project files pushed and then verified byte-for-byte by re-pulling the
 live project — including `Code.js`, `OpenHouseForm.html` and `ClientIntake.html`,

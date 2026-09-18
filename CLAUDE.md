@@ -449,6 +449,12 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   mints a new URL and kills the printed QR. The two `PATCH-Code.gs.md` hooks in the host
   `Code.gs` are already live. `setupRaffle()` must be re-run as info@ after any deploy that adds
   a trigger. The cloud proxy blocks script.google.com, so Durand loads the live pages.
+  Deployed @75 on 2026-09-18 06:39 UTC from this cloud session: `clasp login --no-localhost`
+  works here only when run under a pseudo-terminal as a persistent background task (the
+  prompt exits without a TTY, and a plain background process is killed between turns; see
+  the session's `ptydrive.py` pattern: python `pty.fork` + a fifo for the pasted URL). Durand
+  authorized as info@; the credential lives in `~/.clasprc.json` for this session only. The
+  live project also holds `Review.js` / `ReviewLogic.js` / `ReviewPage.html` (not this repo's).
 - Tests: `npm run test:raffle` (templates + 583 server + 199 red-team, in `npm test`) and
   `npm run test:form` (Playwright against the built page and the console; needs
   `npm i --no-save playwright` matching `/opt/pw-browsers`, not in `npm test`).
