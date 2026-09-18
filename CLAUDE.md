@@ -1003,7 +1003,7 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
 - Deployed 2026-09-18 13:20 EDT: web app @85 = backend 2026-09-18.15 (reorder_subitems) / UI
   2026-09-18.17 = commit 23c6d6d, `main` fast-forwarded. The SOP task's steps were then sorted by
   due date with a one-line `reorder_subitems` patch.
-- LOST-SAVE FIX (dashboard UI 2026-09-18.18, per Durand "fix it"): a `replace_all` save refused as
+- LOST-SAVE FIX (dashboard UI 2026-09-18.19, per Durand "fix it"): a `replace_all` save refused as
   `stale_version` no longer drops the edit. The page keeps `BASELINE_DOC` (snapshot of the document
   it last loaded or saved, taken in `applyLoadedDoc_`, after a successful save and after
   `createTask`); on `conflict` `replayAfterConflict_` captures baseline + local together (before any
