@@ -784,3 +784,10 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   either); inbox error rows carry Retry (`retry_filed {file}`: re-applies only the failed sub-ops
   of the filed PARTIAL-/FAILED- copy, trashes it and drops the record on success) and Dismiss
   (`dismiss_inbox_error {file}`), both in `TSG_DATA_OPS`.
+- UI 2026-09-18.10 (per Durand): the time picker is a button + pop-over (`openTimePop_`,
+  `.time-pop`, hour and minute columns capped at 168 px with scrolling, "no time"; `setTimePick_`
+  for the meeting form), never the browser's dropdown. Notifications status line tells how to
+  allow the frame's origin by hand (chrome://settings/content/notifications, Add `location.origin`)
+  with a Copy-address button and a Test button once granted. Comments panel has "Send N open to
+  Claude" (`commentsPromptFor_`, `sendCommentsToClaude`: Cowork deep link, shift = cloud Code)
+  carrying every unresolved non-Claude comment with its anchor and the act / reply / resolve rules.

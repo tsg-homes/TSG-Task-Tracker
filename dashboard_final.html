@@ -788,8 +788,16 @@
   .history-entry:last-child { border-bottom: none; padding-bottom: 0; }
   .hist-time { color: var(--text-muted); white-space: nowrap; flex: none; min-width: 108px; }
   /* Inbox errors (Settings > General): long messages wrap instead of running off the card */
-  .time-pick { display: inline-flex; gap: 2px; align-items: center; }
-  .time-pick select { width: auto; padding: 2px 3px; font-size: 12px; }
+  .time-pick { display: inline-flex; align-items: center; }
+  .time-btn { cursor: pointer; min-width: 72px; text-align: left; }
+  /* Time pop-over (2026-09-17, per Durand "only show a few at a time so it doesn't extend to the
+     edge of the screen"): two scrollable columns capped at seven rows, never the browser's list. */
+  .time-pop { position: absolute; z-index: 10000; display: flex; gap: 6px; align-items: flex-start; background: var(--surface-1); border: 1px solid var(--gridline); border-radius: 8px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+  .time-pop-col { max-height: 168px; overflow-y: auto; min-width: 64px; }
+  .time-opt { padding: 3px 8px; cursor: pointer; border-radius: 4px; font-size: 12px; line-height: 18px; white-space: nowrap; }
+  .time-opt:hover { background: var(--gray-accent); }
+  .time-opt.on { background: var(--brand); color: #fff; }
+  .time-pop-none { align-self: stretch; color: var(--text-muted); }
   #inboxErrorsList .history-row { display: block; }
   #inboxErrorsList .hist-time { white-space: normal; min-width: 0; }
   #inboxErrorsList .inbox-err { color: var(--text-muted); white-space: pre-wrap; word-break: break-word; font-size: 12px; margin-top: 2px; }
@@ -1576,7 +1584,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.9';
+  const UI_VERSION = '2026-09-18.10';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2052,13 +2060,38 @@
     const list = (taskId ? COMMENTS.filter(c => c.anchor && c.anchor.id === taskId) : COMMENTS.slice()).sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
     document.getElementById('dayViewTitle').textContent = taskId ? 'Comments on #' + taskId : 'Comments';
     setDayViewAdd_(null);
-    document.getElementById('dayViewBody').innerHTML = list.length ? '<div class="comment-list">' + list.map(c => `
+    const openCount = COMMENTS.filter(c => c && !c.resolved && String(c.author || '').toLowerCase() !== 'claude').length;
+    const sendBar = openCount ? `<div class="cp-actions" style="margin-bottom:10px;"><button type="button" class="btn small primary" onclick="sendCommentsToClaude(event)" title="Open a Cowork session on this computer with every open comment (shift-click: Claude Code in the cloud). The session acts, replies in the thread and resolves what it finished.">Send ${openCount} open to Claude</button></div>` : '';
+    document.getElementById('dayViewBody').innerHTML = sendBar + (list.length ? '<div class="comment-list">' + list.map(c => `
       <div class="comment-item ${c.resolved ? 'resolved' : ''}" data-cid="${escapeHtml(c.id)}">
         <div class="comment-head"><b>${escapeHtml(c.author || '')}</b> · ${escapeHtml(formatDateTime(c.ts))} · <span class="comment-anchor" ${c.anchor && c.anchor.id ? `onclick="closeDayView(); openTaskCard(${c.anchor.id})"` : ''}>${escapeHtml(c.anchor ? c.anchor.label : '')}</span></div>
         <div class="comment-text">${escapeHtml(c.text)}</div>
         <div class="cp-actions"><button type="button" class="btn small" onclick="setCommentResolved_('${escapeHtml(c.id)}', ${c.resolved ? 'false' : 'true'})">${c.resolved ? 'Reopen' : 'Resolve'}</button><button type="button" class="btn small danger" onclick="deleteComment_('${escapeHtml(c.id)}')">Delete</button></div>
-      </div>`).join('') + '</div>' : '<div class="history-empty">No comments yet. Turn on Comment mode and click anything to leave one.</div>';
+      </div>`).join('') + '</div>' : '<div class="history-empty">No comments yet. Turn on Comment mode and click anything to leave one.</div>');
     document.getElementById('dayViewModal').classList.add('open');
+  }
+  // "Send to Claude" (2026-09-17, per Durand: "a button on the all comments view to submit them
+  // now"): every unresolved comment Durand wrote goes to a Claude session with the item it is
+  // anchored to; the session acts, replies in the thread (add_comment, replyTo) and resolves
+  // what it finished. The scheduled Routine is the backstop for anything not sent by hand.
+  function commentsPromptFor_() {
+    const open = COMMENTS.filter(c => c && !c.resolved && String(c.author || '').toLowerCase() !== 'claude');
+    const lines = open.map(c => {
+      const t = c.anchor && c.anchor.id ? findTask(c.anchor.id) : null;
+      const where = c.anchor ? (c.anchor.kind + (c.anchor.id ? ' #' + c.anchor.id : '') + (c.anchor.idx != null ? ' step ' + c.anchor.idx : '') + (c.anchor.label ? ' "' + c.anchor.label + '"' : '')) : 'board';
+      return '- [' + c.id + '] on ' + where + (t ? ' (task: ' + t.title + ')' : '') + ', by ' + (c.author || 'Durand') + ' ' + String(c.ts || '').slice(0, 16) + ': ' + String(c.text || '').replace(/\s+/g, ' ');
+    });
+    return 'Act on the open TSG Task Tracker comments below. Use the tsg-task-tracker-protocol skill.\n\n' +
+      '1. Read the tracker data file (Google Drive file id 1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt) with the Drive connector; meta.comments holds these comments with their anchors, and the anchored tasks and steps are in tasks[].\n' +
+      '2. For each comment: do what it asks when it is tracker work (field changes as update_task / update_subitem ops on the anchored item, in the same bulk patch), then reply with an add_comment op {comment: {text, author: "Claude", replyTo: "<comment id>", anchor: <the same anchor>}} saying what you did, and resolve it with update_comment {id: "<comment id>", fields: {resolved: true}} only once it is done. If it needs a decision only Durand can make, reply with the question and leave it open.\n' +
+      '3. Push everything as ONE bulk data patch (source "Claude (comments)") into the _Inbox folder 1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi with the Drive connector\'s create_file. Timestamps UTC ISO; dates in America/New_York.\n' +
+      '4. Wait one minute, re-read the data file, confirm the replies are in meta.comments, the resolved flags are set and no FAILED-, PARTIAL- or MALFORMED- file appeared in _Inbox, and report per comment what was done.\n\n' +
+      'COMMENTS:\n' + (lines.length ? lines.join('\n') : '(none)');
+  }
+  function sendCommentsToClaude(ev) {
+    const q = encodeURIComponent(commentsPromptFor_());
+    if (ev && ev.shiftKey) { window.open('https://claude.ai/code?prompt=' + q, '_blank'); return; }
+    window.location.href = 'claude://cowork/new?q=' + q;
   }
   async function setCommentResolved_(cid, resolved) {
     const c = COMMENTS.find(x => x.id === cid); if (!c) return;
@@ -6006,8 +6039,12 @@
     if (state === 'granted') return 'granted: native notifications are on for this page.';
     if (state === 'unsupported') return 'not available in this frame: the tracker uses in-page toasts and email reminders instead.';
     if (state === 'denied') return 'blocked by the browser (Apps Script pages run in a frame that Chrome does not let ask): in-page toasts and email reminders are used instead.';
-    if (typeof window !== 'undefined' && window.top !== window) return 'no prompt possible inside the Apps Script frame: in-page toasts and email reminders are used instead.';
+    if (typeof window !== 'undefined' && window.top !== window) return 'no prompt is possible inside the Apps Script frame; allow it by hand: copy the address ' + location.origin + ', open chrome://settings/content/notifications, click Add under "Allowed to send notifications", paste it, then reload the tracker. Until then in-page toasts and email reminders are used.';
     return 'not decided yet: click Enable.';
+  }
+  function testNotification_() {
+    try { const n = new Notification('TSG Task Tracker', { body: 'Native notifications work on this page.' }); setTimeout(() => n.close(), 6000); }
+    catch (e) { toast_('Notification failed', String(e.message || e)); }
   }
   async function enableNotificationsClick_() {
     const before = notifyPermission_();
@@ -6110,37 +6147,56 @@
     return String(h).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
   }
   function timeSelectHtml_(value, onchangeExpr, extraClass, hiddenId) {
-    // Two short lists instead of one long one (Durand, 2026-09-17: "fewer selections should be
-    // shown when it's opened"): an hour list (none, then 6 AM to 8 PM) and a minutes list
-    // (:00 :15 :30 :45). A stored value off either grid is shown as its own option. The
-    // combined value is HH:mm; with hiddenId it is also mirrored into a hidden input.
-    const m = /^(\d{1,2}):(\d{2})$/.exec(String(value || ''));
-    const h = m ? Number(m[1]) : null, mm = m ? m[2] : '00';
+    // A button showing the time; clicking it opens a pop-over with an hour column (6 AM to
+    // 8 PM) and a minutes column (:00 :15 :30 :45), each scrolling past seven rows, plus "no
+    // time". Never the browser's own dropdown, which lists every option to the screen edge.
+    // The value is HH:mm; with hiddenId it is mirrored into a hidden input for forms.
+    return `<span class="time-pick ${extraClass || ''}"><button type="button" class="due-input time-btn" data-value="${escapeHtml(value || '')}" onclick="openTimePop_(this, function(v){ ${onchangeExpr} })" title="Time of day">${value ? escapeHtml(timeLabel12_(value)) : '—'}</button>${hiddenId ? `<input type="hidden" id="${hiddenId}" value="${escapeHtml(value || '')}">` : ''}</span>`;
+  }
+  let TIME_POP = null;
+  function closeTimePop_() { if (TIME_POP) { TIME_POP.remove(); TIME_POP = null; } document.removeEventListener('mousedown', onTimePopOutside_, true); }
+  function onTimePopOutside_(ev) { if (TIME_POP && !TIME_POP.contains(ev.target)) closeTimePop_(); }
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && TIME_POP) { closeTimePop_(); ev.stopPropagation(); } }, true);
+  function timePickParts_(v) { const m = /^(\d{1,2}):(\d{2})$/.exec(String(v || '')); return m ? { h: Number(m[1]), mm: m[2] } : { h: null, mm: '00' }; }
+  function setTimePickButton_(btn, v) {
+    btn.dataset.value = v || ''; btn.textContent = v ? timeLabel12_(v) : '—';
+    const wrap = btn.closest('.time-pick'); const hid = wrap && wrap.querySelector('input[type=hidden]'); if (hid) hid.value = v || '';
+  }
+  function openTimePop_(btn, apply) {
+    closeTimePop_();
+    let cur = btn.dataset.value || '';
     const hourLabel = hh => ((hh % 12) || 12) + (hh < 12 ? ' AM' : ' PM');
-    const hours = ['<option value="">—</option>'];
-    for (let hh = 6; hh <= 20; hh++) hours.push(`<option value="${hh}" ${h === hh ? 'selected' : ''}>${hourLabel(hh)}</option>`);
-    if (h !== null && (h < 6 || h > 20)) hours.push(`<option value="${h}" selected>${hourLabel(h)}</option>`);
-    const mins = ['00', '15', '30', '45']; if (m && mins.indexOf(mm) === -1) { mins.push(mm); mins.sort(); }
-    const minOpts = mins.map(x => `<option value="${x}" ${x === mm ? 'selected' : ''}>:${x}</option>`).join('');
-    const handler = `onTimePick_(this, function(v){ ${onchangeExpr} })`;
-    return `<span class="time-pick ${extraClass || ''}" title="Time of day"><select class="due-input time-hour" onchange="${handler}">${hours.join('')}</select><select class="due-input time-min" onchange="${handler}">${minOpts}</select>${hiddenId ? `<input type="hidden" id="${hiddenId}" value="${escapeHtml(value || '')}">` : ''}</span>`;
-  }
-  function timePickValue_(wrap) {
-    const h = wrap.querySelector('.time-hour').value, mm = wrap.querySelector('.time-min').value;
-    return h === '' ? '' : String(Number(h)).padStart(2, '0') + ':' + mm;
-  }
-  function onTimePick_(sel, apply) {
-    const wrap = sel.closest('.time-pick'); const v = timePickValue_(wrap);
-    const hid = wrap.querySelector('input[type=hidden]'); if (hid) hid.value = v;
-    apply(v);
+    const pop = document.createElement('div'); pop.className = 'time-pop'; pop.setAttribute('role', 'listbox');
+    const render = () => {
+      const p = timePickParts_(cur);
+      const hours = []; for (let hh = 6; hh <= 20; hh++) hours.push(hh); if (p.h !== null && hours.indexOf(p.h) === -1) hours.push(p.h);
+      const mins = ['00', '15', '30', '45']; if (mins.indexOf(p.mm) === -1) { mins.push(p.mm); mins.sort(); }
+      pop.innerHTML = `<div class="time-pop-col hours">${hours.map(hh => `<div class="time-opt ${p.h === hh ? 'on' : ''}" data-h="${hh}">${hourLabel(hh)}</div>`).join('')}</div>` +
+        `<div class="time-pop-col mins">${mins.map(x => `<div class="time-opt ${p.mm === x ? 'on' : ''}" data-m="${x}">:${x}</div>`).join('')}</div>` +
+        `<div class="time-opt time-pop-none" data-none="1">no time</div>`;
+      const on = pop.querySelector('.hours .on'); if (on && on.scrollIntoView) { try { on.scrollIntoView({ block: 'nearest' }); } catch (e) {} }
+    };
+    const set = v => { cur = v; setTimePickButton_(btn, v); apply(v); };
+    pop.addEventListener('click', ev => {
+      const el = ev.target.closest('.time-opt'); if (!el) return;
+      ev.stopPropagation();
+      if (el.dataset.none) { set(''); closeTimePop_(); return; }
+      const p = timePickParts_(cur);
+      if (el.dataset.h) { set(String(el.dataset.h).padStart(2, '0') + ':' + p.mm); render(); return; }
+      if (el.dataset.m) { set(String(p.h == null ? 9 : p.h).padStart(2, '0') + ':' + el.dataset.m); closeTimePop_(); }
+    });
+    render();
+    document.body.appendChild(pop);
+    const r = btn.getBoundingClientRect();
+    pop.style.top = (r.bottom + window.scrollY + 4) + 'px'; pop.style.left = (r.left + window.scrollX) + 'px';
+    TIME_POP = pop;
+    setTimeout(() => document.addEventListener('mousedown', onTimePopOutside_, true), 0);
+    return pop;
   }
   function setTimePick_(hiddenId, hm) {
     const hid = document.getElementById(hiddenId); if (!hid) return;
-    hid.value = hm || '';
-    const wrap = hid.closest('.time-pick'); if (!wrap) return;
-    const m = /^(\d{1,2}):(\d{2})$/.exec(hm || '');
-    wrap.querySelector('.time-hour').value = m ? String(Number(m[1])) : '';
-    const minSel = wrap.querySelector('.time-min'); if (m) { if (![...minSel.options].some(o => o.value === m[2])) minSel.add(new Option(':' + m[2], m[2])); minSel.value = m[2]; }
+    const wrap = hid.closest('.time-pick'); const btn = wrap && wrap.querySelector('.time-btn');
+    if (btn) setTimePickButton_(btn, hm || ''); else hid.value = hm || '';
   }
   function onDueTimeChange_(id, idx, val) {
     const ctx = itemFor_(id, idx); if (!ctx || !ctx.item) return;
@@ -7405,7 +7461,7 @@
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Reminder notifications</h3></div>
-        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b>${(notifyPermission_() === 'default' && window.top === window) ? ' <button type="button" class="btn small" onclick="enableNotificationsClick_()">Enable</button>' : ''}<div class="history-empty" id="notifyWhy" style="margin-top:4px;">${escapeHtml(notifyStateText_(notifyPermission_()))}</div></div>
+        <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b>${(notifyPermission_() === 'default' && window.top === window) ? ' <button type="button" class="btn small" onclick="enableNotificationsClick_()">Enable</button>' : ''}${notifyPermission_() === 'granted' ? ' <button type="button" class="btn small" onclick="testNotification_()">Test</button>' : ''}<div class="history-empty" id="notifyWhy" style="margin-top:4px;">${escapeHtml(notifyStateText_(notifyPermission_()))}${window.top !== window && notifyPermission_() !== 'granted' ? ' <button type="button" class="btn small" onclick="navigator.clipboard && navigator.clipboard.writeText(location.origin)">Copy address</button>' : ''}</div></div>
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Claude Code repo</h3></div>

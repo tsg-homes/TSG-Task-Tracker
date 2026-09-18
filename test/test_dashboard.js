@@ -1112,16 +1112,35 @@ setTimeout(async () => {
     w.closeTaskCard();
     w.setNeedsApproval(1, 0, false); w.setNeedsApproval(1, null, false);
   });
-  tryCall('time picker: an hour list (none, 6 AM to 8 PM) and a minutes list; off-grid values kept; combined value is HH:mm', () => {
+  tryCall('time picker: a button opens a pop-over with scroll-capped hour and minute columns; picking hour then minute applies HH:mm; no time clears', () => {
     const html = w.timeSelectHtml_('11:15', 'x(v)');
-    if (!/time-hour/.test(html) || !/<option value="11" selected>11 AM<\/option>/.test(html) || !/<option value="15" selected>:15<\/option>/.test(html)) throw new Error('html ' + html.slice(0, 300));
-    if (!/<option value="7" selected>7 AM<\/option>/.test(w.timeSelectHtml_('07:07', 'x(v)')) || !/value="07" selected>:07/.test(w.timeSelectHtml_('07:07', 'x(v)'))) throw new Error('off-grid minute not kept');
-    const host = doc.createElement('div'); host.innerHTML = w.timeSelectHtml_('14:30', 'x(v)');
-    if (w.timePickValue_(host.querySelector('.time-pick')) !== '14:30') throw new Error('combined value');
-    host.querySelector('.time-hour').value = ''; if (w.timePickValue_(host.querySelector('.time-pick')) !== '') throw new Error('none');
+    if (!/time-btn/.test(html) || !/data-value="11:15"/.test(html) || !/>11:15 AM</.test(html)) throw new Error('button html ' + html.slice(0, 200));
+    if (!/\.time-pop-col \{[^}]*max-height: 168px[^}]*overflow-y: auto/.test(doc.querySelector('style').textContent)) throw new Error('columns not scroll-capped');
+    const host = doc.createElement('div'); host.innerHTML = w.timeSelectHtml_('11:15', 'x(v)'); doc.body.appendChild(host);
+    const btn = host.querySelector('.time-btn'); const got = [];
+    const pop = w.openTimePop_(btn, v => got.push(v));
+    if (!pop || pop.querySelectorAll('.hours .time-opt').length !== 15 || pop.querySelectorAll('.mins .time-opt').length !== 4) throw new Error('pop contents');
+    if (!pop.querySelector('.hours .time-opt.on') || pop.querySelector('.hours .time-opt.on').dataset.h !== '11') throw new Error('current hour not marked');
+    pop.querySelector('.hours [data-h="14"]').click();
+    if (got[got.length - 1] !== '14:15' || btn.dataset.value !== '14:15' || !doc.body.contains(pop)) throw new Error('hour pick ' + JSON.stringify(got));
+    pop.querySelector('.mins [data-m="30"]').click();
+    if (got[got.length - 1] !== '14:30' || btn.textContent !== '2:30 PM' || doc.body.contains(pop)) throw new Error('minute pick ' + JSON.stringify(got));
+    const pop2 = w.openTimePop_(btn, v => got.push(v)); pop2.querySelector('[data-none]').click();
+    if (got[got.length - 1] !== '' || btn.textContent !== '—') throw new Error('no time');
+    host.innerHTML = w.timeSelectHtml_('10:00', '', '', 'mfStartTest'); w.setTimePick_('mfStartTest', '13:45');
+    if (doc.getElementById('mfStartTest').value !== '13:45' || host.querySelector('.time-btn').textContent !== '1:45 PM') throw new Error('setTimePick_');
+    host.remove();
     w.openTaskCard(1);
-    if (doc.querySelector('#taskModal input[type="time"]') || !doc.querySelector('#taskModal .time-pick')) throw new Error('card picker');
+    if (doc.querySelector('#taskModal input[type="time"]') || !doc.querySelector('#taskModal .time-btn')) throw new Error('card picker');
     w.closeTaskCard();
+  });
+  tryCall('comments panel: "Send N open to Claude" lists only unresolved non-Claude comments in the prompt', () => {
+    w.eval("COMMENTS = [{ id: 'c1', ts: '2026-09-17T20:00:00Z', author: 'Durand', text: 'Move this to Friday', anchor: { kind: 'task', id: 1, label: 'Task one' }, resolved: false }, { id: 'c2', ts: '2026-09-17T20:01:00Z', author: 'Claude', text: 'noted', anchor: { kind: 'task', id: 1, label: 'Task one' }, resolved: false }, { id: 'c3', ts: '2026-09-17T20:02:00Z', author: 'Durand', text: 'old', anchor: { kind: 'task', id: 2, label: 'Two' }, resolved: true }]");
+    w.openCommentsPanel();
+    if (!doc.getElementById('dayViewBody').innerHTML.includes('Send 1 open to Claude')) throw new Error('no send button');
+    const p = w.commentsPromptFor_();
+    if (!p.includes('[c1]') || p.includes('[c2]') || p.includes('[c3]') || !p.includes('Move this to Friday') || !p.includes('replyTo')) throw new Error('prompt ' + p.slice(0, 300));
+    w.closeDayView(); w.eval('COMMENTS = []');
   });
   tryCall('inbox error rows carry Retry and Dismiss; Retry posts retry_filed; errors wrap; the alert lands on General', async () => {
     w.eval("RAW_META.inboxErrors = [{ ts: new Date().toISOString(), file: 'mixed.json', op: 'bulk', error: 'a very long error message that must wrap ' + 'x'.repeat(300) }]");
