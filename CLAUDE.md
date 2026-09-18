@@ -686,3 +686,8 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   clasp is byte-identical to it) and `live` tagged there. Times in chat and patch `ts` values are
   America/New_York (the script's time zone); UTC dates had put "2026-09-18" on work done Thursday
   evening 9/17.
+- Judgment-queue Routine, checked 2026-09-17 21:55 EDT via list_triggers: it is named "Task
+  Tracker Judgement Call" (trig_01QwHu6NY22BZUeNXNcPznkq), cron `30 11 * * 1-5` = ONCE per
+  weekday at 7:30 AM Eastern (not hourly as an earlier note said), no connectors stored on the
+  Routine, last run 2026-09-17 12:35 PM EDT succeeded. Pending requests wait until the next
+  morning unless a session answers them (as this session did for J13/J14).
