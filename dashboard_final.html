@@ -1394,7 +1394,7 @@
       <option value="doc">Missing: source link</option>
       <option value="owner">Missing: owner</option>
     </select>
-    <button class="btn" id="btnTriageFilter" onclick="toggleTriageFilter()" title="Show only tasks whose estimate needs your confirmation">&#9873; Triage</button>
+    <button class="btn" id="btnTriageFilter" onclick="toggleTriageFilter()" title="Show only tasks that need you: Triage (an estimate to confirm or a pushed delegate item to release), Claude disagrees, or At Risk (steps run past a date you set)">&#9873; Triage</button>
     <span class="toolbar-sep"></span>
     <select id="sortBy1" title="Sort by">
       <option value="">Sort: default</option>
@@ -1587,7 +1587,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.14';
+  const UI_VERSION = '2026-09-18.15';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2699,6 +2699,16 @@
         ids: triage.map(function(t) { return t.id; })
       });
     }
+    // At Risk (2026-09-18): a hand-set due date whose open steps run past it. The date is kept
+    // (never quietly forced); this row and the Triage filter are the quick list.
+    const atRisk = TASKS.filter(function(t) { return t.status !== 'Done' && (t.tags || []).indexOf('At Risk') !== -1; });
+    if (atRisk.length) {
+      alerts.push({
+        level: 'critical',
+        text: atRisk.length + (atRisk.length === 1 ? ' task is' : ' tasks are') + ' at risk: the open steps run past the due date you set. Re-estimate a step, drop one, or move the date.',
+        ids: atRisk.map(function(t) { return t.id; })
+      });
+    }
     return alerts;
   }
   let LAST_ALERTS = [];
@@ -2828,7 +2838,7 @@
     // renderCompletedCardsGroupHtml_), and Timeline/Workload show Done work items but keep
     // them out of the workload hour totals (computeDailyHours already filters status !==
     // 'Done' there). matchesFilters itself no longer touches Done at all.
-    if (triageOnly && (t.tags || []).indexOf('Triage') === -1 && (t.tags || []).indexOf('Review') === -1) return false;
+    if (triageOnly && (t.tags || []).indexOf('Triage') === -1 && (t.tags || []).indexOf('Review') === -1 && (t.tags || []).indexOf('At Risk') === -1) return false;
     if (status && t.status !== status) return false;
     if (priority && t.priority !== priority) return false;
     if (group && t.group !== group) return false;

@@ -989,6 +989,18 @@ setTimeout(async () => {
     if (!doc.querySelector('.tag-risk')) throw new Error('no chip on the card view');
     t.tags = t.tags.filter(x => x !== 'At Risk'); delete t.realisticEnd; w.setView('board'); w.renderAll();
   });
+  tryCall('At Risk tasks show in the Triage filter and raise their own alert row (2026-09-18)', () => {
+    const t = w.findTask(1);
+    t.tags.push('At Risk'); t.realisticEnd = '2026-09-24';
+    const alerts = w.computeAlerts();
+    const row = alerts.find(a => /at risk/.test(a.text));
+    if (!row || !row.ids.includes(1) || row.level !== 'critical') throw new Error('no at-risk alert: ' + JSON.stringify(alerts.map(a => a.text)));
+    w.setView('board'); w.toggleTriageFilter(); w.renderAll();
+    if (!doc.querySelector('tr.task-row[data-id="1"]')) throw new Error('At Risk task hidden by the Triage filter');
+    const others = Array.from(doc.querySelectorAll('tr.task-row')).filter(r => r.getAttribute('data-id') !== '1');
+    if (others.some(r => { const tt = w.findTask(Number(r.getAttribute('data-id'))); return tt && !(tt.tags || []).some(x => x === 'Triage' || x === 'Review' || x === 'At Risk'); })) throw new Error('filter let an untagged task through');
+    w.toggleTriageFilter(); t.tags = t.tags.filter(x => x !== 'At Risk'); delete t.realisticEnd; w.renderAll();
+  });
   tryCall('a Review tag renders a "Claude disagrees" chip that opens the card with the flag row', () => {
     const t = w.findTask(1);
     t.tags.push('Review');
