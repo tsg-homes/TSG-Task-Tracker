@@ -155,6 +155,64 @@ setTimeout(async () => {
     if (w.eval('saveInFlight') !== false) throw new Error('saveInFlight still true');
   });
 
+  // Lost-save fix (2026-09-18): a save refused as stale is replayed onto the latest document
+  // and saved again, instead of reloading and dropping the edit.
+  await (async () => {
+    const label = 'a conflicted save replays the local edit onto the fresh document and retries with the new version';
+    try {
+      const origFetch = w.fetch;
+      w.eval('conflictReplays = 0; LAST_CONFLICT_REPLAY = null');
+      w.eval('snapshotBaseline_()');
+      // local edits: a task field with its history line, a step field, a new step
+      const t2 = w.findTask(2);
+      t2.status = 'In Progress'; t2.history.push({ ts: '2026-09-18T20:00:00Z', field: 'status', from: 'Not Started', to: 'In Progress', source: 'Durand' });
+      const t1 = w.findTask(1);
+      t1.subitems[0].notes = 'Found it, and confirmed.';
+      t1.subitems.push({ title: 'New local step', done: false, status: 'Not Started', priority: 'Medium', tags: [], docs: [], history: [], subitems: [] });
+      // the server moved on: version 7, task 2 got a new tag and task 3 a new note elsewhere
+      const remote = JSON.parse(JSON.stringify(w.eval('BASELINE_DOC')));
+      remote.meta.docVersion = 7; remote.meta.judgments = [{ id: 'J1' }];
+      remote.tasks.find(t => t.id === 2).tags = ['Remote'];
+      remote.tasks.find(t => t.id === 3).notes = 'Written by the Routine';
+      let saves = 0; const bodies = [];
+      w.fetch = async (url, opts) => {
+        const u = String(url);
+        if (opts && opts.method === 'POST') { saves++; bodies.push(JSON.parse(opts.body)); return { ok: true, status: 200, json: async () => (saves === 1 ? { ok: false, error: 'conflict', reason: 'stale', serverVersion: 7 } : { ok: true, docVersion: 8 }) }; }
+        if (u.includes('api=data')) return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(remote)) };
+        return origFetch(url, opts);
+      };
+      await w.doSave();
+      w.fetch = origFetch;
+      if (saves !== 2) throw new Error('expected 2 saves, got ' + saves);
+      if (bodies[1].meta.docVersion !== 7) throw new Error('retry not stamped with the fresh version: ' + bodies[1].meta.docVersion);
+      const m2 = bodies[1].tasks.find(t => t.id === 2), m1 = bodies[1].tasks.find(t => t.id === 1), m3 = bodies[1].tasks.find(t => t.id === 3);
+      if (m2.status !== 'In Progress' || JSON.stringify(m2.tags) !== '["Remote"]') throw new Error('task 2 merge wrong: ' + m2.status + ' ' + JSON.stringify(m2.tags));
+      if (!m2.history.some(h => h.ts === '2026-09-18T20:00:00Z' && h.field === 'status')) throw new Error('history line not carried');
+      if (m1.subitems[0].notes !== 'Found it, and confirmed.' || m1.subitems.length !== 2 || m1.subitems[1].title !== 'New local step') throw new Error('steps merge wrong: ' + JSON.stringify(m1.subitems.map(s => s.title)));
+      if (m3.notes !== 'Written by the Routine') throw new Error('remote change lost');
+      if (!Array.isArray(bodies[1].meta.judgments)) throw new Error('server-owned meta not taken from the fresh doc');
+      if (w.eval('RAW_META.docVersion') !== 8 || w.eval('conflictReplays') !== 0) throw new Error('state after success: ' + w.eval('RAW_META.docVersion') + ' ' + w.eval('conflictReplays'));
+      if (w.findTask(2).status !== 'In Progress' || w.findTask(3).notes !== 'Written by the Routine') throw new Error('page state not merged');
+      if (!/Saved after a merge/.test((doc.getElementById('tsgToasts') || {}).textContent || '')) throw new Error('no merge toast');
+      // steady state: with nothing changed locally a conflict falls back to reload-and-tell after one refetch
+      w.eval('conflictReplays = 0');
+      let saves2 = 0;
+      w.fetch = async (url, opts) => {
+        if (opts && opts.method === 'POST') { saves2++; return { ok: true, status: 200, json: async () => ({ ok: false, error: 'conflict', reason: 'stale', serverVersion: 9 }) }; }
+        if (String(url).includes('api=data')) { const r = JSON.parse(JSON.stringify(remote)); r.meta.docVersion = 9; r.tasks.find(t => t.id === 2).status = 'In Progress'; return { ok: true, status: 200, json: async () => r }; }
+        return origFetch(url, opts);
+      };
+      await w.doSave();
+      w.fetch = origFetch;
+      if (saves2 !== 1) throw new Error('no-change conflict should not retry: ' + saves2);
+      if (!/changed elsewhere/.test(doc.getElementById('syncPill') ? doc.getElementById('syncPill').textContent : doc.body.textContent)) throw new Error('conflict warning missing');
+      // back to the fixture for later tests
+      w.fetch = origFetch;
+      await w.loadData(false);
+      console.log('OK   -', label);
+    } catch (e) { console.log('FAIL -', label, '->', e.message); FAILS++; w.fetch = origFetch; }
+  })();
+
   // Pop-out per-person views (2026-09-15): one button per roster member except the owner,
   // opening <exec URL>?person=<Name> in a named window from this tab's session.
   const opened = [];

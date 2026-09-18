@@ -854,6 +854,57 @@ section('Subitem rollup respects the parent\'s own work (2026-09-14, task #12 re
     sandbox.tsgRollupSubitemHours_(dd); return dd.tasks[0].estHours === 1; })());
 }
 
+section('Dependencies and due dates always align (2026-09-18)');
+{
+  const NOW2 = '2026-09-18T18:00:00.000Z';
+  const mk = (id, extra) => Object.assign({ id: id, title: 'T' + id, status: 'Not Started', owner: 'Durand', priority: 'Medium', tags: [], subitems: [], history: [], estHours: 1, depends: '' }, extra || {});
+  let d = { meta: { docVersion: 1 }, tasks: [
+    mk(1, { timelineEnd: '2026-09-25' }),
+    mk(2, { timelineEnd: '2026-09-22', depends: '1' }),
+    mk(3, { timelineEnd: '2026-09-23', depends: '2' }),
+    mk(4, { timelineEnd: '2026-09-21', depends: '5' }),
+    mk(5, { timelineEnd: '2026-09-30', status: 'Done' }),
+    mk(6, { timelineEnd: '2026-10-05', depends: '1' })
+  ] };
+  const moved = sandbox.tsgAlignDependencies_(d, NOW2);
+  check('a dependent due before its predecessor moves to the next workday after the predecessor ends (Fri 9/25 -> Mon 9/28)', d.tasks[1].timelineEnd === '2026-09-28');
+  check('the move is logged as due with source Dependency naming the predecessor', d.tasks[1].history.some(h => h.field === 'due' && h.source === 'Dependency' && h.from === '2026-09-22' && h.to === '2026-09-28' && /T1/.test(h.note)));
+  check('the chain settles: a task depending on the moved one moves after it (9/28 -> 9/29)', d.tasks[2].timelineEnd === '2026-09-29');
+  check('a Done predecessor does not constrain', d.tasks[3].timelineEnd === '2026-09-21');
+  check('a dependent already after its predecessor is untouched', d.tasks[5].timelineEnd === '2026-10-05' && !d.tasks[5].history.length);
+  check('returns the number of tasks moved', moved === 2);
+  check('a second pass is a no-op', sandbox.tsgAlignDependencies_(d, NOW2) === 0);
+
+  // Steps and a scheduled span move with the parent; an At Risk realisticEnd on the predecessor counts.
+  d = { meta: { docVersion: 1 }, tasks: [
+    mk(1, { timelineEnd: '2026-09-22', dueOverride: true, realisticEnd: '2026-09-24', tags: ['At Risk'] }),
+    mk(2, { timelineEnd: '2026-09-24', depends: '1', estDays: 2, scheduledStart: '2026-09-23', scheduledDays: ['2026-09-23', '2026-09-24'], subitems: [
+      { title: 'a', done: false, timelineEnd: '2026-09-23', estHours: 0.5 },
+      { title: 'b', done: true, status: 'Done', timelineEnd: '2026-09-21', estHours: 0.5 },
+      { title: 'c', done: false, timelineEnd: '2026-09-24', estHours: 0.5 } ] })
+  ] };
+  sandbox.tsgAlignDependencies_(d, NOW2);
+  const t2 = d.tasks[1];
+  check('the predecessor\'s At Risk realisticEnd (9/24) is what the dependent must clear: span 9/23-9/24 -> 9/25-9/28 (weekend skipped)', t2.scheduledStart === '2026-09-25' && t2.timelineEnd === '2026-09-28');
+  check('open steps shift by the same days and land on workdays, a Done step stays', t2.subitems[0].timelineEnd === '2026-09-25' && t2.subitems[2].timelineEnd === '2026-09-28' && t2.subitems[1].timelineEnd === '2026-09-21');
+  check('scheduledDays shift too, off the weekend', JSON.stringify(t2.scheduledDays) === JSON.stringify(['2026-09-25', '2026-09-28']));
+
+  // A hand-set date is flagged, never moved (per Durand "flag on hand set instead").
+  d = { meta: { docVersion: 1 }, tasks: [ mk(1, { timelineEnd: '2026-09-25' }), mk(2, { timelineEnd: '2026-09-22', dueOverride: true, depends: '1' }) ] };
+  check('a hand-set dependent date is kept and flagged At Risk with the realistic end', sandbox.tsgAlignDependencies_(d, NOW2) === 0 && d.tasks[1].timelineEnd === '2026-09-22' && d.tasks[1].tags.includes('At Risk') && d.tasks[1].realisticEnd === '2026-09-28' && d.tasks[1].dependencyRisk.predId === 1);
+  check('...with one at-risk history line, source Dependency, and no repeat on the next pass', d.tasks[1].history.filter(h => h.field === 'at-risk').length === 1 && (sandbox.tsgAlignDependencies_(d, NOW2), d.tasks[1].history.filter(h => h.field === 'at-risk').length === 1) && d.tasks[1].history[0].source === 'Dependency');
+  sandbox.tsgRollupSubitemHours_(d, NOW2);
+  check('the roll-up pass does not clear a dependency flag', d.tasks[1].tags.includes('At Risk') && d.tasks[1].realisticEnd === '2026-09-28');
+  d.tasks[0].timelineEnd = '2026-09-18';
+  sandbox.tsgAlignDependencies_(d, NOW2);
+  check('the flag clears once the predecessor ends before the hand-set date', !d.tasks[1].tags.includes('At Risk') && !d.tasks[1].realisticEnd && !d.tasks[1].dependencyRisk && d.tasks[1].history.some(h => h.field === 'at-risk' && h.to === null && h.source === 'Dependency'));
+
+  // The pass runs inside tsgAutoScheduleDoc_ on every write.
+  d = { meta: { docVersion: 1 }, tasks: [ mk(1, { timelineEnd: '2026-09-25' }), mk(2, { timelineEnd: '2026-09-22', depends: '1' }) ] };
+  sandbox.tsgAutoScheduleDoc_(d);
+  check('tsgAutoScheduleDoc_ (every write) aligns dependents', d.tasks[1].timelineEnd === '2026-09-28');
+}
+
 section('Domain access: identity gate, roster mapping, inbox trigger (2026-09-14)');
 {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'appsscript.json'), 'utf8'));

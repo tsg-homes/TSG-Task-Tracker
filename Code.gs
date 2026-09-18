@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.16';
+const TSG_CODE_VERSION = '2026-09-18.17';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -5655,17 +5655,126 @@ function tsgFlagDueRisk_(t, latestOpenEnd, now) {
   var tags = Array.isArray(t.tags) ? t.tags : [];
   var had = tags.indexOf('At Risk') !== -1;
   t.history = t.history || [];
+  // A dependency flag (tsgAlignDependencies_) owns the tag while it holds; the later of the two
+  // realistic ends is shown.
+  var depRisk = t.dependencyRisk && t.dependencyRisk.realisticEnd;
   if (atRisk) {
-    var changed = !had || t.realisticEnd !== latestOpenEnd;
-    t.realisticEnd = latestOpenEnd;
+    var target = (depRisk && depRisk > latestOpenEnd) ? depRisk : latestOpenEnd;
+    var changed = !had || t.realisticEnd !== target;
+    t.realisticEnd = target;
     if (!had) t.tags = tags.concat(['At Risk']);
     if (changed && now) t.history.push({ ts: now, field: 'at-risk', from: t.timelineEnd, to: latestOpenEnd, source: 'rollup',
       note: 'open steps run to ' + latestOpenEnd + ', past the due date ' + t.timelineEnd });
+  } else if (depRisk) {
+    if (!had) t.tags = tags.concat(['At Risk']);
+    t.realisticEnd = depRisk;
   } else if (had || t.realisticEnd) {
     t.tags = tags.filter(function(tg) { return tg !== 'At Risk'; });
     delete t.realisticEnd;
     if (now) t.history.push({ ts: now, field: 'at-risk', from: 'At Risk', to: null, source: 'rollup', note: 'steps fit before the due date again' });
   }
+}
+
+/**
+ * Dependencies and due dates always align (2026-09-18, per Durand: "shouldn't you fix it by
+ * ensuring they do align always"). Runs on EVERY write: a dependent task whose span would
+ * start on or before the end of a task it depends on is pushed forward so it starts on the
+ * next workday after that end, whoever moved the date (a dashboard edit, the Routine, an
+ * enrich answer, an inbox patch, the scheduler). The end lands on a workday; scheduledStart
+ * and every OPEN step move by the same number of days so the step roll-up agrees on the next
+ * write; the move is logged as `due` with source 'Dependency' and the predecessor's title.
+ * A predecessor that is Done/Cancelled or has no date does not constrain; its At Risk
+ * `realisticEnd` counts when later than its date. Chains settle by iterating to a fixed
+ * point (cycles are cut by the loop cap). Returns the number of tasks moved.
+ */
+function tsgAlignDependencies_(doc, now) {
+  var tasks = (doc && doc.tasks) || [];
+  var byId = {};
+  tasks.forEach(function(t) { if (t && t.id != null) byId[t.id] = t; });
+  function isOpen(t) { return t && t.status !== 'Done' && t.status !== 'Cancelled'; }
+  function predEnd(p) {
+    var e = p.timelineEnd || '';
+    if (p.realisticEnd && p.realisticEnd > e) e = p.realisticEnd;
+    return e;
+  }
+  function nextWorkdayAfter(iso) {
+    var d = tsgAddDays_(iso, 1), guard = 0;
+    while (!tsgIsWorkdayIso_(d) && guard++ < 7) d = tsgAddDays_(d, 1);
+    return d;
+  }
+  function toWorkday(iso) {
+    var d = iso, guard = 0;
+    while (!tsgIsWorkdayIso_(d) && guard++ < 7) d = tsgAddDays_(d, 1);
+    return d;
+  }
+  function daysBetween(a, b) {
+    return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000);
+  }
+  var moved = 0, changed = true, guard = 0, stillFlagged = {};
+  while (changed && guard++ < 50) {
+    changed = false;
+    tasks.forEach(function(dep) {
+      if (!isOpen(dep) || !dep.timelineEnd) return;
+      tsgDependsList_(dep).forEach(function(id) {
+        var pred = byId[id];
+        if (!pred || pred === dep || !isOpen(pred)) return;
+        var end = predEnd(pred);
+        if (!end) return;
+        var span = tsgScheduledSpan_(dep);
+        var start = span ? span.start : dep.timelineEnd;
+        if (start > end) return;
+        var newStart = nextWorkdayAfter(end);
+        var shift = daysBetween(start, newStart);
+        if (shift <= 0) return;
+        // Shift by the start; every moved date is then nudged off a weekend.
+        var before = dep.timelineEnd;
+        var newEnd = toWorkday(tsgAddDays_(before, shift));
+        if (dep.dueOverride) {
+          // A hand-set date is never moved (per Durand: "flag on hand set instead"): the task is
+          // tagged At Risk with the date it would need, and the flag clears once it fits again.
+          var prev = dep.dependencyRisk;
+          if (!prev || prev.realisticEnd < newEnd) dep.dependencyRisk = { predId: pred.id, predEnd: end, realisticEnd: newEnd };
+          if (!dep.realisticEnd || dep.realisticEnd < newEnd) dep.realisticEnd = newEnd;
+          var tags = Array.isArray(dep.tags) ? dep.tags : [];
+          if (tags.indexOf('At Risk') === -1) dep.tags = tags.concat(['At Risk']);
+          if (!prev || prev.realisticEnd !== newEnd || prev.predId !== pred.id) {
+            dep.history = dep.history || [];
+            dep.history.push({ ts: now || new Date().toISOString(), field: 'at-risk', from: before, to: newEnd, source: 'Dependency',
+              note: 'due date kept; it falls before "' + (pred.title || ('#' + pred.id)) + '" ends on ' + end + ', so the realistic end is ' + newEnd });
+          }
+          stillFlagged[dep.id] = true;
+          return;
+        }
+        dep.timelineEnd = newEnd;
+        if (dep.scheduledStart) dep.scheduledStart = newStart;
+        if (Array.isArray(dep.scheduledDays)) dep.scheduledDays = dep.scheduledDays.map(function(d) { return toWorkday(tsgAddDays_(d, shift)); });
+        (dep.subitems || []).forEach(function(st) {
+          if (!st || st.done || st.status === 'Done' || !st.timelineEnd) return;
+          st.timelineEnd = toWorkday(tsgAddDays_(st.timelineEnd, shift));
+        });
+        if (dep.realisticEnd) dep.realisticEnd = toWorkday(tsgAddDays_(dep.realisticEnd, shift));
+        dep.history = dep.history || [];
+        dep.history.push({ ts: now || new Date().toISOString(), field: 'due', from: before, to: newEnd, source: 'Dependency',
+          note: 'moved to start after "' + (pred.title || ('#' + pred.id)) + '" ends on ' + end });
+        moved++; changed = true;
+      });
+    });
+  }
+  // A dependency flag that no longer holds clears; the At Risk tag and realisticEnd stay only
+  // while the task's own steps still run past its date (tsgFlagDueRisk_'s case).
+  tasks.forEach(function(t) {
+    if (!t || !t.dependencyRisk || stillFlagged[t.id]) return;
+    var was = t.dependencyRisk.realisticEnd;
+    delete t.dependencyRisk;
+    var latest = tsgOpenSubitemHours_(t).latestOpenEnd;
+    var stepsRisk = !!(t.dueOverride && t.timelineEnd && latest && latest > t.timelineEnd);
+    if (stepsRisk) { t.realisticEnd = latest; return; }
+    t.tags = (Array.isArray(t.tags) ? t.tags : []).filter(function(tg) { return tg !== 'At Risk'; });
+    delete t.realisticEnd;
+    t.history = t.history || [];
+    t.history.push({ ts: now || new Date().toISOString(), field: 'at-risk', from: was, to: null, source: 'Dependency', note: 'the date fits after its dependencies again' });
+  });
+  return moved;
 }
 
 /**
@@ -5993,6 +6102,7 @@ function tsgAutoScheduleDoc_(doc) {
   tsgRollupSubitemHours_(doc, new Date().toISOString());
   tsgApplyTravelTimes_(doc);
   tsgFlagAgingTasks_(doc, tsgTodayIso_());
+  tsgAlignDependencies_(doc, new Date().toISOString());
 
   var allItems = [];
   tasks.forEach(function(t) {
@@ -6280,6 +6390,8 @@ function tsgAutoScheduleDoc_(doc) {
     if (!t.subitems || !t.subitems.length) return;
     t.timelineEnd = tsgRollupDue_(t, tsgOpenSubitemHours_(t).latestOpenEnd);
   });
+  // Placement and the roll-up above may have dated a predecessor later than a dependent.
+  tsgAlignDependencies_(doc, new Date().toISOString());
 
   return placed;
 }

@@ -1587,7 +1587,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.18';
+  const UI_VERSION = '2026-09-18.19';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -7009,6 +7009,7 @@
       const result = resp && resp.addResult;
       if (result && result.verdict === 'added' && typeof result.taskId === 'number') {
         TASKS.push(Object.assign({}, fields, { id: result.taskId, subitems: fields.subitems || [], history: fields.history || [] }));
+        snapshotBaseline_();
         setSyncStatus('saved');
         renderAll();
         return { ok: true, added: true };
@@ -7225,6 +7226,135 @@
     saveChain = saveChain.then(doSaveNow_, doSaveNow_);
     return saveChain;
   }
+  // ---- Lost-save fix (2026-09-18, per Durand "fix it"): replay local edits after a conflict ----
+  // doSave sends the WHOLE document stamped with the docVersion this tab last loaded. Anything
+  // else that wrote meanwhile (the Routine, an inbox patch, a reminder stamp, another tab) made
+  // that version stale and the server refused the save. Before this the tab reloaded and the
+  // edit was gone: meta.rejectedSaves held 20 such drops on 2026-09-18, Durand's #259 update
+  // among them. Now the tab keeps a snapshot of the document it last loaded or saved
+  // (BASELINE_DOC), and on a conflict it diffs the local state against that snapshot, fetches
+  // the latest document, replays the field-level changes on top (tasks by id, steps by index
+  // when the step list is unchanged else by title, history lines appended, non-server meta
+  // keys), installs the merged document and saves again with the fresh version. Two replays
+  // per save, then the old reload-and-tell path.
+  let BASELINE_DOC = null;
+  let conflictReplays = 0;
+  const SERVER_OWNED_META = ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion', 'historyArchive', 'last_updated', 'version', 'created', 'featureTaskId'];
+  function cloneJson_(v) { return JSON.parse(JSON.stringify(v === undefined ? null : v)); }
+  function sameJson_(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); }
+  function localDocForDiff_() { return cloneJson_({ tasks: TASKS, meta: Object.assign({}, RAW_META, { teamRoster: TEAM_ROSTER }) }); }
+  function snapshotBaseline_() { try { BASELINE_DOC = localDocForDiff_(); } catch (e) { BASELINE_DOC = null; } }
+  function histKey_(h) { return (h && h.ts || '') + '|' + (h && h.field || '') + '|' + JSON.stringify(h && h.to === undefined ? null : h && h.to); }
+  // Append the history lines the local item gained since the baseline onto the fresh item.
+  function replayHistory_(fresh, base, local) {
+    const seen = new Set((base.history || []).map(histKey_));
+    const have = new Set((fresh.history || []).map(histKey_));
+    let n = 0;
+    (local.history || []).forEach(h => { const k = histKey_(h); if (seen.has(k) || have.has(k)) return; (fresh.history = fresh.history || []).push(cloneJson_(h)); have.add(k); n++; });
+    return n;
+  }
+  // Copy every top-level field that changed between base and local onto fresh (history and
+  // subitems are handled separately; id never). Returns the field names changed.
+  function replayFields_(fresh, base, local) {
+    const changed = [];
+    const keys = new Set(Object.keys(base).concat(Object.keys(local)));
+    keys.forEach(k => {
+      if (k === 'history' || k === 'subitems' || k === 'id') return;
+      if (sameJson_(base[k], local[k])) return;
+      if (local[k] === undefined) delete fresh[k]; else fresh[k] = cloneJson_(local[k]);
+      changed.push(k);
+    });
+    return changed;
+  }
+  // Steps: matched to the baseline by index when the local list has the same length as the
+  // baseline's (the common case, an edit to one step), else by title. Each base step is then
+  // found in the fresh list by that base title (index first, so duplicate titles stay put).
+  // New local steps are appended, steps removed locally are removed by title.
+  function replaySteps_(fresh, base, local) {
+    const bSubs = Array.isArray(base.subitems) ? base.subitems : [];
+    const lSubs = Array.isArray(local.subitems) ? local.subitems : [];
+    if (sameJson_(bSubs, lSubs)) return 0;
+    const fSubs = fresh.subitems = Array.isArray(fresh.subitems) ? fresh.subitems : [];
+    const sameLen = bSubs.length === lSubs.length;
+    const byTitle = (arr, title, idx) => (idx != null && arr[idx] && arr[idx].title === title) ? arr[idx] : (arr.find(s => s && s.title === title) || null);
+    let n = 0;
+    const matchedBase = new Set();
+    lSubs.forEach((ls, i) => {
+      const bs = sameLen ? bSubs[i] : byTitle(bSubs, ls.title, i);
+      if (!bs) {
+        if (!byTitle(fSubs, ls.title, null)) { fSubs.push(cloneJson_(ls)); n++; }
+        return;
+      }
+      matchedBase.add(bs);
+      if (sameJson_(bs, ls)) return;
+      const fs = byTitle(fSubs, bs.title, i);
+      if (!fs) return; // removed elsewhere meanwhile; nothing to land on
+      n += replayFields_(fs, bs, ls).length + replayHistory_(fs, bs, ls);
+    });
+    bSubs.forEach(bs => {
+      if (matchedBase.has(bs)) return;
+      const idx = fSubs.findIndex(s => s && s.title === bs.title);
+      if (idx >= 0) { fSubs.splice(idx, 1); n++; }
+    });
+    return n;
+  }
+  // Replay everything local changed since the baseline onto a freshly fetched document.
+  function replayLocalChanges_(freshDoc, base, local) {
+    const summary = { tasks: 0, fields: 0, added: 0, removed: 0, meta: 0 };
+    const byId = arr => { const m = new Map(); (arr || []).forEach(t => { if (t && t.id != null) m.set(t.id, t); }); return m; };
+    const bMap = byId(base.tasks), lMap = byId(local.tasks), fMap = byId(freshDoc.tasks);
+    (local.tasks || []).forEach(lt => {
+      const bt = bMap.get(lt.id);
+      if (!bt) { if (!fMap.has(lt.id)) { freshDoc.tasks.push(cloneJson_(lt)); summary.added++; } return; }
+      if (sameJson_(bt, lt)) return;
+      const ft = fMap.get(lt.id);
+      if (!ft) return; // deleted elsewhere meanwhile; the edit has nowhere to land
+      const n = replayFields_(ft, bt, lt).length + replayHistory_(ft, bt, lt) + replaySteps_(ft, bt, lt);
+      if (n) { summary.tasks++; summary.fields += n; }
+    });
+    (base.tasks || []).forEach(bt => {
+      if (lMap.has(bt.id) || !fMap.has(bt.id)) return;
+      const idx = freshDoc.tasks.findIndex(t => t && t.id === bt.id);
+      if (idx >= 0) { freshDoc.tasks.splice(idx, 1); summary.removed++; }
+    });
+    const bMeta = base.meta || {}, lMeta = local.meta || {};
+    freshDoc.meta = freshDoc.meta || {};
+    new Set(Object.keys(bMeta).concat(Object.keys(lMeta))).forEach(k => {
+      if (SERVER_OWNED_META.indexOf(k) >= 0) return;
+      if (sameJson_(bMeta[k], lMeta[k])) return;
+      if (lMeta[k] === undefined) delete freshDoc.meta[k]; else freshDoc.meta[k] = cloneJson_(lMeta[k]);
+      summary.meta++;
+    });
+    summary.total = summary.tasks + summary.added + summary.removed + summary.meta;
+    return summary;
+  }
+  // Called from doSaveNow_ on a conflict. Returns true when the merged document is installed
+  // and the save should run again; false when the caller should fall back to reload-and-tell.
+  async function replayAfterConflict_() {
+    if (!BASELINE_DOC || conflictReplays >= 2) return false;
+    // Capture both sides of the diff before any await: a reload that lands while the fetch
+    // below is in flight replaces BASELINE_DOC and TASKS, and diffing across that swap would
+    // read the other side's changes as local edits (seen in the test harness 2026-09-18).
+    const base = BASELINE_DOC;
+    const local = localDocForDiff_();
+    let fresh;
+    try {
+      const res = await apiFetch('api=data');
+      if (!res.ok) return false;
+      fresh = await res.json();
+      if (!fresh || !Array.isArray(fresh.tasks)) return false;
+    } catch (e) { return false; }
+    const freshBaseline = cloneJson_(fresh);
+    const summary = replayLocalChanges_(fresh, base, local);
+    if (!summary.total) return false;
+    conflictReplays++;
+    applyLoadedDoc_(fresh);
+    BASELINE_DOC = freshBaseline; // the diff for a second conflict must still find the edit
+    setSyncStatus('saving', 'The tracker changed elsewhere; re-applying your edit to the latest version');
+    LAST_CONFLICT_REPLAY = summary;
+    return true;
+  }
+  let LAST_CONFLICT_REPLAY = null;
   async function doSaveNow_() {
     const savedId = pendingSaveId;
     pendingSaveId = null;
@@ -7253,6 +7383,14 @@
       }
       if (resp && resp.ok === false) {
         if (resp.error === 'conflict') {
+          // Replay the local edit onto the latest document and save again (see the
+          // lost-save block above); only when nothing local can be recovered fall back to
+          // the reload, with the warning left up.
+          if (await replayAfterConflict_()) {
+            pendingSaveId = savedId;
+            saveInFlight = false;
+            return doSaveNow_();
+          }
           setSyncStatus('conflict', 'The tracker changed elsewhere since this loaded — reloading the latest version. Please redo your last change.');
           // keepStatus: loadData otherwise ends with setSyncStatus('loaded') ("Synced"),
           // wiping the conflict warning set one line above within a few hundred ms — the
@@ -7270,6 +7408,12 @@
         throw new Error(resp.error || 'Save rejected');
       }
       if (resp && typeof resp.docVersion === 'number') RAW_META.docVersion = resp.docVersion;
+      snapshotBaseline_();
+      if (conflictReplays) {
+        const r = LAST_CONFLICT_REPLAY || {};
+        toast_('Saved after a merge', 'The tracker had changed elsewhere; your edit' + (r.tasks > 1 ? 's on ' + r.tasks + ' tasks were' : ' was') + ' re-applied to the latest version and saved.');
+        conflictReplays = 0; LAST_CONFLICT_REPLAY = null;
+      }
       setSyncStatus('saved');
       if (savedId != null) {
         JUST_SAVED_IDS.add(savedId);
@@ -7312,6 +7456,7 @@
     setTimeout(checkInboxErrorToasts_, 0);
     STANDING_ITEMS = (doc.meta && doc.meta.standingItems) || [];
     dataLoaded = true;
+    snapshotBaseline_();
     document.getElementById('updatedStamp').textContent = 'Last updated ' + formatDate(META.lastUpdated);
     renderAll();
   }
