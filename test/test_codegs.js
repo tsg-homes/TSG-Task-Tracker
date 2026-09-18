@@ -1753,6 +1753,7 @@ section('Confirm-the-handoff slice is for people, not Claude (2026-09-18)');
   ] };
   const r = sandbox.tsgOpenSubitemHours_(t);
   check('roll-up adds 0.5 h only for the person-delegated step: 4 h of steps + 0.5 = 4.5', r.hours === 4.5 && r.any === true);
+  check('whole task: delegated to Marj yes, delegated to Claude no, owned by Marj with no delegate yes, Durand no', sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand', delegate: 'Marj' }) && !sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand', delegate: 'Claude' }) && sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Marj' }) && !sandbox.tsgTaskHandoffConfirmNeeded_({ owner: 'Durand' }));
   check('tsgHandoffConfirmNeeded_: Marj yes, Claude no, Durand no, none no', sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Marj' }) && !sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Claude' }) && !sandbox.tsgHandoffConfirmNeeded_({ delegate: 'Durand' }) && !sandbox.tsgHandoffConfirmNeeded_({}));
 }
 

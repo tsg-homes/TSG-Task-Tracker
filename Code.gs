@@ -5131,6 +5131,11 @@ function tsgIsClaudeDelegate_(s) {
 function tsgHandoffConfirmNeeded_(s) {
   return !!(s && s.delegate) && !tsgIsDurandDelegate_(s) && !tsgIsClaudeDelegate_(s);
 }
+// Same rule for a whole task: the person it sits with is its delegate, else its owner.
+function tsgTaskHandoffConfirmNeeded_(t) {
+  var who = String(tsgTaskDelegate_(t) || (t && t.owner) || '').trim().toLowerCase();
+  return !!who && who !== 'durand' && who !== 'claude' && who !== 'unassigned';
+}
 
 /**
  * Mirrors the dashboard's subitemBlockedBy() EXACTLY (dash_fixed2.html) — same default
@@ -5801,7 +5806,7 @@ function tsgAutoScheduleDoc_(doc) {
       t.history = t.history || [];
       t.history.push({ ts: new Date().toISOString(), field: 'timelineEnd', from: before || null, to: t.timelineEnd, note: 'auto-scheduled' });
       finishDate[t.id] = t.timelineEnd;
-      if (!isDurandWork) tsgReserveConfirmCapacity_(addLoad, today, t.timelineEnd);
+      if (!isDurandWork && tsgTaskHandoffConfirmNeeded_(t)) tsgReserveConfirmCapacity_(addLoad, today, t.timelineEnd);
     } else {
       // A subitem: it carries no history of its own, so the note goes on the parent
       // task instead, naming which subitem it was. Nothing outside its own task ever
@@ -5810,7 +5815,7 @@ function tsgAutoScheduleDoc_(doc) {
       item.parent.history = item.parent.history || [];
       item.parent.history.push({ ts: new Date().toISOString(), field: 'subitem-scheduled', from: null,
         to: 'Auto-scheduled ' + item.label + ' for ' + t.timelineEnd, note: 'auto-scheduled' });
-      if (!isDurandWork && tsgHandoffConfirmNeeded_(r)) {
+      if (!isDurandWork && tsgHandoffConfirmNeeded_(t)) {
         // Freshly placed step delegated to a PERSON — reserve the 0.5h "confirm this is done"
         // slice on Durand's capacity pool now, so any items still left in the queue this same
         // run see that slice of his day as already spoken for. Claude steps get no slice.
