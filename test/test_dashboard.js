@@ -1112,6 +1112,17 @@ setTimeout(async () => {
     w.closeTaskCard();
     w.setNeedsApproval(1, 0, false); w.setNeedsApproval(1, null, false);
   });
+  tryCall('time picker: quarter-hour select with 12-hour labels replaces the native time input', () => {
+    const html = w.timeSelectHtml_('11:15', 'x(v)');
+    if (!/<option value="11:15" selected>11:15 AM<\/option>/.test(html) || !/no time/.test(html) || !/other…/.test(html)) throw new Error('select html ' + html.slice(0, 200));
+    if (!/value="14:30"[^>]*>2:30 PM</.test(html)) throw new Error('12-hour labels missing');
+    if (!/value="07:07" selected>7:07 AM</.test(w.timeSelectHtml_('07:07', 'x(v)'))) throw new Error('off-grid value not kept');
+    if (w.parseTimeInput_('2:30 pm') !== '14:30' || w.parseTimeInput_('1430') !== '14:30' || w.parseTimeInput_('12 am') !== '00:00' || w.parseTimeInput_('nope') !== null || w.parseTimeInput_('') !== '') throw new Error('parse');
+    w.openTaskCard(1);
+    if (doc.querySelector('#taskModal input[type="time"]')) throw new Error('native time input still on the card');
+    if (!doc.querySelector('#taskModal select.time-select')) throw new Error('no time select on the card');
+    w.closeTaskCard();
+  });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

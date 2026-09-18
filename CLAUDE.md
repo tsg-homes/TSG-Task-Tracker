@@ -760,3 +760,8 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   `FAILED-`/`PARTIAL-`/`MALFORMED-` inbox files are trashed by the tracker after
   `TSG_INBOX_KEEP_DAYS` (7); the `meta.inboxErrors` record stays. The session can also trash a
   file itself with the Drive connector (done for the 2026-09-17 test file).
+- Time picker (UI 2026-09-18.7, per Durand "the time picker sucks"): every `<input type="time">`
+  (modal Due row, subtask rows, the meeting form's Start) is a `timeSelectHtml_` select: "no
+  time", quarter-hours 6:00 AM–8:00 PM in 12-hour labels, an off-grid stored value as its own
+  option, and "other…" which prompts free text parsed by `parseTimeInput_` (h:mm, hmm, am/pm,
+  24-hour). Values stay `HH:mm` 24-hour in the data.

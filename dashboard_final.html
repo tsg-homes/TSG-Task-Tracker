@@ -1570,7 +1570,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.6';
+  const UI_VERSION = '2026-09-18.7';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -5010,7 +5010,7 @@
             <span class="sub-delegate" title="Delegate — who this subtask is delegated to">${avatarHtml(s.delegate)}${delegateSelect(t.id, i, s.delegate)}</span>
             ${subPillSelect('status', s.status, t.id, i)}
             ${subPillSelect('priority', s.priority, t.id, i)}
-            <span class="sub-due ${overdueSub ? 'overdue' : ''}"><input type="date" class="due-input" value="${due}" onchange="onSubFieldChange(${t.id}, ${i}, 'timelineEnd', this.value)"><input type="time" class="due-input sub-time" value="${s.dueTime || ''}" title="Optional time of day" onchange="onDueTimeChange_(${t.id}, ${i}, this.value)">${reminderControlHtml_(s, t.id, i)}</span>
+            <span class="sub-due ${overdueSub ? 'overdue' : ''}"><input type="date" class="due-input" value="${due}" onchange="onSubFieldChange(${t.id}, ${i}, 'timelineEnd', this.value)">${timeSelectHtml_(s.dueTime || '', `onDueTimeChange_(${t.id}, ${i}, v)`, 'sub-time')}${reminderControlHtml_(s, t.id, i)}</span>
             <span class="sub-hours"><input type="number" min="0.25" step="0.25" class="due-input sub-hours-input" value="${s.estHours != null ? s.estHours : ''}" placeholder="hrs" onchange="onSubFieldChange(${t.id}, ${i}, 'estHours', this.value ? Number(this.value) : null)"></span>
             ${t.subitems.length > 1 ? `<select class="due-input sub-depends-select" title="Depends on — defaults to the subitem right before it" onchange="onSubFieldChange(${t.id}, ${i}, 'depends', this.value)"><option value="">${i > 0 ? 'Previous subtask (default)' : 'No dependency (default)'}</option>${dependsOptions}</select>` : ''}
           </div>
@@ -5795,7 +5795,7 @@
         <label>Title<input type="text" class="text-input" id="mfTitle" value="${escapeHtml(item.title || '')}"></label>
         <div class="meeting-form-row">
           <label>Date<input type="date" class="due-input" id="mfDate" value="${defaultDate}"></label>
-          <label>Start<input type="time" class="due-input" id="mfStart" value="10:00"></label>
+          <label>Start<select class="due-input time-select" id="mfStart">${(() => { const o = []; for (let m = 6 * 60; m <= 20 * 60; m += 15) { const hm = String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); o.push(`<option value="${hm}" ${hm === '10:00' ? 'selected' : ''}>${timeLabel12_(hm)}</option>`); } return o.join(''); })()}</select></label>
           <label>Duration (min)<input type="number" class="due-input" id="mfDuration" value="${meetingBucket_(item.estHours)}" min="15" step="15"></label>
         </div>
         <div class="sched-detail-note">Suggested times — Mon–Thu 9–2 when free for both of you, before the due date, ${meetingBucket_(item.estHours)} min from the estimate <label class="mf-blocks"><input type="checkbox" id="mfBlocks" checked onchange="onMfGuestChange_()"> skip errand and break blocks</label></div>
@@ -6065,6 +6065,44 @@
   function onRemindCustom(id, idx, val) {
     const ctx = itemFor_(id, idx); if (!ctx || !ctx.item) return;
     setRemindAt_(ctx, id, idx, val ? val.slice(0, 16) : '');
+  }
+  // Time picker (2026-09-17, per Durand "the time picker sucks"): the browser's native
+  // <input type=time> is replaced by a select of quarter-hours in 12-hour labels, 6:00 AM to
+  // 8:00 PM, with "no time" first and "other…" for anything off the grid (typed as h:mm,
+  // 24-hour or with am/pm). A stored value off the grid is shown as its own option.
+  function timeLabel12_(hm) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || '')); if (!m) return hm || '';
+    const h = Number(m[1]); return ((h % 12) || 12) + ':' + m[2] + (h < 12 ? ' AM' : ' PM');
+  }
+  function parseTimeInput_(raw) {
+    const t = String(raw || '').trim().toLowerCase(); if (!t) return '';
+    const m = /^(\d{1,2})(?::?(\d{2}))?\s*(a|p|am|pm)?$/.exec(t); if (!m) return null;
+    let h = Number(m[1]); const mm = m[2] ? Number(m[2]) : 0;
+    if (m[3]) { const pm = m[3][0] === 'p'; if (h === 12) h = pm ? 12 : 0; else if (pm) h += 12; }
+    if (h > 23 || mm > 59) return null;
+    return String(h).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  }
+  function timeSelectHtml_(value, onchangeExpr, extraClass) {
+    const opts = ['<option value="">no time</option>'];
+    let seen = false;
+    for (let mins = 6 * 60; mins <= 20 * 60; mins += 15) {
+      const hm = String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
+      if (hm === value) seen = true;
+      opts.push(`<option value="${hm}" ${hm === value ? 'selected' : ''}>${timeLabel12_(hm)}</option>`);
+    }
+    if (value && !seen) opts.push(`<option value="${escapeHtml(value)}" selected>${escapeHtml(timeLabel12_(value))}</option>`);
+    opts.push('<option value="__other__">other…</option>');
+    return `<select class="due-input time-select ${extraClass || ''}" title="Time of day" onchange="onTimeSelect_(this, function(v){ ${onchangeExpr} })">${opts.join('')}</select>`;
+  }
+  function onTimeSelect_(sel, apply) {
+    let v = sel.value;
+    if (v === '__other__') {
+      const typed = prompt('Time (e.g. 11:15, 2:30 pm, 14:30):', '');
+      const parsed = parseTimeInput_(typed);
+      if (parsed === null) { alert('Could not read that time.'); sel.value = ''; return; }
+      v = parsed;
+    }
+    apply(v);
   }
   function onDueTimeChange_(id, idx, val) {
     const ctx = itemFor_(id, idx); if (!ctx || !ctx.item) return;
@@ -6407,7 +6445,7 @@
       `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}</div>`,
       `<div class="modal-row"><b>Priority</b>${modalPillSelect('priority', t.priority, id)}</div>`,
       `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Actionable Task')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,
-      `<div class="modal-row"><b>Due</b><span class="modal-est-wrap"><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)"><input type="time" class="due-input" value="${t.dueTime || ''}" title="Optional time of day" onchange="modalDueTimeChange(${id}, this.value)">${reminderControlHtml_(t, id, null)}</span></div>`,
+      `<div class="modal-row"><b>Due</b><span class="modal-est-wrap"><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)">${timeSelectHtml_(t.dueTime || '', `modalDueTimeChange(${id}, v)`)}${reminderControlHtml_(t, id, null)}</span></div>`,
       (t.timelineEnd ? `<div class="modal-row"><b>Countdown</b>${bonusCountdownHtml_(t)}</div>` : ''),
       `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button>${t.location ? `<a class="btn small" href="${escapeHtml(directionsUrl_(t))}" target="_blank" rel="noopener" title="Open directions in Google Maps">&#128506; Directions</a><button type="button" class="btn small" onclick="sendDirections(${id}, this)" title="Email the Maps directions link to your phone">&#128241; Send to phone</button>` : ''}</span></div>`,
       `<div class="modal-row"><b>Estimate</b><span class="modal-est-wrap"><input type="number" min="0.25" step="0.25" class="due-input modal-due" style="width:70px;" value="${t.estHours || 1}" onchange="modalHoursChange(${id}, this.value)"> hrs${(pendingJudgment_(id, 'enrich') || pendingJudgment_(id, 'estimate')) ? ' <span class="hist-time" title="Queued for the hourly Claude Routine: the title, notes and fields update when it answers">· queued for Claude</span>' : ''}${travelRowHtml_(t)}</span></div>`,
