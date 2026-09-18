@@ -477,6 +477,16 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   `/a/macros/<domain>/` form runs the script and then answers with a Drive 404 (@76). The
   chain-link variables were declared after use in the form script (fixed @77).
 
+## Chat conventions (Durand, 2026-09-18: "make those two into a rule")
+
+- URLs in chat are always plain, clickable links on their own line. Never wrap a URL in a
+  code block or backticks; Durand opens them from the message.
+- Whenever a step needs Durand in an Apps Script editor, give the direct link to that
+  project already on the right account: the editor URL plus `?authuser=N` for the account
+  that must run it (info@tsg.homes is authuser=1 in Durand's browser; the raffle project's
+  sheet and triggers belong to whoever runs setupRaffle). Same for Script Properties,
+  Triggers and Executions: link the page, name the function, say what the log should show.
+
 ## Cloud (Claude Code on the web) session facts
 
 - clasp credentials do not persist between cloud sessions. Each session needs
