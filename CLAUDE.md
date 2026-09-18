@@ -1015,3 +1015,8 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   save replays the local edit...". The dashboard test harness exits synchronously after the last
   `tryCall`, so async tests placed late in the file never run their post-await checks; a test that
   awaits must sit before them (the inbox-error Retry test's General-tab check fails when awaited).
+- Deployed 2026-09-18 13:20 EDT: web app @87 = backend 2026-09-18.16 / UI 2026-09-18.19 = commit
+  e17c614, `main` fast-forwarded. (The other session had shipped backend .16 / UI .18 before this;
+  the data file reported backendVersion 2026-09-18.16 at 13:10 EDT.) Live data at that point:
+  docVersion 1310, 50 pending enrich judgments, 20 stale_version rejections in
+  `meta.rejectedSaves` (all before this deploy).
