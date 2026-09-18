@@ -786,6 +786,12 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   the roll-up added the steps to a stale own share (239 went 2 -> 3). Step hours in an answer
   are floored to 0.25 by `tsgEstimateParse_`, so never answer sub-quarter steps; a direct
   `update_subitem` keeps a smaller value (used to re-split 256/273/289 that night).
+- Deployed 2026-09-18 02:50 EDT: web app @79 = backend 2026-09-18.12 = commit 1f3ee43 (on top of the
+  other session's .11 and its deploy guard), `main` fast-forwarded. KEPT-TOTAL RULE (per Durand "fix
+  that gap too"): when a pass mints or re-estimates steps WITHOUT answering a new total (hours
+  hand-set and kept, or not in `need`), `tsgApplyEstimateToTask_` re-splits the parent's own share
+  from the total the task already showed (`totalBefore`, `stepsTouched`), so steps subdivide the
+  figure instead of adding to it. Three tests in "An answered estimate on a task with steps".
 - Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
   Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
   repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
