@@ -671,10 +671,12 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   Settings > Inbox errors list (`inboxErrorsHtml_`).
 - The meeting-slot "third window" test was date-dependent (failed when run on a Friday); it now
   blocks every Mon-Thu day in its range.
-- Pending on Durand: `npm run deploy` (backend 2026-09-18.1 / UI 2026-09-18.1 carries 2026-09-17.6
-  through .8: one links field, uploads, actual time, inbox trace). After that: drop the log_time
-  patch for tasks 281/287 (scratchpad `patch-logtime-281-287.json`) and the deliberately bad
-  patch (`patch-verify-bad.json`) to verify a PARTIAL- file + `meta.inboxErrors` entry appear.
+- VERIFIED LIVE on @68 (checked 2026-09-18 00:10 EDT against the data file): the deliberately bad
+  bulk (`patch-2026-09-17-verify-bad-op.json`, update_task + `no_such_op`) applied 1 of 2 sub-ops
+  and left `meta.inboxErrors[0]` naming the failing sub-op and the accepted op list (the PARTIAL-
+  file has since been trashed; `_Inbox` was empty). The raffle session's two lost `log_time`
+  entries landed on tasks 281 (20 min, 4 turns) and 287 (10 min, 2 turns) at 03:08Z, and
+  judgments J13/J14 were answered at 02:40Z by the judgment-queue session (queue empty).
 - Roll-up fix (backend 2026-09-18.2): the 0.5 h confirm-the-handoff slice (`tsgOpenSubitemHours_`
   and the scheduler's `tsgReserveConfirmCapacity_` sites) applies only to steps delegated to a
   PERSON (`tsgHandoffConfirmNeeded_`), never to Claude or Durand: a Claude step's estimate is
@@ -753,6 +755,37 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   ae02dd5. GitHub reports the repository RENAMED to `tsg-homes/TSG-Task-Tracker` (old name
   redirects); the session's git remote and the CCR repo scope still use `tsg-homes/task-tracker`,
   and Settings > Team > Claude Code repo should say the new name if it is set.
+- Backend 2026-09-18.7 / UI 2026-09-18.6 (c9e4b8e, the Settings-tabs commit below) is LIVE: the
+  data file stamped `backendVersion` 2026-09-18.7 at 04:10Z on 2026-09-18, and `main` is at the
+  same commit. `meta.backendVersion` remains the check for what the script accepts.
+- `update_subitem` KEY MISMATCH (backend 2026-09-18.8, found 2026-09-18 01:10 EDT): the handler
+  and every in-script caller use `index`; the protocol skill said `subIdx` (the key `log_time`
+  and the judgment queue use), so a patch written to the skill threw "no subitem at index
+  undefined" and was filed FAILED-. The handler now takes `subIdx` as an alias and refuses a
+  patch with neither key by name; the skill says `index`. Not yet deployed (needs the checkpoint).
+- Task 289 due date (2026-09-18): a parent with open steps takes its end from the LATEST open
+  step (`tsgRollupDue_`; a dueOverride only wins when it is LATER), and the scheduler chains a
+  task's steps one after another (`tsgSubitemBlockedByIdx_`), each paced at its chunk rate, so
+  seven small Claude steps landed on seven workdays and pushed the parent to 9/28. To hold a
+  parent to a date, set `timelineEnd` on every open step too (a step with an explicit end is
+  never rescheduled: line "!r.timelineEnd && !(r.scheduledStart && r.estDays)").
+- Deployed 2026-09-18 01:38 EDT: web app @75 = backend 2026-09-18.9 / UI 2026-09-18.12 = commit
+  47835ca, `main` fast-forwarded to it. ONE SESSION DEPLOYS AT A TIME: two sessions deployed in
+  parallel that night (@72 from this branch overwrote @69-71 from `affectionate-planck`, @73 from
+  there overwrote @72, @74 overwrote @73) because `clasp push` ships whatever the pushing branch
+  holds. Before any deploy: `git fetch origin` and confirm `git log HEAD..origin/main` is empty;
+  if not, merge main, test, then deploy. The clasp login for a cloud session is done as
+  durand@ (the script's owner); `.clasp.json` is written by hand with the Script ID and
+  `.tracker-ids.json` from `clasp deployments` (the non-@HEAD id), both gitignored.
+- Deployed 2026-09-18 02:16 EDT: web app @76 = backend 2026-09-18.10 / UI 2026-09-18.12 = commit
+  fab0ecf, `main` fast-forwarded. ROLL-UP RULE (per Durand: "the end result should be the sum
+  of all subitems plus any hours allocated to the main task"): `estHours` on a task with steps =
+  `estHoursOwn` + open steps, and an enrichment answer's `estHours` on such a task is the TOTAL:
+  `tsgApplyEstimateToTask_` now calls `tsgCaptureOwnHours_` after minting/answering steps, the
+  same split an explicit edit gets. Before this the answered figure was written to estHours and
+  the roll-up added the steps to a stale own share (239 went 2 -> 3). Step hours in an answer
+  are floored to 0.25 by `tsgEstimateParse_`, so never answer sub-quarter steps; a direct
+  `update_subitem` keeps a smaller value (used to re-split 256/273/289 that night).
 - Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
   Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
   repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
@@ -840,3 +873,13 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   `index` in `update_subitem`, pushed straight from another session on 2026-09-18, never
   committed); it is now in git and covered by tests. Any deploy from git before this port would
   have removed it.
+- TWO SESSIONS DEPLOYED PAST EACH OTHER (2026-09-18 ~02:00-02:30 EDT): session
+  `claude/dazzling-knuth-usmppv` shipped @75 (backend .9 / UI .12) and @76 (backend "2026-09-18.10",
+  `tsgCaptureOwnHours_`) from its branch; this session shipped @77 (its own backend "2026-09-18.10"
+  + UI .13) without fetching main first, which dropped `tsgCaptureOwnHours_` from production for a
+  few minutes. Fixed by merging main into this branch and deploying @78 = backend 2026-09-18.11 /
+  UI 2026-09-18.13 with both. RULES FROM THIS: (1) `scripts/deploy.js` now fetches origin/main and
+  REFUSES when it is not an ancestor of HEAD (`--allow-behind` overrides); (2) one session deploys at
+  a time; before any deploy `git fetch origin main && git merge origin/main`, re-test, then ship;
+  (3) never reuse a version number: look at `main` for the highest `TSG_CODE_VERSION` / `UI_VERSION`
+  before bumping.

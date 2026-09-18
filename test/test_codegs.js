@@ -1166,6 +1166,13 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   d = personDoc();
   let stale = false; try { sandbox.applyDataPatch_(d, { op: 'update_subitem', id: 1, index: 0, expectTitle: 'Something else', fields: { notes: 'x' } }); } catch (e) { stale = true; }
   check('update_subitem refuses when the subitem at that index has changed title', stale);
+  // subIdx alias (2026-09-18): the skill documented `subIdx`, the handler read only `index`
+  d = personDoc();
+  const aliasTitle = d.tasks[0].subitems[0].title;
+  sandbox.applyDataPatch_(d, { op: 'update_subitem', id: 1, subIdx: 0, expectTitle: aliasTitle, fields: { timelineEnd: '2026-10-09' }, source: 'Durand' });
+  check('update_subitem accepts subIdx as an alias for index', d.tasks[0].subitems[0].timelineEnd === '2026-10-09');
+  let noIdx = false; try { sandbox.applyDataPatch_(d, { op: 'update_subitem', id: 1, fields: { notes: 'x' } }); } catch (e) { noIdx = /missing index/.test(String(e && e.message)); }
+  check('update_subitem without index or subIdx is refused with a clear error', noIdx);
 
   // identity gates and the owner's preview
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'nobody@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
@@ -1850,6 +1857,35 @@ section('Retry / dismiss a filed inbox patch (2026-09-17)');
   check('dismiss trashes the filed file (prefix tolerated) and drops the record', junk.trashed === true && doc.meta.inboxErrors.length === 0);
   check('the two ops are in the accepted list', sandbox.TSG_DATA_OPS.includes('retry_filed') && sandbox.TSG_DATA_OPS.includes('dismiss_inbox_error'));
   sandbox.DriveApp.getFolderById = savedFolder;
+}
+
+section('An answered estimate on a task with steps is the TOTAL: own share = total minus open steps (2026-09-18)');
+{
+  const NOW = '2026-09-18T06:20:00Z';
+  // Task 239's shape: a backfill edit left own = 2 h while the one step had no hours; the answer
+  // says 2 h total and gives the step 1 h. Before the fix the roll-up produced 2 + 1 = 3 h.
+  let d = { meta: { docVersion: 1, judgments: [{ id: 'J9', kind: 'enrich', taskId: 239, need: ['estHours', 'steps'], ts: NOW,
+      currentSteps: [{ index: 0, title: 'Research CallAction', notes: '', estHours: null, taskType: 'Actionable Task', priority: 'Low', progress: 0, location: '', due: '', delegate: '' }] }] },
+    tasks: [{ id: 239, title: 'Research attribution options', status: 'Not Started', priority: 'Medium', estHours: 2, estHoursOwn: 2, tags: [], history: [],
+      subitems: [{ title: 'Research CallAction', done: false, estHours: null, taskType: 'Actionable Task', priority: 'Low', history: [] }] }] };
+  sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J9', ts: NOW, source: 'Claude (queue)', answer: { estHours: 2,
+    steps: [{ index: 0, title: 'Research CallAction', notes: '', estHours: 1, taskType: 'Actionable Task', priority: 'Low', tags: [], progress: 0, location: null, due: null }] } });
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('the answered 2 h is the total: own share becomes 1 h once the step carries 1 h', d.tasks[0].estHoursOwn === 1);
+  check('...and the roll-up lands on the answered total, not total plus steps', d.tasks[0].estHours === 2);
+  // Minted steps that cover the whole total leave the parent no own share.
+  d = { meta: { docVersion: 1, judgments: [{ id: 'J10', kind: 'enrich', taskId: 249, need: ['estHours', 'subitems'], ts: NOW }] },
+    tasks: [{ id: 249, title: 'Build the routines', status: 'In Progress', priority: 'High', estHours: 6, estHoursOwn: 6, tags: [], history: [], subitems: [] }] };
+  sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J10', ts: NOW, source: 'Claude (queue)', answer: { estHours: 2,
+    subitems: [{ title: 'Pre-meeting routine', estHours: 1, taskType: 'Claude', priority: 'High' }, { title: 'Post-meeting routine', estHours: 1, taskType: 'Claude', priority: 'High' }] } });
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('minted steps that sum to the total leave own = 0 and the parent at the total', d.tasks[0].estHoursOwn === 0 && d.tasks[0].estHours === 2 && d.tasks[0].subitems.length === 2);
+  // A subtask answer never touches the parent's split.
+  const own = d.tasks[0].estHoursOwn;
+  d.meta.judgments = [{ id: 'J11', kind: 'enrich', taskId: 249, subIdx: 0, subTitle: 'Pre-meeting routine', need: ['estHours'], ts: NOW }];
+  sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J11', ts: NOW, source: 'Claude (queue)', answer: { estHours: 1.5 } });
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('a subtask answer changes the step and the roll-up, never the parent\'s own share', d.tasks[0].estHoursOwn === own && d.tasks[0].subitems[0].estHours === 1.5 && d.tasks[0].estHours === 2.5);
 }
 
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));

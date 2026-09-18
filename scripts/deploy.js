@@ -39,6 +39,19 @@ if (dirty && !allowDirty) {
   console.error('deploy: refused, uncommitted changes in the files clasp pushes:\n' + dirty + '\n  Commit first (git must match live), or pass --allow-dirty.');
   process.exit(1);
 }
+// Two sessions deployed past each other on 2026-09-18 (@74-@77): each shipped its own branch
+// and silently dropped the other's change from production. main is the record of what is
+// live, so a deploy must contain it: fetch and refuse when origin/main is not an ancestor
+// of HEAD (merge main first), unless --allow-behind is given.
+if (!process.argv.includes('--allow-behind')) {
+  try { execFileSync('git', ['fetch', '-q', 'origin', 'main'], { stdio: 'inherit' }); } catch (e) { console.error('deploy: could not fetch origin/main; continuing on the local copy'); }
+  let behind = false;
+  try { execFileSync('git', ['merge-base', '--is-ancestor', 'origin/main', 'HEAD']); } catch (e) { behind = true; }
+  if (behind) {
+    console.error('deploy: refused, origin/main has commits this branch lacks (another session deployed). Run `git merge origin/main`, re-test, then deploy; or pass --allow-behind to overwrite live on purpose.');
+    process.exit(1);
+  }
+}
 execFileSync(clasp, ['push', '-f'], { stdio: 'inherit', shell: process.platform === 'win32' });
 execFileSync(clasp, ['deploy', '-i', id], { stdio: 'inherit', shell: process.platform === 'win32' });
 if (!dirty) {

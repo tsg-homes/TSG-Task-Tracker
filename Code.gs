@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.10';
+const TSG_CODE_VERSION = '2026-09-18.11';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -975,8 +975,7 @@ function applyDataPatch_(doc, patch) {
     const subs = Array.isArray(pt.subitems) ? pt.subitems : [];
     // The key is `index`; `subIdx` (the key log_time and the judgment queue use) is accepted
     // too, because the protocol skill documented it that way and a session writing to the docs
-    // threw "no subitem at index undefined" and was filed FAILED- (found 2026-09-18; this fix
-    // shipped as backend 2026-09-18.9 straight from a session, ported to git here).
+    // threw "no subitem at index undefined" and was filed FAILED- (found 2026-09-18).
     if (patch.index == null && typeof patch.subIdx === 'number') patch.index = patch.subIdx;
     if (typeof patch.index !== 'number') throw new Error('update_subitem: missing index (a number; `subIdx` is accepted as an alias) on task ' + patch.id);
     const sub = subs[patch.index];
@@ -2025,8 +2024,10 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
       task.timelineEnd = dueIso; task.dueOverride = true; applied.push('due (' + dueIso + ')');
     }
   }
+  var totalApplied = null;
   if (need.indexOf('estHours') !== -1 && est.estHours != null && !keep('estHours')) {
     task.estHours = est.estHours;
+    totalApplied = est.estHours;
     task.estDays = tsgEstDays_(est.estHours, task.priority || est.priority || 'Medium');
     task.estSource = est.source;
     task.tags = task.tags.filter(function(tg) { return tg !== 'needs-estimate'; });
@@ -2220,6 +2221,13 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
       }
     }
   }
+  // 2026-09-18 per Durand ("the end result should be the sum of all subitems plus any hours
+  // allocated to the main task"): on a task with steps the answered estHours is the TOTAL, so the
+  // parent's own share is what is left after the open steps, the same split an explicit dashboard
+  // edit gets through tsgCaptureOwnHours_. Runs after new steps are minted and existing ones
+  // answered so the split sees their hours. Without it the roll-up added the steps on top of a
+  // stale own figure (task 239: answered 2 h with a 1 h step rolled up to 3 h).
+  if (!o.subitem && totalApplied != null && task.subitems && task.subitems.length) tsgCaptureOwnHours_(task, totalApplied);
   tsgSyncReviewNotes_(task);
   return applied;
 }
