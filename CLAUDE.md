@@ -1055,3 +1055,6 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   "After the Block Party"), which nothing can align; the dry run against the live file moved 0.
   The dashboard's `cascadeDependents` stays for instant feedback on a hand edit. Tests: "Dependencies
   and due dates always align".
+- Deployed 2026-09-18 14:40 EDT: web app @88 = backend 2026-09-18.17 (dependency alignment, hand-set
+  dates flagged) / UI 2026-09-18.19 = commit b11a41a, `main` fast-forwarded. Durand's go: "flag on
+  hand set instead / deploy".
