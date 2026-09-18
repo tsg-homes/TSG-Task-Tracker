@@ -691,3 +691,9 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   weekday at 7:30 AM Eastern (not hourly as an earlier note said), no connectors stored on the
   Routine, last run 2026-09-17 12:35 PM EDT succeeded. Pending requests wait until the next
   morning unless a session answers them (as this session did for J13/J14).
+- DEPLOY CHECKPOINT (Durand, 2026-09-17 22:10 EDT: "add the rule, but I am the checkpoint, you
+  have to ask me and we review it together"). `.claude/settings.json` allows `npm run deploy` /
+  `npm run push` so the session can ship, but a deploy happens ONLY after a review in chat:
+  post the backend/UI versions, the commits since the `live` tag, the test result and anything
+  that changes live behavior for the team, then wait for Durand's explicit go in that exchange.
+  Never deploy on a standing approval from an earlier turn.
