@@ -2130,6 +2130,44 @@ const linkTokenOf = mail => (String(mail.body).match(/action=confirm&t=([0-9a-f-
     tab && tab.rows[1].join(' | '));
 }
 
+
+// ---- The monitoring page lists every row (2026-09-18, "a row per entry/referral") --
+{
+  const s = makeSandbox({ props: { RAFFLE_SHEET_ID: 'sheet1', FUB_API_KEY: 'key' } });
+  enterFull(s, entry(), DURING);                                     // Dana + Robin (consented)
+  enterFull(s, entry({ fullName: 'Pending Person', email: 'pend@mail-test.co',
+                       phone: '(215) 555-8600' }), DURING, {
+    skipConsent: true,
+    referral: { referralName: 'PRef Person', referralEmail: 'pref@mail-test.co',
+                referralPhone: '(215) 555-9600', referralRole: 'Seller', referralTimeframe: '0-3 Months' } });
+  // A hostile name cannot get past the door, so plant it on the sheet by hand:
+  // the page must still escape at the sink.
+  const xssRow = s.__data().findIndex(r => cell(s, r, 'Full Name') === 'Pending Person');
+  s.__data()[xssRow][1] = '<img src=x onerror=alert(1)> Smith';
+  // Disqualify Dana's own entry by hand on the sheet (Eligible = No).
+  const dana = s.__data().findIndex(r => cell(s, r, 'Full Name') === 'Dana Reid' && cell(s, r, 'Referral Name') === '');
+  s.__data()[dana][s.RAFFLE_SHEET_HEADERS.indexOf('Eligible')] = 'No';
+
+  const page = String(at(DURING, () => s.raffleStatusPage_(false)));
+  const rowsOnSheet = s.__data().length;
+  const trs = (page.match(/<tr/g) || []).length - 1;                // minus the header row
+  eq('monitor: one table row per sheet row', trs, rowsOnSheet);
+  check('monitor: the referral row shows the referred person with role and timeframe',
+    /PRef Person/.test(page) && /pref@mail-test\.co/.test(page) && /Seller · 0-3 Months/.test(page), page.slice(-2500));
+  check('monitor: a referral nobody has consented to reads Pending consent', /Pending consent/.test(page));
+  check('monitor: and says the invite went out', /invite emailed/.test(page));
+  check('monitor: a consented referral reads Eligible with its consent time', /Eligible<\/span><div[^>]*>invite emailed [^<]*consented/.test(page), page.slice(-3000));
+  check('monitor: an own entry says its email was verified', /email verified/.test(page));
+  check('monitor: the disqualified row is shown, marked, and worth 0 tickets',
+    /Disqualified/.test(page) && /was Eligible/.test(page), page.slice(-3000));
+  check('monitor: but the headline still excludes it (8 tickets became 7)', /7 tickets in the draw/.test(page.slice(0, 1200)), page.slice(0, 1200));
+  check('monitor: names are escaped at the sink', !/<img src=x/.test(page) && /&lt;img src=x/.test(page));
+  check('monitor: the page refreshes itself', /location\.reload/.test(page) && !/onclick/.test(page));
+  // The draw-side reader still drops the disqualified row.
+  check('monitor: the draw reader never sees a disqualified row',
+    !at(DURING, () => s.raffleReadEntries_(false)).some(r => r.name === 'Dana Reid' && !r.isReferralRow));
+}
+
 const { passes, fails } = counts();
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
 process.exit(fails ? 1 : 0);

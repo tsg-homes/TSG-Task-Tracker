@@ -98,9 +98,13 @@ section('T1  Stored XSS in the pages TSG opens');
     // entrant. (Checking for the strings "onerror=" or "javascript:" would be
     // wrong here: those appear, correctly escaped and inert, as the visible text
     // of the winner's name.)
+    // The status page carries exactly one script of its own (the 60 s reload,
+    // raffleStatusPage_); it is removed by exact string here, so anything else
+    // that looks like a script or a handler still fails.
+    const statusOwn = statusHtml.split('<script>setTimeout(function(){ location.reload(); }, 60000);</script>').join('');
     check('status page emits no injected tag or handler attribute ' + i,
-      !/<(script|img|svg|iframe|a|object|embed|style)\b/i.test(statusHtml) &&
-      !/<[a-z][^>]*\son[a-z]+\s*=/i.test(statusHtml));
+      !/<(script|img|svg|iframe|a|object|embed|style)\b/i.test(statusOwn) &&
+      !/<[a-z][^>]*\son[a-z]+\s*=/i.test(statusOwn));
     check('draw page emits no injected tag or handler attribute ' + i,
       !/<(script|img|svg|iframe|a|object|embed|style)\b/i.test(drawHtml) &&
       !/<[a-z][^>]*\son[a-z]+\s*=/i.test(drawHtml));

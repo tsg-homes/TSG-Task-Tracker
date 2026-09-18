@@ -893,8 +893,66 @@ function raffleEntryState_() {
   return 'open';
 }
 
+// One row per sheet row on the monitoring page: an entrant's own entry, or a
+// referral they made (the referred person's details, role, timeframe, and where
+// the invite stands). Newest first. Disqualified rows stay visible, marked.
+function raffleStatusRowsHtml_(rows) {
+  if (!rows.length) return '<p style="color:#666">No entries yet.</p>';
+  var labels = {};
+  labels[RAFFLE_STATUS_ELIGIBLE]   = ['Eligible', '#15464A', '#fff'];
+  labels[RAFFLE_STATUS_PENDING]    = ['Pending consent', '#b8860b', '#fff'];
+  labels[RAFFLE_STATUS_SUPERSEDED] = ['Superseded', '#777', '#fff'];
+  labels[RAFFLE_STATUS_DECLINED]   = ['Declined', '#b3271e', '#fff'];
+  var when = function (v) {
+    if (v instanceof Date) return raffleFmt_(v);
+    return String(v || '');
+  };
+  var cell = function (html, extra) { return '<td style="padding:8px 10px;border-top:1px solid #e3e6e6;vertical-align:top;font-size:13px;' + (extra || '') + '">' + html + '</td>'; };
+  var muted = function (t) { return t ? '<div style="color:#666;font-size:12px">' + raffleEsc_(t) + '</div>' : ''; };
+  var ordered = rows.slice().sort(function (a, b) { return b.row - a.row; });
+  var body = ordered.map(function (r) {
+    var st = labels[r.status] || [r.status || 'Eligible', '#15464A', '#fff'];
+    var badge = '<span style="display:inline-block;background:' + st[1] + ';color:' + st[2] +
+      ';font-size:11px;font-weight:700;letter-spacing:.5px;padding:2px 8px;border-radius:999px;white-space:nowrap">' +
+      raffleEsc_(st[0]) + '</span>';
+    if (r.disqualified) badge = '<span style="display:inline-block;background:#222;color:#fff;font-size:11px;font-weight:700;' +
+      'letter-spacing:.5px;padding:2px 8px;border-radius:999px;white-space:nowrap">Disqualified</span>' +
+      '<div style="color:#666;font-size:12px">was ' + raffleEsc_(st[0]) + '</div>';
+    var detail = [];
+    if (r.isReferralRow) {
+      if (r.referralEmailedAt) detail.push('invite emailed ' + r.referralEmailedAt);
+      else detail.push('invite not sent yet');
+      if (r.status === RAFFLE_STATUS_ELIGIBLE && r.referralConsentAt) detail.push('consented ' + r.referralConsentAt);
+      if (r.reminderSentAt) detail.push('reminder ' + r.reminderSentAt);
+      if (r.chainEmailedAt) detail.push('chain link emailed ' + r.chainEmailedAt);
+    } else {
+      detail.push(r.emailVerified ? 'email verified' : 'email NOT verified');
+    }
+    var who = '<b>' + raffleEsc_(r.name) + '</b>' + muted(r.email) + muted(r.phone);
+    var referred = r.isReferralRow
+      ? '<b>' + raffleEsc_(r.referralName) + '</b>' + muted(r.referralEmail) + muted(r.referralPhone) +
+        muted([r.referralRole, r.referralTimeframe].filter(Boolean).join(' · '))
+      : '<span style="color:#999">—</span>';
+    var fub = r.isReferralRow
+      ? (r.referralFubId ? 'FUB #' + raffleEsc_(r.referralFubId) : (r.referralLoggedAt ? 'logged, unconsented' : '<span style="color:#999">not in FUB</span>'))
+      : (raffleEsc_(r.fubStatus) + (r.fubId ? muted('#' + r.fubId) : ''));
+    return '<tr' + (r.disqualified ? ' style="opacity:.6"' : '') + '>' +
+      cell(raffleEsc_(r.row - 1), 'color:#999;white-space:nowrap') +
+      cell(raffleEsc_(when(r.timestamp)), 'white-space:nowrap;color:#666') +
+      cell(r.isReferralRow ? 'Referral' : 'Entry', 'white-space:nowrap;font-weight:700') +
+      cell(who) + cell(referred) +
+      cell(badge + muted(detail.join(' · '))) +
+      cell(String(r.disqualified ? 0 : r.tickets), 'text-align:right;font-variant-numeric:tabular-nums') +
+      cell(fub) + '</tr>';
+  }).join('');
+  var th = function (t, extra) { return '<th style="text-align:left;padding:8px 10px;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#666;' + (extra || '') + '">' + t + '</th>'; };
+  return '<div style="overflow-x:auto;margin-top:8px"><table style="border-collapse:collapse;width:100%;min-width:900px">' +
+    '<thead><tr>' + th('#') + th('When (ET)') + th('Type') + th('Entrant') + th('Referred') + th('Status') +
+    th('Tickets', 'text-align:right') + th('FUB') + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+}
+
 function raffleStatusPage_(test) {
-  var rows = raffleReadEntries_(test);
+  var rows = raffleReadEntries_(test, { all: true });
   var winner = raffleStoredWinner_(test);
 
   // raffleReadEntries_ returns EVERY row, pending ones included, so the headline
@@ -902,8 +960,9 @@ function raffleStatusPage_(test) {
   // "N eligible entries" while counting rows nobody had consented to. What is
   // actually worth knowing is how many PEOPLE are in, how many tickets they
   // hold, and how much is still sitting in referrals that have not replied.
-  var eligible = rows.filter(function (r) { return r.status === RAFFLE_STATUS_ELIGIBLE; });
-  var pending = rows.filter(function (r) { return r.status === RAFFLE_STATUS_PENDING; }).length;
+  var live = rows.filter(function (r) { return !r.disqualified; });
+  var eligible = live.filter(function (r) { return r.status === RAFFLE_STATUS_ELIGIBLE; });
+  var pending = live.filter(function (r) { return r.status === RAFFLE_STATUS_PENDING; }).length;
   var people = {}, tickets = 0;
   eligible.forEach(function (r) {
     people[r.emailKey || ('row' + r.row)] = true;
@@ -911,7 +970,7 @@ function raffleStatusPage_(test) {
   });
   var peopleCount = Object.keys(people).length;
 
-  var html = '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:520px">' +
+  var html = '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:1100px">' +
     (test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;' +
             'border-radius:6px;margin-bottom:14px">TEST DATA — not the live raffle</div>' : '') +
     '<h2 style="margin:0 0 4px">' + RAFFLE_EVENT_NAME + '</h2>' +
@@ -929,7 +988,14 @@ function raffleStatusPage_(test) {
     html += '<p style="color:#666">No winner drawn yet. Draw is armed for ' +
       raffleFmt_(new Date(RAFFLE_DRAW_AT)) + ' ET.</p>';
   }
-  html += '</div>';
+  html += '<h3 style="margin:28px 0 0">Every row' +
+    '<span style="font-weight:400;color:#666;font-size:13px"> &middot; ' + rows.length + ' on the sheet, newest first' +
+    ' &middot; as of ' + raffleEsc_(raffleFmt_(new Date())) + ' ET &middot; reloads itself every 60 s</span></h3>' +
+    raffleStatusRowsHtml_(rows) +
+    // The page's ONLY script. test_redteam.js strips this exact string before it
+    // asserts that no <script> or on*= attribute reached the admin page, so any
+    // change here must be mirrored there.
+    '</div><script>setTimeout(function(){ location.reload(); }, 60000);</script>';
   return HtmlService.createHtmlOutput(html);
 }
 
@@ -1795,7 +1861,10 @@ function raffleRecordFubOutcome_(row, fub, test) {
 // Reads every entry row into objects. Small by construction (the party is
 // capped at 125), so a full read per submission is cheap and keeps the
 // duplicate check reading the same source of truth the draw will.
-function raffleReadEntries_(test) {
+// opts.all (the monitoring page only): keep manually disqualified rows, flagged
+// `disqualified`, instead of dropping them. Every draw-side caller leaves it off.
+function raffleReadEntries_(test, opts) {
+  var all = !!(opts && opts.all);
   var sh = raffleSheet_(test);
   var last = sh.getLastRow();
   if (last < 2) return [];
@@ -1809,9 +1878,14 @@ function raffleReadEntries_(test) {
     var unmark = function (v) { return String(v || '').replace(/^'/, '').trim(); };
     var name = unmark(r[1]);
     if (!name) return;
-    if (String(r[9] || 'Yes').toLowerCase() === 'no') return; // manually disqualified
+    var disqualified = String(r[9] || 'Yes').toLowerCase() === 'no';   // by hand, on the sheet
+    if (disqualified && !all) return;
     out.push({
       row: idx + 2,
+      disqualified: disqualified,
+      emailVerified: unmark(r[RAFFLE_COL['Email Verified']]),
+      entrySource: unmark(r[RAFFLE_COL['Entry Source']]),
+      referralConsentAt: unmark(r[RAFFLE_COL['Referral Consent At']]),
       timestamp: r[0],
       name: name,
       email: unmark(r[2]),
