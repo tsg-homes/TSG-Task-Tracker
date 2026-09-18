@@ -231,6 +231,13 @@ url is already on the item (Gmail as type `email`, sites as type `web`);
 every change gets its own history line with the answer's source. Verify by re-reading the data
 file after a minute: the answered ids are gone from `meta.judgments`.
 
+## Git mirrors what is live (2026-09-17)
+
+`npm run deploy` refuses a dirty tree (uncommitted changes in the four pushed files) unless
+`--allow-dirty` is passed, and after a successful deploy moves the tag `live` to HEAD and
+fast-forwards `main` to it. So `main` and `git show live:Code.gs` are always the deployed script;
+feature work stays on the session branch until it ships.
+
 ## Inbox trace (2026-09-18): a dropped patch is never silent
 
 `processInbox_` used to rename a failing patch `FAILED-` and then trash it, so from a session's

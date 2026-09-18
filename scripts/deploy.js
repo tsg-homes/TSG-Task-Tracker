@@ -27,5 +27,32 @@ const clasp = process.platform === 'win32' ? 'clasp.cmd' : 'clasp';
 // -f: clasp prompts before overwriting a changed manifest (appsscript.json) and, with no
 // TTY, silently answers "no" and still exits 0 — which once deployed stale code as a new
 // version (2026-09-14). The manifest in this repo is the source of truth, so always force.
+// Git must match what is live (Durand, 2026-09-17): a deploy from a dirty tree would put
+// code in production that no commit holds, so it is refused unless --allow-dirty is given.
+// After a successful deploy the commit is tagged `live` (moved each time, pushed with -f)
+// and `main` is fast-forwarded to it, so `main` == the deployed script at all times.
+const allowDirty = process.argv.includes('--allow-dirty');
+const git = (args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
+let dirty = '';
+try { dirty = git(['status', '--porcelain', '--', 'Code.gs', 'appsscript.json', 'dashboard_final.html', 'person.html']); } catch (e) { dirty = ''; }
+if (dirty && !allowDirty) {
+  console.error('deploy: refused, uncommitted changes in the files clasp pushes:\n' + dirty + '\n  Commit first (git must match live), or pass --allow-dirty.');
+  process.exit(1);
+}
 execFileSync(clasp, ['push', '-f'], { stdio: 'inherit', shell: process.platform === 'win32' });
 execFileSync(clasp, ['deploy', '-i', id], { stdio: 'inherit', shell: process.platform === 'win32' });
+if (!dirty) {
+  try {
+    const head = git(['rev-parse', 'HEAD']);
+    git(['tag', '-f', 'live', head]);
+    execFileSync('git', ['push', '-f', 'origin', 'refs/tags/live'], { stdio: 'inherit' });
+    try {
+      execFileSync('git', ['push', 'origin', head + ':main'], { stdio: 'inherit' });
+      console.log('deploy: main fast-forwarded to ' + head.slice(0, 7) + ' (tag live moved)');
+    } catch (e) {
+      console.error('deploy: could not fast-forward main to ' + head.slice(0, 7) + ' (diverged?); tag live is on it. Merge main by hand.');
+    }
+  } catch (e) {
+    console.error('deploy: git bookkeeping failed: ' + (e.message || e));
+  }
+}

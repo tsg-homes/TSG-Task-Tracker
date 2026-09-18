@@ -680,3 +680,9 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   PERSON (`tsgHandoffConfirmNeeded_`), never to Claude or Durand: a Claude step's estimate is
   already his attention. Task 287 rolled up to 4.5 h instead of 2.5 h before this; the next write
   after deploy recomputes it.
+- Git mirrors live (2026-09-17 21:55 EDT, per Durand "keep the git up to date with the live
+  code"): `scripts/deploy.js` refuses a dirty tree, tags the deployed commit `live` and
+  fast-forwards `main` to it. `main` was fast-forwarded by hand to f09c5a1 (the script pulled with
+  clasp is byte-identical to it) and `live` tagged there. Times in chat and patch `ts` values are
+  America/New_York (the script's time zone); UTC dates had put "2026-09-18" on work done Thursday
+  evening 9/17.
