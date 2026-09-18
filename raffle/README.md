@@ -478,6 +478,35 @@ three names and phones in plain text), the winner email failing to send
 result is on the Draw Audit tab). The alternate-pick audit line is now written
 *after* a successful send, not before.
 
+### The button in the code email (2026-09-18, "build both")
+
+The code email now carries a **Confirm my entry** button above the six-digit
+code. Both finish the same pending entry:
+
+- **Button, on the phone.** `?form=raffle&action=confirm&t=<link token>` opens
+  the entry form at a one-tap confirm step naming the address. The GET enters
+  nobody (mail scanners and link previews fetch every URL in an email); the tap
+  POSTs `step: 'confirmlink'`, which resolves the token to the pending entry and
+  runs `raffleVerifyCode_` with the code the server holds, so both ways share one
+  write path and one set of rules: single use, 15 minutes, FUB match, one
+  self-entry per person. The page then continues to the referral step. A used or
+  expired link renders the form with a notice. The link token is a second UUID
+  (`RAFFLE_LINK_PREFIX` index in the cache); it never carries the code, and using
+  either one kills the other.
+- **Code, on the kiosk.** Unchanged. While the iPad sits on the code step it asks
+  `?form=raffle&action=poll&vid=` every 5 s (a GET, so it never spends doPost's
+  shared 15-per-minute cap; yes/no about a session id it already holds) and, when
+  the guest tapped the button on their phone instead, moves to the entered screen
+  by itself. Only a `kiosk=1` page polls; it stops after 15 minutes.
+- **Test mode.** A QA pending entry's link carries `&qatest=<secret>` so the page
+  it opens is in test mode and the referral and invite that follow land on the
+  Test tab. That link only ever goes to a QA address.
+
+Also fixed on the way: the chain link (a confirmed referral entering by
+referring) had never opened at the referral step, because the template
+variables it reads were declared 270 lines after the start-up block that reads
+them (hoisted as `undefined`). They are declared first now, with a browser test.
+
 ### The "checking" step — measured, not guessed
 
 Durand asked why *Checking…* takes so long. The two buttons that say it:

@@ -46,7 +46,12 @@ function page(opts) {
     announceAt: '6:30 PM',
     // JSON-encoded server-side, like the console's values.
     chainVid: JSON.stringify(opts.chainVid || ''),
-    chainFirst: JSON.stringify(opts.chainFirst || '')
+    chainFirst: JSON.stringify(opts.chainFirst || ''),
+    // The button-in-the-email landing (2026-09-18).
+    confirmToken: JSON.stringify(opts.confirmToken || ''),
+    confirmEmail: JSON.stringify(opts.confirmEmail || ''),
+    confirmFirst: JSON.stringify(opts.confirmFirst || ''),
+    confirmExpired: JSON.stringify(opts.confirmExpired ? '1' : '')
   }, opts.vals || {});
   // Model Apps Script's templating faithfully, including its escaping, because
   // getting that wrong is exactly how the countdown broke live: <?= ?> ESCAPES
@@ -583,6 +588,76 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   const timingText = await p.locator('#codeBusy').textContent();
   check('fix 7: test mode shows the server\'s timing breakdown',
     /TEST MODE timing/.test(timingText) && /fub 2\.1 s/.test(timingText) && /sheet 1\.4 s/.test(timingText), timingText);
+
+  // ---- 17. The button in the code email (2026-09-18) ----
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000,
+    confirmToken: 'ffffffff-1111-4222-8333-444444444444', confirmEmail: 'dana@mail-test.co', confirmFirst: 'Dana' }));
+  await p.waitForTimeout(300);
+  check('button: the landing page opens at the confirm step', await p.locator('#confirmPanel').isVisible());
+  check('button: the entry form is hidden', await p.locator('#formWrap').evaluate(e => e.classList.contains('hidden')));
+  check('button: it names the address', /dana@mail-test\.co/.test(await p.locator('#confirmPanel').textContent()));
+  check('button: and the first name', /, Dana/.test(await p.locator('#confirmPanel').textContent()));
+  await p.waitForTimeout(1500);
+  check('button: the ticker does not yank the confirm step away', await p.locator('#confirmPanel').isVisible());
+  let cbody = null;
+  await p.route(u => /\/exec/.test(u.href), r => {
+    const b = JSON.parse(r.request().postData());
+    cbody = b;
+    return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, verified: true, vid: VID, firstName: 'Dana' }) });
+  });
+  await p.click('#confirmBtn');
+  await p.waitForTimeout(500);
+  check('button: the tap posts confirmlink with the token',
+    cbody && cbody.step === 'confirmlink' && cbody.t === 'ffffffff-1111-4222-8333-444444444444' && cbody.formToken === 'tok', JSON.stringify(cbody));
+  check('button: and lands on the referral step', await p.locator('#referPanel').isVisible());
+  check('button: greeting by first name', (await p.locator('#entrantFirst').textContent()) === 'Dana');
+  await p.unroute(u => /\/exec/.test(u.href));
+
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000, confirmExpired: true }));
+  await p.waitForTimeout(300);
+  check('button: an expired link shows the form with a notice', await p.locator('#raffleForm').isVisible() &&
+    /expired or was already used/.test(await p.locator('#linkExpired').textContent()));
+
+  // The chain link (a confirmed referral entering by referring) must open at the
+  // referral step. It did not until 2026-09-18: its variables were declared after use.
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000, chainVid: VID, chainFirst: 'Robin' }));
+  await p.waitForTimeout(300);
+  check('chain: a chain entrant opens at the referral step', await p.locator('#referPanel').isVisible());
+  check('chain: greeted by first name', (await p.locator('#entrantFirst').textContent()) === 'Robin');
+
+  // The kiosk notices a tap made on the guest's phone and moves on by itself.
+  await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000, vals: { kiosk: '1' } }));
+  await p.waitForTimeout(300);
+  let polls = 0;
+  await p.route(u => /\/exec/.test(u.href), r => {
+    if (r.request().method() === 'GET') {
+      polls++;
+      return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, verified: polls >= 2 }) });
+    }
+    return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, needsCode: true, vid: VID }) });
+  });
+  await fillEntry();
+  await p.click('#submitBtn');
+  await p.waitForTimeout(500);
+  check('kiosk poll: the code step is up (setup)', await p.locator('#codePanel').isVisible());
+  await p.waitForTimeout(11000);
+  check('kiosk poll: the kiosk asked the server more than once', polls >= 2, 'polls ' + polls);
+  check('kiosk poll: and moved to the entered screen when the phone confirmed',
+    await p.locator('#successPanel').isVisible() && /confirmed on your phone/.test(await p.locator('#successMsg').textContent()));
+  await p.unroute(u => /\/exec/.test(u.href));
+
+  // A shared-link phone never polls.
+  await p.goto(LIVE()); await p.waitForTimeout(300);
+  let gets = 0;
+  await p.route(u => /\/exec/.test(u.href), r => {
+    if (r.request().method() === 'GET') { gets++; return r.fulfill({ status: 200, body: '{"ok":true,"verified":false}' }); }
+    return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, needsCode: true, vid: VID }) });
+  });
+  await fillEntry();
+  await p.click('#submitBtn');
+  await p.waitForTimeout(6500);
+  check('kiosk poll: a phone on the shared link does not poll', gets === 0, 'gets ' + gets);
+  await p.unroute(u => /\/exec/.test(u.href));
 
   // (2) The draw console: a failed send is a failed state with a retry, not a disabled button.
   {

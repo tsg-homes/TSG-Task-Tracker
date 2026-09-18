@@ -351,7 +351,12 @@ const cell = (s, row, name) => {
                 referralEmail: 'cref' + n + '@mail-test.co',
                 referralPhone: '(215) 555-93' + (10 + i) }
   }));
+  // Pin the shuffle: with 4 entrants and 4 referred people in the pool, a real
+  // random draw picks three people with no referral about 7% of the time, and
+  // the three assertions below then fail for no reason (seen 2026-09-18).
+  s.Math = new Proxy(Math, { get: (t, k) => (k === 'random' ? () => 0.5 : t[k]) });
   const drawn = at(AFTER, () => s.raffleDrawWinner_(false));
+  s.Math = Math;
   check('draw ran (setup)', drawn.ok === true, JSON.stringify(drawn));
 
   // The draw record has to carry enough to build the FUB links and show the referral.
@@ -2002,6 +2007,80 @@ const toRyan = s => s.__sent.filter(m => /⚠️/.test(String(m.subject)) && /ry
   eq('plain URL: a page served on the plain form keeps it', servedWith(makeSandbox(), plain), plain);
   eq('plain URL: the /dev URL falls back to the remembered public one',
     servedWith(makeSandbox({ props: { RAFFLE_EXEC_URL: plain } }), 'https://script.google.com/macros/s/AKfycbTESTID/dev'), plain);
+}
+
+// ---- The button in the code email (2026-09-18, "build both") -------------------
+const linkTokenOf = mail => (String(mail.body).match(/action=confirm&t=([0-9a-f-]{36})/) || [])[1];
+{
+  const s = makeSandbox({ props: { RAFFLE_EXEC_URL: 'https://script.google.com/macros/s/AKfycbTESTID/exec' } });
+  const r1 = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));
+  check('button: the request still asks for a code (setup)', r1.ok && r1.needsCode);
+  const mail = s.__sent[0];
+  const lt = linkTokenOf(mail);
+  check('button: the email carries a confirm link with its own token', !!lt, mail.body);
+  check('button: the link is on the plain public URL',
+    mail.body.indexOf('https://script.google.com/macros/s/AKfycbTESTID/exec?form=raffle&action=confirm&t=' + lt) !== -1);
+  check('button: the HTML body has the button and the same link',
+    /Confirm my entry/.test(mail.htmlBody) && mail.htmlBody.indexOf('action=confirm&amp;t=' + lt) !== -1);
+  const code = String(mail.subject).match(/(\d{6})/)[1];
+  check('button: the HTML body still shows the code for the kiosk', mail.htmlBody.indexOf(code) !== -1);
+  check('button: the link never carries the code', mail.body.indexOf('t=' + code) === -1 && lt.indexOf(code) === -1);
+  check('button: a live link carries no QA secret', mail.body.indexOf('qatest=') === -1);
+
+  // The GET renders the form at the confirm step; it enters nobody.
+  at(DURING, () => s.raffleServeForm_({ parameter: { action: 'confirm', t: lt } }, 'u'));
+  const props = s.__templates[s.__templates.length - 1].props;
+  eq('button: the landing page carries the token', JSON.parse(props.confirmToken), lt);
+  eq('button: and the address being entered', JSON.parse(props.confirmEmail), 'dana@mail-test.co');
+  eq('button: and is not marked expired', JSON.parse(props.confirmExpired), '');
+  eq('button: the GET wrote no entry (scanners fetch links)', s.__data().length, 0);
+
+  // The kiosk poll says "not yet".
+  const p0 = J(at(DURING, () => s.raffleServeForm_({ parameter: { action: 'poll', vid: r1.vid } }, 'u')));
+  check('poll: not verified before the tap', p0.ok === true && p0.verified === false, JSON.stringify(p0));
+
+  // The tap: same outcome as a typed code.
+  const c1 = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'confirmlink', t: lt })));
+  check('button: the tap verifies and opens a session', c1.ok === true && c1.verified === true && c1.vid === r1.vid, JSON.stringify(c1));
+  eq('button: the tap wrote the self entry', s.__data().length, 1);
+  eq('button: greets by first name', c1.firstName, 'Dana');
+  const p1 = J(at(DURING, () => s.raffleServeForm_({ parameter: { action: 'poll', vid: r1.vid } }, 'u')));
+  check('poll: verified after the tap (the kiosk moves on)', p1.verified === true);
+  const c2 = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'confirmlink', t: lt })));
+  check('button: the link is single use', c2.ok === false && /expired or was already used/.test(c2.error), JSON.stringify(c2));
+  const v2 = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'verify', vid: r1.vid, code: code })));
+  check('button: the code is dead once the link was used', v2.ok === false, JSON.stringify(v2));
+  eq('button: still one row', s.__data().length, 1);
+  at(DURING, () => s.raffleServeForm_({ parameter: { action: 'confirm', t: lt } }, 'u'));
+  eq('button: reopening a used link renders the expired notice',
+    JSON.parse(s.__templates[s.__templates.length - 1].props.confirmExpired), '1');
+
+  // The referral step works off the session the tap opened.
+  const staged = J(at(DURING, () => s.raffleHandleSubmission_(Object.assign({ step: 'referral', vid: c1.vid }, referral()))));
+  check('button: a referral can follow the tap', staged.ok === true && staged.staged === true, JSON.stringify(staged));
+
+  // Garbage and unknown tokens.
+  const bad = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'confirmlink', t: '<script>' })));
+  check('button: a malformed token is refused', bad.ok === false && !bad.serverError);
+  const pbad = J(at(DURING, () => s.raffleServeForm_({ parameter: { action: 'poll', vid: 'nope' } }, 'u')));
+  check('poll: a malformed vid is just "no"', pbad.ok === true && pbad.verified === false);
+}
+{ // The code path is untouched when the button is never tapped (the kiosk case).
+  const s = makeSandbox();
+  const v = verifySession(s, entry(), DURING);
+  check('button: typing the code still enters (kiosk path)', v.ok === true && v.verified === true, JSON.stringify(v));
+  const lt = linkTokenOf(s.__sent[0]);
+  const c = J(at(DURING, () => s.raffleHandleSubmission_({ step: 'confirmlink', t: lt })));
+  check('button: the link is dead once the code was typed', c.ok === false, JSON.stringify(c));
+  eq('button: still one row', s.__data().length, 1);
+}
+{ // A test-mode entry gets a test-mode link, so every later step stays on the Test tab.
+  const s = makeSandbox({ qaMode: true, props: { QA_TEST_SECRET: 'sekret', RAFFLE_EXEC_URL: 'https://script.google.com/macros/s/AKfycbTESTID/exec' } });
+  J(at(BEFORE, () => s.raffleHandleSubmission_(Object.assign({ step: 'request' }, entry()))));
+  const mail = s.__sent[0];
+  check('button: a QA-mode link carries the QA secret so the landing page is in test mode',
+    mail.body.indexOf('&qatest=sekret') !== -1, mail.body);
+  check('button: and the email is marked QA', /QA TEST MODE/.test(mail.htmlBody));
 }
 
 { // Timing rides in the JSON of the slow steps (the form shows it in test mode).

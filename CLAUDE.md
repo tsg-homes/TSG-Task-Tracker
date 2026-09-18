@@ -468,6 +468,14 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   behind `#busyOverlay` with a seconds counter; `raffleTimer_` puts `timing` on the
   request/verify/referral/invite JSON (shown in test mode). Kiosk: `Start over for the next
   guest` only with `&kiosk=1`. Full write-up: README "Failure handling".
+- Confirm button (2026-09-18, @77): the code email carries a "Confirm my entry" button
+  (`action=confirm&t=<link token>` -> form at `#confirmPanel`; the tap POSTs `confirmlink`,
+  which runs `raffleVerifyCode_` with the server-held code; single use; a QA entry's link
+  carries `&qatest=`) above the code; the kiosk polls `action=poll&vid=` (GET) every 5 s and
+  moves on when the phone confirmed. Pages post to the PLAIN exec URL (`raffleNormalizeExecUrl_`
+  on `tmpl.baseUrl`; the console/consent pages normalize `location`): a POST to the
+  `/a/macros/<domain>/` form runs the script and then answers with a Drive 404 (@76). The
+  chain-link variables were declared after use in the form script (fixed @77).
 
 ## Cloud (Claude Code on the web) session facts
 

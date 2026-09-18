@@ -800,6 +800,10 @@ function raffleServeForm_(e, baseUrl, chain) {
   if (action === RAFFLE_CONSENT_ACTION) return raffleConsentPage_(e);
   // The chain invite's link: a confirmed referral entering by referring someone.
   if (action === RAFFLE_CHAIN_ACTION) return raffleChainStart_(e);
+  // The button in the code email, and the kiosk's "did they tap it?" check.
+  // (raffleConfirmPage_ re-enters this function with `action` stripped.)
+  if (action === RAFFLE_CONFIRM_ACTION) return raffleConfirmPage_(e, baseUrl);
+  if (action === RAFFLE_POLL_ACTION) return rafflePollVerified_(e);
 
   // Every admin action goes through ONE gate. Adding a branch inside this block
   // without adding its name here is a silent dead end: the action falls through
@@ -837,6 +841,12 @@ function raffleServeForm_(e, baseUrl, chain) {
   chain = chain || {};
   tmpl.chainVid   = safeJsonForScript_(chain.chainVid || '');
   tmpl.chainFirst = safeJsonForScript_(chain.chainFirst || '');
+  // The confirm button's landing: the page opens at a one-tap "Confirm my
+  // entry" step for this pending entry (or says the link expired).
+  tmpl.confirmToken   = safeJsonForScript_(chain.confirmToken || '');
+  tmpl.confirmEmail   = safeJsonForScript_(chain.confirmEmail || '');
+  tmpl.confirmFirst   = safeJsonForScript_(chain.confirmFirst || '');
+  tmpl.confirmExpired = safeJsonForScript_(chain.confirmExpired ? '1' : '');
   if (chain.chainTest) isTest = true;
   tmpl.submitToken   = getSubmitToken();
   // The page posts back to THIS. It must be the plain /macros/s/<id>/exec form,
@@ -965,6 +975,9 @@ function raffleHandleSubmission_(d) {
   var step = String((d && d.step) || 'request').toLowerCase();
   try {
     if (step === 'verify')   return raffleVerifyCode_(d, test);
+    // The tap on the button in the code email: the same verification, with the
+    // code the server holds.
+    if (step === 'confirmlink') return raffleConfirmLink_(d, test);
     if (step === 'referral') return raffleSubmitReferral_(d, test);
     if (step === 'invite')   return raffleSendReferralInvite_(d, test);
     // The consent POST comes from the referred person, who has no session and no
@@ -1190,9 +1203,20 @@ function raffleRequestCode_(d, test) {
 
   var code = String(Math.floor(100000 + Math.random() * 900000));
   var vid  = Utilities.getUuid();
-  CacheService.getScriptCache().put(RAFFLE_PENDING_PREFIX + vid, JSON.stringify({
-    name: name, email: email, phone: phone, code: code, attempts: 0, test: !!test
+  // BOTH ways in (Durand, 2026-09-18: "a button in the email instead of a code?
+  // or both?" -> both). The code is typed back on the page that asked for it
+  // (the kiosk case: the guest is at the iPad and the email is on their phone);
+  // the button in the same email confirms the same pending entry with one tap
+  // on the phone. A second random token backs the button so the link never
+  // carries the code, and the index key maps it back to this pending entry.
+  var linkToken = Utilities.getUuid();
+  var cache = CacheService.getScriptCache();
+  cache.put(RAFFLE_PENDING_PREFIX + vid, JSON.stringify({
+    name: name, email: email, phone: phone, code: code, attempts: 0, test: !!test,
+    linkToken: linkToken
   }), RAFFLE_CODE_TTL_SECONDS);
+  cache.put(RAFFLE_LINK_PREFIX + linkToken, vid, RAFFLE_CODE_TTL_SECONDS);
+  var confirmUrl = raffleConfirmLinkUrl_(linkToken, test);
 
   // NO bcc HERE, ON PURPOSE. Durand is copied on every other email this project
   // sends (raffleOversightBcc_), but not this one: the six-digit code is a
@@ -1201,15 +1225,20 @@ function raffleRequestCode_(d, test) {
   // oversight copies, this is the email to leave alone.
   MailApp.sendEmail({
     to: email,
+    name: 'The Stawasz Group',
     subject: (test ? QA_TEST_PREFIX : '') + 'Your TSG Block Party entry code: ' + code,
+    htmlBody: raffleCodeEmailHtml_(code, confirmUrl, test),
     body: [
-      'Your entry code is ' + code,
+      'Tap this link to confirm your entry in one step:',
+      confirmUrl,
       '',
-      'Type it back on the entry page to finish entering the drawing for',
+      'Or type this code back on the entry page: ' + code,
+      '',
+      'Either one finishes entering the drawing for',
       RAFFLE_PRIZE_SHORT + ' at the TSG Block Party.',
       '',
-      'This code expires in 15 minutes. If you did not request it, ignore this email —',
-      'nothing has been entered and we will not contact you.',
+      'The link expires in 15 minutes, and so does the code. If you did not request this,',
+      'ignore this email — nothing has been entered and we will not contact you.',
       '',
       'The Stawasz Group · Keller Williams Empower',
       '728 S Broad St, Philadelphia, PA 19146 · (215) 760-6291'
@@ -1220,6 +1249,127 @@ function raffleRequestCode_(d, test) {
   Logger.log('Raffle: verification code emailed (vid ' + vid + ', test=' + !!test + ').');
   return jsonOut({ ok: true, needsCode: true, vid: vid, timing: timer.done(),
     message: 'We emailed a 6-digit code to ' + email + '.' });
+}
+
+// ---------- The confirm button in the code email (2026-09-18) ----------
+var RAFFLE_LINK_PREFIX = 'raffle_link_';
+var RAFFLE_CONFIRM_ACTION = 'confirm';
+var RAFFLE_POLL_ACTION = 'poll';
+
+// The link behind the button. Always the plain public URL. A TEST pending entry
+// gets the QA secret on its link so the page it opens is in test mode too and
+// every later step (the referral, the invite) lands on the Test tab: the link
+// only ever goes to a QA address Durand controls.
+function raffleConfirmLinkUrl_(linkToken, test) {
+  var url = raffleBaseUrl_() + '?form=raffle&action=' + RAFFLE_CONFIRM_ACTION + '&t=' + linkToken;
+  if (test) {
+    var secret = '';
+    try { secret = PropertiesService.getScriptProperties().getProperty(QA_TEST_SECRET_PROPERTY) || ''; }
+    catch (err) { secret = ''; }
+    if (secret) url += '&qatest=' + encodeURIComponent(secret);
+  }
+  return url;
+}
+
+// Inline styles only (Gmail strips <style>), a real <a> as the button, the code
+// beneath it for the kiosk case. Everything interpolated is ours (no entrant
+// text), but the URL is escaped for the attribute regardless.
+function raffleCodeEmailHtml_(code, url, test) {
+  var e = raffleEsc_;
+  return [
+    '<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#1c1c1c">',
+    test ? '<div style="background:#b3271e;color:#fff;font-weight:700;padding:10px 12px;border-radius:6px;' +
+           'margin-bottom:14px;text-align:center">QA TEST MODE — not a real entry</div>' : '',
+    '<div style="background:#15464A;color:#fff;padding:22px 20px;border-radius:10px 10px 0 0;text-align:center">',
+    '<div style="font-size:11px;letter-spacing:2.5px;opacity:.85">THE STAWASZ GROUP</div>',
+    '<div style="font-size:20px;font-weight:700;margin-top:6px">Block Party 2026</div>',
+    '</div>',
+    '<div style="background:#fff;border:1px solid #dfe3e3;border-top:0;padding:24px 20px;border-radius:0 0 10px 10px">',
+    '<p style="font-size:16px;margin:0 0 18px;text-align:center">One tap finishes your entry for<br>',
+    '<b>' + e(RAFFLE_PRIZE_SHORT) + '</b>.</p>',
+    '<p style="text-align:center;margin:0 0 22px">',
+    '<a href="' + e(url) + '" style="display:inline-block;background:#15464A;color:#ffffff;',
+    'text-decoration:none;font-weight:700;font-size:17px;padding:16px 34px;border-radius:6px">',
+    'Confirm my entry</a></p>',
+    '<p style="font-size:13px;color:#4a5252;text-align:center;margin:0 0 18px">',
+    'At the TSG table on the iPad instead? Type this code on its screen:</p>',
+    '<p style="text-align:center;margin:0 0 20px"><span style="display:inline-block;font-size:30px;',
+    'letter-spacing:8px;font-weight:700;padding:12px 18px;border:1px solid #dfe3e3;border-radius:8px;',
+    'background:#f4f5f5">' + e(code) + '</span></p>',
+    '<p style="font-size:12.5px;color:#5c6666;line-height:1.5;margin:0">The button and the code expire in ',
+    '15 minutes. If you did not request this, ignore this email — nothing has been entered and we will ',
+    'not contact you.</p>',
+    '</div>',
+    '<p style="font-size:11px;color:#9aa3a3;text-align:center;margin:14px 0 0">The Stawasz Group · ',
+    'Keller Williams Empower · 728 S Broad St, Philadelphia, PA 19146 · (215) 760-6291</p>',
+    '</div>'
+  ].join('');
+}
+
+// GET ?action=confirm&t=<linkToken>: serves the entry form opened at a one-button
+// "Confirm my entry" step. Nothing is confirmed by the GET itself: mail scanners
+// and link previews fetch every URL in an email, and a GET that entered people
+// would enter the scanner. The tap POSTs step 'confirmlink' below.
+function raffleConfirmPage_(e, baseUrl) {
+  var t = String((e && e.parameter && e.parameter.t) || '');
+  var pending = raffleFindPendingByLink_(t);
+  var inner = { parameter: {} };
+  Object.keys((e && e.parameter) || {}).forEach(function (k) {
+    if (k !== 'action' && k !== 't') inner.parameter[k] = e.parameter[k];
+  });
+  if (!pending) {
+    // Expired or already used. The form still serves, with a message, so the
+    // guest can simply enter again rather than landing on a dead page.
+    return raffleServeForm_(inner, baseUrl, { confirmExpired: true });
+  }
+  return raffleServeForm_(inner, baseUrl, {
+    confirmToken: t,
+    confirmEmail: pending.email,
+    confirmFirst: String(pending.name || '').split(' ')[0],
+    chainTest: !!pending.test
+  });
+}
+
+function raffleFindPendingByLink_(linkToken) {
+  if (!/^[0-9a-fA-F-]{36}$/.test(String(linkToken || ''))) return null;
+  var cache = CacheService.getScriptCache();
+  var vid = cache.get(RAFFLE_LINK_PREFIX + linkToken);
+  if (!vid) return null;
+  var raw = cache.get(RAFFLE_PENDING_PREFIX + vid);
+  if (!raw) return null;
+  var pending = JSON.parse(raw);
+  if (pending.linkToken !== linkToken) return null;
+  pending.vid = vid;
+  return pending;
+}
+
+// POST step 'confirmlink' {t}: the tap on the button. Resolves the link back to
+// the pending entry and runs the SAME verification as a typed code, with the
+// code the server itself holds, so both ways in share one write path and one
+// set of rules (single use, 15 minutes, FUB match, one self-entry per person).
+function raffleConfirmLink_(d, test) {
+  var t = String((d && d.t) || '');
+  var pending = raffleFindPendingByLink_(t);
+  if (!pending) {
+    throw makeValidationError('That link has expired or was already used. ' +
+      'Enter your details again and we will send a new one.');
+  }
+  CacheService.getScriptCache().remove(RAFFLE_LINK_PREFIX + t);   // single use
+  return raffleVerifyCode_({ vid: pending.vid, code: pending.code }, test);
+}
+
+// GET ?action=poll&vid=: the kiosk asks whether the entry it is waiting on was
+// confirmed from the guest's phone instead. A GET on purpose: doPost's shared
+// 15-per-minute cap is for submissions, and a polling iPad must not spend it.
+// Answers only yes/no about a session id the page already holds; it reveals
+// nothing about anybody else.
+function rafflePollVerified_(e) {
+  var vid = String((e && e.parameter && e.parameter.vid) || '');
+  var verified = false;
+  if (/^[0-9a-fA-F-]{36}$/.test(vid)) {
+    verified = !!CacheService.getScriptCache().get(RAFFLE_VERIFIED_PREFIX + vid);
+  }
+  return jsonOut({ ok: true, verified: verified });
 }
 
 // Throws a validation error -- i.e. a message the entrant sees -- rather than

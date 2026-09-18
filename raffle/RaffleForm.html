@@ -265,6 +265,20 @@ body.qa-test{padding-top:62px;}
     <div class="actions"><button type="button" class="linkish" id="startOverBtn">Wrong email? Start over</button></div>
   </div>
 
+  <!-- Step 2b: the button in the code email landed here. One tap confirms the
+       same pending entry the code would; nothing is entered by the page load. -->
+  <div class="panel" id="confirmPanel">
+    <h2>Confirm your entry</h2>
+    <p class="sent">One tap and you are in the drawing<span id="confirmFirst"></span>.<br>
+      Entering as <span class="addr" id="confirmAddr"></span></p>
+    <div id="confirmErr" role="alert"></div>
+    <button type="button" id="confirmBtn">Confirm my entry</button>
+    <div class="busy-note" id="confirmBusy"></div>
+    <div class="fail" id="confirmFail" role="alert"></div>
+    <div class="hint">Nothing is entered until you tap. Then you can refer a friend for 5 more entries.</div>
+    <div class="actions"><button type="button" class="linkish" id="confirmStartOver">Not you? Start over</button></div>
+  </div>
+
   <!-- Step 3: who are you referring -->
   <div class="panel" id="referPanel">
     <h2>You&rsquo;re in. Want 5 more entries?</h2>
@@ -344,6 +358,7 @@ body.qa-test{padding-top:62px;}
   </div>
 
   <div id="formWrap">
+    <div class="fail" id="linkExpired" role="alert"></div>
     <form id="raffleForm" novalidate>
       <input type="text" id="website" name="website" autocomplete="off" tabindex="-1" aria-hidden="true">
 
@@ -528,6 +543,21 @@ body.qa-test{padding-top:62px;}
   var OPEN_MS    = Number(<?!= safeJsonForScript_(openAtMs) ?>);
   var CLOSE_MS   = Number(<?!= safeJsonForScript_(closeAtMs) ?>);
   var SERVER_MS  = Number(<?!= safeJsonForScript_(serverNowMs) ?>);
+  // Declared HERE, before the start-up block below reads them. Until 2026-09-18
+  // they sat 270 lines further down: hoisted as undefined, so a chain entrant
+  // never opened at the referral step.
+  // A chain entrant: someone who confirmed a referral and is now entering by
+  // referring in turn. They arrive with a server-minted session, so the page skips
+  // straight to the referral step -- they have already proved this inbox is theirs.
+  var CHAIN_VID   = <?!= chainVid ?>;
+  var CHAIN_FIRST = <?!= chainFirst ?>;
+  // The button in the code email: a pending entry to confirm with one tap, or
+  // a note that its link has expired.
+  var CONFIRM_TOKEN   = <?!= confirmToken ?>;
+  var CONFIRM_EMAIL   = <?!= confirmEmail ?>;
+  var CONFIRM_FIRST   = <?!= confirmFirst ?>;
+  var CONFIRM_EXPIRED = <?!= confirmExpired ?> === '1';
+
 
   // The page must go dead at 6:15 even if it has been sitting open on someone's
   // phone since 3pm. The client clock can be wrong by minutes, so everything is
@@ -547,9 +577,14 @@ body.qa-test{padding-top:62px;}
   var codePanel = document.getElementById('codePanel');
   var referPanel  = document.getElementById('referPanel');
   var invitePanel = document.getElementById('invitePanel');
+  var confirmPanel = document.getElementById('confirmPanel');
   var referBtn    = document.getElementById('referBtn');
   var inviteBtn   = document.getElementById('inviteBtn');
-  var panels = [beforePanel, closedPanel, successPanel, codePanel, referPanel, invitePanel];
+  var confirmBtn  = document.getElementById('confirmBtn');
+  var panels = [beforePanel, closedPanel, successPanel, codePanel, referPanel, invitePanel, confirmPanel];
+  // The page was opened from the button in the code email and is holding the
+  // one-tap confirm step.
+  var holdingConfirm = false;
   // Server-issued id for this pending entry. Nothing is written until the
   // emailed code comes back against it.
   var pendingVid = null;
@@ -616,11 +651,13 @@ body.qa-test{padding-top:62px;}
     // A held confirmation -- or a half-finished code step -- is only ever
     // replaced by the 6:15 close, never by a phase change the entrant does not
     // care about.
-    if ((holdingSuccess || pendingVid || pendingToken) && p !== 'closed') { lastPhase = p; return; }
+    if ((holdingSuccess || holdingConfirm || pendingVid || pendingToken) && p !== 'closed') { lastPhase = p; return; }
     if (p !== lastPhase || holdingSuccess) {
       holdingSuccess = false;
+      holdingConfirm = false;
       pendingVid = null;
       pendingToken = null;
+      stopKioskPoll();
       if (p === 'before')      show(beforePanel);
       else if (p === 'closed') show(closedPanel);
       else                     showForm();
@@ -633,8 +670,24 @@ body.qa-test{padding-top:62px;}
     document.getElementById('entrantFirst').textContent = CHAIN_FIRST || '';
     show(referPanel);
     lastPhase = phase();
+  } else if (CONFIRM_TOKEN && phase() === 'open') {
+    holdingConfirm = true;
+    document.getElementById('confirmAddr').textContent = CONFIRM_EMAIL || '';
+    document.getElementById('confirmFirst').textContent = CONFIRM_FIRST ? ', ' + CONFIRM_FIRST : '';
+    show(confirmPanel);
+    lastPhase = phase();
   } else {
     render();
+    if (CONFIRM_EXPIRED && phase() === 'open') {
+      var le = document.getElementById('linkExpired');
+      le.innerHTML = '';
+      var lt = document.createElement('div'); lt.className = 't';
+      lt.textContent = 'That confirmation link expired or was already used.';
+      var ld = document.createElement('div'); ld.className = 'd';
+      ld.textContent = 'Links last 15 minutes and work once. Enter your details again and we will send a new one.';
+      le.appendChild(lt); le.appendChild(ld);
+      le.classList.add('on');
+    }
   }
   // One second, so 3:00:00 opens and 6:15:00 closes on the second, with no
   // reload either way.
@@ -877,12 +930,6 @@ body.qa-test{padding-top:62px;}
   // copy of FUB's labels to drift out of date. DEFAULT_TIMEFRAME is matched
   // server-side against that same list, so a renamed bucket in FUB changes the
   // preselection here with no code change.
-  // A chain entrant: someone who confirmed a referral and is now entering by
-  // referring in turn. They arrive with a server-minted session, so the page skips
-  // straight to the referral step -- they have already proved this inbox is theirs.
-  var CHAIN_VID   = <?!= chainVid ?>;
-  var CHAIN_FIRST = <?!= chainFirst ?>;
-
   var TIMEFRAMES = <?!= timeframeList ?>;
   var DEFAULT_TIMEFRAME = "<?!= defaultTimeframe ?>";
   (function(){
@@ -934,6 +981,7 @@ body.qa-test{padding-top:62px;}
         codeInput.value = '';
         clearFail('codeFail');
         show(codePanel);
+        startKioskPoll();
         try { codeInput.focus(); } catch (e) {}
       } else if (res && res.ok) {
         enteredOk(res);                       // already entered
@@ -988,6 +1036,7 @@ body.qa-test{padding-top:62px;}
     post(payload).then(function(res){
       done('Confirm & Enter', res);
       if (res && res.ok && res.verified) {
+        stopKioskPoll();
         pendingVid = res.vid || pendingVid;
         document.getElementById('entrantFirst').textContent = res.firstName || '';
         document.getElementById('referErr').textContent = '';
@@ -1017,6 +1066,82 @@ body.qa-test{padding-top:62px;}
     });
   }
 
+  // ---- Step 2b: the button in the email ----
+  // Same outcome as a typed code; the server holds the code and verifies with it.
+  var confirmAttempt = 0;
+  function confirmLink(payload){
+    confirmAttempt++;
+    clearFail('confirmFail');
+    document.getElementById('confirmErr').textContent = '';
+    var done = busy(confirmBtn, 'Confirming…', 'confirmBusy', 'Confirming your entry and writing it down.');
+    post(payload).then(function(res){
+      done('Confirm my entry', res);
+      if (res && res.ok && res.verified) {
+        holdingConfirm = false;
+        pendingVid = res.vid;
+        document.getElementById('entrantFirst').textContent = res.firstName || '';
+        document.getElementById('referErr').textContent = '';
+        clearFail('referFail');
+        show(referPanel);
+      } else if (res && res.ok) {
+        holdingConfirm = false;
+        enteredOk(res);
+      } else if (res && res.serverError) {
+        showFail('confirmFail', failFor_(null, res), function(){ confirmLink(payload); }, confirmAttempt);
+      } else {
+        document.getElementById('confirmErr').textContent = (res && res.error) || 'That did not work. Try again.';
+      }
+    }).catch(function(err){
+      done('Confirm my entry');
+      report('verify', err, confirmAttempt);
+      showFail('confirmFail', failFor_(err), function(){ confirmLink(payload); }, confirmAttempt);
+    });
+  }
+  confirmBtn.addEventListener('click', function(){
+    confirmAttempt = 0;
+    confirmLink({
+      formType: 'raffle', formToken: TOKEN, qaTestToken: QA_TOKEN,
+      step: 'confirmlink', t: CONFIRM_TOKEN
+    });
+  });
+  document.getElementById('confirmStartOver').addEventListener('click', function(){
+    holdingConfirm = false;
+    startOver(false);
+  });
+
+  // ---- Kiosk: did they tap the button on their phone instead? ----
+  // While the iPad sits on the code step it asks every few seconds (a GET, so
+  // it never spends the submit rate limit) whether this entry was confirmed
+  // elsewhere, and moves on by itself when it was. Gives up after 15 minutes,
+  // when the code and the link have both expired anyway.
+  var kioskPoll = null, kioskPollStarted = 0;
+  function startKioskPoll(){
+    stopKioskPoll();
+    if (!KIOSK || !pendingVid) return;
+    kioskPollStarted = Date.now();
+    kioskPoll = setInterval(pollVerified, 5000);
+  }
+  function stopKioskPoll(){
+    if (kioskPoll) clearInterval(kioskPoll);
+    kioskPoll = null;
+  }
+  function pollVerified(){
+    if (!pendingVid || Date.now() - kioskPollStarted > 15 * 60000) { stopKioskPoll(); return; }
+    var vid = pendingVid;
+    fetch(API + '?form=raffle&action=poll&vid=' + encodeURIComponent(vid), { method: 'GET' })
+      .then(function(r){ return r.text(); })
+      .then(function(text){
+        var data = null;
+        try { data = JSON.parse(text); } catch (e) { data = null; }
+        if (data && data.ok && data.verified && pendingVid === vid && kioskPoll) {
+          stopKioskPoll();
+          enteredOk({ ok: true, message: 'You confirmed on your phone and you are entered. ' +
+            'Keep going there to refer a friend for 5 more entries.' });
+        }
+      })
+      .catch(function(){ /* a missed poll is nothing; the next one asks again */ });
+  }
+
   codeBtn.addEventListener('click', submitCode);
   codeInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') submitCode(); });
 
@@ -1026,8 +1151,10 @@ body.qa-test{padding-top:62px;}
   function startOver(clearAll){
     pendingVid = null;
     pendingToken = null;
+    holdingConfirm = false;
     lastPhase = null;
-    ['submitFail', 'codeFail', 'referFail', 'inviteFail'].forEach(clearFail);
+    stopKioskPoll();
+    ['submitFail', 'codeFail', 'referFail', 'inviteFail', 'confirmFail', 'linkExpired'].forEach(clearFail);
     if (clearAll === true) {
       form.reset();
       ['refName', 'refPhone', 'refEmail'].forEach(function(id){ document.getElementById(id).value = ''; });
