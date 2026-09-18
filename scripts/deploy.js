@@ -42,17 +42,22 @@ if (dirty && !allowDirty) {
 execFileSync(clasp, ['push', '-f'], { stdio: 'inherit', shell: process.platform === 'win32' });
 execFileSync(clasp, ['deploy', '-i', id], { stdio: 'inherit', shell: process.platform === 'win32' });
 if (!dirty) {
+  // main first (the part that matters: main == the deployed script), tag second and
+  // best-effort: the git proxy in cloud sessions refuses force pushes and drops tag
+  // refs, so a failed tag push is logged, never fatal.
+  const head = git(['rev-parse', 'HEAD']);
   try {
-    const head = git(['rev-parse', 'HEAD']);
-    git(['tag', '-f', 'live', head]);
-    execFileSync('git', ['push', '-f', 'origin', 'refs/tags/live'], { stdio: 'inherit' });
-    try {
-      execFileSync('git', ['push', 'origin', head + ':main'], { stdio: 'inherit' });
-      console.log('deploy: main fast-forwarded to ' + head.slice(0, 7) + ' (tag live moved)');
-    } catch (e) {
-      console.error('deploy: could not fast-forward main to ' + head.slice(0, 7) + ' (diverged?); tag live is on it. Merge main by hand.');
-    }
+    execFileSync('git', ['push', 'origin', head + ':main'], { stdio: 'inherit' });
+    console.log('deploy: main fast-forwarded to ' + head.slice(0, 7));
   } catch (e) {
-    console.error('deploy: git bookkeeping failed: ' + (e.message || e));
+    console.error('deploy: could not fast-forward main to ' + head.slice(0, 7) + ' (diverged?). Merge main by hand.');
+  }
+  try {
+    git(['tag', '-f', 'live', head]);
+    execFileSync('git', ['push', 'origin', ':refs/tags/live'], { stdio: 'ignore' });
+    execFileSync('git', ['push', 'origin', 'refs/tags/live'], { stdio: 'ignore' });
+    console.log('deploy: tag live moved to ' + head.slice(0, 7));
+  } catch (e) {
+    console.error('deploy: tag live could not be pushed (' + (e.message || e).split('\n')[0] + '); main is the record.');
   }
 }

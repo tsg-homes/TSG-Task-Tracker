@@ -738,3 +738,9 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   `approvalWaitDays` (`tsgReserveReviewSlices_`); `tsgHandoffConfirmNeeded_` /
   `tsgTaskHandoffConfirmNeeded_` / `tsgConfirmHoursFor_` are deleted. Live data 2026-09-17: 29 open
   delegated items, 1-3 finishing per day, so the evening block absorbs them at 5 min each.
+- Deployed 2026-09-17 23:04 EDT: web app @67 = backend 2026-09-18.5 / UI 2026-09-18.5 = commit
+  303357e; `main` fast-forwarded to it. The cloud git proxy refuses `push -f` (403) and appears
+  to drop tag refs (`ls-remote --tags` hangs up), so the `live` tag is best-effort and `main`
+  is the record of what is deployed; deploy.js now pushes main first and treats the tag as
+  optional. Stored `ts` values stay UTC ISO (`...Z`, the format every history line and
+  comparison uses); only chat and reports use America/New_York.
