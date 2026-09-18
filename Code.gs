@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.12';
+const TSG_CODE_VERSION = '2026-09-18.13';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -4267,7 +4267,7 @@ var TSG_ESTIMATE_SYSTEM =
 // Set by the system itself — never something the estimator should be allowed to hand back,
 // even if it ignores the instruction not to. Filtered out of parsed.tags defensively below.
 var TSG_REVIEW_TAG = 'Triage';
-var TSG_RESERVED_TAGS = ['Triage', 'Review', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude'];
+var TSG_RESERVED_TAGS = ['Triage', 'Review', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude', 'At Risk'];
 
 /**
  * Review gate (2026-09-15, per Durand: "when new tasks are pushed, tag them for review
@@ -5374,6 +5374,7 @@ function tsgRollupSubitemHours_(doc, now) {
     var own = (typeof t.estHoursOwn === 'number' && !isNaN(t.estHoursOwn)) ? t.estHoursOwn : 0;
     if (sub.any || own) t.estHours = Math.round((own + sub.hours) * 100) / 100;
     t.timelineEnd = tsgRollupDue_(t, sub.latestOpenEnd);
+    tsgFlagDueRisk_(t, sub.latestOpenEnd, now);
     if (now) {
       // Make the rollup visible: a changed number now shows up in the task's history as
       // source 'rollup' instead of looking like an edit that mysteriously didn't stick.
@@ -5430,8 +5431,34 @@ function tsgOpenSubitemHours_(t) {
  */
 function tsgRollupDue_(t, latestOpenEnd) {
   if (!latestOpenEnd) return t.timelineEnd || '';
-  if (t.dueOverride && t.timelineEnd && t.timelineEnd > latestOpenEnd) return t.timelineEnd;
+  // A date set by hand (dueOverride) is the real due date and stays put even when the steps
+  // run past it; tsgFlagDueRisk_ marks that case instead of moving the date (2026-09-18, per
+  // Durand's rule: flag a due date that cannot be met, never quietly force it).
+  if (t.dueOverride && t.timelineEnd) return t.timelineEnd;
   return latestOpenEnd;
+}
+
+/**
+ * The gap between a hand-set due date and where the open steps actually end. Sets/clears the
+ * reserved tag 'At Risk' and `realisticEnd` (the latest open step's end) with a history line
+ * each way, so the card shows the risk without the real date being changed.
+ */
+function tsgFlagDueRisk_(t, latestOpenEnd, now) {
+  var atRisk = !!(t.dueOverride && t.timelineEnd && latestOpenEnd && latestOpenEnd > t.timelineEnd);
+  var tags = Array.isArray(t.tags) ? t.tags : [];
+  var had = tags.indexOf('At Risk') !== -1;
+  t.history = t.history || [];
+  if (atRisk) {
+    var changed = !had || t.realisticEnd !== latestOpenEnd;
+    t.realisticEnd = latestOpenEnd;
+    if (!had) t.tags = tags.concat(['At Risk']);
+    if (changed && now) t.history.push({ ts: now, field: 'at-risk', from: t.timelineEnd, to: latestOpenEnd, source: 'rollup',
+      note: 'open steps run to ' + latestOpenEnd + ', past the due date ' + t.timelineEnd });
+  } else if (had || t.realisticEnd) {
+    t.tags = tags.filter(function(tg) { return tg !== 'At Risk'; });
+    delete t.realisticEnd;
+    if (now) t.history.push({ ts: now, field: 'at-risk', from: 'At Risk', to: null, source: 'rollup', note: 'steps fit before the due date again' });
+  }
 }
 
 /**
@@ -5877,7 +5904,12 @@ function tsgAutoScheduleDoc_(doc) {
       var blockIdx = tsgSubitemBlockedByIdx_(item.parent.subitems, item.idx);
       if (blockIdx != null) {
         var sib = item.parent.subitems[blockIdx];
-        if (sib.timelineEnd && sib.timelineEnd >= earliest) earliest = tsgAddDays_(sib.timelineEnd, 1);
+        // A step waits for the one before it, but may start the SAME day that one ends: the
+        // capacity check below decides whether anything is left of that day. Until 2026-09-18
+        // this added a day, so seven ten-minute steps spread across seven workdays and dragged
+        // the parent past its real deadline (task 289, per Durand: "fix the step chaining so
+        // steps land before the parent due date").
+        if (sib.timelineEnd && sib.timelineEnd > earliest) earliest = sib.timelineEnd;
       } else if (item.idx === 0) {
         tsgDependsList_(item.parent).forEach(function(id) {
           if (finishDate[id] && finishDate[id] >= earliest) earliest = tsgAddDays_(finishDate[id], 1);

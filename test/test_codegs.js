@@ -839,7 +839,7 @@ section('Subitem rollup respects the parent\'s own work (2026-09-14, task #12 re
   check('an explicit parent due LATER than every open subitem stands', d.tasks[0].timelineEnd === '2026-09-25');
   d.tasks[0].timelineEnd = '2026-09-15';
   sandbox.tsgRollupSubitemHours_(d, NOW);
-  check('an explicit parent due EARLIER than an open subitem is pushed out to it', d.tasks[0].timelineEnd === '2026-09-20');
+  check('an explicit parent due EARLIER than an open subitem is KEPT and the task is flagged At Risk with the realistic end (2026-09-18)', d.tasks[0].timelineEnd === '2026-09-15' && d.tasks[0].tags.includes('At Risk') && d.tasks[0].realisticEnd === '2026-09-20');
   check('non-Durand delegate on an open subitem adds NO handoff cost any more (review lives in the admin blocks)', (function() {
     const dd = { meta: {}, tasks: [parent({ estHoursOwn: 0, subitems: [{ title: 'x', done: false, delegate: 'Perly', estHours: 1 }] })] };
     sandbox.tsgRollupSubitemHours_(dd); return dd.tasks[0].estHours === 1; })());
@@ -1910,6 +1910,36 @@ section('An answered estimate on a task with steps is the TOTAL: own share = tot
     steps: [{ index: 0, title: 'step a', notes: '', estHours: 1, taskType: 'Actionable Task', priority: 'Medium', tags: [], progress: 0, location: null, due: null }] } });
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('step re-judged to 1 h under a hand-set 2 h total: own drops to 1 h, total holds at 2 h', d.tasks[0].estHours === 2 && d.tasks[0].estHoursOwn === 1 && d.tasks[0].subitems[0].estHours === 1);
+}
+
+section('Steps share a day; a hand-set parent date is flagged, never moved (2026-09-18)');
+{
+  const NOW = '2026-09-18T07:00:00Z';
+  // Seven small delegated steps used to take seven workdays (one per day). Now they chain within the day.
+  let d = { meta: { docVersion: 1 }, tasks: [{ id: 289, title: 'Raffle fixes', owner: 'Durand', delegate: 'Claude', status: 'Not Started', priority: 'Critical', tags: [], history: [], timelineEnd: '',
+    subitems: [0, 1, 2, 3, 4, 5, 6].map(i => ({ title: 'fix ' + i, done: false, estHours: 0.1, taskType: 'Claude', priority: 'Critical', delegate: 'Claude', timelineEnd: '' })) }] };
+  sandbox.tsgAutoScheduleDoc_(d);
+  const ends = d.tasks[0].subitems.map(s => s.timelineEnd);
+  check('seven 0.1 h Claude steps all land on the same day', ends.every(e => e && e === ends[0]));
+  check('...and the parent rolls up to that one day', d.tasks[0].timelineEnd === ends[0]);
+  // Durand's own steps share a day while capacity remains, then spill over.
+  d = { meta: { docVersion: 1 }, tasks: [{ id: 10, title: 'Own work', owner: 'Durand', status: 'Not Started', priority: 'Medium', tags: [], history: [], timelineEnd: '',
+    subitems: [{ title: 'a', done: false, estHours: 1, delegate: 'Durand', timelineEnd: '' }, { title: 'b', done: false, estHours: 1, delegate: 'Durand', timelineEnd: '' }, { title: 'c', done: false, estHours: 2.5, delegate: 'Durand', timelineEnd: '' }] }] };
+  sandbox.tsgAutoScheduleDoc_(d);
+  const [a, b, c] = d.tasks[0].subitems;
+  check('two 1 h steps of his own share the first day', a.timelineEnd && a.timelineEnd === b.timelineEnd);
+  check('a 2.5 h Medium step that no longer fits that day moves on (capacity-aware, not day-per-step)', c.timelineEnd > b.timelineEnd);
+  // A hand-set due date stays put when the steps run past it; the task is flagged At Risk instead.
+  d = { meta: { docVersion: 1 }, tasks: [{ id: 20, title: 'Deadline task', status: 'In Progress', priority: 'High', estHours: 0, timelineEnd: '2026-09-18', dueOverride: true, tags: [], history: [],
+    subitems: [{ title: 'late step', done: false, estHours: 0.5, timelineEnd: '2026-09-24' }] }] };
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  let t = d.tasks[0];
+  check('the hand-set 9/18 due date is kept although the open step ends 9/24', t.timelineEnd === '2026-09-18');
+  check('...the task is tagged At Risk with the realistic end and a history line', t.tags.includes('At Risk') && t.realisticEnd === '2026-09-24' && t.history.some(h => h.field === 'at-risk' && h.to === '2026-09-24'));
+  t.subitems[0].timelineEnd = '2026-09-18';
+  sandbox.tsgRollupSubitemHours_(d, NOW);
+  check('once the step fits before the due date the flag and realisticEnd clear', !t.tags.includes('At Risk') && t.realisticEnd === undefined && t.history.some(h => h.field === 'at-risk' && h.to === null));
+  check('At Risk is a reserved tag', sandbox.TSG_RESERVED_TAGS.includes('At Risk'));
 }
 
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
