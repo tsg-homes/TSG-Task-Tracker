@@ -987,3 +987,6 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   refused by name otherwise); steps untouched, parent logs `subitems-reordered`. Built because the
   only other way to reorder was an `update_task` resending every step with its history (31 KB for the
   SOP task), which the Drive connector cannot carry safely. First use: the SOP task's 31 steps by date.
+- Deployed 2026-09-18 13:20 EDT: web app @85 = backend 2026-09-18.15 (reorder_subitems) / UI
+  2026-09-18.17 = commit 23c6d6d, `main` fast-forwarded. The SOP task's steps were then sorted by
+  due date with a one-line `reorder_subitems` patch.
