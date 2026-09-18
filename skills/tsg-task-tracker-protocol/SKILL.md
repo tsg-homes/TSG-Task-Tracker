@@ -26,7 +26,7 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 - `update_task {id, fields}` — merged with `Object.assign`; cannot set `id`/`history`; `timelineEnd` also sets `dueOverride`; `assignee` is accepted and landed as `delegate`; `depends` lifts `dependsNone`.
 - `update_subitem {id, subIdx, fields, expectTitle}` — one step; `expectTitle` guards against a moved index.
 - `add_subitem {id, subitem}` — `{title, estHours, taskType, priority, delegate, notes}`; always enriched.
-- `delete_task {id}`, `bulk {ops}`.
+- `delete_task {id}`. `bulk {ops}` is applied sub-op by sub-op: a failing sub-op is rolled back alone, the rest land, the file is kept as `PARTIAL-`.
 - `set_meta {fields}` — cannot write `next_id`, `docVersion`, `comments`, `judgments`, `judgmentSeq`.
 - `add_comment {comment:{text, author:'Claude', replyTo?, anchor?}}`, `update_comment {id, fields | remove:true}` — reply to Durand's board comments (`meta.comments`).
 - `judgment {id:'J17', answer:{...}}` — answer a queued request (shapes in README).
@@ -43,8 +43,9 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 2. Build the patch flat per the shapes above; `json.loads` it locally.
 3. For `replace_category_text`, confirm `find in current_content` in Python first.
 4. Upload with `create_file` (`textContent`, `contentMimeType: application/json`, `disableConversionToGoogleType: true`) into `_Inbox`.
-5. Wait a minute, re-read, diff against the expected result before telling Durand it is done. A `FAILED-` file in `_Inbox` (or a write-failure email) means the patch threw.
-6. Multi-KB content (a restore, a large rewrite): never retype it through tool calls; SHA-256 it, deliver the file, have Durand upload it as a new version, verify by re-hashing.
+5. Wait a minute, re-read, diff against the expected result before telling Durand it is done. If the change is missing, look in `_Inbox` for your file renamed `FAILED-` (rolled back), `PARTIAL-` (a bulk: the failing sub-ops rolled back, the rest applied) or `MALFORMED-` (not JSON), and read `meta.inboxErrors[]` in the data file for the exact error (it names the failing sub-op by index and lists the ops the deployed backend accepts). A vanished file with the change present is success; anything else is not.
+6. BEFORE sending an op, check `meta.backendVersion` in the data file: it is the deployed backend, which can trail the repo. `log_time` needs `>= 2026-09-17.7`; `update_subitem`, `judgment`, `request_steps`, `request_tidy`, `add_comment` need `>= 2026-09-16.5`. An op the deployed backend lacks is rolled back and filed, never applied.
+7. Multi-KB content (a restore, a large rewrite): never retype it through tool calls; SHA-256 it, deliver the file, have Durand upload it as a new version, verify by re-hashing.
 
 ## Field checklist
 

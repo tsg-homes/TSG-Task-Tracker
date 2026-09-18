@@ -649,3 +649,29 @@ default is still self-reported until session reports or an export feed it.
 - The protocol skill's source of truth is now `skills/tsg-task-tracker-protocol/SKILL.md` in this
   repo (Durand applies it in Cowork; the synced copy there was last revised 2026-09-02 and still
   said assignee/doc/curl). It carries the session effort report and the one estimation workflow.
+
+## Inbox trace and bulk roll-back (2026-09-18, backend 2026-09-18.1, dashboard UI 2026-09-18.1)
+
+Root cause of the raffle session's "silently dropped" bulk (2026-09-18): the deployed backend was
+2026-09-17.5 (v66, identical to commit f09c5a1, confirmed with `clasp pull`), which has
+`update_subitem` / `judgment` / `request_steps` / `request_tidy` but NOT `log_time` (added in
+2026-09-17.7, deploy blocked in the cloud session). The unknown sub-op threw, the whole bulk failed,
+and `processInbox_` renamed the file `FAILED-` and TRASHED it, so nothing was visible. `main` is
+stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
+- `tsgRestoreDoc_` (in-place restore from a JSON snapshot) rolls back a failing patch, and inside
+  `bulk` each failing SUB-OP alone (`err.partial = {applied, errors}` thrown at the end).
+  `processInbox_` keeps failing files in `_Inbox` as `FAILED-` / `PARTIAL-` / `MALFORMED-` (never
+  trashed, never re-read: the listing skips those prefixes), records every failure in
+  `meta.inboxErrors[]` (server-owned with `backendVersion`; cap 30; loads the data file for the
+  record on a rulesets-only pass), and writes the data file when anything applied OR an error was
+  recorded. Return shape `{ok, applied, partial, failed, malformed}`.
+- Unknown-op errors name `TSG_DATA_OPS` and the backend version; `tsgAutoScheduleDoc_` stamps
+  `meta.backendVersion` on every write so a session can check what the DEPLOYED script accepts.
+- Dashboard: warn alert "N inbox patches failed in the last 7 days" (opens Settings) and a
+  Settings > Inbox errors list (`inboxErrorsHtml_`).
+- The meeting-slot "third window" test was date-dependent (failed when run on a Friday); it now
+  blocks every Mon-Thu day in its range.
+- Pending on Durand: `npm run deploy` (backend 2026-09-18.1 / UI 2026-09-18.1 carries 2026-09-17.6
+  through .8: one links field, uploads, actual time, inbox trace). After that: drop the log_time
+  patch for tasks 281/287 (scratchpad `patch-logtime-281-287.json`) and the deliberately bad
+  patch (`patch-verify-bad.json`) to verify a PARTIAL- file + `meta.inboxErrors` entry appear.
