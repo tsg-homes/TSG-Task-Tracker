@@ -961,3 +961,12 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   2026-09-18; never `pkill -f "clasp login"` (it matches the calling shell and kills it, exit 144).
   Google Workspace expires the refresh token often (`invalid_rapt`), so expect a fresh login per
   cloud session.
+- Deployed 2026-09-18 12:46 EDT: web app @83 = backend 2026-09-18.14 / UI 2026-09-18.16 = commit
+  51d3e1d, `main` fast-forwarded. VERIFIED LIVE on the first write (a set_meta at 16:47Z): the data
+  file went 939,123 -> 696,319 bytes (-243 KB); task history 313 KB -> 142 KB, step history 101 KB
+  -> 94 KB, judgments 282 KB -> 214 KB even though the queue had grown from 31 to 50 requests
+  meanwhile (another session was writing; docVersion 1232 -> 1302); task 289's history 36 KB -> 7 KB
+  in 30 lines; `History/history-2026-09-18T16-47-25-596Z.json` (19.6 KB, 97 lines) exists under the
+  tracker folder (folder id 1b3Df5910KyLtNXzi1o4yyxIIRI7amcJc); `meta.historyArchive` counts it. The
+  MALFORMED J49 file and its `meta.inboxErrors` record are left in place for Durand to dismiss from
+  Settings > General (the dashboard now shows it as a critical row).
