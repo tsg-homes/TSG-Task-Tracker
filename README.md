@@ -288,9 +288,8 @@ side it was "consumed with nothing recorded". Now:
   malformed file's `error` carries the parse position and the 60 characters around it, plus
   `bytes`. The dashboard raises a CRITICAL alert naming the newest file when anything was dropped
   entirely (FAILED-/MALFORMED-), a warn alert for PARTIAL- only, and lists them in Settings >
-  General. Every newly filed file is also EMAILED to the owner in the same pass (backend
-  2026-09-18.14; one mail per file per 6 h), so a dropped patch reaches a human without the
-  dashboard being open.
+  General, and raises one toast per new entry when the page loads (UI 2026-09-18.17). No email:
+  per Durand (2026-09-18) a filed patch is logged and notified in the tracker only.
 - An envelope with `ops` but no `op` is applied as a `bulk` (2026-09-18). Everything else about
   the envelope is unchanged; a file that is not valid JSON is still MALFORMED-, so serialize
   with a real JSON encoder and parse the exact text before uploading it.

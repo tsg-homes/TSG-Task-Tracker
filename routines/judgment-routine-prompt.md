@@ -135,8 +135,8 @@ the J49 patch died at an unescaped quote inside a `notes` value: filed MALFORMED
 lost); then parse the exact text you are about to upload (`json.loads` / `JSON.parse`) and only
 upload when that succeeds. Envelope: `{"target":"data","op":"bulk","source":…,"ts":…,"ops":[…]}`.
 A file that fails to parse on the server is filed `MALFORMED-` in `_Inbox`, recorded in
-`meta.inboxErrors` with the position and the text around it, emailed to Durand, and shown as a
-critical alert on the dashboard; the request it answered stays queued for the next run.
+`meta.inboxErrors` with the position and the text around it, and shown as a critical alert and a
+toast on the dashboard (no email); the request it answered stays queued for the next run.
 
 STEP 7 — Verify. Wait about 90 seconds, re-download the data file and confirm: the answered
 ids are gone from `meta.judgments`; the replies are in `meta.comments` with the resolved flags

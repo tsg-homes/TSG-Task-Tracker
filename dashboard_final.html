@@ -1587,7 +1587,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.16';
+  const UI_VERSION = '2026-09-18.17';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -6178,6 +6178,23 @@
     });
     return out;
   }
+  // A filed inbox patch is notified IN the tracker (Durand 2026-09-18: "dont email me, just log
+  // and notify in tracker"): one toast per new meta.inboxErrors entry on load, on top of the
+  // critical alert row; the newest ts seen is remembered per browser so nothing repeats.
+  function checkInboxErrorToasts_() {
+    const errs = (RAW_META.inboxErrors || []).filter(e => e && e.ts);
+    if (!errs.length) return 0;
+    let seen = ''; try { seen = localStorage.getItem('tsgSeenInboxErrorTs') || ''; } catch (e) {}
+    const fresh = errs.filter(e => String(e.ts) > seen);
+    fresh.forEach(e => {
+      const dropped = !(e.appliedSubOps > 0);
+      toast_('Inbox patch ' + (dropped ? 'dropped' : 'applied in part') + ': ' + (e.file || '?'), String(e.error || '').slice(0, 160),
+        () => { openSettings().then(() => setSettingsTab('general')); });
+    });
+    const newest = errs.map(e => String(e.ts)).sort().pop();
+    try { localStorage.setItem('tsgSeenInboxErrorTs', newest); } catch (e) {}
+    return fresh.length;
+  }
   function checkReminderNotifications_() {
     const now = Date.now();
     const map = notifiedMap_();
@@ -7278,6 +7295,7 @@
     CLAUDE_REPO = (doc.meta && doc.meta.claudeRepo) || '';
     CLAUDE_SESSION = (doc.meta && doc.meta.claudeSession) || '';
     setTimeout(checkReminderNotifications_, 0);
+    setTimeout(checkInboxErrorToasts_, 0);
     STANDING_ITEMS = (doc.meta && doc.meta.standingItems) || [];
     dataLoaded = true;
     document.getElementById('updatedStamp').textContent = 'Last updated ' + formatDate(META.lastUpdated);

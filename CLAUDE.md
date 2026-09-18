@@ -939,8 +939,7 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
 - MALFORMED J49 (`claude-tracker-routine-patch4-j49-20260918T144600.json`): the envelope was a
   correct `op:"bulk"`; the file failed JSON.parse at position 3463 inside the `notes` string (an
   unescaped quote written by the routine). `meta.inboxErrors` DID record it; the dashboard's warn
-  row was the only surface. Now: every filed patch is EMAILED to OWNER_EMAIL in the same pass
-  (`tsgNotifyInboxErrors_`, one mail per file per 6 h via the script cache), the malformed record
+  row was the only surface. Now: the malformed record
   carries `near: "<60 chars around the position>"` and `bytes` (`tsgJsonErrorExcerpt_`), the
   dashboard alert is CRITICAL naming the newest file when anything was dropped entirely (warn for
   PARTIAL- only), and an envelope with `ops` but no `op` is applied as a bulk. The routine prompt
@@ -970,3 +969,8 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   tracker folder (folder id 1b3Df5910KyLtNXzi1o4yyxIIRI7amcJc); `meta.historyArchive` counts it. The
   MALFORMED J49 file and its `meta.inboxErrors` record are left in place for Durand to dismiss from
   Settings > General (the dashboard now shows it as a critical row).
+- NO EMAIL for filed patches (Durand 2026-09-18: "dont email me, just log and notify in tracker"):
+  `tsgNotifyInboxErrors_` and its cache guard were removed before any mail ever went out (backend
+  2026-09-18.15); `meta.inboxErrors` is the log, the dashboard's critical/warn alert row plus one
+  toast per new entry on load (`checkInboxErrorToasts_`, localStorage `tsgSeenInboxErrorTs`, UI
+  2026-09-18.17) is the notification.
