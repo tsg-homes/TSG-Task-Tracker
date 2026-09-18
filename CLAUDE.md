@@ -949,3 +949,15 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
   its correction paragraph already sits in 289's notes.
 - Scratch replay harness: `replay.js` in the session scratchpad (sandbox from test_codegs.js
   lines 1-146 + fixtures); not in the repo.
+- CLASP LOGIN RULE (Durand, 2026-09-18: "make it a rule to use the method where you launch the
+  page, i sign in, then it auto reports"). LOCAL session (Cowork / Claude Code on his computer):
+  plain `clasp login`; clasp listens on localhost:8888, Google redirects the browser there and the
+  code is captured with no paste. CLOUD session (this container): port 8888 is inside the
+  container, so auto-capture cannot work; use `clasp login --no-localhost` and run it as a
+  PERSISTENT BACKGROUND Bash task holding an input fifo (`mkfifo login.in; (sleep 1500 > login.in &);
+  npx clasp login --no-localhost < login.in > login.out`; `run_in_background: true`), print the URL
+  from login.out, and when Durand pastes the redirect URL write it into the fifo. A login started
+  with `( … &)` inside a foreground call dies when that call ends, which voided one pasted code on
+  2026-09-18; never `pkill -f "clasp login"` (it matches the calling shell and kills it, exit 144).
+  Google Workspace expires the refresh token often (`invalid_rapt`), so expect a fresh login per
+  cloud session.
