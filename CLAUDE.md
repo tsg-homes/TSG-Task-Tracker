@@ -476,6 +476,17 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   account). One request in flight at a time (`INFLIGHT` / `canSend_()` on every entry point),
   Retry cooldown 3 s, 30 s lock after 3 failures in a row on a step (`STREAK`). Tests: server
   "raffleRpc" section (doPost stubbed), form section 18 (google.script.run shim).
+- SINGLE RAFFLE SESSION (Durand, 2026-09-18 ~15:20 EDT): "Block Party Raffle — main"
+  (session_01JmbtMxHu9Ss1Lqa8siY3pY, this branch) owns the Apps Script project and every deploy;
+  `claude/inspiring-brown-d0r5kr` is archived and its raffle/ is stale except what was
+  cherry-picked (f96fe25 draft-never-send rule, acc5332 raffle/handoff/) and the
+  `raffleCreateFubSmartLists` block (commit 3c30e92). Live: @82 = this branch at 3c30e92 (the
+  monitoring page table; @82 went out before the takeover message was read, and its push
+  replaced the unversioned project HEAD, so the branch is now the record). Always `clasp pull`
+  before `clasp push`; host files stay byte-identical; confirm with Durand before any deploy
+  unless the task says deploy. FUB API cannot create smart lists or templates (POST /v1/emails
+  403, /v1/emailTemplates 404, POST /v1/smartLists rejects `filters`): the two lists and three
+  templates are built in the FUB UI via Cowork. FUB_API_KEY script property: rotate after the party.
 - Confirm button (2026-09-18, @77): the code email carries a "Confirm my entry" button
   (`action=confirm&t=<link token>` -> form at `#confirmPanel`; the tap POSTs `confirmlink`,
   which runs `raffleVerifyCode_` with the server-held code; single use; a QA entry's link
