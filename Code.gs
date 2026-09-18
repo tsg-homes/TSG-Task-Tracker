@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.8';
+const TSG_CODE_VERSION = '2026-09-18.9';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
