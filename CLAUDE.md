@@ -671,10 +671,12 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   Settings > Inbox errors list (`inboxErrorsHtml_`).
 - The meeting-slot "third window" test was date-dependent (failed when run on a Friday); it now
   blocks every Mon-Thu day in its range.
-- Pending on Durand: `npm run deploy` (backend 2026-09-18.1 / UI 2026-09-18.1 carries 2026-09-17.6
-  through .8: one links field, uploads, actual time, inbox trace). After that: drop the log_time
-  patch for tasks 281/287 (scratchpad `patch-logtime-281-287.json`) and the deliberately bad
-  patch (`patch-verify-bad.json`) to verify a PARTIAL- file + `meta.inboxErrors` entry appear.
+- VERIFIED LIVE on @68 (checked 2026-09-18 00:10 EDT against the data file): the deliberately bad
+  bulk (`patch-2026-09-17-verify-bad-op.json`, update_task + `no_such_op`) applied 1 of 2 sub-ops
+  and left `meta.inboxErrors[0]` naming the failing sub-op and the accepted op list (the PARTIAL-
+  file has since been trashed; `_Inbox` was empty). The raffle session's two lost `log_time`
+  entries landed on tasks 281 (20 min, 4 turns) and 287 (10 min, 2 turns) at 03:08Z, and
+  judgments J13/J14 were answered at 02:40Z by the judgment-queue session (queue empty).
 - Roll-up fix (backend 2026-09-18.2): the 0.5 h confirm-the-handoff slice (`tsgOpenSubitemHours_`
   and the scheduler's `tsgReserveConfirmCapacity_` sites) applies only to steps delegated to a
   PERSON (`tsgHandoffConfirmNeeded_`), never to Claude or Durand: a Claude step's estimate is
@@ -753,6 +755,11 @@ stale (2026-09-14); everything lives on `claude/affectionate-planck-458f9h`.
   ae02dd5. GitHub reports the repository RENAMED to `tsg-homes/TSG-Task-Tracker` (old name
   redirects); the session's git remote and the CCR repo scope still use `tsg-homes/task-tracker`,
   and Settings > Team > Claude Code repo should say the new name if it is set.
+- MAIN IS ONE COMMIT AHEAD OF LIVE since c9e4b8e (backend 2026-09-18.7 / UI 2026-09-18.6, the
+  Settings-tabs commit below): `main` was pushed to it but the data file still stamps
+  `backendVersion` 2026-09-18.6 (@68). Deploying .7 restores "main = deployed"; until then read
+  `meta.backendVersion`, not `main`, for what the script accepts. The proxy refuses force-pushes,
+  so main cannot be moved back.
 - Settings tabs (UI 2026-09-18.6, per Durand "why is all of that on Team"): Rulesets | Threads |
   Team (roster only) | General (`renderGeneralTab`: Home base, Reminder notifications, Claude Code
   repo, Inbox errors) | Capacity (`renderCapacityTab`: review minutes, approval wait, post-review
