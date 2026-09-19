@@ -487,6 +487,20 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   unless the task says deploy. FUB API cannot create smart lists or templates (POST /v1/emails
   403, /v1/emailTemplates 404, POST /v1/smartLists rejects `filters`): the two lists and three
   templates are built in the FUB UI via Cowork. FUB_API_KEY script property: rotate after the party.
+- Kiosk scan panel and the HTML sign (2026-09-19, @83): the kiosk shows the SAME branded QR
+  that is on the printed table sign, stamped at serve time by `raffleKioskQrDataUri_` from
+  `RaffleQr.html` — a single `data:` URI, pushed by clasp, GITIGNORED (it encodes the exec
+  URL). No code is generated in the page; a bespoke encoder built earlier that day was deleted
+  at Durand's instruction ("use the QR code you already have"). It renders at 240 CSS px and
+  must not shrink: measured against OpenCV, the 61-module printed code survives blur, 12°
+  rotation and glare down to 240px and fails on blur at 220px, and the browser test asserts the
+  size. The panel must NOT carry the `kiosk-only` class (`display:block !important` would force
+  an empty box open with no code stamped). `tools/build-sign-html.js <qr.png>` renders the same
+  `display/table-display.template.html` into one self-contained HTML file (screen + one letter
+  page; `#stage` is clipped because a CSS transform does not shrink the layout box and Chrome
+  otherwise spills three pages); output is not committed. `test_raffle.js` now scans every
+  committed raffle file for a deployment id and checks RaffleQr.html stays ignored.
+  Deployed @83 2026-09-19 14:10 EDT = commit 183c53c; all 13 project files verified by re-clone.
 - Confirm button (2026-09-18, @77): the code email carries a "Confirm my entry" button
   (`action=confirm&t=<link token>` -> form at `#confirmPanel`; the tap POSTs `confirmlink`,
   which runs `raffleVerifyCode_` with the server-held code; single use; a QA entry's link
