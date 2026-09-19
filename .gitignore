@@ -2,3 +2,7 @@ node_modules/
 .clasp.json
 *.log
 .tracker-ids.json
+
+# The kiosk QR: it encodes the exec URL, which never goes in this public repo.
+# Pushed to the Apps Script project by clasp, recovered with `clasp pull`.
+raffle/RaffleQr.html

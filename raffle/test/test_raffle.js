@@ -2210,6 +2210,49 @@ const linkTokenOf = mail => (String(mail.body).match(/action=confirm&t=([0-9a-f-
   check('remove: the how-to line is gone after the draw', !/Caught a rehearsal entry/.test(page));
 }
 
+
+// ---- Nothing committed here carries the exec URL (2026-09-19) ---------------
+// The tracker's suite has had this check for its own files since the repo went
+// public; the raffle side did not, and now matters more: RaffleQr.html holds the
+// entry code as a data: URI and is deliberately gitignored, one directory away
+// from files that ARE committed. This is what catches the day someone inlines it
+// into the template "just to make the build simpler".
+{
+  const fs = require('fs');
+  const path = require('path');
+  const root = path.join(__dirname, '..');
+  // Built here rather than written out, so this file cannot trip its own check.
+  const deploymentId = new RegExp('AKfycb[A-Za-z0-9_-]{30,}');
+  const committed = [
+    'RaffleCode.gs', 'RaffleReferral.gs', 'RaffleForm.template.html', 'RaffleForm.html',
+    'RaffleConsole.html', 'RaffleConsent.html', 'README.md', 'PATCH-Code.gs.md',
+    'display/table-display.template.html', 'tools/build-form.js', 'tools/build-display.js',
+    'tools/build-sign-html.js', 'tools/make-qr.py',
+    'handoff/invitation-preevent.html', 'handoff/invitation-preevent.txt',
+    'handoff/thank-referrer.html', 'handoff/introduce-agent.html', 'handoff/README.md'
+  ];
+  let missing = [], leaked = [];
+  committed.forEach((rel) => {
+    const f = path.join(root, rel);
+    if (!fs.existsSync(f)) { missing.push(rel); return; }
+    if (deploymentId.test(fs.readFileSync(f, 'utf8'))) leaked.push(rel);
+  });
+  check('every committed raffle file is where the check expects it', missing.length === 0, missing.join(', '));
+  check('no committed raffle file carries a deployment id or exec URL', leaked.length === 0, leaked.join(', '));
+
+  // And the one file that DOES carry it is ignored by git.
+  const ignore = fs.readFileSync(path.join(root, '..', '.gitignore'), 'utf8');
+  check('RaffleQr.html is gitignored', /^raffle\/RaffleQr\.html$/m.test(ignore),
+    'the kiosk code would be committed on the next `git add -A`');
+  // It is optional by design: a clone without it deploys, and the panel hides.
+  const qr = path.join(root, 'RaffleQr.html');
+  if (fs.existsSync(qr)) {
+    const uri = fs.readFileSync(qr, 'utf8').trim();
+    check('RaffleQr.html, when present, is a single image data: URI',
+      uri.startsWith('data:image/') && !/\s/.test(uri), uri.slice(0, 40));
+  }
+}
+
 const { passes, fails } = counts();
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
 process.exit(fails ? 1 : 0);

@@ -101,15 +101,17 @@ body.kiosk .kiosk-only{display:block !important;}
    hidden on the kiosk too until the code is drawn, so a failed render leaves no
    empty box on the iPad. */
 #scanPanel{display:none;}
-body.kiosk #scanPanel.on{display:flex;align-items:center;gap:18px;border:2px solid var(--tsg-green);
-  border-radius:12px;padding:16px 18px;margin:0 0 20px;background:#fff;}
-#scanPanel .qr{flex:0 0 auto;width:150px;height:150px;}
-#scanPanel .qr svg{display:block;width:100%;height:100%;}
+body.kiosk #scanPanel.on{display:flex;align-items:center;gap:20px;border:2px solid var(--tsg-green);
+  border-radius:12px;padding:18px 20px;margin:0 0 20px;background:#fff;}
+/* 240px is a floor, not a preference: this is the printed code — 61 modules with
+   the monogram plate — and below about 240 CSS px a blurred camera frame stops
+   resolving it (measured; 220px already fails on blur). Do not shrink it. */
+#scanPanel .qr{flex:0 0 auto;width:240px;height:240px;}
+#scanPanel .qr img{display:block;width:100%;height:100%;}
 #scanPanel .txt{flex:1;min-width:0;}
 #scanPanel .txt b{display:block;font-family:'Playfair Display',serif;font-size:21px;
   color:var(--tsg-green);line-height:1.2;}
 #scanPanel .txt span{display:block;margin-top:6px;font-size:15px;line-height:1.45;color:#4a5555;}
-@media (max-width:420px){#scanPanel .qr{width:118px;height:118px;}}
 
 /* A failed request. Not a line of small red text next to a button that merely
    looks disabled: a block that says what failed, what the server actually said,
@@ -372,12 +374,17 @@ body.qa-test{padding-top:62px;}
 
   <div id="formWrap">
     <div class="fail" id="linkExpired" role="alert"></div>
-    <!-- Kiosk only: the same entry page as a QR, so a guest can use their own
-         phone instead of typing on the iPad and take the code email with them.
-         Drawn in the page from the live URL (see the QR block in the script) —
-         there is no image file to go stale against a redeploy. -->
-    <div id="scanPanel" class="kiosk-only" aria-hidden="true">
-      <div class="qr" id="scanQr"></div>
+    <!-- Kiosk only: the same code that is on the printed table sign, so a guest
+         can use their own phone instead of typing on the iPad and take the code
+         email with them. The image is stamped at serve time from RaffleQr.html,
+         which is pushed to the script project but never committed — it encodes
+         the exec URL. -->
+    <!-- No `kiosk-only` class: that rule is `display:block !important` under
+         body.kiosk, which would force this panel open even with no code stamped
+         in it. Visibility is body.kiosk + .on, added by the script once it has
+         confirmed there is really an image. -->
+    <div id="scanPanel" aria-hidden="true">
+      <div class="qr"><img id="scanQr" src="<?!= kioskQr ?>" alt="Scan to enter the raffle"></div>
       <div class="txt">
         <b>Rather use your own phone?</b>
         <span>Scan this with your camera and enter there. Your code arrives in your
@@ -558,7 +565,6 @@ body.qa-test{padding-top:62px;}
   </div>
 </footer>
 
-<script>{{QR_ENCODER}}</script>
 <script>
 (function(){
   var API        = <?!= safeJsonForScript_(baseUrl) ?>;
@@ -721,26 +727,19 @@ body.qa-test{padding-top:62px;}
 
   if (KIOSK) document.body.classList.add('kiosk');
 
-  // The QR for the kiosk, built here rather than shipped as an image: the URL
-  // carries the deployment id (never committed) and a stale PNG after a redeploy
-  // would send every scan to a dead page. TSGQR is inlined by tools/build-form.js.
-  // Deliberately WITHOUT &kiosk=1 — the guest's own phone should get the normal
-  // page, not the one that resets itself for the next person.
-  (function drawKioskQr(){
+  // The scan panel is revealed only once there is really a code to show: a fresh
+  // clone with no RaffleQr.html stamps an empty src, and an empty bordered box
+  // with a broken image in it is worse on the iPad than no panel at all.
+  (function showKioskQr(){
     if (!KIOSK) return;
     var panel = document.getElementById('scanPanel');
-    var host = document.getElementById('scanQr');
-    if (!panel || !host || typeof TSGQR === 'undefined') return;
-    try {
-      // Level M: this is read off a screen at arm's length, where the headroom
-      // that matters is against glare rather than against print damage.
-      host.innerHTML = TSGQR.svg(API + '?form=raffle', { ecl: 'M', label: 'Scan to enter the raffle' });
-      panel.classList.add('on');
-      panel.setAttribute('aria-hidden', 'false');
-    } catch (e) {
-      // A missing code is not worth breaking the iPad's own form over.
-      panel.classList.remove('on');
-    }
+    var img = document.getElementById('scanQr');
+    if (!panel || !img) return;
+    var src = img.getAttribute('src') || '';
+    if (src.indexOf('data:image/') !== 0) return;
+    img.onerror = function(){ panel.classList.remove('on'); };
+    panel.classList.add('on');
+    panel.setAttribute('aria-hidden', 'false');
   })();
 
   // Live US phone formatting — this is a party, on a phone, one-handed. Both

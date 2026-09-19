@@ -47,6 +47,11 @@ function page(opts) {
     // JSON-encoded server-side, like the console's values.
     chainVid: JSON.stringify(opts.chainVid || ''),
     chainFirst: JSON.stringify(opts.chainFirst || ''),
+    // The kiosk's scan code, stamped from RaffleQr.html at serve time (2026-09-19).
+    // A short data: URI stands in for the real 43 KB one.
+    kioskQr: opts.kioskQr === undefined
+      ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=='
+      : opts.kioskQr,
     // The button-in-the-email landing (2026-09-18).
     confirmToken: JSON.stringify(opts.confirmToken || ''),
     confirmEmail: JSON.stringify(opts.confirmEmail || ''),
@@ -919,30 +924,30 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   }
 
   // ---- 20. The kiosk's "use your own phone" QR (2026-09-19) ----
-  // The code is generated in the page from the live URL, so the test proves two
-  // things: that it appears only on the kiosk, and that it encodes exactly the
-  // plain entry URL — NOT the kiosk one, which would hand the guest's phone a
-  // page that wipes itself every 8 seconds.
+  // The same code as the printed table sign, stamped into the page at serve time
+  // from RaffleQr.html. The panel is kiosk-only, and it stays hidden unless a
+  // real image actually arrived — a bordered box with a broken image in it is
+  // worse on the iPad than no panel.
   {
-    const QR = require('../qr-encoder.js');
     await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000, vals: { kiosk: '1' } }));
     await p.waitForTimeout(300);
-    check('kiosk QR: the panel is shown on the kiosk', await p.locator('#scanPanel').isVisible());
-    // Compared on the path data rather than the markup: the browser re-serialises
-    // <rect/> as <rect></rect>, which says nothing about the code itself. The `d`
-    // attribute IS the code — one square per dark module.
-    const pathOf = svg => (svg.match(/ d="([^"]+)"/) || [])[1];
-    const pageD = await p.locator('#scanQr svg path').evaluate(e => e.getAttribute('d'));
-    const label = { ecl: 'M', label: 'Scan to enter the raffle' };
-    check('kiosk QR: it encodes the plain entry URL, module for module',
-      pageD === pathOf(QR.svg('https://example.invalid/exec?form=raffle', label)),
-      'the page\'s code differs from the encoder\'s own output for that URL');
-    check('kiosk QR: it does not encode the kiosk URL',
-      pageD !== pathOf(QR.svg('https://example.invalid/exec?form=raffle&kiosk=1', label)));
-    check('kiosk QR: the code carries its quiet zone',
-      /viewBox="0 0 (\d+) \1"/.test(await p.locator('#scanQr svg').evaluate(e => e.outerHTML)));
-    check('kiosk QR: the panel explains what scanning does',
+    check('kiosk QR: the panel shows on the kiosk', await p.locator('#scanPanel').isVisible());
+    check('kiosk QR: it is the stamped image, not something the page drew',
+      (await p.locator('#scanQr').getAttribute('src')).startsWith('data:image/png;base64,'));
+    // Below about 240 CSS px the printed code stops surviving a blurred camera
+    // frame, so the rendered size is part of the contract, not styling.
+    const box = await p.locator('#scanQr').boundingBox();
+    check('kiosk QR: it renders at least 240px square', box.width >= 240 && box.height >= 240,
+      JSON.stringify(box));
+    check('kiosk QR: the panel says what scanning does',
       /Rather use your own phone/.test(await p.locator('#scanPanel').textContent()));
+
+    // No code stamped (a deployment without RaffleQr.html): no panel at all.
+    await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000,
+      kioskQr: '', vals: { kiosk: '1' } }));
+    await p.waitForTimeout(300);
+    check('kiosk QR: with no code stamped the panel stays hidden',
+      !(await p.locator('#scanPanel').isVisible()));
 
     await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000 }));
     await p.waitForTimeout(300);

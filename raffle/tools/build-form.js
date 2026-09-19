@@ -39,20 +39,14 @@ tmSvg = tmSvg
   .replace(/\bst0\b/g, 'tm-fill')
   .replace('<svg ', '<svg role="img" aria-label="Ticketmaster" ');
 
-// The QR encoder is inlined rather than loaded: this page has to work on a
-// saturated cell site with no CDN, and Apps Script serves it from a sandboxed
-// frame. One source of truth — test/test_qr.js verifies the same file.
-const qrEncoder = fs.readFileSync(path.join(dir, 'qr-encoder.js'), 'utf8');
-
 const png = b => 'data:image/png;base64,' + b;
 const out = tpl
-  .replace('{{QR_ENCODER}}', () => qrEncoder)
   .replace('{{EAGLES_DATA_URI}}', png(eaglesB64))
   .replace('{{TICKETMASTER_SVG}}', tmSvg)
   .replace('{{TSG_LOGO}}', png(tsgB64))
   .replace('{{KW_LOGO}}', png(kwB64));
 
-for (const token of ['{{EAGLES_DATA_URI}}', '{{TICKETMASTER_SVG}}', '{{TSG_LOGO}}', '{{KW_LOGO}}', '{{QR_ENCODER}}']) {
+for (const token of ['{{EAGLES_DATA_URI}}', '{{TICKETMASTER_SVG}}', '{{TSG_LOGO}}', '{{KW_LOGO}}']) {
   if (out.includes(token)) {
     console.error('ERROR: placeholder ' + token + ' was not substituted.');
     process.exit(1);

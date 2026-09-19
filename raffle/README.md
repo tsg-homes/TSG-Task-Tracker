@@ -433,39 +433,40 @@ version). Creating a *new* deployment mints a new URL and kills every printed QR
 ### The QR on the kiosk, and the sign as a web page (2026-09-19)
 
 **The kiosk offers the entry page as a QR.** A guest at the table can scan it and
-enter on their own phone instead of typing on the iPad — which also means the
-code email lands in their own inbox and the iPad moves on by itself when they
+enter on their own phone instead of typing on the iPad -- which also means the
+code email lands in their own inbox, and the iPad moves on by itself when they
 confirm (it was already polling for that). The panel shows only with `&kiosk=1`.
 
-The code is generated **in the page**, by `qr-encoder.js` (inlined into
-`RaffleForm.html` by `tools/build-form.js`), from the URL the page is already
-being served from. Not a committed image: the URL carries the deployment id,
-which never goes in this repo, and a pre-rendered PNG would point at a dead page
-after a redeploy to a new deployment. It deliberately encodes the PLAIN entry URL,
-without `kiosk=1`, so the guest's own phone does not get the page that resets
-itself every 8 seconds.
+It is **the same code that is on the printed table sign**, not a second one: one
+code for the party, so anything scanned anywhere lands identically and there is
+only ever one URL to get wrong.
 
-`qr-encoder.js` is checked two ways by `test/test_qr.js`: module for module
-against python-qrcode across four error-correction levels and nine payload
-lengths, and by decoding the rendered pixels with OpenCV clean, blurred and
-rotated. It does not replace `tools/make-qr.py` — that stays the print pipeline,
-with the monogram and the full scannability proof.
+Where it lives: `RaffleQr.html` in the script project, a single `data:` URI,
+stamped into the page by `raffleKioskQrDataUri_` at serve time. It is pushed by
+clasp and **gitignored** -- it encodes the exec URL, and this repo is public. A
+deployment without it shows no panel at all; entry is unaffected. To recreate it,
+take the code from `tools/make-qr.py`, or lift the one that is already on the
+built sign, which decodes straight out of the PNG:
+
+```
+python3 -c "import cv2; print(cv2.QRCodeDetector().detectAndDecode(cv2.imread('tsg-block-party-table-display.png'))[0])"
+```
+
+Crop it to the code plus its quiet zone, resize to about 440px, and write
+`data:image/png;base64,<...>` into `raffle/RaffleQr.html`.
+
+**Do not shrink it below 240 CSS px.** The printed code is 61 modules with the
+monogram plate, and measured against OpenCV's detector it survives blur, 12 degree
+rotation and a glare gradient down to 240px, then fails on blur at 220px. The
+browser test asserts the rendered size for that reason, not for layout.
 
 **The table sign is also a web page.** `tools/build-sign-html.js <qr.png> [out]`
 renders `display/table-display.template.html` into one self-contained HTML file:
 same design, same QR, scaled to the viewport on screen and to a single letter
 page in print. Use it to reprint from any machine, to send someone the sign
-without sending a 700 KB PNG, or to stand a screen on the table.
-
-The QR argument can come from `tools/make-qr.py`, or be lifted from the sign you
-already have — the branded code on the built PNG decodes straight out of it:
-
-```
-python3 -c "import cv2;print(cv2.QRCodeDetector().detectAndDecode(cv2.imread('tsg-block-party-table-display.png'))[0])"
-```
-
-Like the PNG and the PDF, the built HTML is NOT committed: it carries the code,
-and the code carries the deployment id.
+without sending a 700 KB PNG, or to stand a screen on the table. Like the PNG and
+the PDF the built file is not committed -- it carries the code, and the code
+carries the deployment id.
 
 ## Failure handling (2026-09-18, after the 9/17 rehearsal)
 

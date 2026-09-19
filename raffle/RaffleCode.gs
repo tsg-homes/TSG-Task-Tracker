@@ -857,6 +857,11 @@ function raffleServeForm_(e, baseUrl, chain) {
   // on 2026-09-18 in test mode; guests on phones use the plain URL and did not.
   tmpl.baseUrl       = raffleNormalizeExecUrl_(baseUrl) || raffleBaseUrl_() || baseUrl;
   tmpl.kiosk         = (e.parameter.kiosk || '') ? '1' : '';
+  // The kiosk's scan code. Read from a project file rather than built into the
+  // page source, because it encodes the exec URL and this repo is public:
+  // RaffleQr.html is pushed by clasp and gitignored. Absent (a fresh clone that
+  // has not pulled), this is '' and the page simply never shows the panel.
+  tmpl.kioskQr       = tmpl.kiosk ? raffleKioskQrDataUri_() : '';
   tmpl.qaTestToken   = qaTestToken;   // '' on every normal load
   tmpl.isTest        = isTest ? '1' : '';
   tmpl.prizeShort    = RAFFLE_PRIZE_SHORT;
@@ -1397,6 +1402,22 @@ function raffleRpc(json) {
   });
   if (out && typeof out.getContent === 'function') return out.getContent();
   return JSON.stringify(out);
+}
+
+// The data: URI of the printed sign's QR code, as pushed alongside the script.
+// It is deliberately the SAME code that is on the table sign — one code for the
+// party, printed or on screen, so anything scanned anywhere lands identically.
+// Regenerate it with tools/make-qr.py, or lift it off the built sign; never
+// commit it.
+function raffleKioskQrDataUri_() {
+  try {
+    var uri = HtmlService.createHtmlOutputFromFile('RaffleQr').getContent().trim();
+    return uri.indexOf('data:image/') === 0 ? uri : '';
+  } catch (err) {
+    // No such file in this deployment. The panel hides itself; entry is unaffected.
+    Logger.log('raffle: no RaffleQr.html, the kiosk scan panel is off (' + err + ')');
+    return '';
+  }
 }
 
 // ---------- The confirm button in the code email (2026-09-18) ----------
