@@ -430,6 +430,43 @@ lose only the logo.
 existing deployment (`clasp deploy -i <id>`, or Manage deployments → Edit → New
 version). Creating a *new* deployment mints a new URL and kills every printed QR.
 
+### The QR on the kiosk, and the sign as a web page (2026-09-19)
+
+**The kiosk offers the entry page as a QR.** A guest at the table can scan it and
+enter on their own phone instead of typing on the iPad — which also means the
+code email lands in their own inbox and the iPad moves on by itself when they
+confirm (it was already polling for that). The panel shows only with `&kiosk=1`.
+
+The code is generated **in the page**, by `qr-encoder.js` (inlined into
+`RaffleForm.html` by `tools/build-form.js`), from the URL the page is already
+being served from. Not a committed image: the URL carries the deployment id,
+which never goes in this repo, and a pre-rendered PNG would point at a dead page
+after a redeploy to a new deployment. It deliberately encodes the PLAIN entry URL,
+without `kiosk=1`, so the guest's own phone does not get the page that resets
+itself every 8 seconds.
+
+`qr-encoder.js` is checked two ways by `test/test_qr.js`: module for module
+against python-qrcode across four error-correction levels and nine payload
+lengths, and by decoding the rendered pixels with OpenCV clean, blurred and
+rotated. It does not replace `tools/make-qr.py` — that stays the print pipeline,
+with the monogram and the full scannability proof.
+
+**The table sign is also a web page.** `tools/build-sign-html.js <qr.png> [out]`
+renders `display/table-display.template.html` into one self-contained HTML file:
+same design, same QR, scaled to the viewport on screen and to a single letter
+page in print. Use it to reprint from any machine, to send someone the sign
+without sending a 700 KB PNG, or to stand a screen on the table.
+
+The QR argument can come from `tools/make-qr.py`, or be lifted from the sign you
+already have — the branded code on the built PNG decodes straight out of it:
+
+```
+python3 -c "import cv2;print(cv2.QRCodeDetector().detectAndDecode(cv2.imread('tsg-block-party-table-display.png'))[0])"
+```
+
+Like the PNG and the PDF, the built HTML is NOT committed: it carries the code,
+and the code carries the deployment id.
+
 ## Failure handling (2026-09-18, after the 9/17 rehearsal)
 
 Two things the rehearsal found: a guest saw *"Could not reach us — check your

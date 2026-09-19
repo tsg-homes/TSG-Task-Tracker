@@ -918,6 +918,37 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
     await p3.close();
   }
 
+  // ---- 20. The kiosk's "use your own phone" QR (2026-09-19) ----
+  // The code is generated in the page from the live URL, so the test proves two
+  // things: that it appears only on the kiosk, and that it encodes exactly the
+  // plain entry URL — NOT the kiosk one, which would hand the guest's phone a
+  // page that wipes itself every 8 seconds.
+  {
+    const QR = require('../qr-encoder.js');
+    await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000, vals: { kiosk: '1' } }));
+    await p.waitForTimeout(300);
+    check('kiosk QR: the panel is shown on the kiosk', await p.locator('#scanPanel').isVisible());
+    // Compared on the path data rather than the markup: the browser re-serialises
+    // <rect/> as <rect></rect>, which says nothing about the code itself. The `d`
+    // attribute IS the code — one square per dark module.
+    const pathOf = svg => (svg.match(/ d="([^"]+)"/) || [])[1];
+    const pageD = await p.locator('#scanQr svg path').evaluate(e => e.getAttribute('d'));
+    const label = { ecl: 'M', label: 'Scan to enter the raffle' };
+    check('kiosk QR: it encodes the plain entry URL, module for module',
+      pageD === pathOf(QR.svg('https://example.invalid/exec?form=raffle', label)),
+      'the page\'s code differs from the encoder\'s own output for that URL');
+    check('kiosk QR: it does not encode the kiosk URL',
+      pageD !== pathOf(QR.svg('https://example.invalid/exec?form=raffle&kiosk=1', label)));
+    check('kiosk QR: the code carries its quiet zone',
+      /viewBox="0 0 (\d+) \1"/.test(await p.locator('#scanQr svg').evaluate(e => e.outerHTML)));
+    check('kiosk QR: the panel explains what scanning does',
+      /Rather use your own phone/.test(await p.locator('#scanPanel').textContent()));
+
+    await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000 }));
+    await p.waitForTimeout(300);
+    check('kiosk QR: nothing shows on the shared link', !(await p.locator('#scanPanel').isVisible()));
+  }
+
   await b.close();
   fs.rmSync(OUT, { recursive: true, force: true });
   console.log(fails ? '\n' + fails + ' FAILED' : '\nAll form tests passed.');

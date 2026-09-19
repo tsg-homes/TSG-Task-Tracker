@@ -97,6 +97,19 @@ button:disabled{opacity:.5;cursor:not-allowed;}
 .secondary:active{background:var(--tsg-gray);}
 .kiosk-only{display:none !important;}
 body.kiosk .kiosk-only{display:block !important;}
+/* The kiosk's "use your own phone instead" panel. Hidden everywhere else, and
+   hidden on the kiosk too until the code is drawn, so a failed render leaves no
+   empty box on the iPad. */
+#scanPanel{display:none;}
+body.kiosk #scanPanel.on{display:flex;align-items:center;gap:18px;border:2px solid var(--tsg-green);
+  border-radius:12px;padding:16px 18px;margin:0 0 20px;background:#fff;}
+#scanPanel .qr{flex:0 0 auto;width:150px;height:150px;}
+#scanPanel .qr svg{display:block;width:100%;height:100%;}
+#scanPanel .txt{flex:1;min-width:0;}
+#scanPanel .txt b{display:block;font-family:'Playfair Display',serif;font-size:21px;
+  color:var(--tsg-green);line-height:1.2;}
+#scanPanel .txt span{display:block;margin-top:6px;font-size:15px;line-height:1.45;color:#4a5555;}
+@media (max-width:420px){#scanPanel .qr{width:118px;height:118px;}}
 
 /* A failed request. Not a line of small red text next to a button that merely
    looks disabled: a block that says what failed, what the server actually said,
@@ -359,6 +372,18 @@ body.qa-test{padding-top:62px;}
 
   <div id="formWrap">
     <div class="fail" id="linkExpired" role="alert"></div>
+    <!-- Kiosk only: the same entry page as a QR, so a guest can use their own
+         phone instead of typing on the iPad and take the code email with them.
+         Drawn in the page from the live URL (see the QR block in the script) —
+         there is no image file to go stale against a redeploy. -->
+    <div id="scanPanel" class="kiosk-only" aria-hidden="true">
+      <div class="qr" id="scanQr"></div>
+      <div class="txt">
+        <b>Rather use your own phone?</b>
+        <span>Scan this with your camera and enter there. Your code arrives in your
+          own inbox, and this iPad moves on by itself once you confirm.</span>
+      </div>
+    </div>
     <form id="raffleForm" novalidate>
       <input type="text" id="website" name="website" autocomplete="off" tabindex="-1" aria-hidden="true">
 
@@ -533,6 +558,7 @@ body.qa-test{padding-top:62px;}
   </div>
 </footer>
 
+<script>{{QR_ENCODER}}</script>
 <script>
 (function(){
   var API        = <?!= safeJsonForScript_(baseUrl) ?>;
@@ -694,6 +720,28 @@ body.qa-test{padding-top:62px;}
   setInterval(render, 1000);
 
   if (KIOSK) document.body.classList.add('kiosk');
+
+  // The QR for the kiosk, built here rather than shipped as an image: the URL
+  // carries the deployment id (never committed) and a stale PNG after a redeploy
+  // would send every scan to a dead page. TSGQR is inlined by tools/build-form.js.
+  // Deliberately WITHOUT &kiosk=1 — the guest's own phone should get the normal
+  // page, not the one that resets itself for the next person.
+  (function drawKioskQr(){
+    if (!KIOSK) return;
+    var panel = document.getElementById('scanPanel');
+    var host = document.getElementById('scanQr');
+    if (!panel || !host || typeof TSGQR === 'undefined') return;
+    try {
+      // Level M: this is read off a screen at arm's length, where the headroom
+      // that matters is against glare rather than against print damage.
+      host.innerHTML = TSGQR.svg(API + '?form=raffle', { ecl: 'M', label: 'Scan to enter the raffle' });
+      panel.classList.add('on');
+      panel.setAttribute('aria-hidden', 'false');
+    } catch (e) {
+      // A missing code is not worth breaking the iPad's own form over.
+      panel.classList.remove('on');
+    }
+  })();
 
   // Live US phone formatting — this is a party, on a phone, one-handed. Both
   // phone fields: until 2026-09-18 only the entrant's own had the mask and the
