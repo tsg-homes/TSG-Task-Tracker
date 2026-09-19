@@ -48,7 +48,7 @@ var RAFFLE_OPEN_AT      = '2026-09-01T00:00:00-04:00';
 // ONE place and every line on the form follows.
 var RAFFLE_EVENT_AT     = '2026-09-19T15:00:00-04:00';
 var RAFFLE_EVENT_ENDS   = '7:00 PM';
-var RAFFLE_VENUE        = '1342 N Hancock St, Philadelphia';
+var RAFFLE_VENUE        = '1300 N Hancock St, Philadelphia';
 var RAFFLE_CLOSE_AT     = '2026-09-19T18:15:00-04:00';
 var RAFFLE_DRAW_AT      = '2026-09-19T18:15:00-04:00';
 var RAFFLE_ANNOUNCE_AT  = '6:30 PM';
@@ -865,6 +865,7 @@ function raffleServeForm_(e, baseUrl, chain) {
   tmpl.qaTestToken   = qaTestToken;   // '' on every normal load
   tmpl.isTest        = isTest ? '1' : '';
   tmpl.prizeShort    = RAFFLE_PRIZE_SHORT;
+  tmpl.venue         = RAFFLE_VENUE;
   tmpl.announceAt    = RAFFLE_ANNOUNCE_AT;
   // The page runs its own clock: it counts down to 3:00, opens itself, and goes
   // dead at 6:15 -- all without a reload. It measures against the SERVER clock,
@@ -2199,7 +2200,7 @@ function raffleUpdateExistingFub_(match, name, first, last, email, phone, digits
 function raffleBackground_(name, email, phone) {
   return [
     'Entered the ' + RAFFLE_EVENT_NAME + ' prize drawing (' + RAFFLE_PRIZE_SHORT + ').',
-    'ATTENDED the TSG Block Party on Saturday, September 19, 2026 (1342 N Hancock St, Philadelphia).',
+    'ATTENDED the TSG Block Party on Saturday, September 19, 2026 (' + RAFFLE_VENUE + ').',
     '',
     'Entry submitted: ' + raffleFmt_(raffleNow_()) + ' ET',
     'Name: ' + name,
@@ -2218,7 +2219,7 @@ function raffleBackground_(name, email, phone) {
 
 function raffleAddNote_(personId, name, apiKey, test, upd) {
   var lines = [
-    'Met at the TSG Block Party, Sat 9/19/2026, 1342 N Hancock St. Entered the ' +
+    'Met at the TSG Block Party, Sat 9/19/2026, ' + RAFFLE_VENUE + '. Entered the ' +
     RAFFLE_PRIZE_SHORT + ' drawing and consented to follow-up.',
     'Email address was verified at entry (a code was emailed and typed back).'
   ];

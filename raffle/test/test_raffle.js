@@ -2253,6 +2253,85 @@ const linkTokenOf = mail => (String(mail.body).match(/action=confirm&t=([0-9a-f-
   }
 }
 
+// ---- Recovery: a staged referral whose invite never went out (2026-09-19) ----
+// Live failure: the referral step wrote the row and minted the token, and the
+// entrant's "Send it" tap never reached the server, so `Referral Emailed At`
+// stayed blank and the referred person got nothing. This is that exact state --
+// stage a referral and never run the invite step.
+{
+  const s = makeSandbox();
+  const v = verifySession(s, entry(), BEFORE);
+  const staged = J(at(BEFORE, () => s.raffleHandleSubmission_(
+    Object.assign({ step: 'referral', vid: v.vid }, referral()))));
+  check('recovery: the referral row was staged with a token', !!staged.token, JSON.stringify(staged));
+
+  const row = refRows(s)[0];
+  // The timestamp cell is written with the real clock, so pin it: the "yesterday"
+  // wording is read off the row and this is what proves it.
+  row[0] = new Date(BEFORE);
+  eq('recovery: nothing has been emailed to the referral yet', cell(s, row, 'Referral Emailed At'), '');
+
+  const listed = at(DURING, () => s.raffleListMissedReferralInvites());
+  check('recovery: the dry run finds the one stuck row', /staged with no invite sent: 1/.test(listed), listed);
+  check('recovery: the dry run names the referral', /robin@mail-test\.co/.test(listed), listed);
+
+  const before = s.__sent.length;
+  const out = at(DURING, () => s.raffleSendMissedReferralInvites());
+  eq('recovery: exactly one email was sent', s.__sent.length - before, 1);
+  const mail = s.__sent[s.__sent.length - 1];
+  eq('recovery: it went to the referred person', mail.to, 'robin@mail-test.co');
+  check('recovery: replies land at the shared inbox, not the entrant',
+    mail.replyTo === 'info@tsg.homes', mail.replyTo);
+  check('recovery: oversight is bcc\'d', !!mail.bcc, JSON.stringify(mail.bcc));
+  check('recovery: it is signed by a person, plain text only',
+    !mail.htmlBody && /\nDurand\n/.test(mail.body), JSON.stringify(mail.htmlBody || '').slice(0, 60));
+  check('recovery: the subject names the entrant', /^Dana Reid referred you/.test(mail.subject), mail.subject);
+  check('recovery: the body carries that row\'s consent link',
+    mail.body.indexOf('action=consent&t=' + staged.token) !== -1, mail.body);
+  check('recovery: the corrected venue, not the old one',
+    /1300 N Hancock St/.test(mail.body) && !/1342/.test(mail.body), mail.body);
+  check('recovery: the bonus count comes from the constant',
+    mail.body.indexOf(' ' + s.RAFFLE_BONUS_TICKETS_PER_REFERRAL + ' more entries') !== -1, mail.body);
+  check('recovery: the prize reads the same as everywhere else',
+    mail.body.indexOf(s.RAFFLE_PRIZE_SHORT) !== -1, mail.body);
+  check('recovery: "yesterday" is read off the row, not assumed',
+    /drawing yesterday and referred you/.test(mail.body), mail.body);
+
+  check('recovery: the row is stamped so it cannot be sent twice',
+    cell(s, row, 'Referral Emailed At') !== '', cell(s, row, 'Referral Emailed At'));
+  const again = at(DURING, () => s.raffleSendMissedReferralInvites());
+  check('recovery: a second run sends nothing', /Nothing to send/.test(again), again);
+  eq('recovery: and no further email left the building', s.__sent.length - before, 1);
+}
+
+{ // The three refusals. Each one exists because the copy would otherwise lie.
+  const mk = (opts) => {
+    const s = makeSandbox(opts);
+    const v = verifySession(s, entry(), BEFORE);
+    J(at(BEFORE, () => s.raffleHandleSubmission_(Object.assign({ step: 'referral', vid: v.vid }, referral()))));
+    return s;
+  };
+  const threw = (s, when) => {
+    const n = s.__sent.length;
+    try { at(when, () => s.raffleSendMissedReferralInvites()); return { msg: '', sent: s.__sent.length - n }; }
+    catch (err) { return { msg: String(err), sent: s.__sent.length - n }; }
+  };
+
+  const wrong = threw(mk({ runAs: 'durand@thestawaszgroup.com' }), DURING);
+  check('recovery: refuses to run as anyone but info@ (MailApp sends as the runner)',
+    /Run this as info@tsg\.homes/.test(wrong.msg) && wrong.sent === 0, wrong.msg);
+
+  const late = threw(mk(), AFTER);
+  check('recovery: refuses once entries have closed',
+    /Entries closed/.test(late.msg) && late.sent === 0, late.msg);
+
+  const s3 = mk();
+  s3.__props[s3.raffleWinnerProp_(false)] = JSON.stringify({ name: 'Dana Reid' });
+  const drawn = threw(s3, DURING);
+  check('recovery: refuses once the draw has run',
+    /draw has already run/.test(drawn.msg) && drawn.sent === 0, drawn.msg);
+}
+
 const { passes, fails } = counts();
 console.log('\n' + passes + ' passed, ' + fails + ' failed');
 process.exit(fails ? 1 : 0);

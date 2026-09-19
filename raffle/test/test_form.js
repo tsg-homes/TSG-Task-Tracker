@@ -43,6 +43,7 @@ function page(opts) {
     ]),
     defaultTimeframe: opts.defaultTimeframe === undefined ? '7-12 Months' : opts.defaultTimeframe,
     prizeShort: '$300 toward any Ticketmaster purchase',
+    venue: '1300 N Hancock St, Philadelphia',
     announceAt: '6:30 PM',
     // JSON-encoded server-side, like the console's values.
     chainVid: JSON.stringify(opts.chainVid || ''),
@@ -375,7 +376,7 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
   await p.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000 }));
   await p.waitForTimeout(300);
   check('header shows the venue and hours',
-    /1342 N Hancock St/.test(await p.locator('header').textContent()));
+    /1300 N Hancock St/.test(await p.locator('header').textContent()));
   check('prize card carries the date',
     /Saturday, September 19/.test(await p.locator('.prize .when').textContent()));
   check('prize card still shows both draw times',

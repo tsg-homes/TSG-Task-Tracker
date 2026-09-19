@@ -2,7 +2,7 @@
 
 Public entry form + automatic 6:15 drawing + Follow Up Boss sync for the
 **$300 Ticketmaster** prize at the TSG Block Party, **Saturday 19 September 2026,
-3:00–7:00 PM, 1342 N Hancock St**.
+3:00–7:00 PM, 1300 N Hancock St**.
 
 ## Where this deploys
 
@@ -488,6 +488,38 @@ page in print. Use it to reprint from any machine, to send someone the sign
 without sending a 700 KB PNG, or to stand a screen on the table. Like the PNG and
 the PDF the built file is not committed -- it carries the code, and the code
 carries the deployment id.
+
+### A staged referral whose invite never went out (2026-09-19)
+
+The address on everything is **1300 N Hancock St**, not 1342. It was typed into
+four places and wrong in all of them; `RAFFLE_VENUE` is now the only copy and the
+form header, both FUB note bodies and the referral note read it from there.
+
+**The failure.** Two of the four referrals on the sheet had a consent token
+minted, a FUB record written and `Referral Emailed At` blank: the row exists, the
+referred person got nothing. That is the entrant's final *"Send it — give me 5
+more entries"* tap not reaching the server. Read the monitoring page's
+`Referral Emailed At` column, not the presence of the row, to know whether
+anybody was actually emailed.
+
+**The fix is editor-run, on purpose.** `raffleSendReferralInvite_` cannot be
+replayed for those rows: it requires the entrant's cached verified session, which
+is what stops a token leaked out of a URL from mailing a stranger, and the
+session is gone within the hour. So:
+
+1. Open the script editor **as info@tsg.homes**, run
+   `raffleListMissedReferralInvites()` — a dry run that prints the stuck rows and
+   sends nothing.
+2. If the list is right, run `raffleSendMissedReferralInvites()`.
+
+It refuses to run as any account but info@ (MailApp sends as whoever runs it, and
+every other email in this raffle came from info@), refuses once the draw has run
+or entries have closed, refuses if it matches more than `RAFFLE_RECOVERY_MAX`
+rows, and stamps `Referral Emailed At` immediately after each send so a second
+run cannot re-mail anybody. The copy is plain text signed by Durand rather than
+the branded invite — it is a person following up on something that did not work —
+and every fact in it (venue, hours, close, announcement, bonus entries) is read
+from the constants, so it cannot drift from the page or the rules.
 
 ## Failure handling (2026-09-18, after the 9/17 rehearsal)
 

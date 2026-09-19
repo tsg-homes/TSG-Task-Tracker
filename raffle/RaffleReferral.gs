@@ -804,7 +804,7 @@ function raffleReportMissingField_(label, labels) {
 function raffleReferralBackground_(x) {
   return [
     'Referred by ' + x.entrant.name + ' at the ' + RAFFLE_EVENT_NAME +
-      ' on Saturday, September 19, 2026 (1342 N Hancock St, Philadelphia).',
+      ' on Saturday, September 19, 2026 (' + RAFFLE_VENUE + ').',
     '',
     'Looking to: ' + x.role,
     'Timeframe:  ' + (x.timeframe || '(not given)'),
@@ -3319,4 +3319,175 @@ function raffleSetRowEligible_(test, rowParam, eligible) {
     ' the ' + (test ? 'TEST ' : '') + 'draw from the monitoring page');
   return { ok: true, row: row, name: name, eligible: eligible,
            message: (eligible ? 'Restored ' : 'Removed ') + name + (eligible ? ' to' : ' from') + ' the draw.' };
+}
+
+// ---------- Recovery: a staged referral whose invite never went out ----------
+//
+// 2026-09-19, live. Two of the four referrals on the sheet were staged with a
+// consent token minted, a FUB record written, and `Referral Emailed At` BLANK:
+// the entrant's final "Send it" tap never reached the server. Everything about
+// those referrals exists except the one email the referred person needed.
+//
+// raffleSendReferralInvite_ deliberately cannot be replayed for them. It
+// requires the entrant's cached verified session, which is precisely what stops
+// a token leaked out of a URL from mailing a stranger, and those sessions
+// expired within the hour. So this is the editor-run door instead: no
+// parameters, no token, not reachable from any page, and it refuses once the
+// draw has run or entries have closed, because by then the copy would be lying.
+//
+// RUN IT AS info@tsg.homes (authuser=1 in Durand's browser). MailApp sends as
+// whoever executes the script, every other email in this raffle came from
+// info@, and putting a different sender on the one message that is already late
+// is the last thing this needs. The function checks and refuses otherwise.
+//
+// The copy is Durand's, approved in chat on 2026-09-19: a short personal note
+// from him rather than the branded invite, because a recovery reads better as
+// one. Every fact in it -- the venue, the hours, the close, the announcement,
+// the bonus entries -- comes from the constants at the top of RaffleCode.gs, so
+// it cannot drift from what the page and the rules say.
+
+// A safety valve, not a policy: this should only ever touch a handful of rows.
+// If it matches more than this, something is wrong with the sheet or with the
+// filter, and the answer is to look, not to send.
+var RAFFLE_RECOVERY_MAX = 5;
+
+// Dry run. Prints what raffleSendMissedReferralInvites() would do and sends
+// nothing. Run this first, every time.
+function raffleListMissedReferralInvites() {
+  var rows = raffleMissedReferralRows_();
+  var lines = ['Referrals staged with no invite sent: ' + rows.length];
+  rows.forEach(function (r) {
+    lines.push('  row ' + r.row + '  ' + r.name + ' -> ' + r.referralName +
+               ' <' + r.referralEmail + '>  staged ' + raffleFmt_(new Date(r.timestamp)));
+  });
+  if (raffleStoredWinner_(false)) lines.push('NOTE: the draw has already run — sending is refused.');
+  if (Date.now() >= new Date(RAFFLE_CLOSE_AT).getTime()) {
+    lines.push('NOTE: entries are closed — sending is refused.');
+  }
+  var out = lines.join('\n');
+  Logger.log(out);
+  return out;
+}
+
+function raffleSendMissedReferralInvites() {
+  var who = '';
+  try { who = String(Session.getEffectiveUser().getEmail() || ''); } catch (err) { who = ''; }
+  if (raffleEmailKey_(who) !== raffleEmailKey_(RAFFLE_SHARED_INBOX)) {
+    throw new Error('Run this as ' + RAFFLE_SHARED_INBOX + '. It is running as ' +
+      (who || 'an unknown account') + ', and MailApp sends as whoever runs it.');
+  }
+  if (raffleStoredWinner_(false)) {
+    throw new Error('The draw has already run. This invite tells people they are still ' +
+      'in the drawing, so it must not go out now.');
+  }
+  var now = Date.now();
+  if (now >= new Date(RAFFLE_CLOSE_AT).getTime()) {
+    throw new Error('Entries closed at ' + raffleFmt_(new Date(RAFFLE_CLOSE_AT)) +
+      '. Confirming can no longer put anybody in the drawing, so this is not sent.');
+  }
+
+  var rows = raffleMissedReferralRows_();
+  if (!rows.length) return 'Nothing to send: every staged referral has been emailed.';
+  if (rows.length > RAFFLE_RECOVERY_MAX) {
+    throw new Error(rows.length + ' rows matched, which is more than this is meant to ' +
+      'touch (' + RAFFLE_RECOVERY_MAX + '). Run raffleListMissedReferralInvites() and ' +
+      'look at them before sending anything.');
+  }
+
+  var done = [];
+  rows.forEach(function (r) {
+    try {
+      // The entrant, rebuilt from the row rather than from a session: this runs
+      // hours later and there is no session left to read.
+      var entrant = { name: r.name, email: r.email, personId: r.fubId };
+      var url = raffleConsentUrl_(r.consentToken);
+      var subject = entrant.name + ' referred you — confirm and you are in the $300 drawing too';
+      var body = raffleRecoveryInvitePlain_(entrant, r, url, now);
+
+      raffleCheckCodeSendQuota_(raffleEmailKey_(r.referralEmail), raffleSendWeight_(false));
+      MailApp.sendEmail({
+        to: r.referralEmail,
+        replyTo: RAFFLE_SHARED_INBOX,
+        bcc: raffleOversightBcc_(false),
+        name: 'Durand at The Stawasz Group',
+        subject: subject,
+        body: body
+      });
+      // Stamped straight after the send, before anything else can throw: a
+      // second run must never re-mail somebody who already has this.
+      raffleSheet_(false).getRange(r.row, RAFFLE_COL['Referral Emailed At'] + 1)
+        .setValue(raffleFmt_(raffleNow_()));
+      // On the ENTRANT's timeline: the referred person has no FUB contact until
+      // they consent, and this went out on the entrant's behalf.
+      try { raffleLogEmailToFub_(entrant.personId, subject, body, false); }
+      catch (fubErr) { Logger.log('Recovery: FUB log failed for row ' + r.row + ': ' + fubErr); }
+      done.push('sent  row ' + r.row + '  ' + r.referralEmail);
+    } catch (err) {
+      done.push('FAILED row ' + r.row + '  ' + r.referralEmail + ': ' + err);
+    }
+  });
+  var out = done.join('\n');
+  Logger.log(out);
+  return out;
+}
+
+// Live tab only, and only rows that are genuinely stuck: a referral was named, a
+// token was minted, no invite was ever sent, and they have not confirmed by some
+// other route. raffleReadEntries_ already drops rows disqualified by hand.
+function raffleMissedReferralRows_() {
+  return raffleReadEntries_(false).filter(function (r) {
+    return r.isReferralRow && r.referralEmail && r.consentToken &&
+           !r.referralEmailedAt && !r.referralConsentAt;
+  });
+}
+
+// Plain text only. It is signed by a person, and a branded HTML shell would
+// undercut that -- the reason for different copy here at all is that this one is
+// a person following up on something that did not work.
+function raffleRecoveryInvitePlain_(entrant, entry, url, now) {
+  var refFirst = String(entry.referralName || '').split(' ')[0];
+  var entFirst = String(entrant.name || '').split(' ')[0];
+  var day = function (d) {
+    return Utilities.formatDate(new Date(d), RAFFLE_TZ, 'yyyy-MM-dd').slice(0, 10);
+  };
+  var fmt = function (d, pat) { return Utilities.formatDate(new Date(d), RAFFLE_TZ, pat); };
+  var today = day(now);
+
+  // "yesterday" was right on the 19th for a referral staged on the 18th. Read it
+  // off the row instead of assuming, so the sentence stays true whenever this is
+  // run.
+  var staged = day(entry.timestamp);
+  var when = staged === today ? 'earlier today'
+           : staged === day(now - 86400000) ? 'yesterday'
+           : 'on ' + fmt(entry.timestamp, 'EEEE, MMMM d');
+
+  var event = new Date(RAFFLE_EVENT_AT);
+  var eventWhen = (day(event) === today ? 'today' : fmt(event, 'EEEE, MMMM d')) +
+    ' from ' + fmt(event, 'h:mm a') + ' to ' + RAFFLE_EVENT_ENDS;
+  var close = new Date(RAFFLE_CLOSE_AT);
+  var closeWhen = (day(close) === today ? 'today' : fmt(close, 'EEEE')) +
+    ' at ' + fmt(close, 'h:mm a');
+
+  return [
+    'Hi ' + refFirst + ',',
+    '',
+    entrant.name + ' entered our Block Party drawing ' + when + ' and referred you. ' +
+      'Confirming takes about a minute and puts you in for ' + RAFFLE_PRIZE_SHORT + '. ' +
+      'It also gives ' + entFirst + ' ' + RAFFLE_BONUS_TICKETS_PER_REFERRAL +
+      ' more entries.',
+    '',
+    'Confirm here:',
+    url,
+    '',
+    'You do not need to be at the party to enter or to win, though you are welcome to ' +
+      'come by: ' + RAFFLE_VENUE + ', ' + eventWhen + '. Entries close ' + closeWhen +
+      ', the winner is drawn right after, and we announce at ' + RAFFLE_ANNOUNCE_AT + '. ' +
+      'If you win and you are not with us, we will email and call you.',
+    '',
+    'If you would rather not enter, ignore this and we will not follow up.',
+    '',
+    'Durand',
+    'The Stawasz Group / Keller Williams Empower',
+    '(215) 760-6291 · ' + RAFFLE_SHARED_INBOX
+  ].join('\n');
 }
