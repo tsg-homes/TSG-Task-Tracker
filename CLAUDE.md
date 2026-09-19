@@ -501,6 +501,19 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   otherwise spills three pages); output is not committed. `test_raffle.js` now scans every
   committed raffle file for a deployment id and checks RaffleQr.html stays ignored.
   Deployed @83 2026-09-19 14:10 EDT = commit 183c53c; all 13 project files verified by re-clone.
+- Landscape kiosk (2026-09-19, @84 = commit 154e298): at `(orientation:landscape) and
+  (min-width:900px) and (min-height:600px)` under `body.kiosk`, `main` becomes a two-column
+  grid — prize + `#scanPanel` + footer left, the live `.panel` / `#formWrap` right — the header
+  collapses to one flex line, phone/email and buy-sell/timeframe pair up in `.field-2up`, and
+  the type tightens. `#scanPanel` moved OUT of `#formWrap` to become the left column, so
+  `show()` / `showForm()` toggle its `.off` class: it belongs to the entry step only. Both axes
+  are guarded so a phone held sideways keeps one column. Nothing is removed — the consent
+  paragraph and Official Rules stay beside the checkbox (TCPA record), only smaller.
+  Measured, not eyeballed: test_form.js section 21 asserts document height <= viewport height
+  at 1080x810, 1194x834, 1133x744 and 1080x730 across the entry, code and referral steps, and
+  that the QR sits beside the form. An iPad mini in Safari (1133x664) is the one size still
+  ~37px over on the entry step; running the kiosk full screen removes the browser chrome and
+  the problem.
 - Confirm button (2026-09-18, @77): the code email carries a "Confirm my entry" button
   (`action=confirm&t=<link token>` -> form at `#confirmPanel`; the tap POSTs `confirmlink`,
   which runs `raffleVerifyCode_` with the server-held code; single use; a QA entry's link

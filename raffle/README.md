@@ -34,7 +34,7 @@ untouched — nothing public goes anywhere near its Anthropic key or script toke
 
 ## Deployment status
 
-**Live as version @83, deployed 2026-09-19 by `info@tsg.homes` from a Claude Code
+**Live as version @84, deployed 2026-09-19 by `info@tsg.homes` from a Claude Code
 cloud session** (@75: the 9/17 rehearsal fixes, real errors with retry and a loud banner,
 page lockout, error alerts to Durand only, phone mask, select, kiosk reset; @76: pages post
 to the plain exec URL; @77: the Confirm-my-entry button, kiosk poll, chain-link fix; @78:
@@ -42,7 +42,7 @@ one silent retry on a transport failure, device-neutral wording; @79: pages call
 through `google.script.run` instead of fetch, button-mash lockout and Retry cooldown; @80–@81:
 the archived raffle session's `raffleCreateFubSmartLists`; @82: the monitoring page table;
 @83: Remove from draw / Restore on the monitoring page, and the kiosk scan panel with
-`RaffleQr.html`, which is pushed but never committed). The
+`RaffleQr.html`, which is pushed but never committed; @84: the landscape kiosk layout). The
 live project also carries `Review.js`, `ReviewLogic.js` and `ReviewPage.html`, which
 are not this repo's and are pulled and pushed back untouched. Earlier: @63 on 2026-09-17.
 
