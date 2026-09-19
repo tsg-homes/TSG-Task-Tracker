@@ -462,6 +462,25 @@ monogram plate, and measured against OpenCV's detector it survives blur, 12 degr
 rotation and a glare gradient down to 240px, then fails on blur at 220px. The
 browser test asserts the rendered size for that reason, not for layout.
 
+**The kiosk fits an iPad in landscape without scrolling** (2026-09-19). The iPad
+sits sideways on the table, so at `(orientation: landscape) and (min-width:900px)
+and (min-height:600px)` the single column becomes two: the prize and the scan
+code on the left, whichever step is live on the right, with the header collapsed
+to one line and the vertical rhythm tightened throughout. Phone and email sit
+side by side, as do buy/sell and the timeframe. Nothing is removed: the consent
+paragraph and the Official Rules are the TCPA record and stay next to the
+checkbox, only smaller.
+
+Guarded on both axes on purpose — `min-width` alone would catch a phone held
+sideways, where 390px of height makes two columns far worse than one.
+
+Measured, not eyeballed: `test_form.js` section 21 drives the entry, code and
+referral steps at 1080x810, 1194x834, 1133x744 and 1080x730 and asserts the
+document is no taller than the viewport, plus that the code really is beside the
+form. An iPad mini in Safari (1133x664) is the one size where the entry step
+still runs about 37px over; run the kiosk full screen (Add to Home Screen, or
+Guided Access) and that disappears along with the browser chrome.
+
 **The table sign is also a web page.** `tools/build-sign-html.js <qr.png> [out]`
 renders `display/table-display.template.html` into one self-contained HTML file:
 same design, same QR, scaled to the viewport on screen and to a single letter

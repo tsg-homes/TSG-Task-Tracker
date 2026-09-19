@@ -97,10 +97,113 @@ button:disabled{opacity:.5;cursor:not-allowed;}
 .secondary:active{background:var(--tsg-gray);}
 .kiosk-only{display:none !important;}
 body.kiosk .kiosk-only{display:block !important;}
+/* ---- Kiosk, landscape: everything on one screen, no scrolling ----
+   Per Durand 2026-09-19, the iPad sits in landscape on the table and a guest
+   should never have to scroll to find the fields or the button. The single
+   column becomes two: the prize and the scan code on the left, whichever panel
+   is live on the right, with the vertical rhythm tightened to match.
+
+   Guarded on BOTH axes. min-width alone would catch a phone held sideways,
+   where 430px of height makes two columns far worse than one; 600px of height
+   is the floor where this pays off. Scoped to body.kiosk, so the shared QR link
+   on a guest's own phone is untouched.
+
+   Nothing is hidden: the consent paragraph and the Official Rules are the
+   TCPA record and stay exactly where they were, only smaller. */
+@media (orientation: landscape) and (min-width: 900px) and (min-height: 600px) {
+  /* The header becomes one line. Four stacked lines of branding cost 85px of a
+     screen that has none to spare, and every word of it is repeated below: the
+     wordmark in the footer, the date and the address in the prize block. */
+  body.kiosk header{padding:8px 20px;display:flex;align-items:baseline;
+    justify-content:center;gap:14px;flex-wrap:wrap;}
+  body.kiosk header .wordmark{font-size:16px;letter-spacing:.5px;}
+  body.kiosk header .subtitle{margin-top:0;font-size:10px;letter-spacing:2px;}
+  body.kiosk header .eventdate{margin-top:0;padding-top:0;border-top:0;font-size:11px;font-weight:400;}
+  body.kiosk header .eventdate .loc{display:inline;font-size:11px;margin-top:0;}
+  body.kiosk header .eventdate .loc::before{content:' · ';}
+
+  /* Two columns. The panels are siblings and only one is ever displayed, so
+     they all share the right-hand cell rather than needing a wrapper. */
+  body.kiosk main{max-width:none;width:100%;padding:14px 20px 12px;
+    display:grid;grid-template-columns:minmax(360px,0.9fr) minmax(420px,1.1fr);
+    gap:0 22px;align-content:start;}
+  body.kiosk main > .prize{grid-column:1;grid-row:1;margin-bottom:14px;}
+  body.kiosk main > #scanPanel{grid-column:1;grid-row:2;}
+  body.kiosk main > .panel,
+  body.kiosk main > #formWrap{grid-column:2;grid-row:1 / span 3;align-self:start;}
+
+  /* Two fields to a row. The entry form and the referral form are what decide
+     whether this fits at all, and stacking six labelled inputs is what pushed
+     them past the fold. Full Name keeps the row to itself. */
+  body.kiosk .field-2up{display:grid;grid-template-columns:1fr 1fr;gap:0 14px;}
+  body.kiosk .field-2up .field{margin-top:8px;}
+  /* Empty error and status lines reserve a row each on a page with six of
+     them; they take their space back only when they have something to say. */
+  body.kiosk .errmsg:empty{display:none;}
+  body.kiosk .busy-note:empty{display:none;}
+
+  body.kiosk .prize{padding:12px 16px 12px;margin-bottom:0;}
+  body.kiosk .prize .marks{gap:12px;margin-bottom:8px;}
+  body.kiosk .prize .marks img.eagles{height:34px;}
+  body.kiosk .prize .marks .tm{width:94px;}
+  body.kiosk .prize .kicker{font-size:10px;letter-spacing:2px;}
+  body.kiosk .prize .amount{font-size:36px;}
+  body.kiosk .prize .desc{font-size:13px;margin-top:6px;}
+  body.kiosk .prize .when{margin-top:7px;padding-top:7px;font-size:11.5px;line-height:1.4;}
+  body.kiosk .prize .multi{margin-top:6px;font-size:11.5px;line-height:1.4;}
+
+  body.kiosk #scanPanel.on{padding:14px 16px;margin:0;}
+  body.kiosk #scanPanel .txt b{font-size:19px;}
+  body.kiosk #scanPanel .txt span{margin-top:5px;font-size:13.5px;line-height:1.4;}
+
+  body.kiosk fieldset{padding:12px 16px 13px;margin-bottom:10px;}
+  body.kiosk legend{font-size:16px;}
+  body.kiosk .field{margin-top:8px;}
+  body.kiosk label{font-size:13px;margin-bottom:4px;}
+  /* 16px stays on the inputs: anything smaller and iOS zooms the page on focus,
+     which is its own kind of scrolling. */
+  body.kiosk input[type=text],
+  body.kiosk input[type=email],
+  body.kiosk input[type=tel],
+  body.kiosk select{padding:9px 12px;}
+  body.kiosk select{min-height:42px;}
+  body.kiosk .consent{margin-bottom:8px;}
+  body.kiosk .consent-row label{font-size:10.5px;line-height:1.35;}
+  body.kiosk .consent details{margin-top:6px;}
+  body.kiosk .consent summary{font-size:11.5px;}
+  body.kiosk .consent .disclaimer{font-size:9.5px;line-height:1.35;margin-top:6px;}
+  body.kiosk button{padding:12px;font-size:15.5px;}
+  body.kiosk .panel{padding:14px 18px;}
+  body.kiosk .panel h2{font-size:19px;margin-bottom:6px;}
+  body.kiosk .panel p{font-size:12.5px;line-height:1.4;margin-bottom:4px;}
+  body.kiosk .panel .field{margin-top:8px;}
+  body.kiosk .panel label{font-size:12.5px;margin-bottom:3px;}
+  body.kiosk .roles{margin-top:5px;gap:8px;}
+  body.kiosk .roles .radio{padding:9px 12px;font-size:14px;}
+  body.kiosk .hint{font-size:11px;line-height:1.35;margin:6px 0 8px !important;}
+  body.kiosk .actions{margin-top:8px;}
+  body.kiosk .secondary{margin-top:8px;padding:10px;font-size:14px;}
+  body.kiosk .busy-note{font-size:11.5px;}
+  body.kiosk #codeInput{margin-top:12px;}
+
+  /* The footer is contact detail and the non-affiliation notice, not part of
+     entering. It keeps its place in the flow, one line high, under the left
+     column where there is room for it. */
+  body.kiosk footer{grid-column:1;grid-row:3;padding:9px 0 0;background:transparent;
+    border-top:0;text-align:left;}
+  body.kiosk footer .logos{gap:10px;margin-bottom:2px;justify-content:flex-start;}
+  body.kiosk footer .logos img.tsg{height:26px;}
+  body.kiosk footer .logos img.kw{height:18px;}
+  body.kiosk footer .logos .rule{height:20px;}
+  body.kiosk footer .contact{font-size:10px;line-height:1.35;}
+  body.kiosk footer .fine{font-size:9px;margin-top:2px;line-height:1.35;}
+}
+
 /* The kiosk's "use your own phone instead" panel. Hidden everywhere else, and
    hidden on the kiosk too until the code is drawn, so a failed render leaves no
    empty box on the iPad. */
 #scanPanel{display:none;}
+body.kiosk #scanPanel.on.off{display:none;}
 body.kiosk #scanPanel.on{display:flex;align-items:center;gap:20px;border:2px solid var(--tsg-green);
   border-radius:12px;padding:18px 20px;margin:0 0 20px;background:#fff;}
 /* 240px is a floor, not a preference: this is the printed code — 61 modules with
@@ -243,6 +346,24 @@ body.qa-test{padding-top:62px;}
       <b>+5 entries</b> for every friend who confirms</div>
   </div>
 
+    <!-- Kiosk only: the same code that is on the printed table sign, so a guest
+         can use their own phone instead of typing on the iPad and take the code
+         email with them. The image is stamped at serve time from RaffleQr.html,
+         which is pushed to the script project but never committed — it encodes
+         the exec URL. -->
+    <!-- No `kiosk-only` class: that rule is `display:block !important` under
+         body.kiosk, which would force this panel open even with no code stamped
+         in it. Visibility is body.kiosk + .on, added by the script once it has
+         confirmed there is really an image. -->
+    <div id="scanPanel" aria-hidden="true">
+      <div class="qr"><img id="scanQr" src="<?!= kioskQr ?>" alt="Scan to enter the raffle"></div>
+      <div class="txt">
+        <b>Rather use your own phone?</b>
+        <span>Scan this with your camera and enter there. Your code arrives in your
+          own inbox, and this iPad moves on by itself once you confirm.</span>
+      </div>
+    </div>
+
   <!-- Entries not open yet -->
   <div class="panel" id="beforePanel">
     <h2>Goes live in</h2>
@@ -307,28 +428,32 @@ body.qa-test{padding-top:62px;}
       <input type="text" id="refName" autocapitalize="words">
       <div class="errmsg" id="refNameErr"></div>
     </div>
-    <div class="field">
-      <label for="refPhone">Their phone <span class="req">*</span></label>
-      <input type="tel" id="refPhone" inputmode="tel" placeholder="(215) 555-8123">
-      <div class="errmsg" id="refPhoneErr"></div>
-    </div>
-    <div class="field">
-      <label for="refEmail">Their email <span class="req">*</span></label>
-      <input type="email" id="refEmail" inputmode="email" autocapitalize="off"
-             placeholder="them@email.com">
-      <div class="errmsg" id="refEmailErr"></div>
-    </div>
-    <div class="field">
-      <label>Are they looking to buy or sell? <span class="req">*</span></label>
-      <div class="roles">
-        <label class="radio"><input type="radio" name="refRole" value="Buyer"><span>Buy</span></label>
-        <label class="radio"><input type="radio" name="refRole" value="Seller"><span>Sell</span></label>
+    <div class="field-2up">
+      <div class="field">
+        <label for="refPhone">Their phone <span class="req">*</span></label>
+        <input type="tel" id="refPhone" inputmode="tel" placeholder="(215) 555-8123">
+        <div class="errmsg" id="refPhoneErr"></div>
       </div>
-      <div class="errmsg" id="refRoleErr"></div>
+      <div class="field">
+        <label for="refEmail">Their email <span class="req">*</span></label>
+        <input type="email" id="refEmail" inputmode="email" autocapitalize="off"
+               placeholder="them@email.com">
+        <div class="errmsg" id="refEmailErr"></div>
+      </div>
     </div>
-    <div class="field">
-      <label for="refTimeframe">When are they thinking of moving?</label>
-      <select id="refTimeframe"><option value="">Select&hellip;</option></select>
+    <div class="field-2up">
+      <div class="field">
+        <label>Are they looking to buy or sell? <span class="req">*</span></label>
+        <div class="roles">
+          <label class="radio"><input type="radio" name="refRole" value="Buyer"><span>Buy</span></label>
+          <label class="radio"><input type="radio" name="refRole" value="Seller"><span>Sell</span></label>
+        </div>
+        <div class="errmsg" id="refRoleErr"></div>
+      </div>
+      <div class="field">
+        <label for="refTimeframe">When are they thinking of moving?</label>
+        <select id="refTimeframe"><option value="">Select&hellip;</option></select>
+      </div>
     </div>
 
     <div class="hint" style="text-align:left;margin:12px 0 14px">
@@ -374,23 +499,6 @@ body.qa-test{padding-top:62px;}
 
   <div id="formWrap">
     <div class="fail" id="linkExpired" role="alert"></div>
-    <!-- Kiosk only: the same code that is on the printed table sign, so a guest
-         can use their own phone instead of typing on the iPad and take the code
-         email with them. The image is stamped at serve time from RaffleQr.html,
-         which is pushed to the script project but never committed — it encodes
-         the exec URL. -->
-    <!-- No `kiosk-only` class: that rule is `display:block !important` under
-         body.kiosk, which would force this panel open even with no code stamped
-         in it. Visibility is body.kiosk + .on, added by the script once it has
-         confirmed there is really an image. -->
-    <div id="scanPanel" aria-hidden="true">
-      <div class="qr"><img id="scanQr" src="<?!= kioskQr ?>" alt="Scan to enter the raffle"></div>
-      <div class="txt">
-        <b>Rather use your own phone?</b>
-        <span>Scan this with your camera and enter there. Your code arrives in your
-          own inbox, and this iPad moves on by itself once you confirm.</span>
-      </div>
-    </div>
     <form id="raffleForm" novalidate>
       <input type="text" id="website" name="website" autocomplete="off" tabindex="-1" aria-hidden="true">
 
@@ -401,15 +509,17 @@ body.qa-test{padding-top:62px;}
           <input type="text" id="fullName" autocomplete="name" autocapitalize="words">
           <div class="errmsg" id="nameErr"></div>
         </div>
-        <div class="field">
-          <label for="phone">Phone <span class="req">*</span></label>
-          <input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="(215) 555-8123">
-          <div class="errmsg" id="phoneErr"></div>
-        </div>
-        <div class="field">
-          <label for="email">Email <span class="req">*</span></label>
-          <input type="email" id="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@email.com">
-          <div class="errmsg" id="emailErr"></div>
+        <div class="field-2up">
+          <div class="field">
+            <label for="phone">Phone <span class="req">*</span></label>
+            <input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="(215) 555-8123">
+            <div class="errmsg" id="phoneErr"></div>
+          </div>
+          <div class="field">
+            <label for="email">Email <span class="req">*</span></label>
+            <input type="email" id="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@email.com">
+            <div class="errmsg" id="emailErr"></div>
+          </div>
         </div>
       </fieldset>
 
@@ -546,8 +656,6 @@ body.qa-test{padding-top:62px;}
       <div class="fail" id="submitFail" role="alert"></div>
     </form>
   </div>
-</main>
-
 <footer>
   <div class="logos">
     <img class="tsg" src="data:image/png;base64,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" alt="The Stawasz Group">
@@ -564,6 +672,7 @@ body.qa-test{padding-top:62px;}
     &copy; 2026 The Stawasz Group. Each Keller Williams office is independently owned and operated.
   </div>
 </footer>
+</main>
 
 <script>
 (function(){
@@ -627,13 +736,23 @@ body.qa-test{padding-top:62px;}
   // must not yank it away mid-read just because the clock moved on.
   var holdingSuccess = false;
 
+  // The scan panel lives beside the form rather than inside it (it is the
+  // landscape layout's left column), so hiding the form no longer hides it.
+  // It belongs to the entry step only: offering "use your own phone" to someone
+  // already typing their code on the iPad is just confusing.
+  function scanPanelFollow_(onForm){
+    var sp = document.getElementById('scanPanel');
+    if (sp) sp.classList.toggle('off', !onForm);
+  }
   function show(el){
     formWrap.classList.add('hidden');
+    scanPanelFollow_(false);
     panels.forEach(function(p){ p.style.display = 'none'; });
     if (el) el.style.display = 'block';
   }
   function showForm(){
     formWrap.classList.remove('hidden');
+    scanPanelFollow_(true);
     panels.forEach(function(p){ p.style.display = 'none'; });
   }
 

@@ -97,10 +97,113 @@ button:disabled{opacity:.5;cursor:not-allowed;}
 .secondary:active{background:var(--tsg-gray);}
 .kiosk-only{display:none !important;}
 body.kiosk .kiosk-only{display:block !important;}
+/* ---- Kiosk, landscape: everything on one screen, no scrolling ----
+   Per Durand 2026-09-19, the iPad sits in landscape on the table and a guest
+   should never have to scroll to find the fields or the button. The single
+   column becomes two: the prize and the scan code on the left, whichever panel
+   is live on the right, with the vertical rhythm tightened to match.
+
+   Guarded on BOTH axes. min-width alone would catch a phone held sideways,
+   where 430px of height makes two columns far worse than one; 600px of height
+   is the floor where this pays off. Scoped to body.kiosk, so the shared QR link
+   on a guest's own phone is untouched.
+
+   Nothing is hidden: the consent paragraph and the Official Rules are the
+   TCPA record and stay exactly where they were, only smaller. */
+@media (orientation: landscape) and (min-width: 900px) and (min-height: 600px) {
+  /* The header becomes one line. Four stacked lines of branding cost 85px of a
+     screen that has none to spare, and every word of it is repeated below: the
+     wordmark in the footer, the date and the address in the prize block. */
+  body.kiosk header{padding:8px 20px;display:flex;align-items:baseline;
+    justify-content:center;gap:14px;flex-wrap:wrap;}
+  body.kiosk header .wordmark{font-size:16px;letter-spacing:.5px;}
+  body.kiosk header .subtitle{margin-top:0;font-size:10px;letter-spacing:2px;}
+  body.kiosk header .eventdate{margin-top:0;padding-top:0;border-top:0;font-size:11px;font-weight:400;}
+  body.kiosk header .eventdate .loc{display:inline;font-size:11px;margin-top:0;}
+  body.kiosk header .eventdate .loc::before{content:' · ';}
+
+  /* Two columns. The panels are siblings and only one is ever displayed, so
+     they all share the right-hand cell rather than needing a wrapper. */
+  body.kiosk main{max-width:none;width:100%;padding:14px 20px 12px;
+    display:grid;grid-template-columns:minmax(360px,0.9fr) minmax(420px,1.1fr);
+    gap:0 22px;align-content:start;}
+  body.kiosk main > .prize{grid-column:1;grid-row:1;margin-bottom:14px;}
+  body.kiosk main > #scanPanel{grid-column:1;grid-row:2;}
+  body.kiosk main > .panel,
+  body.kiosk main > #formWrap{grid-column:2;grid-row:1 / span 3;align-self:start;}
+
+  /* Two fields to a row. The entry form and the referral form are what decide
+     whether this fits at all, and stacking six labelled inputs is what pushed
+     them past the fold. Full Name keeps the row to itself. */
+  body.kiosk .field-2up{display:grid;grid-template-columns:1fr 1fr;gap:0 14px;}
+  body.kiosk .field-2up .field{margin-top:8px;}
+  /* Empty error and status lines reserve a row each on a page with six of
+     them; they take their space back only when they have something to say. */
+  body.kiosk .errmsg:empty{display:none;}
+  body.kiosk .busy-note:empty{display:none;}
+
+  body.kiosk .prize{padding:12px 16px 12px;margin-bottom:0;}
+  body.kiosk .prize .marks{gap:12px;margin-bottom:8px;}
+  body.kiosk .prize .marks img.eagles{height:34px;}
+  body.kiosk .prize .marks .tm{width:94px;}
+  body.kiosk .prize .kicker{font-size:10px;letter-spacing:2px;}
+  body.kiosk .prize .amount{font-size:36px;}
+  body.kiosk .prize .desc{font-size:13px;margin-top:6px;}
+  body.kiosk .prize .when{margin-top:7px;padding-top:7px;font-size:11.5px;line-height:1.4;}
+  body.kiosk .prize .multi{margin-top:6px;font-size:11.5px;line-height:1.4;}
+
+  body.kiosk #scanPanel.on{padding:14px 16px;margin:0;}
+  body.kiosk #scanPanel .txt b{font-size:19px;}
+  body.kiosk #scanPanel .txt span{margin-top:5px;font-size:13.5px;line-height:1.4;}
+
+  body.kiosk fieldset{padding:12px 16px 13px;margin-bottom:10px;}
+  body.kiosk legend{font-size:16px;}
+  body.kiosk .field{margin-top:8px;}
+  body.kiosk label{font-size:13px;margin-bottom:4px;}
+  /* 16px stays on the inputs: anything smaller and iOS zooms the page on focus,
+     which is its own kind of scrolling. */
+  body.kiosk input[type=text],
+  body.kiosk input[type=email],
+  body.kiosk input[type=tel],
+  body.kiosk select{padding:9px 12px;}
+  body.kiosk select{min-height:42px;}
+  body.kiosk .consent{margin-bottom:8px;}
+  body.kiosk .consent-row label{font-size:10.5px;line-height:1.35;}
+  body.kiosk .consent details{margin-top:6px;}
+  body.kiosk .consent summary{font-size:11.5px;}
+  body.kiosk .consent .disclaimer{font-size:9.5px;line-height:1.35;margin-top:6px;}
+  body.kiosk button{padding:12px;font-size:15.5px;}
+  body.kiosk .panel{padding:14px 18px;}
+  body.kiosk .panel h2{font-size:19px;margin-bottom:6px;}
+  body.kiosk .panel p{font-size:12.5px;line-height:1.4;margin-bottom:4px;}
+  body.kiosk .panel .field{margin-top:8px;}
+  body.kiosk .panel label{font-size:12.5px;margin-bottom:3px;}
+  body.kiosk .roles{margin-top:5px;gap:8px;}
+  body.kiosk .roles .radio{padding:9px 12px;font-size:14px;}
+  body.kiosk .hint{font-size:11px;line-height:1.35;margin:6px 0 8px !important;}
+  body.kiosk .actions{margin-top:8px;}
+  body.kiosk .secondary{margin-top:8px;padding:10px;font-size:14px;}
+  body.kiosk .busy-note{font-size:11.5px;}
+  body.kiosk #codeInput{margin-top:12px;}
+
+  /* The footer is contact detail and the non-affiliation notice, not part of
+     entering. It keeps its place in the flow, one line high, under the left
+     column where there is room for it. */
+  body.kiosk footer{grid-column:1;grid-row:3;padding:9px 0 0;background:transparent;
+    border-top:0;text-align:left;}
+  body.kiosk footer .logos{gap:10px;margin-bottom:2px;justify-content:flex-start;}
+  body.kiosk footer .logos img.tsg{height:26px;}
+  body.kiosk footer .logos img.kw{height:18px;}
+  body.kiosk footer .logos .rule{height:20px;}
+  body.kiosk footer .contact{font-size:10px;line-height:1.35;}
+  body.kiosk footer .fine{font-size:9px;margin-top:2px;line-height:1.35;}
+}
+
 /* The kiosk's "use your own phone instead" panel. Hidden everywhere else, and
    hidden on the kiosk too until the code is drawn, so a failed render leaves no
    empty box on the iPad. */
 #scanPanel{display:none;}
+body.kiosk #scanPanel.on.off{display:none;}
 body.kiosk #scanPanel.on{display:flex;align-items:center;gap:20px;border:2px solid var(--tsg-green);
   border-radius:12px;padding:18px 20px;margin:0 0 20px;background:#fff;}
 /* 240px is a floor, not a preference: this is the printed code — 61 modules with
@@ -243,6 +346,24 @@ body.qa-test{padding-top:62px;}
       <b>+5 entries</b> for every friend who confirms</div>
   </div>
 
+    <!-- Kiosk only: the same code that is on the printed table sign, so a guest
+         can use their own phone instead of typing on the iPad and take the code
+         email with them. The image is stamped at serve time from RaffleQr.html,
+         which is pushed to the script project but never committed — it encodes
+         the exec URL. -->
+    <!-- No `kiosk-only` class: that rule is `display:block !important` under
+         body.kiosk, which would force this panel open even with no code stamped
+         in it. Visibility is body.kiosk + .on, added by the script once it has
+         confirmed there is really an image. -->
+    <div id="scanPanel" aria-hidden="true">
+      <div class="qr"><img id="scanQr" src="<?!= kioskQr ?>" alt="Scan to enter the raffle"></div>
+      <div class="txt">
+        <b>Rather use your own phone?</b>
+        <span>Scan this with your camera and enter there. Your code arrives in your
+          own inbox, and this iPad moves on by itself once you confirm.</span>
+      </div>
+    </div>
+
   <!-- Entries not open yet -->
   <div class="panel" id="beforePanel">
     <h2>Goes live in</h2>
@@ -307,28 +428,32 @@ body.qa-test{padding-top:62px;}
       <input type="text" id="refName" autocapitalize="words">
       <div class="errmsg" id="refNameErr"></div>
     </div>
-    <div class="field">
-      <label for="refPhone">Their phone <span class="req">*</span></label>
-      <input type="tel" id="refPhone" inputmode="tel" placeholder="(215) 555-8123">
-      <div class="errmsg" id="refPhoneErr"></div>
-    </div>
-    <div class="field">
-      <label for="refEmail">Their email <span class="req">*</span></label>
-      <input type="email" id="refEmail" inputmode="email" autocapitalize="off"
-             placeholder="them@email.com">
-      <div class="errmsg" id="refEmailErr"></div>
-    </div>
-    <div class="field">
-      <label>Are they looking to buy or sell? <span class="req">*</span></label>
-      <div class="roles">
-        <label class="radio"><input type="radio" name="refRole" value="Buyer"><span>Buy</span></label>
-        <label class="radio"><input type="radio" name="refRole" value="Seller"><span>Sell</span></label>
+    <div class="field-2up">
+      <div class="field">
+        <label for="refPhone">Their phone <span class="req">*</span></label>
+        <input type="tel" id="refPhone" inputmode="tel" placeholder="(215) 555-8123">
+        <div class="errmsg" id="refPhoneErr"></div>
       </div>
-      <div class="errmsg" id="refRoleErr"></div>
+      <div class="field">
+        <label for="refEmail">Their email <span class="req">*</span></label>
+        <input type="email" id="refEmail" inputmode="email" autocapitalize="off"
+               placeholder="them@email.com">
+        <div class="errmsg" id="refEmailErr"></div>
+      </div>
     </div>
-    <div class="field">
-      <label for="refTimeframe">When are they thinking of moving?</label>
-      <select id="refTimeframe"><option value="">Select&hellip;</option></select>
+    <div class="field-2up">
+      <div class="field">
+        <label>Are they looking to buy or sell? <span class="req">*</span></label>
+        <div class="roles">
+          <label class="radio"><input type="radio" name="refRole" value="Buyer"><span>Buy</span></label>
+          <label class="radio"><input type="radio" name="refRole" value="Seller"><span>Sell</span></label>
+        </div>
+        <div class="errmsg" id="refRoleErr"></div>
+      </div>
+      <div class="field">
+        <label for="refTimeframe">When are they thinking of moving?</label>
+        <select id="refTimeframe"><option value="">Select&hellip;</option></select>
+      </div>
     </div>
 
     <div class="hint" style="text-align:left;margin:12px 0 14px">
@@ -374,23 +499,6 @@ body.qa-test{padding-top:62px;}
 
   <div id="formWrap">
     <div class="fail" id="linkExpired" role="alert"></div>
-    <!-- Kiosk only: the same code that is on the printed table sign, so a guest
-         can use their own phone instead of typing on the iPad and take the code
-         email with them. The image is stamped at serve time from RaffleQr.html,
-         which is pushed to the script project but never committed — it encodes
-         the exec URL. -->
-    <!-- No `kiosk-only` class: that rule is `display:block !important` under
-         body.kiosk, which would force this panel open even with no code stamped
-         in it. Visibility is body.kiosk + .on, added by the script once it has
-         confirmed there is really an image. -->
-    <div id="scanPanel" aria-hidden="true">
-      <div class="qr"><img id="scanQr" src="<?!= kioskQr ?>" alt="Scan to enter the raffle"></div>
-      <div class="txt">
-        <b>Rather use your own phone?</b>
-        <span>Scan this with your camera and enter there. Your code arrives in your
-          own inbox, and this iPad moves on by itself once you confirm.</span>
-      </div>
-    </div>
     <form id="raffleForm" novalidate>
       <input type="text" id="website" name="website" autocomplete="off" tabindex="-1" aria-hidden="true">
 
@@ -401,15 +509,17 @@ body.qa-test{padding-top:62px;}
           <input type="text" id="fullName" autocomplete="name" autocapitalize="words">
           <div class="errmsg" id="nameErr"></div>
         </div>
-        <div class="field">
-          <label for="phone">Phone <span class="req">*</span></label>
-          <input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="(215) 555-8123">
-          <div class="errmsg" id="phoneErr"></div>
-        </div>
-        <div class="field">
-          <label for="email">Email <span class="req">*</span></label>
-          <input type="email" id="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@email.com">
-          <div class="errmsg" id="emailErr"></div>
+        <div class="field-2up">
+          <div class="field">
+            <label for="phone">Phone <span class="req">*</span></label>
+            <input type="tel" id="phone" inputmode="tel" autocomplete="tel" placeholder="(215) 555-8123">
+            <div class="errmsg" id="phoneErr"></div>
+          </div>
+          <div class="field">
+            <label for="email">Email <span class="req">*</span></label>
+            <input type="email" id="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@email.com">
+            <div class="errmsg" id="emailErr"></div>
+          </div>
         </div>
       </fieldset>
 
@@ -546,8 +656,6 @@ body.qa-test{padding-top:62px;}
       <div class="fail" id="submitFail" role="alert"></div>
     </form>
   </div>
-</main>
-
 <footer>
   <div class="logos">
     <img class="tsg" src="{{TSG_LOGO}}" alt="The Stawasz Group">
@@ -564,6 +672,7 @@ body.qa-test{padding-top:62px;}
     &copy; 2026 The Stawasz Group. Each Keller Williams office is independently owned and operated.
   </div>
 </footer>
+</main>
 
 <script>
 (function(){
@@ -627,13 +736,23 @@ body.qa-test{padding-top:62px;}
   // must not yank it away mid-read just because the clock moved on.
   var holdingSuccess = false;
 
+  // The scan panel lives beside the form rather than inside it (it is the
+  // landscape layout's left column), so hiding the form no longer hides it.
+  // It belongs to the entry step only: offering "use your own phone" to someone
+  // already typing their code on the iPad is just confusing.
+  function scanPanelFollow_(onForm){
+    var sp = document.getElementById('scanPanel');
+    if (sp) sp.classList.toggle('off', !onForm);
+  }
   function show(el){
     formWrap.classList.add('hidden');
+    scanPanelFollow_(false);
     panels.forEach(function(p){ p.style.display = 'none'; });
     if (el) el.style.display = 'block';
   }
   function showForm(){
     formWrap.classList.remove('hidden');
+    scanPanelFollow_(true);
     panels.forEach(function(p){ p.style.display = 'none'; });
   }
 

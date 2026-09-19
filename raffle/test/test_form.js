@@ -954,6 +954,67 @@ const CLOSE = new Date('2026-09-19T18:15:00-04:00').getTime();
     check('kiosk QR: nothing shows on the shared link', !(await p.locator('#scanPanel').isVisible()));
   }
 
+  // ---- 21. The kiosk fits an iPad in landscape without scrolling (2026-09-19) ----
+  // Per Durand: the iPad sits in landscape on the table and a guest should never
+  // have to scroll to reach the fields or the button. Asserted as a measurement,
+  // not a screenshot: document height against viewport height at each step, at
+  // the sizes the real device reports. Anything added to the page later that
+  // pushes a step past the fold fails here rather than at the table.
+  {
+    const SIZES = [
+      ['iPad 10.2 landscape', 1080, 810],
+      ['iPad Air 11 landscape', 1194, 834],
+      ['iPad mini landscape', 1133, 744],
+      ['iPad 10.2 with Safari chrome', 1080, 730]
+    ];
+    for (const [label, width, height] of SIZES) {
+      const kp = await b.newPage({ viewport: { width, height } });
+      await kp.route('**/exec', r => {
+        const body = JSON.parse(r.request().postData() || '{}');
+        if (body.step === 'request') return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, needsCode: true, vid: VID }) });
+        if (body.step === 'verify') return r.fulfill({ status: 200, body: JSON.stringify({ ok: true, verified: true, vid: VID, firstName: 'Dana' }) });
+        return r.fulfill({ status: 200, body: '{"ok":true}' });
+      });
+      await kp.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000, vals: { kiosk: '1' } }));
+      await kp.waitForTimeout(350);
+      const fits = async step => {
+        const m = await kp.evaluate(() => ({ doc: document.documentElement.scrollHeight, win: window.innerHeight }));
+        check('kiosk landscape: ' + label + ' does not scroll on the ' + step,
+          m.doc - m.win <= 1, m.doc + 'px of content in a ' + m.win + 'px viewport');
+      };
+      await fits('entry form');
+      // The two columns are the whole point: the code beside the form, not above it.
+      const [qr, form] = await Promise.all([
+        kp.locator('#scanPanel').boundingBox(),
+        kp.locator('#formWrap').boundingBox()
+      ]);
+      check('kiosk landscape: ' + label + ' puts the code beside the form, not above it',
+        qr.x + qr.width <= form.x + 1, JSON.stringify({ qr, form }));
+
+      await kp.fill('#fullName', 'Dana Reid');
+      await kp.fill('#phone', '2155558123');
+      await kp.fill('#email', 'dana@mail-test.co');
+      await kp.check('#consent');
+      await kp.click('#submitBtn');
+      await kp.waitForTimeout(450);
+      await fits('code step');
+      await kp.fill('#codeInput', '654321');
+      await kp.click('#codeBtn');
+      await kp.waitForTimeout(450);
+      await fits('referral step');
+      await kp.close();
+    }
+
+    // A phone held sideways is NOT an iPad: it keeps the single column, where
+    // two columns in 390px of height would be far worse.
+    const ph = await b.newPage({ viewport: { width: 844, height: 390 } });
+    await ph.goto(page({ openAt: OPEN, closeAt: CLOSE, now: OPEN + 3600000, vals: { kiosk: '1' } }));
+    await ph.waitForTimeout(300);
+    check('kiosk landscape: a short landscape screen keeps one column',
+      await ph.evaluate(() => getComputedStyle(document.querySelector('main')).display !== 'grid'));
+    await ph.close();
+  }
+
   await b.close();
   fs.rmSync(OUT, { recursive: true, force: true });
   console.log(fails ? '\n' + fails + ' FAILED' : '\nAll form tests passed.');
