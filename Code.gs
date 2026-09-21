@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-18.17';
+const TSG_CODE_VERSION = '2026-09-21.1';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -707,6 +707,10 @@ function applyDataPatch_(doc, patch) {
 
   if (patch.op === 'add_task') {
     const task = patch.task;
+    // Every task lands with the arrays the dashboard reads unguarded (2026-09-21: a task added
+    // without `subitems` could never take a subtask from the add box).
+    if (!Array.isArray(task.subitems)) task.subitems = [];
+    if (!Array.isArray(task.tags)) task.tags = [];
     // 2026-09-09 per Durand: standardize title formatting on the way in, before dedup
     // matching even runs (tsgClassifyIncoming_ already normalizes case for matching, so
     // this doesn't change match behavior either way). originalTitleForCleanup is only
@@ -2903,6 +2907,13 @@ function tsgUploadAttachment_(fields) {
 }
 // Legacy single `doc` folded into the one docs[] list on every write (2026-09-17: "one field
 // for all types of links"). The scheduler/enricher still read both while old data exists.
+/** Every task carries `subitems`, `tags`, `docs` and `history` as arrays (2026-09-21). Runs on every write. */
+function tsgNormalizeTaskShapes_(doc) {
+  (doc && doc.tasks || []).forEach(function(t) {
+    if (!t) return;
+    ['subitems', 'tags', 'docs', 'history'].forEach(function(k) { if (!Array.isArray(t[k])) t[k] = []; });
+  });
+}
 function tsgMigrateDocToDocs_(doc) {
   (doc.tasks || []).forEach(function(t) {
     if (!t) return;
@@ -6099,6 +6110,7 @@ function tsgAutoScheduleDoc_(doc) {
   tsgCompactJudgments_(doc);
   tsgMigrateAssigneeToDelegate_(doc);
   tsgMigrateDocToDocs_(doc);
+  tsgNormalizeTaskShapes_(doc);
   tsgRollupSubitemHours_(doc, new Date().toISOString());
   tsgApplyTravelTimes_(doc);
   tsgFlagAgingTasks_(doc, tsgTodayIso_());

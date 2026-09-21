@@ -1587,7 +1587,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-18.19';
+  const UI_VERSION = '2026-09-21.1';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -6759,8 +6759,14 @@
     el.style.height = 'auto';
     el.style.height = el.scrollHeight + 'px';
   }
-  function addSubitem(id) {
-    const input = document.getElementById('newsub-' + id) || document.getElementById('modalNewsub-' + id);
+  function addSubitem(id, isModal) {
+    // ROOT CAUSE of "nothing happens" on the card (Durand, 2026-09-21, on the pinned tracker
+    // task): a task that already has steps renders its BOARD add box even while the step list
+    // is collapsed, and this used to read that box first (`||`), never the card's. Read the box
+    // the submit came from; fall back to the other only when that one is not on the page.
+    const preferred = document.getElementById(isModal ? 'modalNewsub-' + id : 'newsub-' + id);
+    const other = document.getElementById(isModal ? 'newsub-' + id : 'modalNewsub-' + id);
+    const input = (preferred && preferred.value.trim()) ? preferred : ((other && other.value.trim()) ? other : preferred || other);
     if (!input) return;
     // Shift+Enter inserts a newline instead of submitting, so a short pasted or typed
     // list — one title per line — becomes one subitem per line in a single add, rather
@@ -6768,6 +6774,10 @@
     const lines = input.value.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
     if (!lines.length) return;
     const t = findTask(id);
+    if (!t) return;
+    // BUG FIX 2026-09-21 (Durand: "its not adding new subtasks"): a task created by a patch
+    // or the Routine had no `subitems` array, so this push threw and nothing was added.
+    if (!Array.isArray(t.subitems)) t.subitems = [];
     lines.forEach(function(title) {
       t.subitems.push({
         title: title, done: false, delegate: '', status: 'Not Started',
@@ -6793,7 +6803,7 @@
   // render, so this refocuses the FRESH element by id afterward rather than the one the
   // keydown actually fired on (which no longer exists in the DOM by then).
   function addSubitemAndRefocus_(id, isModal) {
-    addSubitem(id);
+    addSubitem(id, !!isModal);
     if (isModal) openTaskCard(id);
     const el = document.getElementById(isModal ? 'modalNewsub-' + id : 'newsub-' + id);
     if (el) el.focus();
@@ -7438,6 +7448,9 @@
   // in well under a second while the real fetch is still in flight; the fetch then replaces it.
   function applyLoadedDoc_(doc) {
     TASKS = doc.tasks;
+    // A task that arrived through a patch or the Routine may carry no `subitems` at all
+    // (13 live tasks did on 2026-09-21); every list here reads it as an array.
+    TASKS.forEach(function(t) { if (t && !Array.isArray(t.subitems)) t.subitems = []; if (t && !Array.isArray(t.tags)) t.tags = []; });
     tsgNormalizeTaskDates_(TASKS);
     RAW_META = doc.meta || {};
     renderJudgeChip_();

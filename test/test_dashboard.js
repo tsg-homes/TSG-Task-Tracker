@@ -1248,6 +1248,49 @@ setTimeout(async () => {
     w.document.querySelectorAll('.tsg-toast').forEach(el => el.remove());
     w.eval('RAW_META.inboxErrors = []');
   });
+  tryCall('add subtask on a task that has NO subitems array (created by a patch): the steps land and the box clears (2026-09-21 bug)', () => {
+    w.eval("TASKS.push({ id: 901, title: 'Patch-created task with no steps key', group: 'Marketing', owner: 'Durand', status: 'Not Started', priority: 'Medium', history: [] })");
+    w.renderAll();
+    // A task with no steps has no board add box (the step row only renders once steps exist), so the card is the only way in.
+    w.openTaskCard(901);
+    const box = doc.getElementById('modalNewsub-901');
+    if (!box) throw new Error('no card add box rendered for the task');
+    box.value = 'First step\nSecond step';
+    w.addSubitemAndRefocus_(901, true);
+    const t = w.findTask(901);
+    if (!Array.isArray(t.subitems) || t.subitems.length !== 2 || t.subitems[1].title !== 'Second step') throw new Error('steps not added: ' + JSON.stringify(t.subitems));
+    if (doc.getElementById('modalNewsub-901').value !== '') throw new Error('box not cleared');
+    w.closeTaskCard();
+    if (!t.history.some(h => h.field === 'subitem' && h.to === 'First step')) throw new Error('no history line');
+    w.eval('TASKS = TASKS.filter(x => x.id !== 901)'); w.renderAll();
+  });
+  tryCall('add subtask from the CARD of a task that already has steps (board box also on the page): the card box is read (2026-09-21 bug on the pinned task)', () => {
+    const t = w.findTask(1);
+    const before = t.subitems.length;
+    w.eval('expandedSubtasks.delete(1)'); w.renderAll();
+    if (!doc.getElementById('newsub-1')) throw new Error('board add box expected to be rendered (hidden) for a task with steps');
+    w.openTaskCard(1);
+    const cardBox = doc.getElementById('modalNewsub-1');
+    if (!cardBox) throw new Error('card add box missing');
+    cardBox.value = 'Step typed in the card';
+    w.addSubitemAndRefocus_(1, true);
+    const t2 = w.findTask(1);
+    if (t2.subitems.length !== before + 1 || t2.subitems[t2.subitems.length - 1].title !== 'Step typed in the card') throw new Error('card add did not land: ' + t2.subitems.length + ' steps');
+    // and the board box still works on its own
+    w.closeTaskCard(); w.renderAll();
+    doc.getElementById('newsub-1').value = 'Step typed on the board';
+    w.addSubitemAndRefocus_(1, false);
+    if (w.findTask(1).subitems.length !== before + 2) throw new Error('board add did not land');
+    w.findTask(1).subitems.splice(before); w.renderAll();
+  });
+  tryCall('applyLoadedDoc_ gives every task a subitems and tags array', () => {
+    const before = w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })');
+    const d2 = w.cloneJson_(before); d2.tasks.push({ id: 902, title: 'Stepless', group: 'Marketing', owner: 'Durand', status: 'Not Started', priority: 'Low', history: [] });
+    w.applyLoadedDoc_(d2);
+    const t = w.findTask(902);
+    if (!t || !Array.isArray(t.subitems) || !Array.isArray(t.tags)) throw new Error('not normalized: ' + JSON.stringify(t));
+    w.applyLoadedDoc_(before);
+  });
   tryCall('judge-now chip: hidden with an empty queue, counts pending judgments, prompt names the ids and the data file', () => {
     w.eval('RAW_META.judgments = []'); w.renderJudgeChip_();
     if (doc.getElementById('judgeChip').style.display !== 'none') throw new Error('chip shown with nothing queued');

@@ -172,6 +172,7 @@ function freshDoc() {
 
 function section(name) { console.log('\n=== ' + name + ' ==='); }
 let FAILS = 0;
+function futureLocal_(days, hm) { const x = new Date(Date.now() + days * 86400000); const p = n => String(n).padStart(2, '0'); return x.getFullYear() + '-' + p(x.getMonth() + 1) + '-' + p(x.getDate()) + 'T' + hm; }
 function check(label, cond) { console.log((cond ? 'PASS' : 'FAIL') + ' - ' + label); if (!cond) FAILS++; }
 
 // --- Test 1: tsgCleanTitle_ mechanical cleanup ---
@@ -659,6 +660,8 @@ section('Task location and round-trip travel (2026-09-16)');
 
 section('Judgment queue: no API key (2026-09-16, method 2)');
 {
+  // The fixtures answer fixed 2026-09 dates; once the calendar passes them the live floor would move them (seen 2026-09-21).
+  var savedFloorJQ = sandbox.tsgEarliestDueIso_; sandbox.tsgEarliestDueIso_ = () => '2026-09-01'; // var: restored after the block
   apiKeyPresent = false;
   claudeRequests = [];
   claudeResponder = () => { throw new Error('no Claude call may happen without a key'); };
@@ -731,6 +734,8 @@ section('Judgment queue: no API key (2026-09-16, method 2)');
   driveFilesFixture = [];
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
+
+sandbox.tsgEarliestDueIso_ = savedFloorJQ;
 
 section('Version indicator (?api=version + footer stamp)');
 {
@@ -1617,15 +1622,16 @@ section('Reminders and due time (2026-09-17)');
 {
   const props = {};
   const origProps3 = sandbox.PropertiesService.getScriptProperties;
+  const RM1 = futureLocal_(30, '10:15'), RM2 = futureLocal_(29, '08:00'); // always ahead of the clock
   sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (props[k] == null ? null : props[k]), setProperty: (k, v) => { props[k] = v; } });
   const d = freshDoc();
-  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { dueTime: '10:30', remindAt: '2026-09-20T10:15' }, source: 'Durand', ts: '2026-09-17T12:00:00Z' });
-  check('dueTime and remindAt are logged task fields', d.tasks[0].dueTime === '10:30' && d.tasks[0].history.some(h => h.field === 'remindAt' && h.to === '2026-09-20T10:15'));
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { dueTime: '10:30', remindAt: RM1 }, source: 'Durand', ts: '2026-09-17T12:00:00Z' });
+  check('dueTime and remindAt are logged task fields', d.tasks[0].dueTime === '10:30' && d.tasks[0].history.some(h => h.field === 'remindAt' && h.to === RM1));
   sandbox.tsgAutoScheduleDoc_(d);
-  check('every write indexes the earliest pending reminder into the script property', props.TSG_NEXT_REMINDER === new Date('2026-09-20T10:15:00').toISOString());
-  d.tasks[0].subitems = [{ title: 'Step one', done: false, status: 'Not Started', remindAt: '2026-09-19T08:00', notes: '' }];
+  check('every write indexes the earliest pending reminder into the script property', props.TSG_NEXT_REMINDER === new Date(RM1 + ':00').toISOString());
+  d.tasks[0].subitems = [{ title: 'Step one', done: false, status: 'Not Started', remindAt: RM2, notes: '' }];
   sandbox.tsgAutoScheduleDoc_(d);
-  check('a subtask reminder earlier than the task\'s becomes the next one', props.TSG_NEXT_REMINDER === new Date('2026-09-19T08:00:00').toISOString());
+  check('a subtask reminder earlier than the task\'s becomes the next one', props.TSG_NEXT_REMINDER === new Date(RM2 + ':00').toISOString());
   check('the tick does nothing before the reminder is due', sandbox.tsgReminderTick_().fired === 0);
   // Fire: reminder in the past, data file readable
   d.tasks[0].subitems[0].remindAt = '2020-01-01T08:00';
@@ -2001,11 +2007,11 @@ section('Steps share a day; a hand-set parent date is flagged, never moved (2026
   check('...and the parent rolls up to that one day', d.tasks[0].timelineEnd === ends[0]);
   // Durand's own steps share a day while capacity remains, then spill over.
   d = { meta: { docVersion: 1 }, tasks: [{ id: 10, title: 'Own work', owner: 'Durand', status: 'Not Started', priority: 'Medium', tags: [], history: [], timelineEnd: '',
-    subitems: [{ title: 'a', done: false, estHours: 1, delegate: 'Durand', timelineEnd: '' }, { title: 'b', done: false, estHours: 1, delegate: 'Durand', timelineEnd: '' }, { title: 'c', done: false, estHours: 2.5, delegate: 'Durand', timelineEnd: '' }] }] };
+    subitems: [{ title: 'a', done: false, estHours: 1, delegate: 'Durand', timelineEnd: '' }, { title: 'b', done: false, estHours: 1, delegate: 'Durand', timelineEnd: '' }, { title: 'c', done: false, estHours: 4.5, delegate: 'Durand', timelineEnd: '' }] }] };
   sandbox.tsgAutoScheduleDoc_(d);
   const [a, b, c] = d.tasks[0].subitems;
   check('two 1 h steps of his own share the first day', a.timelineEnd && a.timelineEnd === b.timelineEnd);
-  check('a 2.5 h Medium step that no longer fits that day moves on (capacity-aware, not day-per-step)', c.timelineEnd > b.timelineEnd);
+  check('a 4.5 h Medium step that no longer fits that day moves on (capacity-aware, not day-per-step)', c.timelineEnd > b.timelineEnd);
   // A hand-set due date stays put when the steps run past it; the task is flagged At Risk instead.
   d = { meta: { docVersion: 1 }, tasks: [{ id: 20, title: 'Deadline task', status: 'In Progress', priority: 'High', estHours: 0, timelineEnd: '2026-09-18', dueOverride: true, tags: [], history: [],
     subitems: [{ title: 'late step', done: false, estHours: 0.5, timelineEnd: '2026-09-24' }] }] };
@@ -2160,4 +2166,17 @@ section('Write amplification: slim judgments, coalesced step requests, history r
     sandbox.LockService.getScriptLock = origLock; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.DriveApp.getFileById = origGetFileById;
     sentMail = []; cacheStore = {};
   }
+}
+
+section('Every task carries a subitems array: add_task and every write normalise it (2026-09-21)');
+{
+  const doc = freshDoc();
+  sandbox.applyDataPatch_(doc, { op: 'add_task', skipEnrich: true, skipDedup: true, source: 'Claude (session)', ts: '2026-09-21T18:00:00Z', task: { title: 'Task With No Steps Key', owner: 'Durand', group: 'Marketing', status: 'Not Started', priority: 'Low', notes: 'x' } });
+  const t = doc.tasks.find(x => x.title === 'Task With No Steps Key');
+  check('add_task lands subitems and tags as arrays when the patch carried neither', !!t && Array.isArray(t.subitems) && Array.isArray(t.tags));
+  const doc2 = freshDoc();
+  doc2.tasks.push({ id: 77, title: 'Old stepless task', owner: 'Durand', status: 'Not Started', priority: 'Low', group: 'Ops' });
+  sandbox.tsgAutoScheduleDoc_(doc2);
+  const u = doc2.tasks.find(x => x.id === 77);
+  check('a task already on the board without subitems/tags/docs/history gets them on the next write', Array.isArray(u.subitems) && Array.isArray(u.tags) && Array.isArray(u.docs) && Array.isArray(u.history));
 }
