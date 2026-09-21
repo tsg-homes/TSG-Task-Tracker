@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-21.1';
+const TSG_CODE_VERSION = '2026-09-21.2';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -2840,13 +2840,13 @@ function tsgMeetingSlots_(guestEmail, startStr, endStr, minutes, excludeBlocks) 
   // Errand / break blocks of the day template (the Today view's fixed blocks: errands 10:00,
   // lunch 12:00, relief 14:00) are treated as busy unless the caller opts in to them —
   // 2026-09-17 per Durand: "exclude errands and break blocks by default".
-  var blocks = excludeBlocks ? TSG_DAY_BLOCKS : [];
   function scan(win) {
     var out = [];
     for (var d = startIso; d <= endIso && out.length < 10; d = tsgAddDays_(d, 1)) {
       var dow = new Date(d + 'T12:00:00').getDay();
       var hours = win[dow];
       if (!hours) continue;
+      var blocks = excludeBlocks ? tsgDayBlocks_(d) : [];   // no errand/lunch/relief on a Friday
       var perDay = 0;
       for (var hm = hours[0]; hm + dur <= hours[1] && perDay < 2; hm += 30) {
         if (blocks.some(function(b) { return hm < b[1] && hm + dur > b[0]; })) continue;
@@ -5362,11 +5362,17 @@ function tsgIsoDate_(d) { return Utilities.formatDate(d, Session.getScriptTimeZo
 // The earliest day a due date can honestly land on, in the script's time zone: today while the
 // workday (ends TSG_DAY_END_HM) is still running, otherwise the next workday.
 var TSG_DAY_END_HM = '16:30';
+// Friday is a 10:00-14:00 day (Durand, 2026-09-21: "friday work hours are 10-2"; capacity stays
+// TSG_FRIDAY_CAPACITY). The window, not the capacity, is what these helpers answer.
+var TSG_FRIDAY_END_HM = '14:00';
+function tsgDayEndHm_(iso) { return tsgIsoDayOfWeek_(iso) === 5 ? TSG_FRIDAY_END_HM : TSG_DAY_END_HM; }
+/** The day template's fixed blocks for a date: none on a Friday, whose whole 10-2 window is work. */
+function tsgDayBlocks_(iso) { return tsgIsoDayOfWeek_(iso) === 5 ? [] : TSG_DAY_BLOCKS; }
 function tsgEarliestDueIso_(now) {
   var d = now || new Date();
   var iso = tsgIsoDate_(d);
   var hm = Utilities.formatDate(d, Session.getScriptTimeZone(), 'HH:mm');
-  if (hm >= TSG_DAY_END_HM || !tsgIsWorkdayIso_(iso)) { iso = tsgAddDays_(iso, 1); var guard = 0; while (!tsgIsWorkdayIso_(iso) && guard++ < 7) iso = tsgAddDays_(iso, 1); }
+  if (hm >= tsgDayEndHm_(iso) || !tsgIsWorkdayIso_(iso)) { iso = tsgAddDays_(iso, 1); var guard = 0; while (!tsgIsWorkdayIso_(iso) && guard++ < 7) iso = tsgAddDays_(iso, 1); }
   return iso;
 }
 

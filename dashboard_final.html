@@ -1587,7 +1587,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-21.1';
+  const UI_VERSION = '2026-09-21.2';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -4323,6 +4323,15 @@
   const TODAY_DAY_START = '07:00';
   const TODAY_DAY_END = '16:30';
   const TODAY_ADMIN_MIN = 30;
+  // Friday is a 10:00-14:00 day (Durand, 2026-09-21: "friday work hours are 10-2 but capacity
+  // doesn't change", i.e. dayCapacity stays 4 h). The whole window is work: no errand, lunch or
+  // relief block, and 15-minute admin bookends instead of 30.
+  const FRIDAY_DAY_START = '10:00', FRIDAY_DAY_END = '14:00', FRIDAY_ADMIN_MIN = 15;
+  function todayWindow_(dateISO) {
+    const fri = new Date((dateISO || todayISO()) + 'T12:00:00').getDay() === 5;
+    return fri ? { start: hmToMin(FRIDAY_DAY_START), end: hmToMin(FRIDAY_DAY_END), adminMin: FRIDAY_ADMIN_MIN, friday: true }
+               : { start: hmToMin(TODAY_DAY_START), end: hmToMin(TODAY_DAY_END), adminMin: TODAY_ADMIN_MIN, friday: false };
+  }
   const TODAY_LUNCH_MIN = 60;
   const TODAY_BREAK_MIN = 10;
   const TODAY_RELIEF_MIN = 20;
@@ -4589,8 +4598,9 @@
     const pmExtra = eodSplit ? 0 : Math.max(0, eodLoad - REVIEW_FREE_MIN);
     const amItems = statics.concat(capped(sodDynamic.concat(sodSplit ? [] : sodReview)));
     const pmItems = statics.concat(capped(eodDynamic.concat(eodSplit ? [] : eodReview)));
-    const amStart = hmToMin(TODAY_DAY_START), pmEnd = hmToMin(TODAY_DAY_END);
-    const amEnd = amStart + TODAY_ADMIN_MIN + amExtra, pmStart = pmEnd - TODAY_ADMIN_MIN - pmExtra;
+    const W = todayWindow_(today);
+    const amStart = W.start, pmEnd = W.end;
+    const amEnd = amStart + W.adminMin + amExtra, pmStart = pmEnd - W.adminMin - pmExtra;
     fixed.push({ kind: 'admin', title: 'Morning Admin', start: amStart, end: amEnd, items: amItems, reviewMin: sodLoad });
     if (sodSplit) fixed.push({ kind: 'review', title: 'Review delegated work', start: amEnd, end: amEnd + sodLoad, items: sodReview, reviewMin: sodLoad });
     if (eodSplit) fixed.push({ kind: 'review', title: 'Review delegated work', start: pmStart - eodLoad, end: pmStart, items: eodReview, reviewMin: eodLoad });
@@ -4624,6 +4634,7 @@
       .filter(ev => ev.end > ev.start);
     fixed.push.apply(fixed, events);
     const overlaps = function(s, e) { return fixed.some(f => s < f.end && e > f.start); };
+    if (W.friday) { fixed.sort((a, b) => a.start - b.start); return fixed; }   // a Friday has no errand, lunch or relief block
 
     // Personal errands: targets ~10:00 AM by default, using the same shift-avoidance
     // pattern as Lunch below (try earlier in 15-min steps, then later). Computed before
@@ -4636,10 +4647,10 @@
     if (overlaps(errandStart, errandStart + errandMin)) {
       let efound = false;
       for (let delta = 15; delta <= 150 && !efound; delta += 15) {
-        if (errandStart - delta >= hmToMin(TODAY_DAY_START) + TODAY_ADMIN_MIN && !overlaps(errandStart - delta, errandStart - delta + errandMin)) {
+        if (errandStart - delta >= W.start + W.adminMin && !overlaps(errandStart - delta, errandStart - delta + errandMin)) {
           errandStart = errandStart - delta; efound = true; break;
         }
-        if (errandStart + delta + errandMin <= hmToMin(TODAY_DAY_END) - TODAY_ADMIN_MIN && !overlaps(errandStart + delta, errandStart + delta + errandMin)) {
+        if (errandStart + delta + errandMin <= W.end - W.adminMin && !overlaps(errandStart + delta, errandStart + delta + errandMin)) {
           errandStart = errandStart + delta; efound = true; break;
         }
       }
@@ -4651,10 +4662,10 @@
     if (overlaps(lunchStart, lunchStart + TODAY_LUNCH_MIN)) {
       let found = false;
       for (let delta = 15; delta <= 150 && !found; delta += 15) {
-        if (lunchStart - delta >= hmToMin(TODAY_DAY_START) + TODAY_ADMIN_MIN && !overlaps(lunchStart - delta, lunchStart - delta + TODAY_LUNCH_MIN)) {
+        if (lunchStart - delta >= W.start + W.adminMin && !overlaps(lunchStart - delta, lunchStart - delta + TODAY_LUNCH_MIN)) {
           lunchStart = lunchStart - delta; found = true; break;
         }
-        if (lunchStart + delta + TODAY_LUNCH_MIN <= hmToMin(TODAY_DAY_END) - TODAY_ADMIN_MIN && !overlaps(lunchStart + delta, lunchStart + delta + TODAY_LUNCH_MIN)) {
+        if (lunchStart + delta + TODAY_LUNCH_MIN <= W.end - W.adminMin && !overlaps(lunchStart + delta, lunchStart + delta + TODAY_LUNCH_MIN)) {
           lunchStart = lunchStart + delta; found = true; break;
         }
       }
@@ -4671,8 +4682,8 @@
     const lunchShift = lunchStart - 12 * 60;
     let breakWinStart = hmToMin('14:00') + lunchShift;
     let breakWinEnd = hmToMin('15:00') + lunchShift;
-    const dayEndLimit = hmToMin(TODAY_DAY_END) - TODAY_ADMIN_MIN;
-    const dayStartLimit = hmToMin(TODAY_DAY_START) + TODAY_ADMIN_MIN;
+    const dayEndLimit = W.end - W.adminMin;
+    const dayStartLimit = W.start + W.adminMin;
     if (breakWinEnd > dayEndLimit) {
       const over = breakWinEnd - dayEndLimit;
       breakWinEnd -= over; breakWinStart -= over;
@@ -4694,8 +4705,9 @@
     fixed.sort((a, b) => a.start - b.start);
     return fixed;
   }
-  function buildTodayGaps(fixed) {
-    const dayStart = hmToMin(TODAY_DAY_START), dayEnd = hmToMin(TODAY_DAY_END);
+  function buildTodayGaps(fixed, dateISO) {
+    const W = todayWindow_(dateISO);
+    const dayStart = W.start, dayEnd = W.end;
     const gaps = [];
     let cursor = dayStart;
     fixed.forEach(f => {
@@ -4708,7 +4720,7 @@
   function buildTodayAgenda(dateISO) {
     const today = dateISO || todayISO();
     const fixed = buildTodayFixed(today);
-    const gaps = buildTodayGaps(fixed);
+    const gaps = buildTodayGaps(fixed, today);
     const candidates = getTodayCandidates(today);
     const queue = buildTodayGroupBlocks(candidates);
     const filler = [];
@@ -4731,7 +4743,7 @@
     // filler). Slivers under 15 min are rounding noise between back-to-back blocks, not
     // a usable gap, so they're dropped rather than shown.
     const MIN_VISIBLE_GAP = 15;
-    const openGaps = buildTodayGaps(scheduled)
+    const openGaps = buildTodayGaps(scheduled, today)
       .filter(g => g.end - g.start >= MIN_VISIBLE_GAP)
       .map(g => ({ kind: 'gap', title: 'Open', start: g.start, end: g.end }));
     const schedule = scheduled.concat(openGaps).sort((a, b) => a.start - b.start);
