@@ -25,7 +25,7 @@ const fakeData = {
           title: '@Claude - get the phone number', done: true, delegate: 'Claude', status: 'Done',
           priority: 'Medium', tags: ['Claude'], timelineEnd: '2026-09-10', progress: 100,
           depends: '', doc: '', notes: 'Found it.', estHours: 0.25, estDays: null, estSource: 'none',
-          taskType: 'Actionable Task', docs: [],
+          taskType: 'Hands-on', docs: [],
           history: [
             { ts: '2026-09-09T17:22:00Z', field: 'created', from: null, to: null, source: 'Claude' },
             { ts: '2026-09-09T18:00:00Z', field: 'status', from: 'In Progress', to: 'Done', source: 'Claude' },
@@ -417,7 +417,7 @@ setTimeout(async () => {
   tryCall("an Errands-group task due today is placed inside the Errands block, not as its own work block, and grows the block", () => {
     const today = w.todayISO();
     const T = w.eval('TASKS');
-    T.push({ id: 910, title: 'Drop off the lockbox', owner: 'Durand', status: 'Not Started', priority: 'Medium', group: 'Errands', tags: [], taskType: 'Actionable Task',
+    T.push({ id: 910, title: 'Drop off the lockbox', owner: 'Durand', status: 'Not Started', priority: 'Medium', group: 'Errands', tags: [], taskType: 'Hands-on',
       timelineEnd: today, progress: 0, depends: '', doc: '', docs: [], notes: '', estHours: 0.5, estDays: 1, estSource: 'claude', location: '45 Baltimore Pike', travelMin: 30, history: [], subitems: [] });
     const agenda = w.buildTodayAgenda(today);
     const errand = agenda.schedule.find(i => i.kind === 'errand');
@@ -518,7 +518,7 @@ setTimeout(async () => {
     } catch (e) { console.log('FAIL - travel mode ->', e.message); FAILS++; }
     try {
       const T = w.eval('TASKS');
-      T.push({ id: 912, title: 'Drop off the keys', owner: 'Durand', status: 'Not Started', priority: 'Medium', group: 'Errands', tags: [], taskType: 'Actionable Task', timelineEnd: w.todayISO(), progress: 0, depends: '', doc: '', docs: [], notes: '', estHours: 0.5, estDays: 1, estSource: 'claude', location: 'x', travelMin: 30, travelOneWayMin: 15, travelMode: 'oneway', history: [], subitems: [] });
+      T.push({ id: 912, title: 'Drop off the keys', owner: 'Durand', status: 'Not Started', priority: 'Medium', group: 'Errands', tags: [], taskType: 'Hands-on', timelineEnd: w.todayISO(), progress: 0, depends: '', doc: '', docs: [], notes: '', estHours: 0.5, estDays: 1, estSource: 'claude', location: 'x', travelMin: 30, travelOneWayMin: 15, travelMode: 'oneway', history: [], subitems: [] });
       const it = w.getTodayErrandItems(w.todayISO()).find(c => c.task.id === 912);
       if (!it || it.minutes !== 45 || it.travelMin !== 15) throw new Error('errand minutes should be 30 + 15 one-way, got ' + (it && it.minutes));
       for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 912) T.splice(i, 1);
@@ -1003,8 +1003,8 @@ setTimeout(async () => {
     const today = w.todayISO();
     const a = w.findTask(1), b = w.findTask(2);
     const prevTypes = [a.taskType, b.taskType], prevDel = [a.delegate, b.delegate];
-    a.timelineEnd = today; a.status = 'In Progress'; a.estHours = 1; delete a.dueTime; delete a.dueTimeAuto; a.subitems = []; a.taskType = 'Actionable Task'; a.owner = 'Durand'; delete a.delegate;
-    b.timelineEnd = today; b.status = 'Not Started'; b.estHours = 0.5; b.dueTime = '15:45'; delete b.dueTimeAuto; b.subitems = b.subitems || []; b.taskType = 'Actionable Task'; b.owner = 'Durand'; delete b.delegate;
+    a.timelineEnd = today; a.status = 'In Progress'; a.estHours = 1; delete a.dueTime; delete a.dueTimeAuto; a.subitems = []; a.taskType = 'Hands-on'; a.owner = 'Durand'; delete a.delegate;
+    b.timelineEnd = today; b.status = 'Not Started'; b.estHours = 0.5; b.dueTime = '15:45'; delete b.dueTimeAuto; b.subitems = b.subitems || []; b.taskType = 'Hands-on'; b.owner = 'Durand'; delete b.delegate;
     w.eval("todayViewDate = todayISO(); todayGranularity = 'day'");
     w.setView('today');
     if (!/^\d\d:\d\d$/.test(a.dueTime || '')) throw new Error('scheduler did not set dueTime: ' + a.dueTime);
@@ -1425,6 +1425,16 @@ setTimeout(async () => {
     const f2 = w.newTaskFieldsFromModal_();
     if (f2.needsApproval) throw new Error('undelegated new task must not require approval');
     w.eval('NT_BUSY = false'); w.closeNewTaskModal();
+  });
+  tryCall('applyLoadedDoc_ maps the old type name Actionable Task to Hands-on on tasks and steps (2026-09-21)', () => {
+    const before = w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })');
+    const d2 = w.cloneJson_(before); d2.tasks.push({ id: 904, title: 'Old type', group: 'Marketing', owner: 'Durand', status: 'Not Started', priority: 'Low', history: [], tags: [], taskType: 'Actionable Task', subitems: [{ title: 'S', done: false, status: 'Not Started', taskType: 'Actionable Task', notes: '' }] });
+    w.applyLoadedDoc_(d2);
+    const t = w.findTask(904);
+    if (t.taskType !== 'Hands-on' || t.subitems[0].taskType !== 'Hands-on') throw new Error('not mapped: ' + t.taskType + ' / ' + t.subitems[0].taskType);
+    const tt = w.eval('TASK_TYPES'); if (tt.indexOf('Hands-on') === -1 || tt.indexOf('Actionable Task') !== -1) throw new Error('TASK_TYPES: ' + tt.join(','));
+    if (w.typeBadgeClass('Hands-on') !== 'type-hands-on') throw new Error('badge class: ' + w.typeBadgeClass('Hands-on'));
+    w.applyLoadedDoc_(before);
   });
   tryCall('applyLoadedDoc_ gives every task a subitems and tags array', () => {
     const before = w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })');

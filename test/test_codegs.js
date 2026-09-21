@@ -161,7 +161,7 @@ function freshDoc() {
     meta: { version: 1, docVersion: 1, next_id: 200 },
     tasks: [
       { id: 1, title: 'Confirm Vendor Invoice For Photography', owner: 'Durand', status: 'In Progress',
-        priority: 'High', group: 'Books & Finance', tags: [], taskType: 'Actionable Task',
+        priority: 'High', group: 'Books & Finance', tags: [], taskType: 'Hands-on',
         timelineEnd: '2026-09-20', progress: 0, depends: '', doc: '', notes: 'existing notes',
         estHours: 2, estDays: 1, estSource: 'claude', history: [{ ts: '2026-09-01T00:00:00Z', field: 'created', from: null, to: null }],
         subitems: []
@@ -212,7 +212,7 @@ section('Batch-aware depends resolution');
     }
     need.forEach(f => { if (!(f in out)) {
       if (f === 'estHours') out.estHours = 1;
-      else if (f === 'taskType') out.taskType = 'Actionable Task';
+      else if (f === 'taskType') out.taskType = 'Hands-on';
       else if (f === 'subitems') out.subitems = [];
       else if (f === 'priority') out.priority = 'Medium';
       else if (f === 'group') out.group = 'Deals & Closings';
@@ -243,7 +243,7 @@ section('Priority/group Triage fallback, no flat silent default');
     const out = { rationale: 'test', priority: null, group: null }; // estimator itself can't tell
     need.forEach(f => { if (!(f in out)) {
       if (f === 'estHours') out.estHours = 1;
-      else if (f === 'taskType') out.taskType = 'Actionable Task';
+      else if (f === 'taskType') out.taskType = 'Hands-on';
       else if (f === 'subitems') out.subitems = [];
       else if (f === 'dependsOnTitle') out.dependsOnTitle = null;
       else if (f === 'tags') out.tags = [];
@@ -267,7 +267,7 @@ section('Tags inference');
     const out = { rationale: 'test' };
     need.forEach(f => {
       if (f === 'estHours') out.estHours = 1;
-      else if (f === 'taskType') out.taskType = 'Actionable Task';
+      else if (f === 'taskType') out.taskType = 'Hands-on';
       else if (f === 'subitems') out.subitems = [];
       else if (f === 'priority') out.priority = 'Medium';
       else if (f === 'group') out.group = 'Marketing';
@@ -295,7 +295,7 @@ section('update_task generic diffing + real subitem history');
       status: 'Done', priority: 'Critical', notes: 'Paid.',
       subitems: [{ title: 'Get W9 from vendor', done: true, delegate: 'Erika', status: 'Done',
         priority: 'Medium', tags: [], timelineEnd: '2026-09-10', progress: 100, depends: '',
-        doc: '', notes: '', estHours: 0.25, estDays: null, estSource: 'none', taskType: 'Actionable Task' }]
+        doc: '', notes: '', estHours: 0.25, estDays: null, estSource: 'none', taskType: 'Hands-on' }]
     }
   };
   sandbox.applyDataPatch_(doc, patch);
@@ -340,7 +340,7 @@ let lastDriveMatchUser = '';   // captures the actual prompt sent, so tests can 
     else if (typeof driveMatchResponse === 'string') { /* zero candidates: the field must not even be requested */ }
     need.forEach(f => {
       if (f === 'estHours') out.estHours = 1;
-      else if (f === 'taskType') out.taskType = 'Actionable Task';
+      else if (f === 'taskType') out.taskType = 'Hands-on';
       else if (f === 'subitems') out.subitems = [];
       else if (f === 'priority') out.priority = 'Medium';
       else if (f === 'group') out.group = 'Deals & Closings';
@@ -536,7 +536,7 @@ section('Claude call plumbing (2026-09-16 efficiency pass)');
   check('a progress-only read carries no board-context block', req.messages[0].content.length === 1);
 
   claudeRequests = [];
-  claudeResponder = () => ({ estHours: 1, taskType: 'Actionable Task', subitems: [], priority: 'Medium', group: 'Ops', dependsOnTitle: null, tags: [], needsConfirmation: false, rationale: 'r' });
+  claudeResponder = () => ({ estHours: 1, taskType: 'Hands-on', subitems: [], priority: 'Medium', group: 'Ops', dependsOnTitle: null, tags: [], needsConfirmation: false, rationale: 'r' });
   est = sandbox.tsgEstimateTask_('Plan the mailer', 'n', 'Medium', ['estHours', 'taskType', 'subitems', 'priority', 'group', 'dependsOnTitle', 'tags'], { groups: ['Ops'], openTitles: ['Other task'], existingTags: ['Mailers'], batchSiblings: ['Sibling task'] });
   req = claudeRequests[0];
   check('the full estimator keeps the default effort', !req.output_config.effort && req.output_config.format.schema.required.includes('needsConfirmation'));
@@ -544,7 +544,7 @@ section('Claude call plumbing (2026-09-16 efficiency pass)');
 
   // A bulk push: the board-context block is byte-identical across siblings (that is what makes it a cache hit).
   claudeRequests = [];
-  claudeResponder = (system, user) => ({ estHours: 1, taskType: 'Actionable Task', subitems: [], priority: 'Medium', group: 'Ops', dependsOnTitle: null, tags: [], needsConfirmation: false, progress: 0, rationale: 'r' });
+  claudeResponder = (system, user) => ({ estHours: 1, taskType: 'Hands-on', subitems: [], priority: 'Medium', group: 'Ops', dependsOnTitle: null, tags: [], needsConfirmation: false, progress: 0, rationale: 'r' });
   const bulkDoc = { meta: { next_id: 900 }, tasks: [ { id: 1, title: 'Existing open task', group: 'Ops', status: 'Not Started', tags: ['Mailers'], history: [] } ] };
   sandbox.applyDataPatch_(bulkDoc, { op: 'bulk', ts: '2026-09-16T10:00:00Z', source: 'Claude', ops: [
     { op: 'add_task', task: { title: 'Bulk task one alpha' }, skipDedup: true },
@@ -606,7 +606,7 @@ section('Claude call plumbing (2026-09-16 efficiency pass)');
 
 section('Task location and round-trip travel (2026-09-16)');
 {
-  claudeResponder = () => ({ estHours: 1, taskType: 'Actionable Task', subitems: [], priority: 'Medium', group: 'Errands', dependsOnTitle: null, tags: [], needsConfirmation: false, progress: 0, rationale: 'r' });
+  claudeResponder = () => ({ estHours: 1, taskType: 'Hands-on', subitems: [], priority: 'Medium', group: 'Errands', dependsOnTitle: null, tags: [], needsConfirmation: false, progress: 0, rationale: 'r' });
   cacheStore = {}; mapsCalls = 0;
   // Travel is computed in the scheduler pass that processInbox_ runs after every patch.
   const write = (dd, patch) => { sandbox.applyDataPatch_(dd, patch); sandbox.tsgAutoScheduleDoc_(dd); };
@@ -700,13 +700,13 @@ section('Judgment queue: no API key (2026-09-16, method 2)');
   write(d, { op: 'update_task', id: 2, fields: { notes: 'first thought' }, source: 'Durand' });
   const e2 = d.meta.judgments.find(r => r.taskId === 2);
   d.tasks.find(x => x.id === 2).notes = 'edited again by hand';
-  write(d, { op: 'judgment', id: e2.id, source: 'Claude (queue)', answer: { title: 'Parent with steps', notes: 'Current state: polished.', tags: ['Ops'], estHours: 1, taskType: 'Actionable Task', priority: 'Medium', group: 'Ops', subitems: [], dependsOnTitle: null, location: null, due: null, needsConfirmation: false, rationale: 'r' } });
+  write(d, { op: 'judgment', id: e2.id, source: 'Claude (queue)', answer: { title: 'Parent with steps', notes: 'Current state: polished.', tags: ['Ops'], estHours: 1, taskType: 'Hands-on', priority: 'Medium', group: 'Ops', subitems: [], dependsOnTitle: null, location: null, due: null, needsConfirmation: false, rationale: 'r' } });
   check('an answer whose notes were edited meanwhile keeps the hand edit and still applies the rest', d.tasks.find(x => x.id === 2).notes === 'edited again by hand' && d.tasks.find(x => x.id === 2).tags.includes('Ops') && d.tasks.find(x => x.id === 2).estHours === 1);
   // subitems keep the progress read
   write(d, { op: 'update_subitem', id: 2, index: 0, expectTitle: 'step a', fields: { notes: 'started drafting' }, source: 'Durand' });
   const sreq = d.meta.judgments.find(r => r.kind === 'enrich' && r.taskId === 2 && r.subIdx === 0);
   check('a subtask notes change queues a full enrich request of its own (title, notes, estimate, tags, progress, location, due; no steps or group), with its title as a guard', !!sreq && sreq.subTitle === 'step a' && ['title', 'notes', 'estHours', 'tags', 'progress', 'location', 'due'].every(f => sreq.need.includes(f)) && !sreq.need.includes('subitems') && !sreq.need.includes('group') && sreq.current.subtask === true);
-  write(d, { op: 'judgment', id: sreq.id, source: 'Claude (queue)', answer: { title: 'Draft step A', notes: 'Current state: drafting.', estHours: 0.5, taskType: 'Actionable Task', priority: 'Medium', tags: ['Drafts'], progress: 30, location: '45 Baltimore Pike, Media PA', due: '2026-09-20', driveMatch: null, meetingMatch: null, needsConfirmation: false, rationale: 'r' } });
+  write(d, { op: 'judgment', id: sreq.id, source: 'Claude (queue)', answer: { title: 'Draft step A', notes: 'Current state: drafting.', estHours: 0.5, taskType: 'Hands-on', priority: 'Medium', tags: ['Drafts'], progress: 30, location: '45 Baltimore Pike, Media PA', due: '2026-09-20', driveMatch: null, meetingMatch: null, needsConfirmation: false, rationale: 'r' } });
   const sub0 = d.tasks.find(x => x.id === 2).subitems[0];
   check('the subtask answer polishes its title and notes and fills its estimate, tags, location and due', sub0.title === 'Draft step A' && sub0.notes === 'Current state: drafting.' && sub0.estHours === 0.5 && sub0.tags.includes('Drafts') && sub0.location === '45 Baltimore Pike, Media PA' && sub0.timelineEnd === '2026-09-20' && !sub0.subitems);
   check('a subtask notes change queues a progress read and the answer lands with a history line', d.tasks.find(x => x.id === 2).subitems[0].progress === 30 && d.tasks.find(x => x.id === 2).subitems[0].history.some(h => h.field === 'progress' && h.to === 30));
@@ -1106,7 +1106,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
       { id: 2, title: 'Assigned to Marj', owner: 'Durand', delegate: 'Marj', status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '2026-09-25', notes: '', history: [], subitems: [] },
       { id: 3, title: "Marj's own task", owner: 'Marj', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'mine', history: [], subitems: [] },
       { id: 4, title: 'Nothing to do with Marj', owner: 'Durand', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'secret', history: [], subitems: [] },
-      { id: 5, title: 'Marj task with steps', owner: 'Marj', delegate: 'Marj', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'n', tags: ['Self-created', 'Flyers'], taskType: 'Actionable Task', estHours: 3, history: [], subitems: [
+      { id: 5, title: 'Marj task with steps', owner: 'Marj', delegate: 'Marj', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'n', tags: ['Self-created', 'Flyers'], taskType: 'Hands-on', estHours: 3, history: [], subitems: [
         { title: 'step one', delegate: 'Marj', done: true, status: 'Done', progress: 100, timelineEnd: '', notes: '' },
         { title: 'step two', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, timelineEnd: '', notes: '' } ] }
     ] };
@@ -1123,7 +1123,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   check('delegated subitem: parent title, status/notes only, not parentOwn', sub.parentTitle === 'Durand task with Marj sub' && sub.editable.join() === 'status,notes' && sub.index === 0 && sub.parentOwn === false);
   check('a task with subitems reports progress as the done ratio and its counts', stepped.progress === 50 && stepped.subDone === 1 && stepped.subTotal === 2);
   check("a subitem of her own task is flagged parentOwn so the page nests it", rows.some(r => r.kind === 'sub' && r.id === 5 && r.parentOwn === true && r.done === true));
-  check('task rows carry owner, tags, type and estimate for the board-style row', stepped.owner === 'Marj' && stepped.tags.includes('Flyers') && stepped.taskType === 'Actionable Task' && stepped.estHours === 3);
+  check('task rows carry owner, tags, type and estimate for the board-style row', stepped.owner === 'Marj' && stepped.tags.includes('Flyers') && stepped.taskType === 'Hands-on' && stepped.estHours === 3);
 
   // RPC with Marj signed in; the queue helper is exercised through fakes
   const origSession = sandbox.Session, origGetFileById = sandbox.DriveApp.getFileById, origGetFolderById = sandbox.DriveApp.getFolderById, origLock = sandbox.LockService.getScriptLock;
@@ -1148,7 +1148,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
     const out = { rationale: 'test' };
     if (need.includes('progress')) out.progress = progressAnswer;
     if (need.includes('estHours')) { out.estHours = 2; out.needsConfirmation = false; }
-    if (need.includes('taskType')) out.taskType = 'Actionable Task';
+    if (need.includes('taskType')) out.taskType = 'Hands-on';
     if (need.includes('subitems')) out.subitems = ['Draft the copy', 'Send to printer'];
     if (need.includes('tags')) out.tags = ['Flyers'];
     if (need.includes('dependsOnTitle')) out.dependsOnTitle = null;
@@ -1213,7 +1213,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   d = JSON.parse(disk);
   let added = d.tasks.find(t => /fall flyer print run/i.test(t.title));
   check('add: creates a task owned by Marj, in her group, tagged Self-created and NOT held for review', r.ok === true && !!added && added.owner === 'Marj' && added.delegate === 'Marj' && added.group === 'Marj' && added.priority === 'Low' && added.tags.includes('Self-created') && !added.tags.includes('Triage'));
-  check('add: the estimator fills estimate, type, subitems and tags', added.estSource === 'claude' && added.taskType === 'Actionable Task' && added.subitems.length === 2 && added.tags.includes('Flyers') && added.history.some(h => h.field === 'auto-enriched'));
+  check('add: the estimator fills estimate, type, subitems and tags', added.estSource === 'claude' && added.taskType === 'Hands-on' && added.subitems.length === 2 && added.tags.includes('Flyers') && added.history.some(h => h.field === 'auto-enriched'));
   check('add: the 2h estimate is split across the two minted steps; the rollup is their plain sum (no confirm cost)', added.subitems.every(s => s.estHours === 1 && s.estSource === 'claude') && added.estHours === 2);
   check('add: the estimator was asked for progress from the notes and priority/group were not re-asked', claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"progress"/.test(u)) && !claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"priority"/.test(u)) && !claudeCalls.some(u => /NEEDED_FIELDS: \[[^\]]*"group"/.test(u)));
   check('add: minted subitems are delegated to Marj, not left for Durand', added.subitems.every(s => s.delegate === 'Marj'));
@@ -1271,7 +1271,7 @@ section('Progress follows the notes on every write path (2026-09-15)');
 {
   let calls = [];
   let answer = 60;
-  claudeResponder = (system, user) => { calls.push(user); if (/^ITEMS:/.test(user)) { const n = (user.match(/^\d+\. Title:/gm) || []).length; return { items: Array.from({ length: n }, (_, i) => ({ index: i + 1, progress: answer })) }; } const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('steps')) { const sm = /CURRENT_STEPS[^\n]*\n(\[.*\])/.exec(user); const cs = sm ? JSON.parse(sm[1]) : []; out.steps = cs.map(cc => ({ index: cc.index, title: cc.title, notes: cc.notes, estHours: null, taskType: null, priority: null, tags: [], progress: answer, location: null, due: null })); } if (need.includes('progress')) out.progress = answer; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Actionable Task'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; return out; };
+  claudeResponder = (system, user) => { calls.push(user); if (/^ITEMS:/.test(user)) { const n = (user.match(/^\d+\. Title:/gm) || []).length; return { items: Array.from({ length: n }, (_, i) => ({ index: i + 1, progress: answer })) }; } const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('steps')) { const sm = /CURRENT_STEPS[^\n]*\n(\[.*\])/.exec(user); const cs = sm ? JSON.parse(sm[1]) : []; out.steps = cs.map(cc => ({ index: cc.index, title: cc.title, notes: cc.notes, estHours: null, taskType: null, priority: null, tags: [], progress: answer, location: null, due: null })); } if (need.includes('progress')) out.progress = answer; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Hands-on'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; return out; };
   function d0() { return { meta: { docVersion: 5, next_id: 10, status_values: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'] }, tasks: [
     { id: 1, title: 'Call the caterer', owner: 'Durand', status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '', notes: '', tags: [], history: [], subitems: [] },
     { id: 2, title: 'Parent with steps', owner: 'Durand', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'p', tags: [], history: [], subitems: [
@@ -1327,7 +1327,7 @@ section('Progress follows the notes on every write path (2026-09-15)');
 section('Review gate: pushed delegate items carry Triage and stay off the person page until cleared (2026-09-15)');
 {
   driveFilesFixture = []; calendarEventsFixture = [];
-  claudeResponder = (system, user) => { const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('progress')) out.progress = 0; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Actionable Task'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; return out; };
+  claudeResponder = (system, user) => { const m = /NEEDED_FIELDS: (\[.*?\])/.exec(user); const need = m ? JSON.parse(m[1]) : []; const out = { rationale: 'r' }; if (need.includes('progress')) out.progress = 0; if (need.includes('estHours')) { out.estHours = 1; out.needsConfirmation = false; } if (need.includes('taskType')) out.taskType = 'Hands-on'; if (need.includes('subitems')) out.subitems = []; if (need.includes('tags')) out.tags = []; if (need.includes('priority')) out.priority = 'Medium'; if (need.includes('group')) out.group = 'Ops'; if (need.includes('dependsOnTitle')) out.dependsOnTitle = null; return out; };
   function gdoc() { return { meta: { docVersion: 1, next_id: 20, teamRoster: [{ name: 'Durand' }, { name: 'Marj' }, { name: 'Perly' }] }, tasks: [
     { id: 1, title: 'Existing parent', owner: 'Durand', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: '', tags: [], history: [], subitems: [
       { title: 'old step', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, notes: '', tags: [] } ] }
@@ -1370,7 +1370,7 @@ section('Review gate: pushed delegate items carry Triage and stay off the person
 
 section('Comments ops and the Tidy proposal (2026-09-16)');
 {
-  const d = { meta: { docVersion: 1, next_id: 5 }, tasks: [ { id: 1, title: 'Plan the fall mailer', owner: 'Durand', status: 'In Progress', priority: 'Medium', taskType: 'Actionable Task', group: 'Marketing', tags: ['Triage'], estHours: 2, timelineEnd: '', notes: 'talked to vendor. vendor said 665.78 for standard. also need 500 list', history: [], subitems: [] } ] };
+  const d = { meta: { docVersion: 1, next_id: 5 }, tasks: [ { id: 1, title: 'Plan the fall mailer', owner: 'Durand', status: 'In Progress', priority: 'Medium', taskType: 'Hands-on', group: 'Marketing', tags: ['Triage'], estHours: 2, timelineEnd: '', notes: 'talked to vendor. vendor said 665.78 for standard. also need 500 list', history: [], subitems: [] } ] };
   sandbox.applyDataPatch_(d, { op: 'add_comment', comment: { text: 'Is this the right vendor?', author: 'Durand', anchor: { kind: 'task', id: 1, label: '#1 Plan the fall mailer' } }, source: 'Durand' });
   check('add_comment stores an id, timestamp, author, anchor and text in meta.comments', d.meta.comments.length === 1 && /^c/.test(d.meta.comments[0].id) && d.meta.comments[0].author === 'Durand' && d.meta.comments[0].anchor.id === 1 && d.meta.comments[0].resolved === false);
   const cid = d.meta.comments[0].id;
@@ -1387,7 +1387,7 @@ section('Comments ops and the Tidy proposal (2026-09-16)');
 
   // Comments route to the pinned Claude feature task and the judgment queue (2026-09-18)
   const fd = { meta: { docVersion: 1, next_id: 10, judgments: [] }, tasks: [
-    { id: 1, title: 'Plan the fall mailer', owner: 'Durand', status: 'In Progress', priority: 'Medium', taskType: 'Actionable Task', group: 'Marketing', tags: [], history: [], subitems: [{ title: 'Pick the vendor', status: 'Not Started', history: [] }] },
+    { id: 1, title: 'Plan the fall mailer', owner: 'Durand', status: 'In Progress', priority: 'Medium', taskType: 'Hands-on', group: 'Marketing', tags: [], history: [], subitems: [{ title: 'Pick the vendor', status: 'Not Started', history: [] }] },
     { id: 5, title: '@Claude - Track all Task Tracker Feature/Bug Requests/Reports Here', owner: 'Durand', delegate: 'Claude', pinned: true, status: 'In Progress', priority: 'High', taskType: 'Claude', group: 'Systems', tags: [], history: [], subitems: [] } ] };
   sandbox.applyDataPatch_(fd, { op: 'add_comment', comment: { text: 'esc should end the commenting\nsecond line of detail', author: 'Durand', anchor: { kind: 'element', label: 'THE STAWASZ GROUP Internal Use Only', path: 'div.wrap' } }, source: 'Durand' });
   const uiC = fd.meta.comments[0];
@@ -1421,7 +1421,7 @@ section('Comments ops and the Tidy proposal (2026-09-16)');
   const FILE_IDS5 = vm.runInContext('FILE_IDS', sandbox);
   const origGet5 = sandbox.DriveApp.getFileById;
   sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS5.data ? JSON.stringify(d) : '{}') }) });
-  claudeResponder = (system, user) => { if (!/tidy one task/i.test(system)) throw new Error('wrong prompt'); return { title: 'Plan the fall farming mailer with Hello Creative Pro', notes: 'Current state: vendor quoted $665.78 (standard postage) against the 500-contact list.\n\nLog:\n- 2026-09-15: talked to vendor; quote 665.78 standard; need the 500 list', priority: 'Bogus', taskType: 'Actionable Task', group: 'Nowhere', estHours: 3.1, tags: ['Mailers', 'Triage', 'x', 'y', 'z'], rationale: 'Split state from log.' }; };
+  claudeResponder = (system, user) => { if (!/tidy one task/i.test(system)) throw new Error('wrong prompt'); return { title: 'Plan the fall farming mailer with Hello Creative Pro', notes: 'Current state: vendor quoted $665.78 (standard postage) against the 500-contact list.\n\nLog:\n- 2026-09-15: talked to vendor; quote 665.78 standard; need the 500 list', priority: 'Bogus', taskType: 'Hands-on', group: 'Nowhere', estHours: 3.1, tags: ['Mailers', 'Triage', 'x', 'y', 'z'], rationale: 'Split state from log.' }; };
   const prop = sandbox.tsgTidyProposal_(1);
   check('tidy returns before + proposal with the rewritten title and notes', prop.ok && prop.before.title === 'Plan the fall mailer' && /Hello Creative Pro/.test(prop.proposal.title) && /Current state/.test(prop.proposal.notes));
   check('tidy keeps the current priority/group when the model proposes an unknown one, rounds hours, keeps system tags and caps topical tags at 3', prop.proposal.priority === 'Medium' && prop.proposal.group === 'Marketing' && prop.proposal.estHours === 3 && prop.proposal.tags.indexOf('Triage') !== -1 && prop.proposal.tags.filter(x => x !== 'Triage').length <= 3);
@@ -1479,10 +1479,10 @@ section('Estimator: progress is a requestable field (2026-09-15)');
   check('tsgProgressFromNotes_: empty notes are 0 with no call', sandbox.tsgProgressFromNotes_('t', '   ', '') === 0);
   claudeResponder = () => ({ rationale: 'nothing numeric' });
   check('tsgProgressFromNotes_: no number from the model gives null', sandbox.tsgProgressFromNotes_('t', 'some notes', '') === null);
-  claudeResponder = () => ({ estHours: 1, taskType: 'Actionable Task', subitems: [], rationale: 'r', needsConfirmation: false });
+  claudeResponder = () => ({ estHours: 1, taskType: 'Hands-on', subitems: [], rationale: 'r', needsConfirmation: false });
   est = sandbox.tsgEstimateTask_('Plain task', 'n', 'Medium');
   check('progress stays null when it was not requested', est.progress === null && est.estHours === 1);
-  check('the estimator prompt offers the Claude task type', /"Claude"\|"Actionable Task"/.test(vm.runInContext('TSG_ESTIMATE_SYSTEM', sandbox)));
+  check('the estimator prompt offers the Claude task type', /"Claude"\|"Hands-on"/.test(vm.runInContext('TSG_ESTIMATE_SYSTEM', sandbox)));
 }
 
 section('Task type Claude delegates to Claude (2026-09-15)');
@@ -1503,7 +1503,7 @@ section('Pinned tasks (2026-09-16)');
   const d = freshDoc();
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { pinned: true }, source: 'Durand', ts: '2026-09-16T12:00:00Z' });
   check('pinned is a logged task field', d.tasks[0].pinned === true && d.tasks[0].history.some(h => h.field === 'pinned' && h.to === true && h.source === 'Durand'));
-  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Bonus umbrella', owner: 'Durand', priority: 'Critical', group: 'Ops', estHours: 1, taskType: 'Actionable Task', tags: ['Bonus'], pinned: true, notes: '' }, source: 'Claude', skipDedup: true, skipEnrich: true });
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Bonus umbrella', owner: 'Durand', priority: 'Critical', group: 'Ops', estHours: 1, taskType: 'Hands-on', tags: ['Bonus'], pinned: true, notes: '' }, source: 'Claude', skipDedup: true, skipEnrich: true });
   const added = d.tasks[d.tasks.length - 1];
   check('add_task keeps pinned on the new task', !!added && added.pinned === true);
   const before = JSON.parse(JSON.stringify(d));
@@ -1520,7 +1520,7 @@ section('Links every update: Gmail candidates, web links, meeting slots, directi
   claudeResponder = (system, user) => {
     seenUser = user;
     seenNeed = JSON.parse((user.match(/NEEDED_FIELDS: (\[.*\])/) || [])[1] || '[]');
-    const out = { rationale: 'test', estHours: 1, taskType: 'Actionable Task', subitems: [], priority: 'Medium', group: 'Ops', tags: [], dependsOnTitle: null, progress: 10, title: 'Confirm the photography invoice', notes: 'Current state: waiting.', location: null, due: null };
+    const out = { rationale: 'test', estHours: 1, taskType: 'Hands-on', subitems: [], priority: 'Medium', group: 'Ops', tags: [], dependsOnTitle: null, progress: 10, title: 'Confirm the photography invoice', notes: 'Current state: waiting.', location: null, due: null };
     if (seenNeed.includes('driveMatch')) out.driveMatch = { index: 1, confident: true, rationale: 'same invoice' };
     if (seenNeed.includes('mailMatch')) out.mailMatch = { index: 1, confident: true, rationale: 'the vendor thread' };
     if (seenNeed.includes('webLinks')) out.webLinks = [{ url: 'https://www.usps.com/', label: 'USPS' }, { url: 'not a url', label: 'bad' }, { url: 'https://www.usps.com/', label: 'dup' }];
@@ -1543,7 +1543,7 @@ section('Links every update: Gmail candidates, web links, meeting slots, directi
   sandbox.applyDataPatch_(q, { op: 'add_task', task: { title: 'Confirm photography invoice payment', owner: 'Durand', priority: 'Medium', group: 'Ops', notes: 'Vendor sent the invoice by email.', tags: [] }, source: 'Claude', skipDedup: true });
   const j = q.meta.judgments[q.meta.judgments.length - 1];
   check('queued enrich request carries mailCandidates and asks for mailMatch + webLinks', j && Array.isArray(j.mailCandidates) && j.mailCandidates[0].url.includes('abc123') && j.need.includes('mailMatch') && j.need.includes('webLinks'));
-  sandbox.applyDataPatch_(q, { op: 'judgment', id: j.id, answer: { rationale: 'r', estHours: 1, taskType: 'Actionable Task', subitems: [], priority: 'Medium', group: 'Ops', tags: [], dependsOnTitle: null, progress: 0, title: 'Confirm the photography invoice', notes: 'Current state: waiting.', location: null, due: null, driveMatch: null, meetingMatch: null, mailMatch: { index: 1, confident: true, rationale: 'thread' }, webLinks: [{ url: 'https://www.usps.com/', label: 'USPS' }] }, source: 'Claude (queue)' });
+  sandbox.applyDataPatch_(q, { op: 'judgment', id: j.id, answer: { rationale: 'r', estHours: 1, taskType: 'Hands-on', subitems: [], priority: 'Medium', group: 'Ops', tags: [], dependsOnTitle: null, progress: 0, title: 'Confirm the photography invoice', notes: 'Current state: waiting.', location: null, due: null, driveMatch: null, meetingMatch: null, mailMatch: { index: 1, confident: true, rationale: 'thread' }, webLinks: [{ url: 'https://www.usps.com/', label: 'USPS' }] }, source: 'Claude (queue)' });
   const qt = q.tasks[q.tasks.length - 1];
   check('a queued answer links the email thread and the web link', qt.docs.some(x => x.type === 'email') && qt.docs.some(x => x.type === 'web'));
   sandbox.PropertiesService.getScriptProperties = origProps;
@@ -1663,18 +1663,18 @@ section('Hand edits win, disagreements flagged, dependency clears stick (2026-09
   d.tasks[0].history.push({ ts: '2026-09-15T10:00:00Z', field: 'estHours', from: 4, to: 1, source: 'Durand' });
   d.tasks[0].history.push({ ts: '2026-09-15T10:00:00Z', field: 'priority', from: 'Medium', to: 'Low', source: 'Durand' });
   d.tasks[0].estHours = 1; d.tasks[0].priority = 'Low';
-  claudeResponder = () => ({ rationale: 'a full vendor reconciliation', title: 'Confirm Vendor Invoice For Photography', notes: 'Current state: waiting on the vendor.', estHours: 5, taskType: 'Actionable Task', priority: 'Critical', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false });
+  claudeResponder = () => ({ rationale: 'a full vendor reconciliation', title: 'Confirm Vendor Invoice For Photography', notes: 'Current state: waiting on the vendor.', estHours: 5, taskType: 'Hands-on', priority: 'Critical', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false });
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'vendor says the invoice is wrong, need to reconcile' }, source: 'Durand', ts: '2026-09-17T12:00:00Z' });
   const t = d.tasks[0];
   check('every judgment field is asked for on a notes change, hand-set or not', true);
   check('the hand-set hours and priority stay', t.estHours === 1 && t.priority === 'Low');
   check('a material disagreement (5h vs 1h, Critical vs Low) is flagged with the Review tag, one flag per field, a disagreement history line, and a REVIEW paragraph in the note', t.tags.includes('Review') && !t.tags.includes('Triage') && (t.reviewFlags || []).length === 2 && t.reviewFlags.some(f => f.field === 'estHours' && f.claude === 5 && f.mine === 1 && /reconciliation/.test(f.rationale)) && t.reviewFlags.some(f => f.field === 'priority') && t.history.filter(h => h.field === 'disagreement').length === 2 && /REVIEW \(2026-09-17\): Claude proposed estHours = 5 because a full vendor reconciliation; your value 1 is kept/.test(t.notes) && t.notes.indexOf('Current state:') === 0);
-  claudeResponder = () => ({ rationale: 'close enough', title: t.title, notes: t.notes, estHours: 1.25, taskType: 'Actionable Task', priority: 'Medium', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false });
+  claudeResponder = () => ({ rationale: 'close enough', title: t.title, notes: t.notes, estHours: 1.25, taskType: 'Hands-on', priority: 'Medium', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false });
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'vendor says the invoice is wrong, need to reconcile. update: got the corrected one' }, source: 'Durand', ts: '2026-09-17T12:05:00Z' });
   check('a small difference (1.25h vs 1h, Medium vs Low) is not a disagreement; the earlier flags are replaced, not duplicated', t.estHours === 1 && (t.reviewFlags || []).length === 0 && !t.tags.includes('Review') && !/REVIEW \(/.test(t.notes));
   check('the note keeps its polished body once the flags clear', t.notes === 'Current state: waiting on the vendor.' || t.notes.indexOf('REVIEW') === -1);
   // forced re-run settles a disagreement with Claude's value
-  claudeResponder = () => ({ rationale: 'big job', title: t.title, notes: t.notes, estHours: 6, taskType: 'Actionable Task', priority: 'Critical', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false });
+  claudeResponder = () => ({ rationale: 'big job', title: t.title, notes: t.notes, estHours: 6, taskType: 'Hands-on', priority: 'Critical', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false });
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { notes: 'third edit' }, source: 'Durand', ts: '2026-09-17T12:10:00Z' });
   check('flagged again on a big difference', t.tags.includes('Review') && t.estHours === 1);
   sandbox.applyDataPatch_(d, { op: 'request_tidy', id: 1, source: 'Durand', ts: '2026-09-17T12:15:00Z' });
@@ -1683,7 +1683,7 @@ section('Hand edits win, disagreements flagged, dependency clears stick (2026-09
   const d2 = freshDoc();
   d2.tasks.push({ id: 2, title: 'Get Photos From The Photographer', owner: 'Durand', status: 'Not Started', priority: 'Medium', group: 'Ops', tags: [], notes: '', history: [], subitems: [] });
   let asked = null;
-  claudeResponder = (system, user) => { asked = JSON.parse((user.match(/NEEDED_FIELDS: (\[.*\])/) || [])[1] || '[]'); return { rationale: 'r', title: 'Confirm Vendor Invoice For Photography', notes: 'Current state: x.', estHours: 2, taskType: 'Actionable Task', priority: 'High', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: 'Get Photos From The Photographer', location: null, due: null, progress: 0, needsConfirmation: false }; };
+  claudeResponder = (system, user) => { asked = JSON.parse((user.match(/NEEDED_FIELDS: (\[.*\])/) || [])[1] || '[]'); return { rationale: 'r', title: 'Confirm Vendor Invoice For Photography', notes: 'Current state: x.', estHours: 2, taskType: 'Hands-on', priority: 'High', group: 'Books & Finance', tags: [], subitems: [], dependsOnTitle: 'Get Photos From The Photographer', location: null, due: null, progress: 0, needsConfirmation: false }; };
   sandbox.applyDataPatch_(d2, { op: 'update_task', id: 1, fields: { notes: 'need the photos first' }, source: 'Durand' });
   check('with no dependency set, one is inferred', d2.tasks[0].depends === '2');
   sandbox.applyDataPatch_(d2, { op: 'update_task', id: 1, fields: { depends: '', dependsNone: true }, source: 'Durand' });
@@ -1693,11 +1693,11 @@ section('Hand edits win, disagreements flagged, dependency clears stick (2026-09
   check('setting a dependency by hand lifts dependsNone', d2.tasks[0].dependsNone === undefined && d2.tasks[0].depends === '2');
   // dashboard-typed values are hand-set from creation
   const d3 = freshDoc();
-  claudeResponder = () => ({ rationale: 'r', title: 'Order The Fall Flyers', notes: 'Current state: x.', estHours: 4, taskType: 'Actionable Task', priority: 'Low', group: 'Marketing', tags: [], subitems: [], dependsOnTitle: null, location: null, due: '2026-11-30', progress: 0, needsConfirmation: false });
+  claudeResponder = () => ({ rationale: 'r', title: 'Order The Fall Flyers', notes: 'Current state: x.', estHours: 4, taskType: 'Hands-on', priority: 'Low', group: 'Marketing', tags: [], subitems: [], dependsOnTitle: null, location: null, due: '2026-11-30', progress: 0, needsConfirmation: false });
   sandbox.applyDataPatch_(d3, { op: 'add_task', task: { title: 'Order the fall flyers', owner: 'Durand', priority: 'Critical', group: 'Marketing', timelineEnd: '2026-09-25', notes: 'print shop needs the order by wednesday', tags: [] }, source: 'Durand', ownerCreated: true, skipDedup: true });
   const t3 = d3.tasks[d3.tasks.length - 1];
   check('values typed into the New Task form carry Durand history lines from creation', t3.history.some(h => h.field === 'priority' && h.source === 'Durand') && t3.history.some(h => h.field === 'timelineEnd' && h.source === 'Durand'));
-  claudeResponder = () => ({ rationale: 'no rush', title: t3.title, notes: t3.notes, estHours: 4, taskType: 'Actionable Task', priority: 'Low', group: 'Marketing', tags: [], subitems: [], dependsOnTitle: null, location: null, due: '2026-11-30', progress: 0, needsConfirmation: false });
+  claudeResponder = () => ({ rationale: 'no rush', title: t3.title, notes: t3.notes, estHours: 4, taskType: 'Hands-on', priority: 'Low', group: 'Marketing', tags: [], subitems: [], dependsOnTitle: null, location: null, due: '2026-11-30', progress: 0, needsConfirmation: false });
   sandbox.applyDataPatch_(d3, { op: 'update_task', id: t3.id, fields: { notes: 'print shop needs the order by wednesday. quote received' }, source: 'Durand' });
   check('...so a later pass keeps them and flags the disagreement (Critical vs Low, 9/25 vs 11/30)', t3.priority === 'Critical' && t3.timelineEnd === '2026-09-25' && t3.tags.includes('Review') && (t3.reviewFlags || []).some(f => f.field === 'timelineEnd' && f.claude === '2026-11-30'));
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
@@ -1713,7 +1713,7 @@ section('Subtasks ride in the parent\'s call (2026-09-17)');
   claudeResponder = (system, user) => {
     calls.push(user);
     const need = JSON.parse((user.match(/NEEDED_FIELDS: (\[.*?\])/) || [])[1] || '[]');
-    const out = { rationale: 'r', title: 'Plan the block party', notes: 'Current state: planning.', tags: [], estHours: 8, taskType: 'Actionable Task', priority: 'High', group: 'Ops', dependsOnTitle: null, location: null, due: null, subitems: [], needsConfirmation: false };
+    const out = { rationale: 'r', title: 'Plan the block party', notes: 'Current state: planning.', tags: [], estHours: 8, taskType: 'Hands-on', priority: 'High', group: 'Ops', dependsOnTitle: null, location: null, due: null, subitems: [], needsConfirmation: false };
     if (need.includes('steps')) out.steps = [
       { index: 0, title: 'Book the band', notes: 'Current state: two bands emailed.', estHours: 0.5, taskType: 'Email', priority: 'High', tags: [], progress: 40, location: null, due: null },
       { index: 1, title: 'Order the tables', notes: '', estHours: 1, taskType: 'Call', priority: 'Medium', tags: [], progress: 0, location: null, due: '2026-10-01' },
@@ -1729,20 +1729,20 @@ section('Subtasks ride in the parent\'s call (2026-09-17)');
   check('the parent logs the step re-judge', t.history.some(h => h.field === 'auto-enriched' && /steps \(2 re-judged\)/.test(h.to)));
   // minted steps arrive with their fields; a plain string still works
   calls = [];
-  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', title: 'Confirm The Caterer', notes: 'Current state: x.', tags: [], estHours: 2, taskType: 'Actionable Task', priority: 'Medium', group: 'Ops', dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false,
+  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', title: 'Confirm The Caterer', notes: 'Current state: x.', tags: [], estHours: 2, taskType: 'Hands-on', priority: 'Medium', group: 'Ops', dependsOnTitle: null, location: null, due: null, progress: 0, needsConfirmation: false,
     subitems: [{ title: 'Call the caterer', estHours: 0.25, taskType: 'Call', priority: 'High' }, 'Send the deposit'] }; };
   sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Confirm the caterer', owner: 'Durand', priority: 'Medium', group: 'Ops', notes: 'need to lock the caterer', tags: [] }, source: 'Claude', skipDedup: true });
   const n = d.tasks[d.tasks.length - 1];
-  check('minted steps carry hours, type and priority from the same answer; a string step still lands with defaults', calls.length === 1 && n.subitems.length === 2 && n.subitems[0].estHours === 0.25 && n.subitems[0].taskType === 'Call' && n.subitems[0].priority === 'High' && n.subitems[0].estSource === 'claude' && n.subitems[1].title === 'Send the deposit' && n.subitems[1].taskType === 'Actionable Task');
+  check('minted steps carry hours, type and priority from the same answer; a string step still lands with defaults', calls.length === 1 && n.subitems.length === 2 && n.subitems[0].estHours === 0.25 && n.subitems[0].taskType === 'Call' && n.subitems[0].priority === 'High' && n.subitems[0].estSource === 'claude' && n.subitems[1].title === 'Send the deposit' && n.subitems[1].taskType === 'Hands-on');
   // a new step in a subitems array with the parent unchanged: one steps-only call for just that index
   calls = [];
-  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', steps: [{ index: 2, title: 'Print the flyers', notes: '', estHours: 0.75, taskType: 'Actionable Task', priority: 'Medium', tags: [], progress: 0, location: null, due: null }] }; };
+  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', steps: [{ index: 2, title: 'Print the flyers', notes: '', estHours: 0.75, taskType: 'Hands-on', priority: 'Medium', tags: [], progress: 0, location: null, due: null }] }; };
   const subs = JSON.parse(JSON.stringify(n.subitems)).concat([{ title: 'print the flyers', done: false, status: 'Not Started', progress: 0, notes: '', tags: [], history: [] }]);
   sandbox.applyDataPatch_(d, { op: 'update_task', id: n.id, fields: { subitems: subs }, source: 'Durand' });
   check('a new step with the parent unchanged costs one steps-only call scoped to the new index', calls.length === 1 && /NEEDED_FIELDS: \["steps"\]/.test(calls[0]) && /"index":2/.test(calls[0]) && !/"index":0/.test(calls[0]) && d.tasks[d.tasks.length - 1].subitems[2].estHours === 0.75 && d.tasks[d.tasks.length - 1].subitems[2].title === 'Print the flyers');
   // add_subitem without notes is still estimated (title is enough)
   calls = [];
-  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', title: 'Hang the banner', notes: '', tags: [], estHours: 0.5, taskType: 'Actionable Task', priority: 'Medium', location: null, due: null, progress: 0, needsConfirmation: false }; };
+  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', title: 'Hang the banner', notes: '', tags: [], estHours: 0.5, taskType: 'Hands-on', priority: 'Medium', location: null, due: null, progress: 0, needsConfirmation: false }; };
   sandbox.applyDataPatch_(d, { op: 'add_subitem', id: n.id, subitem: { title: 'hang the banner', done: false, status: 'Not Started', progress: 0, notes: '', tags: [] }, source: 'Claude' });
   const last = d.tasks[d.tasks.length - 1].subitems.slice(-1)[0];
   check('add_subitem with no notes is estimated from its title in one call', calls.length === 1 && last.estHours === 0.5 && last.title === 'Hang the banner');
@@ -1752,7 +1752,7 @@ section('Subtasks ride in the parent\'s call (2026-09-17)');
     { title: 'Rollout — Follow up with Chelsey', done: false, status: 'Not Started', progress: 0, notes: '', estHours: 0.5, tags: [], history: [] },
     { title: 'a step with no hours', done: false, status: 'Not Started', progress: 0, notes: '', tags: [], history: [] } ] };
   d.tasks.push(bf);
-  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', steps: [{ index: 1, title: 'A step with no hours, now estimated', notes: '', estHours: 2, taskType: 'Actionable Task', priority: 'Critical', tags: [], progress: 0, location: null, due: null }] }; };
+  claudeResponder = (system, user) => { calls.push(user); return { rationale: 'r', steps: [{ index: 1, title: 'A step with no hours, now estimated', notes: '', estHours: 2, taskType: 'Hands-on', priority: 'Critical', tags: [], progress: 0, location: null, due: null }] }; };
   sandbox.applyDataPatch_(d, { op: 'request_steps', id: 7, source: 'Claude' });
   check('request_steps sends only the unestimated open steps', calls.length === 1 && /"index":1/.test(calls[0]) && !/"index":0/.test(calls[0]) && bf.subitems[1].estHours === 2 && bf.subitems[0].title === 'Rollout — Follow up with Chelsey');
   // queue mode: a deferred steps answer follows the step by title when the list moved
@@ -1764,7 +1764,7 @@ section('Subtasks ride in the parent\'s call (2026-09-17)');
   const jr = q.meta.judgments[q.meta.judgments.length - 1];
   check('a queued parent request carries currentSteps', !!jr && jr.need.includes('steps') && (jr.currentSteps || []).length === 2 && jr.currentSteps[0].title === 'book the band');
   q.tasks[0].subitems.unshift({ title: 'inserted first', done: false, status: 'Not Started', progress: 0, notes: '', tags: [], history: [] });
-  sandbox.applyDataPatch_(q, { op: 'judgment', id: jr.id, source: 'Claude (queue)', answer: { rationale: 'r', title: 'Plan the block party', notes: 'Current state: queued.', tags: [], estHours: 8, taskType: 'Actionable Task', priority: 'High', group: 'Ops', dependsOnTitle: null, location: null, due: null, subitems: [], needsConfirmation: false,
+  sandbox.applyDataPatch_(q, { op: 'judgment', id: jr.id, source: 'Claude (queue)', answer: { rationale: 'r', title: 'Plan the block party', notes: 'Current state: queued.', tags: [], estHours: 8, taskType: 'Hands-on', priority: 'High', group: 'Ops', dependsOnTitle: null, location: null, due: null, subitems: [], needsConfirmation: false,
     steps: [{ index: 0, title: 'Book the band', notes: 'Current state: booked.', estHours: 0.5, taskType: 'Email', priority: 'High', tags: [], progress: 60, location: null, due: null }] } });
   check('a deferred steps answer lands on the right step by title after the list moved', q.tasks[0].subitems[1].title === 'Book the band' && q.tasks[0].subitems[1].progress === 60 && q.tasks[0].subitems[0].title === 'inserted first' && q.tasks[0].subitems[0].progress === 0);
   sandbox.PropertiesService.getScriptProperties = origProps4; apiKeyPresent = true;
@@ -1841,9 +1841,9 @@ section('Actual time: log_time op and ACTUALS_BY_TYPE (2026-09-17)');
   check('an unknown kind falls back to manual', t.timeLog[t.timeLog.length - 1].kind === 'manual');
   const d2 = freshDoc();
   d2.tasks = [1, 2, 3].map(i => ({ id: i, title: 'E' + i, status: 'Done', taskType: 'Email', estHours: 0.5, actualHours: [0.25, 0.5, 1][i - 1], subitems: [], history: [] }))
-    .concat([{ id: 4, title: 'X', status: 'Done', taskType: 'Actionable Task', estHours: 2, actualHours: 3, subitems: [], history: [] }]);
+    .concat([{ id: 4, title: 'X', status: 'Done', taskType: 'Hands-on', estHours: 2, actualHours: 3, subitems: [], history: [] }]);
   const act = sandbox.tsgActualsByType_(d2);
-  check('three Email samples give a row with medians; a single Actionable sample is left out', !!act.Email && act.Email.n === 3 && act.Email.medianActualHours === 0.5 && act.Email.medianActualOverEstimate === 1 && !act['Actionable Task']);
+  check('three Email samples give a row with medians; a single Hands-on sample is left out', !!act.Email && act.Email.n === 3 && act.Email.medianActualHours === 0.5 && act.Email.medianActualOverEstimate === 1 && !act['Hands-on']);
   const p = sandbox.tsgEstimatePrompt_('Email the vendor', 'notes', 'High', ['estHours', 'taskType', 'subitems'], { actuals: act });
   const txt = p.user.map(b => b.text).join('\n');
   check('the estimator prompt carries ACTUALS_BY_TYPE when asked for hours', /ACTUALS_BY_TYPE/.test(txt) && txt.includes('"Email":{"n":3'));
@@ -1948,11 +1948,11 @@ section('An answered estimate on a task with steps is the TOTAL: own share = tot
   // Task 239's shape: a backfill edit left own = 2 h while the one step had no hours; the answer
   // says 2 h total and gives the step 1 h. Before the fix the roll-up produced 2 + 1 = 3 h.
   let d = { meta: { docVersion: 1, judgments: [{ id: 'J9', kind: 'enrich', taskId: 239, need: ['estHours', 'steps'], ts: NOW,
-      currentSteps: [{ index: 0, title: 'Research CallAction', notes: '', estHours: null, taskType: 'Actionable Task', priority: 'Low', progress: 0, location: '', due: '', delegate: '' }] }] },
+      currentSteps: [{ index: 0, title: 'Research CallAction', notes: '', estHours: null, taskType: 'Hands-on', priority: 'Low', progress: 0, location: '', due: '', delegate: '' }] }] },
     tasks: [{ id: 239, title: 'Research attribution options', status: 'Not Started', priority: 'Medium', estHours: 2, estHoursOwn: 2, tags: [], history: [],
-      subitems: [{ title: 'Research CallAction', done: false, estHours: null, taskType: 'Actionable Task', priority: 'Low', history: [] }] }] };
+      subitems: [{ title: 'Research CallAction', done: false, estHours: null, taskType: 'Hands-on', priority: 'Low', history: [] }] }] };
   sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J9', ts: NOW, source: 'Claude (queue)', answer: { estHours: 2,
-    steps: [{ index: 0, title: 'Research CallAction', notes: '', estHours: 1, taskType: 'Actionable Task', priority: 'Low', tags: [], progress: 0, location: null, due: null }] } });
+    steps: [{ index: 0, title: 'Research CallAction', notes: '', estHours: 1, taskType: 'Hands-on', priority: 'Low', tags: [], progress: 0, location: null, due: null }] } });
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('the answered 2 h is the total: own share becomes 1 h once the step carries 1 h', d.tasks[0].estHoursOwn === 1);
   check('...and the roll-up lands on the answered total, not total plus steps', d.tasks[0].estHours === 2);
@@ -1974,23 +1974,23 @@ section('An answered estimate on a task with steps is the TOTAL: own share = tot
     tasks: [{ id: 282, title: 'Buy the gift card', status: 'In Progress', priority: 'Critical', estHours: 1.5, tags: [], subitems: [],
       history: [{ ts: '2026-09-18T01:34:00Z', field: 'estHours', from: null, to: 1.5, source: 'Durand' }] }] };
   sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J12', ts: NOW, source: 'Claude (queue)', answer: { estHours: 3,
-    subitems: [{ title: 'Call Citi about the decline', estHours: 0.25, taskType: 'Call', priority: 'Critical' }, { title: 'Buy the card', estHours: 0.25, taskType: 'Actionable Task', priority: 'Critical' }] } });
+    subitems: [{ title: 'Call Citi about the decline', estHours: 0.25, taskType: 'Call', priority: 'Critical' }, { title: 'Buy the card', estHours: 0.25, taskType: 'Hands-on', priority: 'Critical' }] } });
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('hand-set total kept: minted steps subdivide it (own 1 h, total still 1.5 h, the answered 3 h ignored)', d.tasks[0].estHours === 1.5 && d.tasks[0].estHoursOwn === 1 && d.tasks[0].subitems.length === 2);
   // A request that does not ask for hours but mints steps: the existing total stays, steps subdivide it.
   d = { meta: { docVersion: 1, judgments: [{ id: 'J13', kind: 'enrich', taskId: 300, need: ['subitems'], ts: NOW }] },
     tasks: [{ id: 300, title: 'Four hours of work', status: 'Not Started', priority: 'Medium', estHours: 4, tags: [], history: [], subitems: [] }] };
-  sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J13', ts: NOW, source: 'Claude (queue)', answer: { subitems: [{ title: 'First hour', estHours: 1, taskType: 'Actionable Task', priority: 'Medium' }] } });
+  sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J13', ts: NOW, source: 'Claude (queue)', answer: { subitems: [{ title: 'First hour', estHours: 1, taskType: 'Hands-on', priority: 'Medium' }] } });
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('no total asked for: the existing 4 h stays the total, own becomes 3 h', d.tasks[0].estHours === 4 && d.tasks[0].estHoursOwn === 3);
   // Steps re-judged to more hours under a kept total: own shrinks, total holds.
   d = { meta: { docVersion: 1, judgments: [{ id: 'J14', kind: 'enrich', taskId: 301, need: ['estHours', 'steps'], ts: NOW,
-      currentSteps: [{ index: 0, title: 'step a', notes: '', estHours: 0.5, taskType: 'Actionable Task', priority: 'Medium', progress: 0, location: '', due: '', delegate: '' }] }] },
+      currentSteps: [{ index: 0, title: 'step a', notes: '', estHours: 0.5, taskType: 'Hands-on', priority: 'Medium', progress: 0, location: '', due: '', delegate: '' }] }] },
     tasks: [{ id: 301, title: 'Two hours hand-set', status: 'Not Started', priority: 'Medium', estHours: 2, estHoursOwn: 1.5, tags: [],
       history: [{ ts: '2026-09-18T01:00:00Z', field: 'estHours', from: null, to: 2, source: 'Durand' }],
-      subitems: [{ title: 'step a', done: false, estHours: 0.5, taskType: 'Actionable Task', priority: 'Medium', history: [] }] }] };
+      subitems: [{ title: 'step a', done: false, estHours: 0.5, taskType: 'Hands-on', priority: 'Medium', history: [] }] }] };
   sandbox.applyDataPatch_(d, { op: 'judgment', id: 'J14', ts: NOW, source: 'Claude (queue)', answer: { estHours: 5,
-    steps: [{ index: 0, title: 'step a', notes: '', estHours: 1, taskType: 'Actionable Task', priority: 'Medium', tags: [], progress: 0, location: null, due: null }] } });
+    steps: [{ index: 0, title: 'step a', notes: '', estHours: 1, taskType: 'Hands-on', priority: 'Medium', tags: [], progress: 0, location: null, due: null }] } });
   sandbox.tsgRollupSubitemHours_(d, NOW);
   check('step re-judged to 1 h under a hand-set 2 h total: own drops to 1 h, total holds at 2 h', d.tasks[0].estHours === 2 && d.tasks[0].estHoursOwn === 1 && d.tasks[0].subitems[0].estHours === 1);
 }
@@ -2051,7 +2051,7 @@ section('Write amplification: slim judgments, coalesced step requests, history r
   calendarEventsFixture = [{ id: 'e1', title: 'Marketing Update', start: new Date(Date.now() + 86400000), end: new Date(Date.now() + 90000000) }];
   driveFilesFixture = []; gmailThreadsFixture = [];
   let doc = freshDoc();
-  doc.tasks[0].taskType = 'Actionable Task';
+  doc.tasks[0].taskType = 'Hands-on';
   doc.tasks[0].subitems = [
     { title: 'Draft the postcard copy', status: 'Not Started', notes: '', history: [] },
     { title: 'Order the print run', status: 'Not Started', notes: '', history: [] },
@@ -2063,7 +2063,7 @@ section('Write amplification: slim judgments, coalesced step requests, history r
 
   // --- bulk coalescing: several steps of one task -> ONE steps-only request ---
   doc = freshDoc();
-  doc.tasks[0].taskType = 'Actionable Task';
+  doc.tasks[0].taskType = 'Hands-on';
   doc.tasks[0].subitems = [
     { title: 'Draft the postcard copy', status: 'Not Started', notes: '', history: [] },
     { title: 'Order the print run', status: 'Not Started', notes: '', history: [] },
@@ -2203,6 +2203,18 @@ section('Every delegated item requires approval: needsApproval follows the deleg
   d2.tasks.push({ id: 85, title: 'Via a write', owner: 'Durand', delegate: 'Claude', status: 'Not Started', priority: 'Low', group: 'Ops', subitems: [], tags: [], history: [] });
   sandbox.tsgAutoScheduleDoc_(d2);
   check('tsgAutoScheduleDoc_ (every write) applies the rule', d2.tasks.find(x => x.id === 85).needsApproval === true);
+}
+
+section('Task type rename: Actionable Task -> Hands-on, legacy values land as the new name (2026-09-21)');
+{
+  const d = freshDoc();
+  d.tasks.push({ id: 86, title: 'Old-typed task', owner: 'Durand', status: 'Not Started', priority: 'Low', group: 'Ops', taskType: 'Actionable Task', subitems: [{ title: 'Old-typed step', done: false, status: 'Not Started', taskType: 'Schedule Task', notes: '' }], tags: [], history: [] });
+  sandbox.tsgAutoScheduleDoc_(d);
+  const t = d.tasks.find(x => x.id === 86);
+  check('a write rewrites Actionable Task / Schedule Task on the task and its step to Hands-on', t.taskType === 'Hands-on' && t.subitems[0].taskType === 'Hands-on');
+  check('the type list and the estimator prompt say Hands-on, not Actionable Task', sandbox.TSG_TASK_TYPE_VALUES.indexOf('Hands-on') !== -1 && sandbox.TSG_TASK_TYPE_VALUES.indexOf('Actionable Task') === -1 && /"Claude"\|"Hands-on"/.test(vm.runInContext('TSG_ESTIMATE_SYSTEM', sandbox)));
+  const parsed = sandbox.tsgEstimateParse_(JSON.stringify({ taskType: 'Actionable Task', subitems: [{ title: 'S', estHours: 1, taskType: 'actionable task', priority: 'Low' }] }), ['taskType', 'subitems'], 'Rename test');
+  check('an estimator answer using the old name is accepted and canonicalised, on the task and on a minted step', parsed.taskType === 'Hands-on' && parsed.subitems[0].taskType === 'Hands-on');
 }
 
 section('Friday is a 10-2 day: floor, meeting-slot blocks (2026-09-21)');

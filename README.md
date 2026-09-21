@@ -220,7 +220,7 @@ judgment, and writes the answers back as inbox ops. Until an answer lands a new 
   {"op":"judgment","id":"J17","answer":{"title":"Send Farina the listing agreement for signature",
    "notes":"Current state: …\n\nLog:\n- 2026-09-16: …","estHours":0.5,"taskType":"Email",
    "subitems":[{"title":"Chase the signed copy","estHours":0.25,"taskType":"Email","priority":"High"}],
-   "steps":[{"index":0,"title":"Draft the agreement","notes":"Current state: drafted.","estHours":0.5,"taskType":"Actionable Task","priority":"High","tags":[],"progress":100,"location":null,"due":null}],
+   "steps":[{"index":0,"title":"Draft the agreement","notes":"Current state: drafted.","estHours":0.5,"taskType":"Hands-on","priority":"High","tags":[],"progress":100,"location":null,"due":null}],
    "priority":"High","group":"Ops","dependsOnTitle":null,"tags":["Listings"],
    "progress":25,"location":"Farina Di Vita, Media PA","due":"2026-09-19","needsConfirmation":false,
    "driveMatch":{"index":1,"confident":true,"rationale":"…"},"meetingMatch":null,
@@ -239,7 +239,7 @@ Rules are the estimator's own (`TSG_ESTIMATE_SYSTEM` in `Code.gs`): only fields 
 `title` one imperative line, max 80 chars, derived from a free-flow note when the title is a
 placeholder; `notes` rewritten as "Current state" + dated "Log" keeping every fact verbatim;
 hours are hands-on time from the calibration table; `taskType` one of Email | Call |
-Text/Chat | Meeting | Claude | Actionable Task; `priority` one of Critical | High | Medium |
+Text/Chat | Meeting | Claude | Hands-on; `priority` one of Critical | High | Medium |
 Low; `group` an existing group unless nothing fits; `dependsOnTitle` an exact open title or
 null; 0-3 topical tags, never a system tag; `progress` 0-100 from evidence in the notes;
 `location` a stated place or null; `due` a stated deadline as YYYY-MM-DD or null; `subitems` NEW steps only,

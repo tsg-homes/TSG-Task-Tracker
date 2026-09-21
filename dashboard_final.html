@@ -520,7 +520,7 @@
   .type-badge.type-call  { color: var(--brand); border-color: rgba(21,70,74,0.3); }
   .type-badge.type-text  { color: var(--brand); border-color: rgba(21,70,74,0.3); }
   .type-badge.type-schedule-task { color: var(--brand); border-color: rgba(21,70,74,0.3); }
-  .type-badge.type-actionable-task { color: var(--text-muted); }
+  .type-badge.type-hands-on { color: var(--text-muted); }
   .type-badge.type-meeting { color: var(--brand); border-color: rgba(21,70,74,0.3); }
   .type-badge.type-claude { color: var(--status-warn); border-color: rgba(150,112,10,0.45); background: var(--status-warn-bg); }
 
@@ -1598,7 +1598,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-21.8';
+  const UI_VERSION = '2026-09-21.9';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1784,11 +1784,11 @@
   // Collapsed to 5 categories 2026-09-09 per Durand — 'Text' and 'Chat' merged into one
   // 'Text/Chat' type (same UI treatment either way: message a team member in Google Chat,
   // or text a non-team contact's phone), and 'Schedule Task' retired entirely (folds into
-  // 'Actionable Task' — it never had distinct behavior). Existing tasks/subitems still
+  // 'Hands-on' — it never had distinct behavior). Existing tasks/subitems still
   // carrying the old 'Text', 'Chat', or 'Schedule Task' values need a one-time data patch
   // to remap them; the dashboard treats any unrecognized taskType as a plain, unstyled
   // badge rather than crashing, but they won't match TASK_TYPES' own dropdown until remapped.
-  // 'Meeting' stays distinct from 'Actionable Task' — this is for a task that IS a meeting,
+  // 'Meeting' stays distinct from 'Hands-on' — this is for a task that IS a meeting,
   // or is meant to be checked on/discussed in one, most commonly Durand's accountability
   // checks on delegated subitems. Not in TODAY_ADMIN_ELIGIBLE_TYPES (below) since it doesn't
   // behave like Durand's own quick-touch types.
@@ -1796,7 +1796,7 @@
   // Claude carries out in a Cowork / Claude Code session (drafting, research, data pulls,
   // tracker and Drive housekeeping). The estimator can assign it; a new task typed Claude
   // with no delegate is delegated to Claude server-side.
-  const TASK_TYPES = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Actionable Task'];
+  const TASK_TYPES = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Hands-on'];
   // TSG team roster for the Owner/Delegate dropdowns — matches the real people who take
   // tasks. "+ Other…" always stays available for anyone not on this list. Each entry is
   // {name, role, title}: role is the coarse category used for filtering (e.g. an
@@ -2465,6 +2465,10 @@
     if (removed) logHistory(ctx.t, subIdx == null ? 'doc' : 'subitem-doc', removed.label || removed.url, null);
     renderAll(); if (currentModalTaskId === taskId) openTaskCard(taskId); scheduleSave();
   }
+  // "Actionable Task" became "Hands-on" (2026-09-21); a document written before the rename still
+  // shows and selects as the current name until the server rewrites it on its next write.
+  const TASK_TYPE_ALIASES = { 'actionable task': 'Hands-on', 'schedule task': 'Hands-on', 'hands on': 'Hands-on' };
+  function canonicalTaskType_(v) { const k = String(v || '').trim().toLowerCase(); return TASK_TYPE_ALIASES[k] || v; }
   function typeBadgeClass(type) { return 'type-' + (type || '').toLowerCase().replace(/\s+/g, '-'); }
   function typeBadgeHtml(t) {
     if (!t.taskType) return '';
@@ -4489,7 +4493,7 @@
       if (t.status === 'Done') return;
       if ((t.delegate || 'Unassigned') !== CALENDAR_OWNER) return;
       if (isErrandTask_(t)) return; // shown inside the Errands block instead
-      if (!t.isSubtask && TODAY_ADMIN_ELIGIBLE_TYPES.indexOf(t.taskType || 'Actionable Task') !== -1) return;
+      if (!t.isSubtask && TODAY_ADMIN_ELIGIBLE_TYPES.indexOf(t.taskType || 'Hands-on') !== -1) return;
       // Meeting-linked items with a live matching calendar block for today are shown
       // attached to that block instead (see buildTodayFixed) — never as generic filler too.
       if (todayMeetingBlockMatch_(t, today)) return;
@@ -4550,7 +4554,7 @@
   const TODAY_ADMIN_MAX_PER_BLOCK = 5;
   // A 30-min admin block is for quick touches, not real work. Tasks of these types that
   // Durand owns directly (no subitems — see getTodayCandidates/buildOperationalTaskChecks)
-  // land here instead of taking a scheduled block; anything else (a real actionable task)
+  // land here instead of taking a scheduled block; anything else (a real hands-on task)
   // still needs its own slot in the regular schedule.
   const TODAY_ADMIN_ELIGIBLE_TYPES = ['Email', 'Call', 'Text/Chat'];
   // Durand's own quick-touch tasks (Email/Call/Text/Chat, no subitems) that are
@@ -4561,7 +4565,7 @@
     const today = dateISO || todayISO();
     return getWorkItems(TASKS)
       .filter(t => !t.isSubtask && t.status !== 'Done' && (t.delegate || 'Unassigned') === CALENDAR_OWNER
-        && TODAY_ADMIN_ELIGIBLE_TYPES.indexOf(t.taskType || 'Actionable Task') !== -1
+        && TODAY_ADMIN_ELIGIBLE_TYPES.indexOf(t.taskType || 'Hands-on') !== -1
         && todayInclude_(t, today).include)
       .map(t => ({ label: t.title, sub: t.priority || '', taskId: t.id, kind: 'action' }));
   }
@@ -5227,7 +5231,7 @@
           </div>
           <div class="sub-meta">${tagsHtml}<button type="button" class="icon-btn" onclick="addSubTag(${t.id}, ${i})" title="Add tag">+ tag</button></div>
           <div class="sub-meta">
-            <select class="due-input sub-type-select" title="Type" onchange="onSubFieldChange(${t.id}, ${i}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (s.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select>
+            <select class="due-input sub-type-select" title="Type" onchange="onSubFieldChange(${t.id}, ${i}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (s.taskType || 'Hands-on') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select>
             ${s.taskType === 'Meeting' ? `<button type="button" class="icon-btn" onclick="openMeetingPicker(${t.id}, ${i})" title="Link a calendar meeting">${(s.docs || []).some(d => d.type === 'meeting') ? '&#128197; meeting' : '+ meeting'}</button>` : ''}
           </div>
           <div class="sub-meta sub-docs-row">${docsListHtml(s.docs, t.id, i)}<button type="button" class="icon-btn" onclick="addManualDoc(${t.id}, ${i})" title="Add a link or file">+ link</button>${s.location ? `<span class="today-task-loc" title="${escapeHtml(s.location)}">&#128205; ${escapeHtml(s.location)}${travelMinutesFor_(s) ? ' · ' + travelModeLabel_(s) : ''}</span>` : ''}</div>
@@ -6821,7 +6825,7 @@
       `<div class="modal-row"><b>Delegate</b><span class="modal-owner-wrap" title="Who is doing this task. It appears on their own page (subtasks can also be delegated one by one below).">${avatarHtml(taskDelegate(t), 'lg')}${taskDelegateSelect(id, taskDelegate(t))}${approvalToggleHtml_(id, null)}</span></div>`,
       `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}</div>`,
       `<div class="modal-row"><b>Priority</b>${modalPillSelect('priority', t.priority, id)}</div>`,
-      `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Actionable Task')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Actionable Task') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,
+      `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Hands-on')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Hands-on') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,
       `<div class="modal-row"><b>Due</b><span class="modal-est-wrap"><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)">${timeSelectHtml_(t.dueTime || '', `modalDueTimeChange(${id}, v)`)}${reminderControlHtml_(t, id, null)}${atRiskDueNoteHtml_(t)}</span></div>`,
       (t.timelineEnd ? `<div class="modal-row"><b>Countdown</b>${bonusCountdownHtml_(t)}</div>` : ''),
       `<div class="modal-row"><b>Location</b><span class="modal-source">${t.location ? escapeHtml(t.location) + ' <span class="hist-time">' + travelLabel_(t) + '</span>' : '<span class="modal-empty">No location — set one and the round-trip travel time is added to this task</span>'}<button type="button" class="icon-btn" onclick="modalEditLocation(${id})" title="Set the location">&#9998;</button>${t.location ? `<a class="btn small" href="${escapeHtml(directionsUrl_(t))}" target="_blank" rel="noopener" title="Open directions in Google Maps">&#128506; Directions</a><button type="button" class="btn small" onclick="sendDirections(${id}, this)" title="Email the Maps directions link to your phone">&#128241; Send to phone</button>` : ''}</span></div>`,
@@ -6929,7 +6933,7 @@
         title: title, done: false, delegate: '', status: 'Not Started',
         priority: t.priority || 'Medium', tags: [], timelineEnd: '',
         progress: 0, depends: '', doc: '', notes: '', estHours: null, estDays: null,
-        estSource: 'none', taskType: 'Actionable Task', docs: []
+        estSource: 'none', taskType: 'Hands-on', docs: []
       });
       logHistory(t, 'subitem', null, title);
     });
@@ -7619,7 +7623,12 @@
     TASKS = doc.tasks;
     // A task that arrived through a patch or the Routine may carry no `subitems` at all
     // (13 live tasks did on 2026-09-21); every list here reads it as an array.
-    TASKS.forEach(function(t) { if (t && !Array.isArray(t.subitems)) t.subitems = []; if (t && !Array.isArray(t.tags)) t.tags = []; });
+    TASKS.forEach(function(t) {
+      if (!t) return;
+      if (!Array.isArray(t.subitems)) t.subitems = []; if (!Array.isArray(t.tags)) t.tags = [];
+      if (t.taskType) t.taskType = canonicalTaskType_(t.taskType);
+      t.subitems.forEach(function(s) { if (s && s.taskType) s.taskType = canonicalTaskType_(s.taskType); });
+    });
     tsgNormalizeTaskDates_(TASKS);
     RAW_META = doc.meta || {};
     renderJudgeChip_();

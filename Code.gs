@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-21.5';
+const TSG_CODE_VERSION = '2026-09-21.6';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -796,7 +796,7 @@ function applyDataPatch_(doc, patch) {
         priority: task.priority || match.priority || 'Medium', tags: task.tags || [],
         timelineEnd: task.timelineEnd || '', progress: 0, depends: '', doc: task.doc || '',
         notes: task.notes || '', estHours: null, estDays: null, estSource: 'none',
-        taskType: task.taskType || 'Actionable Task',
+        taskType: task.taskType || 'Hands-on',
         history: [{ ts: now, field: 'created', from: null, to: null, source: patch.source || 'unknown' }]
       });
       match.history = match.history || [];
@@ -2272,7 +2272,7 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
       return { title: s.title, done: false, delegate: tsgDefaultSubitemDelegate_(task), status: 'Not Started',
         priority: s.priority || task.priority || 'Medium', tags: [], timelineEnd: '', progress: 0,
         depends: '', doc: '', notes: '', estHours: hours, estDays: null,
-        estSource: hours != null ? 'claude' : 'none', taskType: s.taskType || 'Actionable Task',
+        estSource: hours != null ? 'claude' : 'none', taskType: s.taskType || 'Hands-on',
         history: [{ ts: now, field: 'created', from: null, to: null, source: o.source || 'unknown' }] };
     }));
     applied.push('subitems (+' + est.subitems.length + ')');
@@ -2975,7 +2975,16 @@ function tsgNormalizeTaskShapes_(doc) {
   (doc && doc.tasks || []).forEach(function(t) {
     if (!t) return;
     ['subitems', 'tags', 'docs', 'history'].forEach(function(k) { if (!Array.isArray(t[k])) t[k] = []; });
+    if (t.taskType) t.taskType = tsgCanonicalTaskType_(t.taskType);
+    t.subitems.forEach(function(s) { if (s && s.taskType) s.taskType = tsgCanonicalTaskType_(s.taskType); });
   });
+}
+/** Task type "Actionable Task" was renamed "Hands-on" (Durand, 2026-09-21); "Schedule Task" was folded
+ *  into it earlier. Old values in data, patches and answers land as the current name. */
+var TSG_TASK_TYPE_ALIASES = { 'actionable task': 'Hands-on', 'schedule task': 'Hands-on', 'hands on': 'Hands-on', 'hands-on': 'Hands-on' };
+function tsgCanonicalTaskType_(v) {
+  var k = String(v || '').trim().toLowerCase();
+  return TSG_TASK_TYPE_ALIASES[k] || v;
 }
 /**
  * Every delegated item requires approval (Durand, 2026-09-21: "all delegated tasks should
@@ -4392,15 +4401,14 @@ var TSG_ESTIMATE_SYSTEM =
   'and not already present in CURRENT_STEPS. Each is {"title", "estHours", "taskType", "priority"} ' +
   'judged by the same rules as the task\'s own fields (hands-on hours from the calibration table). ' +
   'Empty array if the task is a single atomic action. Never invent work that is not there.\n' +
-  'taskType is one of: "Email"|"Call"|"Text/Chat"|"Meeting"|"Claude"|"Actionable Task". Use "Email" or ' +
+  'taskType is one of: "Email"|"Call"|"Text/Chat"|"Meeting"|"Claude"|"Hands-on". Use "Email" or ' +
   '"Call" when the whole point of the task is sending one email or making one call. Use ' +
   '"Text/Chat" for a quick message to one person (SMS or a chat ping) rather than a call or ' +
   'formal email. Use "Meeting" only when the task IS a meeting or is meant to be checked on/' +
   'discussed in one. Use "Claude" when the work itself is something Claude (the AI assistant the ' +
   'Director runs in Cowork / Claude Code sessions) would carry out end to end: drafting a document ' +
   'or email, research, a data pull or transform, tracker or Drive housekeeping, a summary. A task a ' +
-  'human must physically do or decide stays "Actionable Task". Everything else is "Actionable ' +
-  'Task" — this should be the majority.\n\n' +
+  'human must physically do or decide stays "Hands-on". Everything else is "Hands-on" — this should be the majority.\n\n' +
   'priority — one of "Critical"|"High"|"Medium"|"Low".\n' +
   'Infer from real urgency and consequence signals in the title/notes (a hard deadline, money at ' +
   'risk, a person blocked, legal/compliance exposure, a client-facing commitment) — not from tone ' +
@@ -4561,7 +4569,7 @@ function tsgHoldForReview_(item, historyArr, now, why) {
  * @param {{groups:string[], openTitles:string[], existingTags:string[]}} [context]  board state for group/dependency/tag inference
  * Returns {estHours, taskType, subitems, priority, group, dependsOnTitle, tags, source, rationale}.
  */
-var TSG_TASK_TYPE_VALUES = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Actionable Task'];
+var TSG_TASK_TYPE_VALUES = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Hands-on'];
 var TSG_PRIORITY_VALUES = ['Critical', 'High', 'Medium', 'Low'];
 // Fields that are pure classification: a call asking for nothing else runs at effort 'low'.
 var TSG_ESTIMATE_LOW_EFFORT_FIELDS = ['progress', 'driveMatch', 'meetingMatch', 'mailMatch'];
@@ -4691,7 +4699,7 @@ function tsgEstimateParse_(raw, need, title, context) {
     out.needsConfirmation = !!parsed.needsConfirmation;
   }
   if (need.indexOf('taskType') !== -1 && parsed.taskType) {
-    out.taskType = parsed.taskType;
+    out.taskType = tsgCanonicalTaskType_(parsed.taskType);
   }
   if (need.indexOf('subitems') !== -1) {
     // A string (the Routine's older answers) or an object with the step's own hours/type/priority.
@@ -4701,7 +4709,7 @@ function tsgEstimateParse_(raw, need, title, context) {
       .map(function (s) {
         var o = { title: String(s.title).trim(), done: false };
         if (typeof s.estHours === 'number' && isFinite(s.estHours) && s.estHours > 0) o.estHours = Math.max(0.25, Math.round(s.estHours * 4) / 4);
-        if (TSG_TASK_TYPE_VALUES.indexOf(s.taskType) !== -1) o.taskType = s.taskType;
+        if (TSG_TASK_TYPE_VALUES.indexOf(tsgCanonicalTaskType_(s.taskType)) !== -1) o.taskType = tsgCanonicalTaskType_(s.taskType);
         if (TSG_PRIORITY_VALUES.indexOf(s.priority) !== -1) o.priority = s.priority;
         return o;
       });
@@ -4979,7 +4987,7 @@ var TSG_TIDY_SYSTEM =
   '"Log" of dated bullets, oldest first, one per event, each starting with its date. Keep every fact, name, ' +
   'date, phone number, dollar amount and URL verbatim. Drop chatter, duplicates and stale instructions that ' +
   'later lines superseded. Never invent a fact. If the notes are already clean, return them unchanged.\n' +
-  '- priority (Critical|High|Medium|Low), taskType (Email|Call|Text/Chat|Meeting|Claude|Actionable Task), ' +
+  '- priority (Critical|High|Medium|Low), taskType (Email|Call|Text/Chat|Meeting|Claude|Hands-on), ' +
   'group (one of EXISTING_GROUPS), estHours (number, 0.25-80), tags (0-3, prefer EXISTING_TAGS; never Triage, ' +
   'Aging, Scheduling Stuck, Dependency Issue, needs-estimate, Claude): change a field ONLY when the title/notes ' +
   'clearly justify it; otherwise return the current value.\n' +
@@ -4997,7 +5005,7 @@ var TSG_TIDY_SCHEMA = {
 };
 /** Proposal for the dashboard's Tidy button: current fields plus Claude's cleaned-up version, validated. */
 function tsgTidyBefore_(t) {
-  return { title: t.title || '', notes: t.notes || '', priority: t.priority || 'Medium', taskType: t.taskType || 'Actionable Task', group: t.group || '',
+  return { title: t.title || '', notes: t.notes || '', priority: t.priority || 'Medium', taskType: t.taskType || 'Hands-on', group: t.group || '',
     estHours: (typeof t.estHours === 'number') ? t.estHours : null, tags: (t.tags || []).slice() };
 }
 /** Validates a raw tidy answer against the board: unknown values fall back to the current ones, system tags are kept. */
@@ -5006,12 +5014,12 @@ function tsgTidyValidate_(doc, t, p) {
   var before = tsgTidyBefore_(t);
   p = p || {};
   var prios = (doc.meta && doc.meta.priority_values) || ['Critical', 'High', 'Medium', 'Low'];
-  var types = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Actionable Task'];
+  var types = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Hands-on'];
   var proposal = {
     title: String(p.title || before.title).trim().slice(0, 120) || before.title,
     notes: (typeof p.notes === 'string') ? p.notes.trim() : before.notes,
     priority: prios.indexOf(p.priority) !== -1 ? p.priority : before.priority,
-    taskType: types.indexOf(p.taskType) !== -1 ? p.taskType : before.taskType,
+    taskType: types.indexOf(tsgCanonicalTaskType_(p.taskType)) !== -1 ? tsgCanonicalTaskType_(p.taskType) : before.taskType,
     group: (p.group && groups.indexOf(p.group) !== -1) ? p.group : before.group,
     estHours: (typeof p.estHours === 'number' && p.estHours > 0) ? Math.max(0.25, Math.min(80, Math.round(p.estHours * 4) / 4)) : before.estHours,
     tags: Array.isArray(p.tags) ? p.tags.map(function(x) { return String(x).trim(); }).filter(function(x) { return x && TSG_RESERVED_TAGS.indexOf(x) === -1; }).slice(0, 3) : before.tags,
@@ -5191,7 +5199,7 @@ function tsgActualsByType_(doc) {
     if (!t || t.status !== 'Done') return;
     var actual = tsgItemActualHours_(t);
     if (!(actual > 0)) return;
-    var type = t.taskType || 'Actionable Task';
+    var type = t.taskType || 'Hands-on';
     by[type] = by[type] || { actual: [], ratio: [] };
     by[type].actual.push(actual);
     if (Number(t.estHours) > 0) by[type].ratio.push(actual / Number(t.estHours));
