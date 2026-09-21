@@ -2187,12 +2187,13 @@ section('Friday is a 10-2 day: floor, meeting-slot blocks (2026-09-21)');
   check('a Friday at 1 PM still has today as its floor', sandbox.tsgEarliestDueIso_(fri1300) === '2026-09-25');
   check('a Friday at 2 PM is over: the floor is Monday', sandbox.tsgEarliestDueIso_(fri1400) === '2026-09-28');
   check('a Thursday at 3 PM still has today as its floor (16:30 rule unchanged)', sandbox.tsgEarliestDueIso_(thu1500) === '2026-09-24');
-  check('tsgDayBlocks_ is empty on a Friday and the template on other days', sandbox.tsgDayBlocks_('2026-09-25').length === 0 && sandbox.tsgDayBlocks_('2026-09-24').length === 3);
+  check('tsgDayBlocks_ on a Friday is errands 09:30-10:00, lunch 12-1, relief 14:00-14:20; other days keep the template', JSON.stringify(sandbox.tsgDayBlocks_('2026-09-25')) === JSON.stringify([[570, 600], [720, 780], [840, 860]]) && sandbox.tsgDayBlocks_('2026-09-24').length === 3);
   check('Friday capacity stays 4 h', sandbox.tsgDayCapacity_('2026-09-25') === 4 && sandbox.tsgDayCapacity_('2026-09-24') === 6);
   // meeting slots on a Friday-only range with the day blocks excluded (the default): the 10:00
   // slot used to be eaten by the errand block; a Friday has none.
   calendarEventsFixture = []; guestCalendarEvents = null;
   const r = sandbox.tsgMeetingSlots_('', '2026-09-25', '2026-09-25', 30);
   const first = r.slots.length ? new Date(r.slots[0].startISO) : null;
-  check('the first Friday slot is 10:00 (no errand block on a Friday)', r.ok && r.window === 'third' && !!first && first.getHours() === 10 && first.getMinutes() === 0);
+  check('the first Friday slot is 10:00 (the errand block ends when the day starts)', r.ok && r.window === 'third' && !!first && first.getHours() === 10 && first.getMinutes() === 0);
+  check('no Friday slot overlaps lunch', r.slots.every(sl => { const h = new Date(sl.startISO).getHours(); return h < 12 || h >= 13; }));
 }

@@ -1283,14 +1283,16 @@ setTimeout(async () => {
     if (w.findTask(1).subitems.length !== before + 2) throw new Error('board add did not land');
     w.findTask(1).subitems.splice(before); w.renderAll();
   });
-  tryCall('Friday day template is 10:00-14:00 with no errand, lunch or relief block; Thursday keeps the full template (2026-09-21)', () => {
+  tryCall('Friday day template: errands before 10, lunch inside 10-2, relief after 2, admin bookends 15 min; Thursday keeps the full template (2026-09-21)', () => {
     const fri = w.buildTodayAgenda('2026-09-25').schedule;
-    const kinds = fri.map(b => b.kind);
     if (!fri.length) throw new Error('empty Friday schedule');
-    if (fri.some(b => b.start < 600 || b.end > 840)) throw new Error('Friday block outside 10-2: ' + JSON.stringify(fri.map(b => [b.kind, b.start, b.end])));
-    if (kinds.some(k => k === 'errand' || k === 'lunch' || k === 'relief')) throw new Error('Friday has template blocks: ' + kinds.join(','));
-    const admin = fri.filter(b => b.kind === 'admin');
-    if (admin.length !== 2 || admin[0].start !== 600 || admin[1].end !== 840) throw new Error('Friday admin bookends wrong: ' + JSON.stringify(admin.map(b => [b.start, b.end])));
+    const byKind = k => fri.filter(b => b.kind === k);
+    const errand = byKind('errand')[0], lunch = byKind('lunch')[0], relief = byKind('relief')[0], admin = byKind('admin');
+    if (!errand || errand.end !== 600 || errand.start !== 570) throw new Error('errand not just before 10: ' + JSON.stringify(errand));
+    if (!lunch || lunch.start < 600 || lunch.end > 840) throw new Error('lunch not inside 10-2: ' + JSON.stringify(lunch));
+    if (!relief || relief.start !== 840) throw new Error('relief not right after 2: ' + JSON.stringify(relief));
+    if (admin.length !== 2 || admin[0].start !== 600 || admin[0].end !== 615 || admin[1].end !== 840) throw new Error('Friday admin bookends wrong: ' + JSON.stringify(admin.map(b => [b.start, b.end])));
+    if (fri.some(b => b.kind === 'task' && (b.start < 600 || b.end > 840))) throw new Error('a task block sits outside 10-2');
     const thu = w.buildTodayAgenda('2026-09-24').schedule;
     if (!thu.some(b => b.kind === 'lunch') || thu[0].start !== 420) throw new Error('Thursday template changed: ' + JSON.stringify(thu.map(b => [b.kind, b.start, b.end])));
   });

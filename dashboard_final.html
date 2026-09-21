@@ -1587,7 +1587,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-21.2';
+  const UI_VERSION = '2026-09-21.3';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -4324,8 +4324,9 @@
   const TODAY_DAY_END = '16:30';
   const TODAY_ADMIN_MIN = 30;
   // Friday is a 10:00-14:00 day (Durand, 2026-09-21: "friday work hours are 10-2 but capacity
-  // doesn't change", i.e. dayCapacity stays 4 h). The whole window is work: no errand, lunch or
-  // relief block, and 15-minute admin bookends instead of 30.
+  // doesn't change", i.e. dayCapacity stays 4 h; then "erands before work on friday, break after,
+  // still need lunch"): errands sit just before 10:00, the relief break just after 14:00, lunch
+  // inside the window, and 15-minute admin bookends instead of 30.
   const FRIDAY_DAY_START = '10:00', FRIDAY_DAY_END = '14:00', FRIDAY_ADMIN_MIN = 15;
   function todayWindow_(dateISO) {
     const fri = new Date((dateISO || todayISO()) + 'T12:00:00').getDay() === 5;
@@ -4634,7 +4635,25 @@
       .filter(ev => ev.end > ev.start);
     fixed.push.apply(fixed, events);
     const overlaps = function(s, e) { return fixed.some(f => s < f.end && e > f.start); };
-    if (W.friday) { fixed.sort((a, b) => a.start - b.start); return fixed; }   // a Friday has no errand, lunch or relief block
+    if (W.friday) {
+      // Errands before the day starts, lunch inside it (default noon, shifted like any other
+      // day), the relief break right after the day ends. None of it eats the 10-2 window
+      // except lunch.
+      const fErrandItems = getTodayErrandItems(today);
+      const fErrandMin = Math.max(TODAY_ERRAND_MIN, fErrandItems.reduce((a, c) => a + c.minutes, 0));
+      fixed.push({ kind: 'errand', title: ERRANDS[today] ? ('Errand: ' + ERRANDS[today]) : 'Errands', start: W.start - fErrandMin, end: W.start, items: fErrandItems });
+      let fLunch = 12 * 60;
+      if (overlaps(fLunch, fLunch + TODAY_LUNCH_MIN)) {
+        for (let delta = 15; delta <= 90; delta += 15) {
+          if (fLunch - delta >= W.start + W.adminMin && !overlaps(fLunch - delta, fLunch - delta + TODAY_LUNCH_MIN)) { fLunch = fLunch - delta; break; }
+          if (fLunch + delta + TODAY_LUNCH_MIN <= W.end - W.adminMin && !overlaps(fLunch + delta, fLunch + delta + TODAY_LUNCH_MIN)) { fLunch = fLunch + delta; break; }
+        }
+      }
+      fixed.push({ kind: 'lunch', title: 'Lunch', start: fLunch, end: fLunch + TODAY_LUNCH_MIN });
+      fixed.push({ kind: 'relief', title: 'Relief / Buffer', start: W.end, end: W.end + TODAY_RELIEF_MIN });
+      fixed.sort((a, b) => a.start - b.start);
+      return fixed;
+    }
 
     // Personal errands: targets ~10:00 AM by default, using the same shift-avoidance
     // pattern as Lunch below (try earlier in 15-min steps, then later). Computed before

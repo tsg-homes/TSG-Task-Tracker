@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-21.2';
+const TSG_CODE_VERSION = '2026-09-21.3';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -2846,7 +2846,7 @@ function tsgMeetingSlots_(guestEmail, startStr, endStr, minutes, excludeBlocks) 
       var dow = new Date(d + 'T12:00:00').getDay();
       var hours = win[dow];
       if (!hours) continue;
-      var blocks = excludeBlocks ? tsgDayBlocks_(d) : [];   // no errand/lunch/relief on a Friday
+      var blocks = excludeBlocks ? tsgDayBlocks_(d) : [];   // Friday has its own block positions
       var perDay = 0;
       for (var hm = hours[0]; hm + dur <= hours[1] && perDay < 2; hm += 30) {
         if (blocks.some(function(b) { return hm < b[1] && hm + dur > b[0]; })) continue;
@@ -5366,8 +5366,10 @@ var TSG_DAY_END_HM = '16:30';
 // TSG_FRIDAY_CAPACITY). The window, not the capacity, is what these helpers answer.
 var TSG_FRIDAY_END_HM = '14:00';
 function tsgDayEndHm_(iso) { return tsgIsoDayOfWeek_(iso) === 5 ? TSG_FRIDAY_END_HM : TSG_DAY_END_HM; }
-/** The day template's fixed blocks for a date: none on a Friday, whose whole 10-2 window is work. */
-function tsgDayBlocks_(iso) { return tsgIsoDayOfWeek_(iso) === 5 ? [] : TSG_DAY_BLOCKS; }
+/** The day template's fixed blocks for a date. Friday (Durand: "erands before work on friday, break
+ * after, still need lunch"): errands 09:30-10:00, lunch 12-13, relief 14:00-14:20. */
+var TSG_FRIDAY_BLOCKS = [[9 * 60 + 30, 10 * 60], [12 * 60, 13 * 60], [14 * 60, 14 * 60 + 20]];
+function tsgDayBlocks_(iso) { return tsgIsoDayOfWeek_(iso) === 5 ? TSG_FRIDAY_BLOCKS : TSG_DAY_BLOCKS; }
 function tsgEarliestDueIso_(now) {
   var d = now || new Date();
   var iso = tsgIsoDate_(d);
