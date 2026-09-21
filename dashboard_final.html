@@ -1597,7 +1597,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-21.4';
+  const UI_VERSION = '2026-09-21.5';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -7451,16 +7451,22 @@
     return true;
   }
   let LAST_CONFLICT_REPLAY = null;
-  const SAVE_LOCK_MAX_MS = 15000;
-  let PAGE_LOCK_TIMER = null;
-  function setPageLock_(on, label) {
+  const SAVE_LOCK_MAX_MS = 15000, SAVE_LOCK_STICKY_MAX_MS = 90000;
+  let PAGE_LOCK_TIMER = null, PAGE_LOCK_STICKY = false;
+  // sticky (2026-09-21, Durand: "no lock out on failure retry meant there should be one"): a save
+  // that failed and is being retried out of band (queued behind another write, or a conflict
+  // that falls back to a reload) keeps the page locked until the next document lands
+  // (applyLoadedDoc_ releases it), not just until the request returns.
+  function setPageLock_(on, label, sticky) {
     let bar = document.getElementById('saveLockBar');
     if (!bar) { bar = document.createElement('div'); bar.id = 'saveLockBar'; bar.setAttribute('role', 'status'); document.body.appendChild(bar); }
     bar.textContent = on ? (label || 'Saving…') : '';
     document.body.classList.toggle('save-lock', !!on);
+    PAGE_LOCK_STICKY = !!(on && sticky);
     clearTimeout(PAGE_LOCK_TIMER);
-    if (on) PAGE_LOCK_TIMER = setTimeout(function() { document.body.classList.remove('save-lock'); }, SAVE_LOCK_MAX_MS);
+    if (on) PAGE_LOCK_TIMER = setTimeout(function() { document.body.classList.remove('save-lock'); PAGE_LOCK_STICKY = false; }, sticky ? SAVE_LOCK_STICKY_MAX_MS : SAVE_LOCK_MAX_MS);
   }
+  function releasePageLockUnlessSticky_() { if (!PAGE_LOCK_STICKY) setPageLock_(false); }
   async function doSaveNow_() {
     const savedId = pendingSaveId;
     pendingSaveId = null;
@@ -7499,6 +7505,7 @@
             return doSaveNow_();
           }
           setSyncStatus('conflict', 'The tracker changed elsewhere since this loaded — reloading the latest version. Please redo your last change.');
+          setPageLock_(true, 'The tracker changed elsewhere; reloading the latest version…', true);
           // keepStatus: loadData otherwise ends with setSyncStatus('loaded') ("Synced"),
           // wiping the conflict warning set one line above within a few hundred ms — the
           // save failed and Durand never saw it.
@@ -7509,6 +7516,7 @@
           // The save is queued server-side (its inbox file exists) and the minute trigger
           // applies it; the next poll picks up the new version. Not an error to alarm about.
           setSyncStatus('saving', 'Queued: another write is being applied; syncing shortly');
+          setPageLock_(true, 'Queued: another write is being applied; your save lands within a minute…', true);
           setTimeout(pollForRemoteChanges, 20000);
           return;
         }
@@ -7533,7 +7541,7 @@
       setSyncStatus('error', err.message || err);
     } finally {
       saveInFlight = false;
-      setPageLock_(false);
+      releasePageLockUnlessSticky_();
     }
   }
 
@@ -7545,6 +7553,7 @@
   // the localStorage warm start (2026-09-15): a repeat visit paints the last-known document
   // in well under a second while the real fetch is still in flight; the fetch then replaces it.
   function applyLoadedDoc_(doc) {
+    if (PAGE_LOCK_STICKY) setPageLock_(false);   // the retried save (or the reload after a conflict) has landed
     TASKS = doc.tasks;
     // A task that arrived through a patch or the Routine may carry no `subitems` at all
     // (13 live tasks did on 2026-09-21); every list here reads it as an array.

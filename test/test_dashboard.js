@@ -1353,6 +1353,20 @@ setTimeout(async () => {
     w.setPageLock_(false);
     if (doc.body.classList.contains('save-lock')) throw new Error('lock not released');
   });
+  await (async () => {
+    const label = 'page lock holds through a retried save: a "busy" (queued) answer keeps it until the next document lands (2026-09-21, "there should be one")';
+    try {
+      const origFetch = w.fetch;
+      w.fetch = async (url, opts) => (opts && opts.method === 'POST') ? { ok: true, status: 200, json: async () => ({ ok: false, error: 'busy' }) } : origFetch(url, opts);
+      w.eval('pendingSaveId = null');
+      await w.doSaveNow_();
+      if (!doc.body.classList.contains('save-lock')) throw new Error('lock dropped while the save is still queued');
+      w.applyLoadedDoc_(w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })'));
+      if (doc.body.classList.contains('save-lock')) throw new Error('lock not released when the document landed');
+      w.fetch = origFetch;
+      console.log('OK   -', label);
+    } catch (e) { console.log('FAIL -', label, '->', e.message); FAILS++; }
+  })();
   tryCall('applyLoadedDoc_ gives every task a subitems and tags array', () => {
     const before = w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })');
     const d2 = w.cloneJson_(before); d2.tasks.push({ id: 902, title: 'Stepless', group: 'Marketing', owner: 'Durand', status: 'Not Started', priority: 'Low', history: [] });
