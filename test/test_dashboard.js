@@ -868,12 +868,12 @@ setTimeout(async () => {
     if (w.findTask(1).remindAt !== '2026-09-25T13:00') throw new Error('remindAt ' + w.findTask(1).remindAt);
     if (!w.findTask(1).history.some(h => h.field === 'remindAt')) throw new Error('no history');
   });
-  tryCall('adding a due time to an item with no reminder applies the default preset (Settings > General, 15 min before unless changed)', () => {
+  tryCall('adding a due time to an item with no reminder applies the default preset (Settings > General, 1 hour before unless changed; was 15 min until 2026-09-21)', () => {
     const t = w.findTask(1);
     t.timelineEnd = '2026-09-25'; delete t.dueTime; delete t.remindAt; delete t.reminderSentAt;
     w.eval("delete RAW_META.remindDefault");
     w.modalDueTimeChange(1, '14:00');
-    if (t.remindAt !== '2026-09-25T13:45') throw new Error('default not applied: ' + t.remindAt);
+    if (t.remindAt !== '2026-09-25T13:00') throw new Error('default not applied: ' + t.remindAt);
     if (!t.history.some(h => h.field === 'remindAt' && h.source === 'Durand')) throw new Error('no history line');
     w.onRemindPreset(1, null, '60'); // hand-picked preset follows later time changes, never the default
     w.modalDueTimeChange(1, '15:00');
@@ -887,7 +887,7 @@ setTimeout(async () => {
     w.eval("delete RAW_META.remindDefault; RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true;");
     w.setSettingsTab('general');
     const sel = doc.getElementById('remindDefaultSelect');
-    if (!sel || sel.value !== '15' || [...sel.options].some(o => o.value === 'custom')) throw new Error('Settings default reminder select');
+    if (!sel || sel.value !== '60' || [...sel.options].some(o => o.value === 'custom')) throw new Error('Settings default reminder select');
     w.__posts = [];
     w.setRemindDefault('60');
     const post = (w.__posts || []).map(x => { try { return JSON.parse(x.body); } catch (e) { return null; } }).find(x => x && x.op === 'set_meta');
@@ -1295,6 +1295,63 @@ setTimeout(async () => {
     if (fri.some(b => b.kind === 'task' && (b.start < 600 || b.end > 840))) throw new Error('a task block sits outside 10-2');
     const thu = w.buildTodayAgenda('2026-09-24').schedule;
     if (!thu.some(b => b.kind === 'lunch') || thu[0].start !== 420) throw new Error('Thursday template changed: ' + JSON.stringify(thu.map(b => [b.kind, b.start, b.end])));
+  });
+  tryCall('Today view carries a Pinned strip that opens the pinned task (2026-09-21)', () => {
+    const t = w.findTask(1); const was = t.pinned; t.pinned = true;
+    const html = w.renderTodayView();
+    if (!/today-pinned/.test(html) || !html.includes(w.escapeHtml(t.title)) || !html.includes('openTaskCard(1)')) throw new Error('pinned strip missing');
+    t.pinned = was;
+    if (/today-pinned/.test(w.renderTodayView()) && !w.eval('TASKS.some(x => x.pinned && x.status !== "Done")')) throw new Error('strip shown with nothing pinned');
+  });
+  tryCall('default reminders: a due date with no time gets the day before at 8 AM; a time then makes it 1 hour before (2026-09-21)', () => {
+    w.eval("TASKS.push({ id: 903, title: 'Reminder defaults', group: 'Marketing', owner: 'Durand', status: 'Not Started', priority: 'Medium', history: [], subitems: [], tags: [] })");
+    if (w.remindDefault_() !== '60') throw new Error('unset default should be 1 hour: ' + w.remindDefault_());
+    w.modalDueChange(903, '2026-10-08');
+    let t = w.findTask(903);
+    if (t.remindAt !== '2026-10-07T08:00') throw new Error('day-before reminder missing: ' + t.remindAt);
+    if (w.remindPresetOf_(t) !== 'daybefore8') throw new Error('preset not recognised: ' + w.remindPresetOf_(t));
+    w.modalDueChange(903, '2026-10-09');
+    t = w.findTask(903);
+    if (t.remindAt !== '2026-10-08T08:00') throw new Error('day-before reminder did not follow the date: ' + t.remindAt);
+    w.onDueTimeChange_(903, null, '14:00');
+    t = w.findTask(903);
+    if (t.remindAt !== '2026-10-09T13:00') throw new Error('time-based default not applied: ' + t.remindAt);
+    w.eval('TASKS = TASKS.filter(x => x.id !== 903)'); w.closeTaskCard(); w.renderAll();
+  });
+  tryCall('timeline header labels are short and columns at least 48 px wide (2026-09-21)', () => {
+    w.eval("timelineZoom = 'day'");
+    const html = w.renderTimelineView(w.eval('TASKS'));
+    const labels = Array.from(html.matchAll(/class="tl-col[^"]*"[^>]*>([^<]*)</g)).map(m => m[1]);
+    if (!labels.length) throw new Error('no header columns');
+    if (!/^[A-Z][a-z]{2} \d{1,2}$/.test(labels[0])) throw new Error('first label should carry the month: ' + labels[0]);
+    if (labels.length > 1 && !/^\d{1,2}$|^[A-Z][a-z]{2} 1$/.test(labels[1])) throw new Error('day labels should be day numbers: ' + labels[1]);
+    w.eval("timelineZoom = 'fit'");
+    const lay = w.timelineLayout(400);
+    if (lay.step * lay.dayWidth < 48) throw new Error('fit columns too narrow: ' + JSON.stringify(lay));
+  });
+  tryCall('the legacy Source row is gone from the card; Links remains (2026-09-21)', () => {
+    w.openTaskCard(1);
+    const html = doc.getElementById('taskModal').innerHTML;
+    if (/<b>Source<\/b>/.test(html)) throw new Error('Source row still rendered');
+    if (!/<b>Links<\/b>/.test(html)) throw new Error('Links row missing');
+    if (typeof w.modalEditDoc === 'function') throw new Error('modalEditDoc still defined');
+    w.closeTaskCard();
+  });
+  tryCall('linking a meeting offers its date and time as the due date (confirm stubbed true) (2026-09-21)', () => {
+    w.eval("TASKS.push({ id: 904, title: 'Meeting link due', group: 'Marketing', owner: 'Durand', status: 'Not Started', priority: 'Medium', history: [], subitems: [], tags: [], docs: [] })");
+    w.openMeetingPicker(904, null);
+    w.linkMeetingToTarget({ id: 'evX', title: 'Vendor sync', htmlLink: 'https://calendar.google.com/event?eid=X', start: '2026-10-06T18:00:00.000Z', end: '2026-10-06T19:00:00.000Z' }, false);
+    const t = w.findTask(904);
+    const dt = w.isoToLocalDateHm_('2026-10-06T18:00:00.000Z');
+    if (t.timelineEnd !== dt.date || t.dueTime !== dt.hm) throw new Error('due not set from the meeting: ' + JSON.stringify([t.timelineEnd, t.dueTime, dt]));
+    if (!t.history.some(h => h.field === 'due') || !t.history.some(h => h.field === 'dueTime')) throw new Error('no history lines');
+    w.eval('TASKS = TASKS.filter(x => x.id !== 904)'); w.closeTaskCard(); w.renderAll();
+  });
+  tryCall('page lock: on while a save is in flight, released after success and after a failure (2026-09-21)', () => {
+    w.setPageLock_(true);
+    if (!doc.body.classList.contains('save-lock') || !doc.getElementById('saveLockBar')) throw new Error('lock not applied');
+    w.setPageLock_(false);
+    if (doc.body.classList.contains('save-lock')) throw new Error('lock not released');
   });
   tryCall('applyLoadedDoc_ gives every task a subitems and tags array', () => {
     const before = w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })');

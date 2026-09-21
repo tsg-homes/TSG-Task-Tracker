@@ -697,6 +697,13 @@
   .modal-overlay.busy .meeting-form { pointer-events: none; opacity: 0.55; }
   .modal-overlay.busy .meeting-form::after { content: 'Saving…'; display: block; text-align: center; font-weight: 700; margin-top: 8px; color: var(--muted); }
   .add-form.busy { pointer-events: none; opacity: 0.55; }
+  /* Page lock while a save is in flight (2026-09-21, tracker task: "all add/update
+     functionalities need to lock the whole page"): clicks wait, typing in the focused field
+     does not; the lock always releases (finally + a hard timeout), so a failed or retried save
+     never locks the page out. */
+  body.save-lock > *:not(#saveLockBar) { pointer-events: none; }
+  #saveLockBar { position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 10000; font-size: 11px; font-weight: 700; padding: 3px 12px; border-radius: 0 0 8px 8px; background: var(--brand); color: #fff; display: none; }
+  body.save-lock #saveLockBar { display: block; }
   .today-task-loc { color: var(--muted); font-size: 0.85em; }
   .modal-est-wrap { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .modal-travel { display: inline-flex; align-items: center; gap: 6px; }
@@ -1096,7 +1103,8 @@
   /* Timeline view */
   .timeline-wrap { overflow-x: auto; }
   .timeline-header { display: flex; border-bottom: 1px solid var(--gridline); margin-left: 200px; }
-  .timeline-header .tl-col { flex: none; font-size: 10.5px; color: var(--text-muted); text-align: center; padding: 4px 0; border-left: 1px solid var(--gridline); }
+  .timeline-header .tl-col { flex: none; font-size: 11px; font-weight: 600; color: var(--text-muted); text-align: center; padding: 4px 0; border-left: 1px solid var(--gridline); overflow: hidden; white-space: nowrap; box-sizing: border-box; }
+  .timeline-header .tl-col.tl-weekend { background: var(--surface-2); }
   .timeline-rows { position: relative; }
   .timeline-row { display: flex; align-items: center; border-bottom: 1px solid var(--gridline); min-height: 34px; }
   .timeline-row .tl-label { width: 200px; flex: none; font-size: 12px; padding: 6px 10px 6px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
@@ -1230,6 +1238,8 @@
   .sched-detail-row { display: flex; justify-content: space-between; gap: 16px; font-size: 13px; padding: 8px 0; border-bottom: 1px solid var(--border); }
   .sched-detail-row b { color: var(--text-muted); font-weight: 700; }
   .sched-detail-note { font-size: 12px; color: var(--text-muted); font-style: italic; }
+  .today-pinned { margin: 8px 0 12px; padding: 8px 10px; border: 1px solid var(--gridline); border-radius: 8px; background: var(--surface-2); }
+  .today-pinned-head { font-weight: 700; font-size: 12px; margin-bottom: 4px; }
   .today-admin-line { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 5px; border-radius: 5px; }
   .today-admin-line.clickable { cursor: pointer; }
   .today-admin-line.clickable:hover { background: var(--surface-2); }
@@ -1524,7 +1534,7 @@
       <button class="icon-btn" onclick="closeNotePopup()" title="Close">&#10005;</button>
     </div>
     <div class="meeting-form">
-      <textarea class="text-input" id="noteModalText" spellcheck="true"></textarea>
+      <textarea class="text-input" id="noteModalText" spellcheck="true" autocorrect="on" autocapitalize="sentences"></textarea>
       <div class="meeting-actions" style="display:flex; gap:8px; justify-content:flex-end; margin-top:8px;">
         <button class="btn small" onclick="closeNotePopup()">Cancel</button>
         <button class="btn small primary" onclick="saveNotePopup()">Save</button>
@@ -1587,7 +1597,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-21.3';
+  const UI_VERSION = '2026-09-21.4';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1862,7 +1872,6 @@
     if (src.notes && src.notes.trim()) dst.notes = (dst.notes ? dst.notes.trim() + '\n\n' : '') + '[Merged from #' + src.id + ' "' + src.title + '" on ' + stamp + ']\n' + src.notes.trim();
     (src.subitems || []).forEach(sub => { dst.subitems = dst.subitems || []; dst.subitems.push(Object.assign({}, sub, { history: (sub.history || []).concat([{ ts: new Date().toISOString(), field: 'merged-from', from: null, to: '#' + src.id + ' ' + src.title }]) })); });
     (src.docs || []).forEach(d => { dst.docs = dst.docs || []; if (!dst.docs.some(x => x.url === d.url)) dst.docs.push(d); });
-    if (src.doc && !dst.doc) dst.doc = src.doc;
     dst.tags = [...new Set([...(dst.tags || []), ...(src.tags || [])])];
     if (!dst.timelineEnd && src.timelineEnd) dst.timelineEnd = src.timelineEnd;
     const deps = [...new Set([...dependsList(dst), ...dependsList(src)])].filter(x => x !== dst.id && x !== src.id);
@@ -2187,7 +2196,7 @@
   function docLinkHtml(t) {
     const url = t.doc || (t.docs && t.docs[0] && t.docs[0].url) || '';
     if (!url) return '';
-    return `<a class="doc-link" href="${escapeHtml(safeUrl(url))}" target="_blank" rel="noopener" title="Source: ${escapeHtml(url)}" onclick="event.stopPropagation()">&#128279;</a>`;
+    return `<a class="doc-link" href="${escapeHtml(safeUrl(url))}" target="_blank" rel="noopener" title="Link: ${escapeHtml(url)}" onclick="event.stopPropagation()">&#128279;</a>`;
   }
   // Multiple links/files per task or subtask (2026-09-01) — a separate, additive `docs[]`
   // list alongside the single legacy `doc`/"Source" field above. Nothing already linked via
@@ -2990,9 +2999,8 @@
       t.subitems.forEach(s => lines.push('- [' + (s.done ? 'x' : ' ') + '] ' + s.title + (s.delegate ? ' (' + s.delegate + ')' : '') + (s.timelineEnd ? ' due ' + s.timelineEnd : '')));
     }
     const docs = (t.docs || []).filter(d => d && d.url);
-    if (t.doc || docs.length) {
+    if (docs.length) {
       lines.push('', 'Links:');
-      if (t.doc) lines.push('- ' + t.doc);
       docs.forEach(d => lines.push('- ' + (d.label ? d.label + ': ' : '') + d.url));
     }
     lines.push('', 'Work this task. When you make progress or finish, update task #' + t.id + ' in the TSG Task Tracker through the tsg-task-tracker-protocol skill (an _Inbox patch: update_task / update_subitem, source "Claude"), and log what changed in its notes. Never write to the Data file directly.');
@@ -3733,11 +3741,24 @@
   function timelineLayout(totalDays) {
     const containerWidth = Math.max(700, Math.min(2600, (window.innerWidth || 1400) - 320));
     let dayWidth, step;
-    if (timelineZoom === 'day') { dayWidth = 36; step = 1; }
+    if (timelineZoom === 'day') { dayWidth = 48; step = 1; }   // 48 px holds a day number or "Sep 21"
     else if (timelineZoom === 'week') { dayWidth = 14; step = 7; }
     else if (timelineZoom === 'month') { dayWidth = 5; step = 30; }
     else { dayWidth = Math.max(4, Math.min(60, Math.round(containerWidth / totalDays))); step = Math.max(1, Math.round(totalDays / 14)); }
+    // A header column must hold its label (2026-09-21, Durand: "at this scale this element isnt
+    // really readable"): widen the step until a column is at least 48 px.
+    while (step * dayWidth < 48 && step < totalDays) step++;
     return { dayWidth: dayWidth, step: step };
+  }
+  // Short header labels: day zoom shows the day number (month on the first column and on the
+  // 1st), coarser zooms "Sep 22", month zoom the month.
+  function tlIsWeekend_(dIso) { const dow = new Date(dIso + 'T00:00:00').getDay(); return dow === 0 || dow === 6; }
+  function tlColLabel_(dIso, step, i) {
+    const d = new Date(dIso + 'T00:00:00');
+    const mon = d.toLocaleString('en-US', { month: 'short' });
+    if (step === 1) return (i === 0 || d.getDate() === 1) ? mon + ' ' + d.getDate() : String(d.getDate());
+    if (step >= 28) return mon + (d.getDate() > 15 ? ' ' + d.getDate() : '');
+    return mon + ' ' + d.getDate();
   }
   // Timeline groups by delegate, same as Workload: a delegated task shows only as its
   // subtasks (each under its delegate's section), a task with no subtasks shows under its
@@ -3774,7 +3795,7 @@
       colDates.push(addDays(minD, i));
     }
     const header = `<div class="timeline-header" style="width:${totalDays * dayWidth}px;margin-left:200px;">` +
-      colDates.map(d => `<span class="tl-col" style="flex:0 0 ${step * dayWidth}px;">${formatDate(d)}</span>`).join('') +
+      colDates.map((d, i) => `<span class="tl-col${tlIsWeekend_(d) && step === 1 ? ' tl-weekend' : ''}" style="flex:0 0 ${step * dayWidth}px;" title="${escapeHtml(formatDate(d))}">${escapeHtml(tlColLabel_(d, step, i))}</span>`).join('') +
       '</div>';
     const ROW_HEIGHT = 34;
 
@@ -4871,7 +4892,21 @@
     if (todayGranularity === 'week') body = renderTodayWeek();
     else if (todayGranularity === 'month') body = renderTodayMonth();
     else body = renderTodayDayFull(todayViewDate);
-    return renderTodayNavBar() + body;
+    return renderTodayNavBar() + renderTodayPinned_() + body;
+  }
+  // Pinned tasks ride along on every Today view (2026-09-21, tracker task: "pinned items should
+  // also show on the Today view"): title, progress, open-step count and the next step, each
+  // opening its card. They are not forced into the day's capacity.
+  function renderTodayPinned_() {
+    const pinned = TASKS.filter(t => isPinned_(t) && t.status !== 'Done' && t.status !== 'Cancelled');
+    if (!pinned.length) return '';
+    const rows = pinned.map(t => {
+      const open = (t.subitems || []).filter(s => !(s.done || s.status === 'Done'));
+      const next = open[0];
+      const sub = taskProgress(t) + '% · ' + open.length + ' open step' + (open.length === 1 ? '' : 's') + (next ? ' · next: ' + next.title : '') + (t.timelineEnd ? ' · due ' + formatDate(t.timelineEnd) : '');
+      return `<div class="today-admin-line kind-action clickable" onclick="event.stopPropagation(); openTaskCard(${t.id})"><span>${escapeHtml(t.title)}</span><span class="today-admin-sub">${escapeHtml(sub)}</span></div>`;
+    }).join('');
+    return `<div class="today-pinned"><div class="today-pinned-head">&#128204; Pinned</div>${rows}</div>`;
   }
   // One admin-checklist line's markup. What it does on click (and which marker it shows)
   // depends on kind: 'action' opens the one task behind it; 'group' opens all the tasks
@@ -5369,7 +5404,7 @@
     const before = t.timelineEnd;
     const presetBefore = remindPresetOf_(t);
     t.timelineEnd = el.value;
-    if (before !== el.value) { logHistory(t, 'due', before, el.value); cascadeDependents(id); followDueReminder_(t, presetBefore); }
+    if (before !== el.value) { logHistory(t, 'due', before, el.value); cascadeDependents(id); followDueReminder_(t, presetBefore); if (defaultDateReminder_(t)) logHistory(t, 'remindAt', null, t.remindAt); }
     renderAll(); scheduleSave();
   }
   function onTitleEdit(id, el) {
@@ -5771,15 +5806,6 @@
     const inp = document.getElementById('ntLocation');
     openLocationPicker(inp ? inp.value : '', function(val) { const el = document.getElementById('ntLocation'); if (el) el.value = val; });
   }
-  function modalEditDoc(id) {
-    const t = findTask(id);
-    const before = t.doc || '';
-    const val = prompt('Source link (Gmail thread, meeting doc, etc.):', before);
-    if (val == null) return;
-    t.doc = val.trim();
-    if (before !== t.doc) logHistory(t, 'doc', before || null, t.doc || null);
-    renderAll(); openTaskCard(id); scheduleSave();
-  }
   // ---- Meeting picker (2026-09-01) ----
   // Wired up when a task or subtask's Type is set to "Meeting": lets Durand link it to a
   // real calendar event (best-guess prepopulated, list scoped to a date window he can move),
@@ -6079,7 +6105,21 @@
     // elsewhere as generic filler — see todayMeetingBlockMatch_/buildTodayFixed.
     if (ev.start) {
       const dt = isoToLocalDateHm_(ev.start);
-      if (dt) { item.meetingDate = dt.date; item.meetingStart = dt.hm; }
+      if (dt) {
+        item.meetingDate = dt.date; item.meetingStart = dt.hm;
+        // Offer the meeting's date and time as the due date (2026-09-21, tracker task: "when
+        // linking a meeting, update due date?"), never silently.
+        if (item.timelineEnd !== dt.date || (dt.hm && (item.dueTime || '') !== dt.hm)) {
+          if (confirm('Set the due date to the meeting, ' + formatDate(dt.date) + (dt.hm ? ' at ' + timeLabel12_(dt.hm) : '') + '?')) {
+            const preset = remindPresetOf_(item), bDue = item.timelineEnd || '', bTime = item.dueTime || '';
+            item.timelineEnd = dt.date; if (dt.hm) item.dueTime = dt.hm; delete item.dueTimeAuto; if (!s) item.dueOverride = true;
+            if (bDue !== dt.date) logHistory(t, s ? 'subitem-due' : 'due', bDue || null, dt.date);
+            if (dt.hm && bTime !== dt.hm) logHistory(t, s ? 'subitem-dueTime' : 'dueTime', bTime || null, dt.hm);
+            followDueReminder_(item, preset);
+            if (!s) cascadeDependents(t.id);
+          }
+        }
+      }
     }
     if (ev.end) {
       const dtEnd = isoToLocalDateHm_(ev.end);
@@ -6095,7 +6135,7 @@
         // Fall back to the first docs[] link when there's no legacy `doc` — otherwise the
         // calendar-event write-back carried an empty taskLink for every task whose only
         // link lives in docs[], which is now the normal case.
-        body: JSON.stringify({ eventId: ev.id, taskTitle: item.title, taskLink: item.doc || (item.docs && item.docs[0] && item.docs[0].url) || '' })
+        body: JSON.stringify({ eventId: ev.id, taskTitle: item.title, taskLink: (item.docs && item.docs[0] && item.docs[0].url) || '' })
       });
     } catch (err) { /* non-fatal */ }
   }
@@ -6120,9 +6160,11 @@
   // time component for due dates"). remindAt is a local 'YYYY-MM-DDTHH:mm'; the backend emails the
   // owner when it comes due and stamps reminderSentAt. Presets are relative to the due date and
   // its time (09:00 when no time is set).
-  const REMIND_PRESETS = [['', 'No reminder'], ['0', 'At due time'], ['15', '15 min before'], ['60', '1 hour before'], ['1440', '1 day before'], ['custom', 'Custom…']];
+  const REMIND_PRESETS = [['', 'No reminder'], ['0', 'At due time'], ['15', '15 min before'], ['60', '1 hour before'], ['1440', '1 day before'], ['daybefore8', 'Day before, 8 AM'], ['custom', 'Custom…']];
+  const DAY_BEFORE_HM = '08:00';   // the fixed daily reminder time (Durand: "daily reminder time fixed at 8am")
   function remindPresetOf_(item) {
     if (!item.remindAt) return '';
+    if (item.timelineEnd && item.remindAt === addDays(item.timelineEnd, -1) + 'T' + DAY_BEFORE_HM) return 'daybefore8';
     const base = dueDateTime_(item);
     if (!base) return 'custom';
     const diff = Math.round((base - new Date(item.remindAt.slice(0, 16) + ':00')) / 60000);
@@ -6137,6 +6179,7 @@
   function remindAtFor_(item, preset) {
     if (preset === '' || preset == null) return '';
     if (preset === 'custom') return item.remindAt || '';
+    if (preset === 'daybefore8') return item.timelineEnd ? addDays(item.timelineEnd, -1) + 'T' + DAY_BEFORE_HM : '';
     const base = dueDateTime_(item);
     if (!base) return '';
     return localMinuteIso_(new Date(base.getTime() - Number(preset) * 60000));
@@ -6352,18 +6395,22 @@
     // A preset reminder follows the due time; an item with no reminder yet gets the default
     // one (Settings > General) the moment a time is set (2026-09-18, per Durand "reminder
     // should be set to defaults when a time is added").
-    if (preset && preset !== 'custom') { ctx.item.remindAt = remindAtFor_(ctx.item, preset); delete ctx.item.reminderSentAt; }
-    else if (val && !ctx.item.remindAt && remindDefault_() && dueDateTime_(ctx.item)) {
+    // A day-before reminder that only existed because there was no time gives way to the
+    // time-based default the moment a time arrives.
+    if (preset && preset !== 'custom' && preset !== 'daybefore8') { ctx.item.remindAt = remindAtFor_(ctx.item, preset); delete ctx.item.reminderSentAt; }
+    else if (val && (!ctx.item.remindAt || preset === 'daybefore8') && remindDefault_() && dueDateTime_(ctx.item)) {
       ctx.item.remindAt = remindAtFor_(ctx.item, remindDefault_()); delete ctx.item.reminderSentAt;
       logHistory(ctx.t, idx == null ? 'remindAt' : 'subitem-remindAt', null, ctx.item.remindAt);
     }
     renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
   // Default reminder preset (minutes before the due time as a string; '' = none), stored in
-  // meta.remindDefault; 15 min before when unset.
+  // meta.remindDefault; 1 hour before when unset (2026-09-21, tracker task: "1 hour before when
+  // a time is set"). An item with a due DATE but no time gets the day before at 8 AM instead
+  // (defaultDateReminder_).
   function remindDefault_() {
     const v = RAW_META.remindDefault;
-    if (v === undefined || v === null) return '15';
+    if (v === undefined || v === null) return '60';
     const s = String(v);
     return REMIND_PRESETS.some(p => p[0] === s && s !== 'custom') ? s : '';
   }
@@ -6379,13 +6426,20 @@
     const before = t.timelineEnd;
     const presetBefore = remindPresetOf_(t);
     t.timelineEnd = val;
-    if (before !== val) { logHistory(t, 'due', before, val); cascadeDependents(id); followDueReminder_(t, presetBefore); }
+    if (before !== val) { logHistory(t, 'due', before, val); cascadeDependents(id); followDueReminder_(t, presetBefore); if (defaultDateReminder_(t)) logHistory(t, 'remindAt', null, t.remindAt); }
     renderAll(); openTaskCard(id); scheduleSave();
   }
   // The preset is read BEFORE the date moves: a one-day shift would otherwise read as the
   // "1 day before" preset.
   function followDueReminder_(item, preset) {
     if (preset && preset !== 'custom') { item.remindAt = remindAtFor_(item, preset); delete item.reminderSentAt; }
+  }
+  // A due date with no time and no reminder yet gets the day-before-at-8-AM default. Returns
+  // true when it set one (the caller logs it).
+  function defaultDateReminder_(item) {
+    if (!item || !item.timelineEnd || item.dueTime || item.remindAt || !remindDefault_()) return false;
+    item.remindAt = remindAtFor_(item, 'daybefore8'); delete item.reminderSentAt;
+    return !!item.remindAt;
   }
   function modalHoursChange(id, val) {
     const t = findTask(id);
@@ -6692,7 +6746,7 @@
     if (pinBtn) { pinBtn.classList.toggle('toggle-active', isPinned_(t)); pinBtn.innerHTML = isPinned_(t) ? '&#128204; Pinned' : '&#128204; Pin'; pinBtn.title = isPinned_(t) ? 'Unpin (drops back into its group)' : 'Pin to the top of every list'; }
     setTimeout(function() { const ov = document.getElementById('taskModal'); if (ov && ov.classList.contains('open') && !ov.contains(document.activeElement)) ov.focus(); }, 0);
     document.getElementById('modalTitle').innerHTML =
-      `<span class="modal-edit" contenteditable="true" spellcheck="true" onblur="modalTitleEdit(${id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>`;
+      `<span class="modal-edit" contenteditable="true" spellcheck="true" autocorrect="on" autocapitalize="sentences" onblur="modalTitleEdit(${id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>`;
     const pct = taskProgress(t);
     const tagsChips = (t.tags || []).map(function(tag, i) {
       return `<span class="tag-chip modal-tag-chip ${tagClass(tag)}">${escapeHtml(tag)}<span class="rm" onclick="modalRemoveTag(${id}, ${i})" title="Remove tag">&#10005;</span></span>`;
@@ -6713,8 +6767,7 @@
       actualRowHtml_(t, id),
       `<div class="modal-row"><b>Progress</b><span>${pct}%</span></div>`,
       reviewFlagsRowHtml_(t),
-      `<div class="modal-row"><b>Tags</b><span class="modal-tags">${tagsChips}<input type="text" class="text-input tag-input" list="tagOptions" placeholder="+ tag" spellcheck="true" onkeydown="if(event.key==='Enter'){event.preventDefault();modalAddTagFrom(${id}, this);}" onchange="modalAddTagFrom(${id}, this)"></span></div>`,
-      `<div class="modal-row"><b>Source</b><span class="modal-source">${t.doc ? `<a href="${escapeHtml(safeUrl(t.doc))}" target="_blank" rel="noopener" class="doc-link-text">${escapeHtml(t.doc)}</a>` : '<span class="modal-empty">Not linked — add the email or meeting doc this came from</span>'}<button type="button" class="icon-btn" onclick="modalEditDoc(${id})" title="${t.doc ? 'Edit source link' : 'Add source link'}">${t.doc ? '&#9998;' : '+ link'}</button></span></div>`,
+      `<div class="modal-row"><b>Tags</b><span class="modal-tags">${tagsChips}<input type="text" class="text-input tag-input" list="tagOptions" placeholder="+ tag" spellcheck="true" autocorrect="on" autocapitalize="sentences" onkeydown="if(event.key==='Enter'){event.preventDefault();modalAddTagFrom(${id}, this);}" onchange="modalAddTagFrom(${id}, this)"></span></div>`,
       `<div class="modal-row"><b>Links</b><span class="modal-source">${docsListHtml(t.docs, id, null)}<button type="button" class="icon-btn" onclick="addManualDoc(${id}, null)" title="Search Drive, email and calendar, paste a link, upload a file or paste an image">+ link</button><label class="icon-btn" title="Attach files from this computer">&#128206;<input type="file" multiple style="display:none" onchange="attachFiles_(this.files, { taskId: ${id}, subIdx: null }); this.value = ''"></label></span></div>`,
       claudeRowHtml_(t),
       (t.taskType === 'Meeting' ? `<div class="modal-row"><b>Meeting</b><span class="modal-source"><button type="button" class="icon-btn" onclick="openMeetingPicker(${id}, null)" title="Link a calendar meeting">${(t.docs || []).some(d => d.type === 'meeting') ? '&#128197; Change linked meeting' : '+ Link a meeting'}</button></span></div>` : ''),
@@ -6745,7 +6798,7 @@
         }
         return nameRow + `<div class="modal-row"><b>Phone</b><span class="modal-edit" contenteditable="true" data-placeholder="Add a number to text" onblur="modalFieldEdit(${id}, 'contactPhone', this)">${escapeHtml(t.contactPhone || '')}</span>${t.contactPhone ? `<a class="icon-btn" href="sms:${escapeHtml(t.contactPhone.replace(/[^0-9+]/g, ''))}" title="Text ${escapeHtml(t.contactPhone)}">&#128172; Text</a>` : ''}</div>`;
       })() : ''),
-      `<div class="modal-row modal-row-notes"><b>Notes</b><span class="modal-edit modal-notes" contenteditable="true" spellcheck="true" onblur="modalFieldEdit(${id}, 'notes', this)">${escapeHtml(t.notes || '')}</span></div>`,
+      `<div class="modal-row modal-row-notes"><b>Notes</b><span class="modal-edit modal-notes" contenteditable="true" spellcheck="true" autocorrect="on" autocapitalize="sentences" onblur="modalFieldEdit(${id}, 'notes', this)">${escapeHtml(t.notes || '')}</span></div>`,
       // Disabled 2026-09-03 per Durand — no Anthropic API key is provisioned for the
       // ?target=claude endpoint this calls, so every click just failed. Re-enable by
       // restoring the onclick (and dropping `disabled`) once that's set up.
@@ -6969,6 +7022,7 @@
     const fields = {
       title, group, owner: 'Durand',
       status, priority, tags, timelineEnd: due,
+      remindAt: (due && remindDefault_()) ? remindAtFor_({ timelineEnd: due }, 'daybefore8') : undefined,
       progress: 0, depends: '', doc: '', notes, subitems: [],
       history: [{ ts: new Date().toISOString(), field: 'created', from: null, to: null }]
     };
@@ -7392,14 +7446,26 @@
     applyLoadedDoc_(fresh);
     BASELINE_DOC = freshBaseline; // the diff for a second conflict must still find the edit
     setSyncStatus('saving', 'The tracker changed elsewhere; re-applying your edit to the latest version');
+    setPageLock_(true, 'Re-applying your edit…');
     LAST_CONFLICT_REPLAY = summary;
     return true;
   }
   let LAST_CONFLICT_REPLAY = null;
+  const SAVE_LOCK_MAX_MS = 15000;
+  let PAGE_LOCK_TIMER = null;
+  function setPageLock_(on, label) {
+    let bar = document.getElementById('saveLockBar');
+    if (!bar) { bar = document.createElement('div'); bar.id = 'saveLockBar'; bar.setAttribute('role', 'status'); document.body.appendChild(bar); }
+    bar.textContent = on ? (label || 'Saving…') : '';
+    document.body.classList.toggle('save-lock', !!on);
+    clearTimeout(PAGE_LOCK_TIMER);
+    if (on) PAGE_LOCK_TIMER = setTimeout(function() { document.body.classList.remove('save-lock'); }, SAVE_LOCK_MAX_MS);
+  }
   async function doSaveNow_() {
     const savedId = pendingSaveId;
     pendingSaveId = null;
     saveInFlight = true;
+    setPageLock_(true);
     try {
       const res = await apiFetch('', {
         method: 'POST',
@@ -7467,6 +7533,7 @@
       setSyncStatus('error', err.message || err);
     } finally {
       saveInFlight = false;
+      setPageLock_(false);
     }
   }
 
