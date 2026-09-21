@@ -1064,3 +1064,28 @@ lines alone 231 KB, whole old+new notes per line; task 289 had 36 KB in 29 lines
 - Deployed 2026-09-18 14:40 EDT: web app @88 = backend 2026-09-18.17 (dependency alignment, hand-set
   dates flagged) / UI 2026-09-18.19 = commit b11a41a, `main` fast-forwarded. Durand's go: "flag on
   hand set instead / deploy".
+
+## Add-subtask fix (2026-09-21, backend 2026-09-21.1, dashboard UI 2026-09-21.1)
+
+Per Durand ("its not adding new subtasks" / "i literally just tested it on the pinned task and when
+i submit a subitem on it, nothing happens"). ROOT CAUSE: `taskRowHtml` renders a task's board
+add box (`newsub-<id>`) whenever the task HAS steps, hidden while the step list is collapsed, and
+`addSubitem` read `newsub-<id> || modalNewsub-<id>`, so text typed in the CARD's box was never
+read on any task that already had steps; a task with no steps has no board box, so the 9/18
+live-state check on a fresh task passed and the step was wrongly marked Done. Now
+`addSubitem(id, isModal)` reads the box the submit came from (fallback to the other only when it
+holds text); `addSubitemAndRefocus_` passes `isModal`. SECONDARY: 13 live tasks created by
+patches or the Routine since 9/18 (ids 290-309) carried no `subitems` array, so the push threw on
+them: `add_task` lands `subitems`/`tags` as arrays, `tsgNormalizeTaskShapes_` (subitems, tags,
+docs, history) runs in `tsgAutoScheduleDoc_` on every write, `applyLoadedDoc_` normalises on load.
+Tests: dashboard "add subtask from the CARD of a task that already has steps", "add subtask on a
+task that has NO subitems array", "applyLoadedDoc_ gives every task a subitems and tags array";
+backend "Every task carries a subitems array". DATE-DEPENDENT FIXTURES: five backend checks
+started failing once the calendar passed their hard-coded 2026-09-18/19 dates (the judgment-queue
+answers with `due`, the reminder tick, the 2.5 h step that fitted a Monday's capacity); the
+judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fixtures use
+`futureLocal_(days, hm)`, the step is 4.5 h. Page state in the dashboard harness (`TASKS`,
+`expandedSubtasks`, `RAW_META`) is `let`, reachable only through `w.eval(...)`.
+- Deployed 2026-09-21 14:52 EDT: web app @89 = backend 2026-09-21.1 / UI 2026-09-21.1 = commit
+  7726c8b, `main` fast-forwarded. clasp needed a fresh login (`invalid_rapt`) first, done with the
+  background-fifo method.
