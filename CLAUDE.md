@@ -1120,3 +1120,24 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   `linkMeetingToTarget` confirms setting due date/time to the meeting. Still open on the task:
   multiple/recurring reminders (next), "actionable-task handling" and "approval required is
   automatic" (both need Durand's definition).
+- Deployed 2026-09-21 16:01 EDT: web app @92 = backend 2026-09-21.5 / UI 2026-09-21.8 = commit
+  abd51f2, `main` fast-forwarded. MULTIPLE AND RECURRING REMINDERS: `extraReminders[]` on tasks and
+  steps (`{at, repeat: ''|daily|weekdays|weekly|monthly, sentAt?}`), fired by `tsgReminderTick_` and
+  re-armed (`tsgReArmRepeat_`, weekdays land on a workday); dashboard "+ reminder" rows beside the
+  main bell (`extraRemindersHtml_`). Today label carries the day of week (`weekdayName_`).
+  EVERY DELEGATED ITEM REQUIRES APPROVAL (Durand 2026-09-21: "all delegated tasks should require
+  approval"): `tsgApplyDelegateApproval_` runs in `tsgAutoScheduleDoc_` (every write) and sets
+  `needsApproval = true` on every open task/step whose delegate is anyone but Durand (a person or
+  Claude; `tsgIsDelegatedAway_`), history line source `Delegation`; a hand unset is re-flagged.
+  Dashboard mirrors it on delegate change (`applyDelegateApproval_` in `onTaskDelegateChange` /
+  `onDelegateChange`) and in the New Task form; `approvalToggleHtml_` renders checked+disabled while
+  delegated. Undelegated items keep the hand toggle. Live effect on the first write: ~21 tasks and
+  ~53 steps flagged.
+- TASK TYPE RENAME (Durand 2026-09-21, chose "Hands-on" over Work / Do): backend 2026-09-21.6 / UI
+  2026-09-21.9 (commit ba321a7). `TASK_TYPES` / `TSG_TASK_TYPE_VALUES` / the estimator and tidy
+  prompts say `Hands-on`; `tsgCanonicalTaskType_` (`TSG_TASK_TYPE_ALIASES`: actionable task, schedule
+  task, hands on) rewrites legacy values in `tsgNormalizeTaskShapes_` (every write, tasks and steps),
+  in `tsgEstimateParse_` / tidy answers, and on the dashboard in `applyLoadedDoc_`
+  (`canonicalTaskType_`); badge class `type-hands-on`. README and the protocol skill updated. The
+  earlier "suggested name" for this rename was never recorded anywhere; the choice above is the
+  record.
