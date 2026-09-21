@@ -1598,7 +1598,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-21.6';
+  const UI_VERSION = '2026-09-21.7';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -4790,11 +4790,14 @@
     const schedule = scheduled.concat(openGaps).sort((a, b) => a.start - b.start);
     return { schedule: schedule, unplaced: queue };
   }
+  // The Today view names the day of week (2026-09-21, tracker task "today view should show day of week").
+  function weekdayName_(iso) { const d = new Date(iso + 'T12:00:00'); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { weekday: 'long' }); }
   function relativeDayLabel(iso) {
     const today = todayISO();
-    if (iso === today) return 'Today';
-    if (iso === addDays(today, 1)) return 'Tomorrow';
-    return formatDate(iso);
+    const dated = weekdayName_(iso) + ', ' + formatDate(iso);
+    if (iso === today) return 'Today · ' + dated;
+    if (iso === addDays(today, 1)) return 'Tomorrow · ' + dated;
+    return dated;
   }
   // "Due from others" = delegate progress visibility: subtasks delegated to someone other
   // than Durand, due soon. This is the natural place to watch delegate progress from,

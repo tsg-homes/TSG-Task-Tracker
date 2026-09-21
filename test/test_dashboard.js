@@ -1384,6 +1384,13 @@ setTimeout(async () => {
     if (t.extraReminders) throw new Error('not removed');
     w.closeTaskCard();
   });
+  tryCall('Today view label carries the day of week (2026-09-21)', () => {
+    const today = w.todayISO();
+    if (!/^Today · (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), /.test(w.relativeDayLabel(today))) throw new Error('today label: ' + w.relativeDayLabel(today));
+    if (!/^Friday, /.test(w.relativeDayLabel('2026-09-25'))) throw new Error('dated label: ' + w.relativeDayLabel('2026-09-25'));
+    w.eval("todayGranularity = 'day'");
+    if (!w.renderTodayNavBar().includes(w.escapeHtml(w.relativeDayLabel(w.eval('todayViewDate'))))) throw new Error('nav bar does not show the label');
+  });
   tryCall('applyLoadedDoc_ gives every task a subitems and tags array', () => {
     const before = w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })');
     const d2 = w.cloneJson_(before); d2.tasks.push({ id: 902, title: 'Stepless', group: 'Marketing', owner: 'Durand', status: 'Not Started', priority: 'Low', history: [] });
