@@ -1089,3 +1089,9 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
 - Deployed 2026-09-21 14:52 EDT: web app @89 = backend 2026-09-21.1 / UI 2026-09-21.1 = commit
   7726c8b, `main` fast-forwarded. clasp needed a fresh login (`invalid_rapt`) first, done with the
   background-fifo method.
+- FRIDAY WORK HOURS (Durand, 2026-09-21): "friday work hours are 10-2 but capacity doesn't change".
+  The Friday window is 10:00-14:00; the capacity figure stays as the Daily Capacity ruleset has it.
+  What still assumes a 07:00-16:30 day on Fridays in Code.gs: `TSG_DAY_END_HM` (16:30, the
+  due-date floor) and `TSG_DAY_BLOCKS` (errand 10:00, lunch 12-13, relief 14:00) plus the
+  dashboard's day template; the meeting-slot finder already knows Fri 10-2 (`TSG_MEETING_WINDOWS`
+  third window). Tracked as a Claude step on the tracker feature task; not built yet.
