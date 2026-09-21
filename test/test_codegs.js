@@ -2197,3 +2197,35 @@ section('Friday is a 10-2 day: floor, meeting-slot blocks (2026-09-21)');
   check('the first Friday slot is 10:00 (the errand block ends when the day starts)', r.ok && r.window === 'third' && !!first && first.getHours() === 10 && first.getMinutes() === 0);
   check('no Friday slot overlaps lunch', r.slots.every(sl => { const h = new Date(sl.startISO).getHours(); return h < 12 || h >= 13; }));
 }
+
+section('Multiple and recurring reminders: extraReminders[] fire, re-arm and spend (2026-09-21)');
+{
+  check('weekdays repeat skips the weekend (Fri -> Mon)', sandbox.tsgNextRepeat_('2026-09-25T08:00', 'weekdays') === '2026-09-28T08:00');
+  check('daily / weekly / monthly advance; monthly clamps the day', sandbox.tsgNextRepeat_('2026-09-30T09:15', 'daily') === '2026-10-01T09:15' && sandbox.tsgNextRepeat_('2026-09-21T09:15', 'weekly') === '2026-09-28T09:15' && sandbox.tsgNextRepeat_('2026-01-31T09:15', 'monthly') === '2026-02-28T09:15');
+  const props = {}; const origProps5 = sandbox.PropertiesService.getScriptProperties;
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (props[k] == null ? null : props[k]), setProperty: (k, v) => { props[k] = v; } });
+  const d = freshDoc();
+  d.tasks[0].extraReminders = [{ at: '2020-01-06T09:00', repeat: 'weekly' }, { at: '2020-01-02T09:00', repeat: '' }, { at: '2020-01-03T09:00', repeat: '', sentAt: '2020-01-03T09:00:05.000Z' }];
+  d.tasks[0].subitems = [{ title: 'Step one', done: false, status: 'Not Started', notes: '', extraReminders: [{ at: '2020-01-01T07:00', repeat: 'daily' }] }];
+  const pend = sandbox.tsgPendingReminders_(d);
+  check('pending lists the unspent one-shot, the weekly and the step daily, not the spent one-shot', pend.length === 3 && pend.every(p => p.extraIdx != null) && !pend.some(p => p.key === 't1x2'));
+  const origGetFile5 = sandbox.DriveApp.getFileById, origFolder5 = sandbox.DriveApp.getFolderById;
+  let queued = [];
+  sandbox.DriveApp.getFileById = () => ({ getBlob: () => ({ getDataAsString: () => JSON.stringify(d) }), setContent: () => {}, getName: () => 'data' });
+  sandbox.DriveApp.getFolderById = () => ({ createFile: (name, body) => { queued.push(JSON.parse(body)); }, getFilesByName: () => ({ hasNext: () => false }), getFiles: () => ({ hasNext: () => false }), getFoldersByName: () => ({ hasNext: () => true, next: () => ({ createFile: (n) => ({ getName: () => n }) }) }) });
+  sandbox.tsgAutoScheduleDoc_(d);
+  sentMail = []; cacheStore = {};
+  const fired = sandbox.tsgReminderTick_();
+  check('all three due extras are emailed; a repeating one says so in the subject', fired.fired === 2 && sentMail.length === 3 && sentMail.some(m => /^Reminder \(weekly\)/.test(m.subject)) && sentMail.some(m => /^Reminder \(daily\)/.test(m.subject)));
+  const bulk = queued[0]; const taskOp = bulk.ops.find(o => o.op === 'update_task'), subOp = bulk.ops.find(o => o.op === 'update_subitem');
+  check('one op per item carries the whole list: the weekly re-armed to a future date with sentAt, the one-shot spent, the step daily re-armed', !!taskOp && taskOp.fields.extraReminders.length === 3 && taskOp.fields.extraReminders[0].sentAt && new Date(taskOp.fields.extraReminders[0].at) > new Date() && taskOp.fields.extraReminders[0].repeat === 'weekly' && taskOp.fields.extraReminders[1].sentAt && taskOp.fields.extraReminders[1].at === '2020-01-02T09:00' && !!subOp && subOp.fields.extraReminders[0].sentAt && new Date(subOp.fields.extraReminders[0].at) > new Date());
+  check('the next-reminder property now points at the earliest re-armed extra', !!props.TSG_NEXT_REMINDER && new Date(props.TSG_NEXT_REMINDER) > new Date());
+  sandbox.DriveApp.getFileById = origGetFile5; sandbox.DriveApp.getFolderById = origFolder5; sandbox.PropertiesService.getScriptProperties = origProps5; sentMail = []; cacheStore = {};
+}
+
+{
+  const now = new Date('2026-09-21T15:00:00-04:00');
+  check('re-arm jumps a years-overdue daily reminder straight past now, keeping the time', sandbox.tsgReArmRepeat_('2020-01-01T07:00', 'daily', now) === '2026-09-22T07:00');
+  check('re-arm keeps a weekday reminder on a workday', sandbox.tsgReArmRepeat_('2026-09-19T07:00', 'weekdays', now) === '2026-09-22T07:00' && sandbox.tsgReArmRepeat_('2026-09-25T16:00', 'weekdays', new Date('2026-09-25T16:30:00-04:00')) === '2026-09-28T16:00');
+  check('a future reminder is left alone', sandbox.tsgReArmRepeat_('2027-01-01T07:00', 'weekly', now) === '2027-01-01T07:00');
+}

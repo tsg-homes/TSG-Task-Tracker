@@ -1238,6 +1238,7 @@
   .sched-detail-row { display: flex; justify-content: space-between; gap: 16px; font-size: 13px; padding: 8px 0; border-bottom: 1px solid var(--border); }
   .sched-detail-row b { color: var(--text-muted); font-weight: 700; }
   .sched-detail-note { font-size: 12px; color: var(--text-muted); font-style: italic; }
+  .remind-extra { display: flex; gap: 6px; align-items: center; margin-top: 3px; font-size: 12px; flex-wrap: wrap; }
   .today-pinned { margin: 8px 0 12px; padding: 8px 10px; border: 1px solid var(--gridline); border-radius: 8px; background: var(--surface-2); }
   .today-pinned-head { font-weight: 700; font-size: 12px; margin-bottom: 4px; }
   .today-admin-line { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 5px; border-radius: 5px; }
@@ -1597,7 +1598,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-21.5';
+  const UI_VERSION = '2026-09-21.6';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -6184,11 +6185,48 @@
     if (!base) return '';
     return localMinuteIso_(new Date(base.getTime() - Number(preset) * 60000));
   }
+  // Extra reminders (2026-09-21, tracker task "multiple and recurring reminders"): each row is a
+  // datetime + repeat (none / daily / weekdays / weekly / monthly) + remove; the backend re-arms a
+  // repeating one after it fires (extraReminders[].at advances, sentAt stamps).
+  const REPEAT_OPTIONS = [['', 'Once'], ['daily', 'Daily'], ['weekdays', 'Weekdays'], ['weekly', 'Weekly'], ['monthly', 'Monthly']];
+  function extraRemindersHtml_(item, args) {
+    const list = Array.isArray(item.extraReminders) ? item.extraReminders : [];
+    const rows = list.map((r, x) => `<div class="remind-extra"><input type="datetime-local" class="due-input" value="${escapeHtml(r.at || '')}" onchange="onExtraReminderAt_(${args}, ${x}, this.value)"><select class="due-input" onchange="onExtraReminderRepeat_(${args}, ${x}, this.value)">${REPEAT_OPTIONS.map(o => `<option value="${o[0]}" ${(r.repeat || '') === o[0] ? 'selected' : ''}>${o[1]}</option>`).join('')}</select>${r.sentAt ? `<span class="hist-time" title="Last emailed ${escapeHtml(r.sentAt)}">· sent</span>` : ''}<button type="button" class="icon-btn" title="Remove this reminder" onclick="removeExtraReminder_(${args}, ${x})">&#10005;</button></div>`).join('');
+    return rows + `<button type="button" class="btn small" style="margin-top:3px;" onclick="addExtraReminder_(${args})" title="Add another reminder, optionally repeating">+ reminder</button>`;
+  }
+  function extraCtx_(id, idx) { const ctx = itemFor_(id, idx); if (!ctx || !ctx.item) return null; if (!Array.isArray(ctx.item.extraReminders)) ctx.item.extraReminders = []; return ctx; }
+  function extraDone_(ctx, id, idx, what) {
+    logHistory(ctx.t, idx == null ? 'reminders' : 'subitem-reminders', null, what);
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+  function addExtraReminder_(id, idx) {
+    const ctx = extraCtx_(id, idx); if (!ctx) return;
+    ensureNotifyPermission_();
+    const base = dueDateTime_(ctx.item); const at = localMinuteIso_(base ? new Date(base.getTime() - 3600000) : new Date(Date.now() + 3600000));
+    ctx.item.extraReminders.push({ at: at, repeat: '' });
+    extraDone_(ctx, id, idx, 'added ' + at);
+  }
+  function onExtraReminderAt_(id, idx, x, val) {
+    const ctx = extraCtx_(id, idx); if (!ctx || !ctx.item.extraReminders[x]) return;
+    ctx.item.extraReminders[x].at = String(val || '').slice(0, 16); delete ctx.item.extraReminders[x].sentAt;
+    extraDone_(ctx, id, idx, 'moved to ' + ctx.item.extraReminders[x].at);
+  }
+  function onExtraReminderRepeat_(id, idx, x, val) {
+    const ctx = extraCtx_(id, idx); if (!ctx || !ctx.item.extraReminders[x]) return;
+    ctx.item.extraReminders[x].repeat = REPEAT_OPTIONS.some(o => o[0] === val) ? val : ''; delete ctx.item.extraReminders[x].sentAt;
+    extraDone_(ctx, id, idx, (ctx.item.extraReminders[x].repeat || 'once') + ' at ' + ctx.item.extraReminders[x].at);
+  }
+  function removeExtraReminder_(id, idx, x) {
+    const ctx = extraCtx_(id, idx); if (!ctx || !ctx.item.extraReminders[x]) return;
+    const gone = ctx.item.extraReminders.splice(x, 1)[0];
+    if (!ctx.item.extraReminders.length) delete ctx.item.extraReminders;
+    extraDone_(ctx, id, idx, 'removed ' + (gone.at || ''));
+  }
   function reminderControlHtml_(item, id, idx) {
     const preset = remindPresetOf_(item);
     const args = idx == null ? `${id}, null` : `${id}, ${idx}`;
     const sent = item.reminderSentAt ? ` <span class="hist-time" title="Reminder emailed ${escapeHtml(item.reminderSentAt)}">· sent</span>` : '';
-    return `<span class="remind-wrap" title="Email reminder to you">&#128276; <select class="due-input remind-select" onchange="onRemindPreset(${args}, this.value)">${REMIND_PRESETS.map(p => `<option value="${p[0]}" ${p[0] === preset ? 'selected' : ''}>${p[1]}</option>`).join('')}</select>${preset === 'custom' ? `<input type="datetime-local" class="due-input" value="${escapeHtml(item.remindAt || '')}" onchange="onRemindCustom(${args}, this.value)">` : ''}${sent}</span>`;
+    return `<span class="remind-wrap" title="Email reminder to you">&#128276; <select class="due-input remind-select" onchange="onRemindPreset(${args}, this.value)">${REMIND_PRESETS.map(p => `<option value="${p[0]}" ${p[0] === preset ? 'selected' : ''}>${p[1]}</option>`).join('')}</select>${preset === 'custom' ? `<input type="datetime-local" class="due-input" value="${escapeHtml(item.remindAt || '')}" onchange="onRemindCustom(${args}, this.value)">` : ''}${sent}</span>${extraRemindersHtml_(item, args)}`;
   }
   // Native notifications while the tracker is open (2026-09-17, per Durand): a due reminder
   // also raises a browser Notification (or an in-page toast when permission is missing), once
@@ -6256,10 +6294,15 @@
     const dayAgo = now - 86400000;
     (TASKS || []).forEach(t => {
       const consider = (item, subIdx) => {
-        if (!item || !item.remindAt || item.done || item.status === 'Done') return;
-        const at = new Date(String(item.remindAt).slice(0, 16) + ':00').getTime();
-        if (isNaN(at) || at > now || at < dayAgo) return;
-        out.push({ key: 't' + t.id + (subIdx != null ? 's' + subIdx : ''), t: t, item: item, subIdx: subIdx, remindAt: item.remindAt });
+        if (!item || item.done || item.status === 'Done') return;
+        const base = 't' + t.id + (subIdx != null ? 's' + subIdx : '');
+        const push = (key, remindAt) => {
+          const at = new Date(String(remindAt).slice(0, 16) + ':00').getTime();
+          if (isNaN(at) || at > now || at < dayAgo) return;
+          out.push({ key: key, t: t, item: item, subIdx: subIdx, remindAt: remindAt });
+        };
+        if (item.remindAt) push(base, item.remindAt);
+        (Array.isArray(item.extraReminders) ? item.extraReminders : []).forEach((r, x) => { if (r && r.at) push(base + 'x' + x, r.at); });
       };
       consider(t, null);
       (t.subitems || []).forEach((s, i) => consider(s, i));

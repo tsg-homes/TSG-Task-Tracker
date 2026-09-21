@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-21.3';
+const TSG_CODE_VERSION = '2026-09-21.4';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -1445,14 +1445,62 @@ function tsgReminderPending_(item) {
   if (item.done || item.status === 'Done') return false;
   return !!tsgReminderDate_(item.remindAt);
 }
+// Extra reminders (2026-09-21, tracker task "allow setting multiple and recurring reminders"):
+// `extraReminders: [{at: 'YYYY-MM-DDTHH:mm', repeat: ''|'daily'|'weekdays'|'weekly'|'monthly',
+// sentAt?}]` on tasks and steps, beside the single preset-driven `remindAt`. A one-shot entry is
+// spent once `sentAt` is stamped; a repeating one is re-armed by advancing `at` past now.
+var TSG_REPEATS = ['', 'daily', 'weekdays', 'weekly', 'monthly'];
+function tsgNextRepeat_(atStr, repeat) {
+  var m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(String(atStr || ''));
+  if (!m) return '';
+  var date = m[1], hm = m[2];
+  if (repeat === 'daily') date = tsgAddDays_(date, 1);
+  else if (repeat === 'weekly') date = tsgAddDays_(date, 7);
+  else if (repeat === 'weekdays') { date = tsgAddDays_(date, 1); var g = 0; while (!tsgIsWorkdayIso_(date) && g++ < 7) date = tsgAddDays_(date, 1); }
+  else if (repeat === 'monthly') {
+    var d = tsgParseIsoDate_(date); if (!d) return '';
+    var day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + 1);
+    var last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    d.setDate(Math.min(day, last)); date = tsgIsoDate_(d);
+  } else return '';
+  return date + 'T' + hm;
+}
+/** The first occurrence of a repeating reminder after `now` (a reminder years overdue jumps, never loops). */
+function tsgReArmRepeat_(atStr, repeat, now) {
+  var at = tsgReminderDate_(atStr); if (!at) return '';
+  if (at > now) return atStr;
+  var m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(String(atStr)), hm = m[2];
+  var DAY = 86400000;
+  if (repeat === 'daily' || repeat === 'weekdays' || repeat === 'weekly') {
+    var period = repeat === 'weekly' ? 7 * DAY : DAY;
+    var n = Math.floor((now - at) / period) + 1;
+    var d = new Date(at.getTime() + n * period);
+    var iso = tsgIsoDate_(d) + 'T' + hm;
+    if (repeat === 'weekdays') { var date = iso.slice(0, 10), g = 0; while (!tsgIsWorkdayIso_(date) && g++ < 7) date = tsgAddDays_(date, 1); iso = date + 'T' + hm; }
+    return iso;
+  }
+  if (repeat === 'monthly') { var cur = atStr, g2 = 0; while (cur && tsgReminderDate_(cur) <= now && g2++ < 1200) cur = tsgNextRepeat_(cur, 'monthly'); return cur; }
+  return '';
+}
+function tsgExtraReminderPending_(item, r) {
+  if (!item || !r || item.done || item.status === 'Done') return false;
+  var at = tsgReminderDate_(r.at); if (!at) return false;
+  if (!r.sentAt) return true;
+  return !!r.repeat && new Date(r.sentAt) < at;
+}
 function tsgPendingReminders_(doc) {
   var out = [];
   (doc && doc.tasks || []).forEach(function(t) {
     if (!t) return;
-    if (tsgReminderPending_(t)) out.push({ key: 't' + t.id, task: t, item: t, subIdx: null, at: tsgReminderDate_(t.remindAt) });
-    (t.subitems || []).forEach(function(s, i) {
-      if (tsgReminderPending_(s)) out.push({ key: 't' + t.id + 's' + i, task: t, item: s, subIdx: i, at: tsgReminderDate_(s.remindAt) });
-    });
+    var consider = function(item, subIdx) {
+      var base = 't' + t.id + (subIdx == null ? '' : 's' + subIdx);
+      if (tsgReminderPending_(item)) out.push({ key: base, task: t, item: item, subIdx: subIdx, at: tsgReminderDate_(item.remindAt) });
+      (Array.isArray(item.extraReminders) ? item.extraReminders : []).forEach(function(r, x) {
+        if (tsgExtraReminderPending_(item, r)) out.push({ key: base + 'x' + x, task: t, item: item, subIdx: subIdx, at: tsgReminderDate_(r.at), extraIdx: x, repeat: r.repeat || '' });
+      });
+    };
+    consider(t, null);
+    (t.subitems || []).forEach(function(s, i) { consider(s, i); });
   });
   out.sort(function(a, b) { return a.at - b.at; });
   return out;
@@ -1489,20 +1537,35 @@ function tsgReminderTick_() {
   catch (err) { return { ok: false, error: 'data unreadable: ' + err.message }; }
   var pending = tsgPendingReminders_(doc);
   var due = pending.filter(function(r) { return r.at <= now && !tsgCacheGet_('reminderFired:' + r.key); });
-  var ops = [];
+  var ops = [], extraTouched = {};
   due.forEach(function(r) {
-    var subject = 'Reminder: ' + r.item.title + (r.item.timelineEnd ? ' — due ' + r.item.timelineEnd + (r.item.dueTime ? ' ' + r.item.dueTime : '') : '');
+    var subject = 'Reminder' + (r.repeat ? ' (' + r.repeat + ')' : '') + ': ' + r.item.title + (r.item.timelineEnd ? ' — due ' + r.item.timelineEnd + (r.item.dueTime ? ' ' + r.item.dueTime : '') : '');
     try { MailApp.sendEmail(OWNER_EMAIL, subject, tsgReminderBody_(r)); }
     catch (mailErr) { Logger.log('[reminders] send failed for ' + r.key + ': ' + mailErr.message); return; }
     tsgCachePut_('reminderFired:' + r.key, '1', 900);
     var sentAt = now.toISOString();
+    if (r.extraIdx != null) {
+      // Stamp in memory; one op per item carries the whole list after the loop, so several
+      // extras firing together never overwrite each other.
+      var entry = r.item.extraReminders[r.extraIdx];
+      entry.sentAt = sentAt;
+      if (entry.repeat) { var nxt = tsgReArmRepeat_(entry.at, entry.repeat, now); if (nxt) entry.at = nxt; }
+      var ik = 't' + r.task.id + (r.subIdx == null ? '' : 's' + r.subIdx);
+      extraTouched[ik] = r;
+      return;
+    }
     if (r.subIdx == null) ops.push({ op: 'update_task', id: r.task.id, fields: { reminderSentAt: sentAt } });
     else ops.push({ op: 'update_subitem', id: r.task.id, index: r.subIdx, expectTitle: r.item.title, fields: { reminderSentAt: sentAt } });
+  });
+  Object.keys(extraTouched).forEach(function(ik) {
+    var r = extraTouched[ik];
+    if (r.subIdx == null) ops.push({ op: 'update_task', id: r.task.id, fields: { extraReminders: r.item.extraReminders } });
+    else ops.push({ op: 'update_subitem', id: r.task.id, index: r.subIdx, expectTitle: r.item.title, fields: { extraReminders: r.item.extraReminders } });
   });
   if (ops.length) tsgQueueDataPatch_({ op: 'bulk', source: 'Reminder', ops: ops });
   // Point the property at the next reminder still in the future; the queued patch's write
   // re-indexes properly once it lands.
-  var later = pending.filter(function(r) { return r.at > now; });
+  var later = tsgPendingReminders_(doc).filter(function(r) { return r.at > now; });   // re-read: repeating extras were re-armed above
   try { PropertiesService.getScriptProperties().setProperty(TSG_REMINDER_PROP, later.length ? later[0].at.toISOString() : ''); } catch (err) {}
   return { ok: true, fired: ops.length, next: later.length ? later[0].at.toISOString() : '' };
 }

@@ -1367,6 +1367,23 @@ setTimeout(async () => {
       console.log('OK   -', label);
     } catch (e) { console.log('FAIL -', label, '->', e.message); FAILS++; }
   })();
+  tryCall('extra reminders: add, set repeat, appear in the card and in the due list, remove (2026-09-21)', () => {
+    const t = w.findTask(1);
+    delete t.extraReminders;
+    w.addExtraReminder_(1, null);
+    if (!t.extraReminders || t.extraReminders.length !== 1 || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(t.extraReminders[0].at)) throw new Error('not added: ' + JSON.stringify(t.extraReminders));
+    w.onExtraReminderRepeat_(1, null, 0, 'weekdays');
+    if (t.extraReminders[0].repeat !== 'weekdays') throw new Error('repeat not set');
+    w.openTaskCard(1);
+    if (!doc.getElementById('taskModal').innerHTML.includes('remind-extra')) throw new Error('row not rendered on the card');
+    const past = w.localMinuteIso_(new Date(Date.now() - 600000));
+    w.onExtraReminderAt_(1, null, 0, past);
+    if (!w.dueReminders_(Date.now()).some(r => r.key === 't1x0')) throw new Error('extra not in the due list');
+    if (!t.history.some(h => h.field === 'reminders')) throw new Error('no history line');
+    w.removeExtraReminder_(1, null, 0);
+    if (t.extraReminders) throw new Error('not removed');
+    w.closeTaskCard();
+  });
   tryCall('applyLoadedDoc_ gives every task a subitems and tags array', () => {
     const before = w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })');
     const d2 = w.cloneJson_(before); d2.tasks.push({ id: 902, title: 'Stepless', group: 'Marketing', owner: 'Durand', status: 'Not Started', priority: 'Low', history: [] });
