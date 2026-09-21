@@ -535,6 +535,12 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
 
 ## Cloud (Claude Code on the web) session facts
 
+- SESSION NAMING (Durand, 2026-09-21: "it should follow the naming convention we
+  established"): the owning Code session for a project is titled `<Project> — Main` —
+  capital M, em dash. Live: "TSG Task Tracker — Main", "Block Party Raffle — Main",
+  "Event Raffle Kit — Main" (session_01Vvg2HKJNMYMRFXRq3uYuJt, repo
+  `tsg-homes/event-raffle-kit`, the generic kit extracted from raffle/ on 2026-09-21).
+
 - clasp credentials do not persist between cloud sessions. Each session needs
   `clasp login --no-localhost`: Claude prints the URL, Durand authorizes as
   durand@thestawaszgroup.com, and pastes back the `http://localhost:8888/?...code=...` URL.
