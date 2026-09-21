@@ -1598,7 +1598,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-21.7';
+  const UI_VERSION = '2026-09-21.8';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -3172,6 +3172,20 @@
   // Set here by Durand it is NOT held for review (the review gate only holds automation pushes).
   // taskDelegate() reads the retired `assignee` name too until the server has migrated it.
   function taskDelegate(t) { return (t && (t.delegate || t.assignee)) || ''; }
+  // Every delegated item requires approval (Durand, 2026-09-21: "all delegated tasks should
+  // require approval"): a task or step delegated to anyone but Durand (a person or Claude)
+  // carries needsApproval = true, set the moment the delegate changes here and re-applied by
+  // the server on every write. Undelegated items keep a hand-set flag.
+  function isDelegatedAway_(name) { const n = String(name || '').trim().toLowerCase(); return !!n && n !== 'durand' && n !== 'unassigned'; }
+  function applyDelegateApproval_(t, idx) {
+    const item = idx == null ? t : ((t.subitems || [])[idx] || null); if (!item) return false;
+    const del = idx == null ? taskDelegate(t) : item.delegate;
+    if (!isDelegatedAway_(del) || item.needsApproval === true) return false;
+    const before = !!item.needsApproval;
+    item.needsApproval = true;
+    logHistory(t, idx == null ? 'needsApproval' : 'subitem-needsApproval', idx == null ? String(before) : item.title, 'true');
+    return true;
+  }
   function taskDelegateSelect(taskId, current) {
     return `<select class="person-select" data-id="${taskId}" onchange="onTaskDelegateChange(this)" onclick="event.stopPropagation()" title="Delegate: who is doing this task. It appears on their page.">${personOptions(current, true)}</select>`;
   }
@@ -3188,6 +3202,7 @@
     t.delegate = val;
     delete t.assignee;
     if (before !== val) logHistory(t, 'delegate', before || null, val || null);
+    applyDelegateApproval_(t, null);
     renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
   function delegateSelect(taskId, idx, current) {
@@ -3220,6 +3235,7 @@
     }
     s.delegate = val;
     if (before !== val) logHistory(t, 'subitem-delegate', s.title, val);
+    applyDelegateApproval_(t, idx);
     renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
 
@@ -7072,7 +7088,7 @@
       progress: 0, depends: '', doc: '', notes, subitems: [],
       history: [{ ts: new Date().toISOString(), field: 'created', from: null, to: null }]
     };
-    if (delegate) fields.delegate = delegate;
+    if (delegate) { fields.delegate = delegate; if (isDelegatedAway_(delegate)) { fields.needsApproval = true; fields.history.push({ ts: new Date().toISOString(), field: 'needsApproval', from: 'false', to: 'true', source: 'Durand' }); } }
     const locEl = document.getElementById('ntLocation');
     const location = locEl ? locEl.value.trim() : '';
     if (location) fields.location = location;
@@ -7828,6 +7844,8 @@
   function approvalToggleHtml_(taskId, idx) {
     const t = findTask(taskId); if (!t) return '';
     const item = idx == null ? t : ((t.subitems || [])[idx] || null); if (!item) return '';
+    const del = idx == null ? taskDelegate(t) : item.delegate;
+    if (isDelegatedAway_(del)) return ` <label class="hist-time" title="Delegated work always requires approval: reviewed at completion, then a post-review update session after the approval wait (Settings > Capacity)" onclick="event.stopPropagation()"><input type="checkbox" checked disabled> approval</label>`;
     return ` <label class="hist-time" title="Needs approval: reviewed at completion, then a post-review update session after the approval wait (Settings > Capacity)" onclick="event.stopPropagation()"><input type="checkbox" ${item.needsApproval ? 'checked' : ''} onchange="setNeedsApproval(${taskId}, ${idx == null ? 'null' : idx}, this.checked)"> approval</label>`;
   }
   function setNeedsApproval(taskId, idx, on) {

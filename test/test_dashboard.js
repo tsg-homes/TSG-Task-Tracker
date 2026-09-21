@@ -1391,6 +1391,41 @@ setTimeout(async () => {
     w.eval("todayGranularity = 'day'");
     if (!w.renderTodayNavBar().includes(w.escapeHtml(w.relativeDayLabel(w.eval('todayViewDate'))))) throw new Error('nav bar does not show the label');
   });
+  tryCall('delegating a task or step to anyone but Durand sets needsApproval and locks the toggle (2026-09-21)', () => {
+    const before = w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })');
+    const d2 = w.cloneJson_(before);
+    d2.tasks.push({ id: 903, title: 'Approval rule', group: 'Marketing', owner: 'Durand', status: 'Not Started', priority: 'Low', history: [], tags: [], subitems: [{ title: 'S1', done: false, status: 'Not Started', notes: '' }] });
+    w.applyLoadedDoc_(d2);
+    const sel = doc.createElement('select'); sel.dataset.id = '903';
+    ['', 'Durand', 'Marj', 'Claude'].forEach(v => { const o = doc.createElement('option'); o.value = v; o.textContent = v || 'none'; sel.appendChild(o); });
+    sel.value = 'Durand'; w.onTaskDelegateChange(sel);
+    let t = w.findTask(903);
+    if (t.needsApproval) throw new Error('Durand as delegate must not require approval');
+    if (!/type="checkbox" (?!checked disabled)/.test(w.approvalToggleHtml_(903, null))) throw new Error('toggle should be editable when not delegated away');
+    sel.value = 'Marj'; w.onTaskDelegateChange(sel);
+    t = w.findTask(903);
+    if (t.needsApproval !== true) throw new Error('person delegate did not set needsApproval');
+    if (!t.history.some(h => h.field === 'needsApproval' && h.to === 'true' && h.source === 'Durand')) throw new Error('no history line');
+    if (!/checked disabled/.test(w.approvalToggleHtml_(903, null))) throw new Error('toggle not locked for a delegated task');
+    const ssel = doc.createElement('select'); ssel.dataset.id = '903'; ssel.dataset.idx = '0';
+    ['', 'Claude'].forEach(v => { const o = doc.createElement('option'); o.value = v; o.textContent = v || 'none'; ssel.appendChild(o); });
+    ssel.value = 'Claude'; w.onDelegateChange(ssel);
+    t = w.findTask(903);
+    if (t.subitems[0].needsApproval !== true) throw new Error('Claude step delegate did not set needsApproval');
+    if (!/checked disabled/.test(w.approvalToggleHtml_(903, 0))) throw new Error('step toggle not locked');
+    w.applyLoadedDoc_(before);
+  });
+  tryCall('New Task with a delegate other than Durand is created needing approval', () => {
+    w.openNewTaskModal({ title: 'NT approval', group: 'Marketing' });
+    doc.getElementById('ntTitle').value = 'NT approval';
+    doc.getElementById('ntDelegate').value = 'Claude';
+    const f = w.newTaskFieldsFromModal_();
+    if (f.delegate !== 'Claude' || f.needsApproval !== true) throw new Error('fields: ' + JSON.stringify({ d: f.delegate, a: f.needsApproval }));
+    doc.getElementById('ntDelegate').value = '';
+    const f2 = w.newTaskFieldsFromModal_();
+    if (f2.needsApproval) throw new Error('undelegated new task must not require approval');
+    w.eval('NT_BUSY = false'); w.closeNewTaskModal();
+  });
   tryCall('applyLoadedDoc_ gives every task a subitems and tags array', () => {
     const before = w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })');
     const d2 = w.cloneJson_(before); d2.tasks.push({ id: 902, title: 'Stepless', group: 'Marketing', owner: 'Durand', status: 'Not Started', priority: 'Low', history: [] });

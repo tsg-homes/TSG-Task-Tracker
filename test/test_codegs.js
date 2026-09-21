@@ -2181,6 +2181,30 @@ section('Every task carries a subitems array: add_task and every write normalise
   check('a task already on the board without subitems/tags/docs/history gets them on the next write', Array.isArray(u.subitems) && Array.isArray(u.tags) && Array.isArray(u.docs) && Array.isArray(u.history));
 }
 
+section('Every delegated item requires approval: needsApproval follows the delegate on every write (2026-09-21)');
+{
+  const d = freshDoc();
+  d.tasks.push({ id: 81, title: 'Delegated to Marj', owner: 'Durand', delegate: 'Marj', status: 'Not Started', priority: 'Low', group: 'Ops', subitems: [], tags: [], history: [] });
+  d.tasks.push({ id: 82, title: 'Delegated to Claude, hand-unset', owner: 'Durand', delegate: 'Claude', needsApproval: false, status: 'In Progress', priority: 'Low', group: 'Ops', subitems: [
+    { title: 'Step for Erika', done: false, status: 'Not Started', delegate: 'Erika', notes: '' },
+    { title: 'Step for Durand', done: false, status: 'Not Started', delegate: 'Durand', notes: '' },
+    { title: 'Done step for Perly', done: true, status: 'Done', delegate: 'Perly', notes: '' }
+  ], tags: [], history: [] });
+  d.tasks.push({ id: 83, title: 'Kept by Durand', owner: 'Durand', delegate: 'Durand', status: 'Not Started', priority: 'Low', group: 'Ops', subitems: [], tags: [], history: [] });
+  d.tasks.push({ id: 84, title: 'Done and delegated', owner: 'Durand', delegate: 'Marj', status: 'Done', priority: 'Low', group: 'Ops', subitems: [], tags: [], history: [] });
+  const n = sandbox.tsgApplyDelegateApproval_(d);
+  const t81 = d.tasks.find(x => x.id === 81), t82 = d.tasks.find(x => x.id === 82), t83 = d.tasks.find(x => x.id === 83), t84 = d.tasks.find(x => x.id === 84);
+  check('a task delegated to a person gets needsApproval with a Delegation history line', t81.needsApproval === true && t81.history.some(h => h.field === 'needsApproval' && h.to === 'true' && h.source === 'Delegation'));
+  check('a Claude-delegated task with the flag unset by hand is re-flagged', t82.needsApproval === true);
+  check('an open step delegated to a person is flagged; a Durand step and a Done step are not', t82.subitems[0].needsApproval === true && !t82.subitems[1].needsApproval && !t82.subitems[2].needsApproval && t82.history.some(h => h.field === 'subitem-needsApproval' && h.from === 'Step for Erika' && h.source === 'Delegation'));
+  check('a task delegated to Durand and a Done task are left alone', !t83.needsApproval && !t84.needsApproval);
+  check('three changes counted; a second pass changes nothing', n === 3 && sandbox.tsgApplyDelegateApproval_(d) === 0);
+  const d2 = freshDoc();
+  d2.tasks.push({ id: 85, title: 'Via a write', owner: 'Durand', delegate: 'Claude', status: 'Not Started', priority: 'Low', group: 'Ops', subitems: [], tags: [], history: [] });
+  sandbox.tsgAutoScheduleDoc_(d2);
+  check('tsgAutoScheduleDoc_ (every write) applies the rule', d2.tasks.find(x => x.id === 85).needsApproval === true);
+}
+
 section('Friday is a 10-2 day: floor, meeting-slot blocks (2026-09-21)');
 {
   const fri1300 = new Date('2026-09-25T13:00:00-04:00'), fri1400 = new Date('2026-09-25T14:00:00-04:00'), thu1500 = new Date('2026-09-24T15:00:00-04:00');

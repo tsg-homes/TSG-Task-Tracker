@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-21.4';
+const TSG_CODE_VERSION = '2026-09-21.5';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -2976,6 +2976,38 @@ function tsgNormalizeTaskShapes_(doc) {
     if (!t) return;
     ['subitems', 'tags', 'docs', 'history'].forEach(function(k) { if (!Array.isArray(t[k])) t[k] = []; });
   });
+}
+/**
+ * Every delegated item requires approval (Durand, 2026-09-21: "all delegated tasks should
+ * require approval"). A task or step whose delegate is set and is not Durand (a person or
+ * Claude) carries needsApproval = true; the flag is derived from the delegation, so a hand
+ * unset is re-applied on the next write. Undelegated items keep whatever was set by hand.
+ * Runs on every write; each change gets a history line with source `Delegation`.
+ */
+function tsgIsDelegatedAway_(name) {
+  var n = String(name || '').trim().toLowerCase();
+  return !!n && n !== 'durand' && n !== 'unassigned';
+}
+function tsgApplyDelegateApproval_(doc) {
+  var now = new Date().toISOString(), changed = 0;
+  (doc && doc.tasks || []).forEach(function(t) {
+    if (!t || t.status === 'Done' || t.status === 'Cancelled') return;
+    if (tsgIsDelegatedAway_(tsgTaskDelegate_(t)) && t.needsApproval !== true) {
+      var was = String(!!t.needsApproval);
+      t.needsApproval = true; changed++;
+      if (!Array.isArray(t.history)) t.history = [];
+      t.history.push({ ts: now, field: 'needsApproval', from: was, to: 'true', source: 'Delegation' });
+    }
+    (t.subitems || []).forEach(function(s) {
+      if (!s || s.done || s.status === 'Done' || s.status === 'Cancelled') return;
+      if (tsgIsDelegatedAway_(s.delegate) && s.needsApproval !== true) {
+        s.needsApproval = true; changed++;
+        if (!Array.isArray(t.history)) t.history = [];
+        t.history.push({ ts: now, field: 'subitem-needsApproval', from: s.title, to: 'true', source: 'Delegation' });
+      }
+    });
+  });
+  return changed;
 }
 function tsgMigrateDocToDocs_(doc) {
   (doc.tasks || []).forEach(function(t) {
@@ -6182,6 +6214,7 @@ function tsgAutoScheduleDoc_(doc) {
   tsgMigrateAssigneeToDelegate_(doc);
   tsgMigrateDocToDocs_(doc);
   tsgNormalizeTaskShapes_(doc);
+  tsgApplyDelegateApproval_(doc);
   tsgRollupSubitemHours_(doc, new Date().toISOString());
   tsgApplyTravelTimes_(doc);
   tsgFlagAgingTasks_(doc, tsgTodayIso_());
