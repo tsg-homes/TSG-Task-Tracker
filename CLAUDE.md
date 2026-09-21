@@ -523,6 +523,22 @@ Per Durand ("is there a more efficient way to implement all of the claude calls?
   `/a/macros/<domain>/` form runs the script and then answers with a Drive 404 (@76). The
   chain-link variables were declared after use in the form script (fixed @77).
 
+## Block Party Raffle — session archived 2026-09-21
+
+- The party ran 2026-09-19; the draw and winner email went out from @84. The owning
+  session "Block Party Raffle — Main" (session_01JmbtMxHu9Ss1Lqa8siY3pY) was archived
+  on 2026-09-21 at Durand's request. State at archive:
+  - Live web app: @84 (commit 154e298 + RaffleQr.html). Project HEAD is AHEAD of live by
+    commit 1157d6c: venue corrected 1342 -> 1300 N Hancock (`RAFFLE_VENUE` is the one
+    copy) and the editor-run recovery pair `raffleListMissedReferralInvites` /
+    `raffleSendMissedReferralInvites` (run as info@; used 2026-09-19 16:34 for two stuck
+    invites; it refuses after the close). Durand: "keep it queued if I update something
+    else" — the address fix ships with the next deploy, nobody deploys for it alone.
+  - After the party: rotate FUB_API_KEY and QA_TEST_SECRET in the raffle project; the
+    FUB smart lists and templates were never built (API refused; UI job).
+  - Reusable version: `tsg-homes/event-raffle-kit` (session "Event Raffle Kit — Main").
+    Future events start there, not from raffle/.
+
 ## Chat conventions (Durand, 2026-09-18: "make those two into a rule")
 
 - URLs in chat are always plain, clickable links on their own line. Never wrap a URL in a
