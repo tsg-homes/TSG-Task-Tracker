@@ -1105,3 +1105,18 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   just before 10:00, lunch inside the window, the relief break right after 14:00. Arithmetic Durand
   accepted: 4 h capacity against a 4 h window that also holds lunch and two 15-min bookends, so the
   Friday day view packs about 2.5 h of task blocks and shows the rest as "didn't fit".
+- PINNED-TASK BATCH (2026-09-21, per Durand "why haven't you performed all of the fixes in the
+  pinned claude task"): dashboard UI 2026-09-21.4 + .5, deployed 2026-09-21 ~16:00 EDT as web app
+  @91 = commit b490d65, `main` fast-forwarded; backend unchanged at 2026-09-21.3. Shipped: page
+  lock on every save (`setPageLock_`, `body.save-lock`, pointer events only so typing continues;
+  released in `doSaveNow_`'s finally; STICKY through a "busy"/queued answer and the conflict
+  reload until `applyLoadedDoc_` lands the next document, 90 s hard cap; Durand: "no lock out
+  on failure retry meant there should be one"); Pinned strip on the Today view
+  (`renderTodayPinned_`); autocorrect/autocapitalize attributes on every spell-checked field (the
+  platform ceiling, noted on the step); default reminders (`daybefore8` preset = day before at
+  08:00 for a due date with no time, `defaultDateReminder_`; time set -> `remindDefault_` now 60
+  min when unset; new tasks with a due date get the day-before reminder); timeline header
+  (`tlColLabel_`, 48 px day columns, `tl-weekend`); legacy Source row/`modalEditDoc` removed;
+  `linkMeetingToTarget` confirms setting due date/time to the meeting. Still open on the task:
+  multiple/recurring reminders (next), "actionable-task handling" and "approval required is
+  automatic" (both need Durand's definition).
