@@ -1095,3 +1095,13 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   due-date floor) and `TSG_DAY_BLOCKS` (errand 10:00, lunch 12-13, relief 14:00) plus the
   dashboard's day template; the meeting-slot finder already knows Fri 10-2 (`TSG_MEETING_WINDOWS`
   third window). Tracked as a Claude step on the tracker feature task; not built yet.
+- FRIDAY TEMPLATE (Durand, 2026-09-21: "erands before work on friday, break after, still need lunch!"
+  and "yes friday only has 4 hours of capacity"): backend 2026-09-21.3 / UI 2026-09-21.3, deployed
+  2026-09-21 15:2x EDT as web app @90 = commit 276a9b2, `main` fast-forwarded. Capacity was already 4 h
+  (`TSG_FRIDAY_CAPACITY`, dashboard `dayCapacity`); what changed is the WINDOW: `tsgDayEndHm_` gives
+  14:00 on Fridays for the due-date floor; `tsgDayBlocks_` returns `TSG_FRIDAY_BLOCKS` (errands
+  09:30-10:00, lunch 12-13, relief 14:00-14:20) for the meeting-slot scan; the dashboard's
+  `todayWindow_` makes the Friday agenda 10:00-14:00 with 15-minute admin bookends, the errand block
+  just before 10:00, lunch inside the window, the relief break right after 14:00. Arithmetic Durand
+  accepted: 4 h capacity against a 4 h window that also holds lunch and two 15-min bookends, so the
+  Friday day view packs about 2.5 h of task blocks and shows the rest as "didn't fit".
