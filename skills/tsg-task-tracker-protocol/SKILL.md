@@ -25,7 +25,7 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 ### Data ops (`target: "data"`)
 - `add_task {task}` — fields below; `skipDedup`/`skipEnrich` only when told. A near-duplicate title is merged as a step of the existing task, not added.
 - `update_task {id, fields}` — merged with `Object.assign`; cannot set `id`/`history`; `timelineEnd` also sets `dueOverride`; `assignee` is accepted and landed as `delegate`; `depends` lifts `dependsNone`.
-- NO ID? Any of `update_task`, `update_subitem`, `add_subitem`, `log_time`, `delete_task`, `reorder_subitems`, `request_steps`, `request_tidy` may carry `taskTitle` instead of `id` (backend >= 2026-09-22.1); `update_task`, `delete_task`, `log_time`, `reorder_subitems`, `request_steps`, `request_tidy` also accept `title`. Exact match only (trim, whitespace, case ignored); two open tasks with the same title, or no match, are REFUSED by name with the closest titles and the file is filed. Prefer the id from the index; use the title when you only know the title.
+- IDS ONLY: every op that names a task needs its numeric `id` (from the index file; the dashboard shows it in front of every title as `#321`). There is no lookup by title.
 - `reorder_subitems {id, by: "due"}` or `{id, order: [old indices]}` — reorder a task's steps without resending them (backend >= 2026-09-18.15); a stable sort by `timelineEnd` (undated last) or an explicit permutation; the steps are untouched and the parent logs `subitems-reordered`.
 - `update_subitem {id, index, fields, expectTitle}` — one step by 0-based `index` (`subIdx` is accepted as an alias from backend 2026-09-18.8; before that only `index` worked and a `subIdx` patch was filed FAILED-); `expectTitle` guards against a moved index.
 - `add_subitem {id, subitem}` — `{title, estHours, taskType, priority, delegate, notes}`; always enriched.
@@ -55,7 +55,7 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 
 Tasks: `title` (one imperative line), `group`, `owner`, `delegate` (the person or `Claude` the task sits with — `assignee` is retired), `status` (`meta.status_values`), `priority` (`meta.priority_values`), `tags[]` (topical only — never `Triage`, `Review`, `Aging`, `Scheduling Stuck`, `Dependency Issue`, `needs-estimate`; the review gate adds `Triage` itself to anything automation points at a person), `timelineStart`, `timelineEnd`, `dueTime` (`HH:mm`, optional), `remindAt`, `progress`, `depends` (comma list of ids) or `dependsNone`, `docs[]` (the ONE links list: `{url, label, type}` with type `link | meeting | email | claude | web | image | file`; the legacy single `doc` is retired), `notes` ("Current state" + dated "Log", every fact kept), `subitems[]`, `estHours`, `estDays`, `estSource`, `taskType` (`Email | Call | Text/Chat | Meeting | Claude | Hands-on`), `location`, `pinned`.
 
-Steps (`subitems[]`): `title`, `estHours`, `taskType`, `priority`, `delegate`, `notes`, `docs[]`, `status`/`done`, `location`, `dueTime`, `remindAt`.
+Steps (`subitems[]`): `title`, `estHours`, `taskType` (judged on the step alone, never copied from the parent; Durand 2026-09-22), `priority`, `delegate`, `notes`, `docs[]`, `status`/`done`, `location`, `dueTime`, `remindAt`.
 
 A typed task must carry a link of its kind (email → thread, meeting → event, Claude → the session, Text/Chat → the chat) — match an existing one or say in the notes that one must be created. Inferred values get a `BEST-GUESS <FIELD>` note line. Do not add the two pinned bonus tasks' fields by hand; never unpin or split them.
 

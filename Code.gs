@@ -359,7 +359,7 @@ function applyRulesetPatchOp_(doc, patch) {
 // have asked Claude for (a new task's estimate/type/subitems/priority/group/dependency/tags/
 // progress plus its Drive and calendar matches, a notes-progress read, a Tidy rewrite) is
 // written to doc.meta.judgments instead of being dropped. A scheduled Claude Code Routine
-// (hourly on weekdays) reads the data file, answers each request under its own judgment,
+// (once per weekday, 7:30 AM Eastern) reads the data file, answers each request under its own judgment,
 // and sends {target:'data', op:'judgment', id, answer} inbox ops; applyDataPatch_ applies an
 // answer through the SAME field logic the live path uses (tsgApplyEstimateToTask_,
 // tsgSetProgressFromNotes_, tsgTidyValidate_) and removes the request. The queue is
@@ -642,36 +642,6 @@ function tsgWriteIndex_(doc) {
   return file.getId();
 }
 /**
- * TASK REFERENCE BY TITLE (2026-09-22): an op that names a task may carry `taskTitle`
- * (any op below) or `title` (update_task, delete_task, log_time, reorder_subitems,
- * request_steps, request_tidy) instead of `id`. The match is exact after trimming,
- * collapsing whitespace and ignoring case; several matches prefer the one open task;
- * anything else is refused by name with the closest titles so the caller can pick an id
- * from the index. Never a fuzzy match: a wrong task updated silently is worse than a
- * refusal.
- */
-var TSG_TITLE_REF_OPS = ['update_task', 'update_subitem', 'add_subitem', 'log_time', 'delete_task', 'reorder_subitems', 'request_steps', 'request_tidy'];
-var TSG_TITLE_KEY_OPS = ['update_task', 'delete_task', 'log_time', 'reorder_subitems', 'request_steps', 'request_tidy'];
-function tsgTitleKey_(s) { return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase(); }
-function tsgResolveTaskRef_(doc, patch) {
-  if (!patch || patch.id != null || TSG_TITLE_REF_OPS.indexOf(patch.op) === -1) return;
-  var ref = patch.taskTitle != null ? patch.taskTitle : (TSG_TITLE_KEY_OPS.indexOf(patch.op) !== -1 ? patch.title : null);
-  if (ref == null || !String(ref).trim()) return;
-  var key = tsgTitleKey_(ref);
-  var hits = (doc.tasks || []).filter(function(t) { return t && tsgTitleKey_(t.title) === key; });
-  if (hits.length > 1) {
-    var openHits = hits.filter(function(t) { return t.status !== 'Done' && t.status !== 'Cancelled'; });
-    if (openHits.length === 1) hits = openHits;
-  }
-  if (hits.length === 1) { patch.id = hits[0].id; patch.resolvedByTitle = true; return; }
-  if (hits.length > 1) throw new Error(patch.op + ': title matches ' + hits.length + ' tasks (' + hits.map(function(t) { return '#' + t.id; }).join(', ') + '); send the id');
-  var near = (doc.tasks || []).filter(function(t) { return t && t.title; }).map(function(t) {
-    var k = tsgTitleKey_(t.title); var score = (k.indexOf(key) !== -1 || key.indexOf(k) !== -1) ? 2 : (k.split(' ').filter(function(w) { return w.length > 3 && key.indexOf(w) !== -1; }).length);
-    return { t: t, score: score };
-  }).filter(function(x) { return x.score > 0; }).sort(function(a, b) { return b.score - a.score; }).slice(0, 3);
-  throw new Error(patch.op + ': no task titled "' + ref + '"' + (near.length ? '; closest: ' + near.map(function(x) { return '#' + x.t.id + ' "' + x.t.title + '"'; }).join(', ') : '') + '. Read the index file (' + TSG_INDEX_FILE_NAME + ') for ids.');
-}
-/**
  * NEEDS DURAND (2026-09-22, tracker task: "How are Claude's tasks that need Durand's
  * intervention handed back to him?"). Derived on every write: an open item delegated to
  * Claude whose status is Blocked or Waiting, or whose notes carry "DRAFT — AWAITING
@@ -766,7 +736,6 @@ function applyDataPatch_(doc, patch) {
   // An envelope with `ops` but no `op` can only mean a bulk (2026-09-18); accepting it costs
   // nothing and one less way for a routine-written file to be filed FAILED-.
   if (!patch.op && Array.isArray(patch.ops)) patch.op = 'bulk';
-  tsgResolveTaskRef_(doc, patch);   // `taskTitle` / `title` instead of `id` (2026-09-22)
 
   if (patch.op === 'bulk') {
     // 2026-09-10 per Durand: dependsOnTitle inference should see every task in this same
@@ -1266,7 +1235,7 @@ function applyDataPatch_(doc, patch) {
     // above (one-time, parameter-free), this is meant for any future top-level meta
     // field a caller needs to set wholesale. First user: doc.meta.standingItems, the
     // recurring Ops Manual duties (SOP-sourced, dated by cadence) that feed the Today
-    // view's Admin checklist client-side — see dash_fixed2.html's buildStandingItemChecks.
+    // view's Admin checklist client-side — see dashboard_final.html's buildStandingItemChecks.
     var metaFields = Object.assign({}, patch.fields || {});
     // comments is server-owned too (2026-09-16): use add_comment / update_comment so two
     // writers (the dashboard, a Claude session) never overwrite each other's threads.
@@ -1340,8 +1309,9 @@ function applyDataPatch_(doc, patch) {
     // rejection is logged, not thrown, so it doesn't jam the rest of the batch.
     // What the client actually does with a "conflict" response today (corrected
     // 2026-09-02 — the previous version of this comment claimed an automatic reload-and-
-    // retry that has never existed): dash_fixed2.html's doSave() surfaces a conflict
-    // error to the user and the edit is NOT re-applied — the user has to reload and redo
+    // retry that has never existed; since 2026-09-18 the dashboard DOES replay the edit
+    // onto the fresh document, see replayAfterConflict_): the dashboard's save surfaces a
+    // conflict and re-applies the local diff; the user only has to redo it if two replays fail
     // it by hand. If a real auto-retry is ever implemented dashboard-side, this comment
     // needs updating again.
     const currentVersion = doc.meta.docVersion || 0;
@@ -1573,7 +1543,6 @@ function tsgReminderPending_(item) {
 // `extraReminders: [{at: 'YYYY-MM-DDTHH:mm', repeat: ''|'daily'|'weekdays'|'weekly'|'monthly',
 // sentAt?}]` on tasks and steps, beside the single preset-driven `remindAt`. A one-shot entry is
 // spent once `sentAt` is stamped; a repeating one is re-armed by advancing `at` past now.
-var TSG_REPEATS = ['', 'daily', 'weekdays', 'weekly', 'monthly'];
 function tsgNextRepeat_(atStr, repeat) {
   var m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(String(atStr || ''));
   if (!m) return '';
@@ -1892,7 +1861,7 @@ function tsgPersonRpc(action, payloadJson) {
     return JSON.stringify({
       ok: true, person: name, docVersion: doc.meta && doc.meta.docVersion, codeVersion: TSG_CODE_VERSION,
       statuses: (doc.meta && doc.meta.status_values) || ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'],
-      priorities: (doc.meta && doc.meta.priority_values) || ['Critical', 'High', 'Medium', 'Low'],
+      priorities: (doc.meta && doc.meta.priority_values) || TSG_PRIORITY_VALUES,
       rows: tsgPersonSlice_(doc, name)
     });
   }
@@ -1929,7 +1898,7 @@ function tsgPersonRpc(action, payloadJson) {
   if (action === 'add') {
     var title = String(payload.title || '').trim();
     if (!title) return JSON.stringify({ ok: false, error: 'title required' });
-    var prios = (doc.meta && doc.meta.priority_values) || ['Critical', 'High', 'Medium', 'Low'];
+    var prios = (doc.meta && doc.meta.priority_values) || TSG_PRIORITY_VALUES;
     var prio = prios.indexOf(payload.priority) !== -1 ? payload.priority : 'Medium';
     var due = (payload.due && tsgIsValidIsoDate_(payload.due)) ? payload.due : '';
     var nowIso = new Date().toISOString();
@@ -1984,8 +1953,8 @@ function doGet(e) {
     // the processInbox_() call above, which already ran unconditionally.
     return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
   }
-  // No ?api=whoami here, deliberately (2026-09-14): under this deployment's anonymous
-  // access, Session.getActiveUser() makes Apps Script abort the whole request with
+  // No ?api=whoami here, deliberately (2026-09-14): under ANONYMOUS access (the mode before
+  // the 9/14 DOMAIN switch), Session.getActiveUser() makes Apps Script abort the whole request with
   // Google's "Sorry, unable to open the file at this time" page — it does not return ''.
   // Per-person views therefore need a domain-restricted deployment; see CLAUDE.md.
   if (e.parameter.api === 'data') {
@@ -2404,7 +2373,7 @@ function tsgApplyEstimateToTask_(doc, task, est, need, o) {
       var hours = (typeof s.estHours === 'number') ? s.estHours : perStep;
       return { title: s.title, done: false, delegate: tsgDefaultSubitemDelegate_(task), status: 'Not Started',
         priority: s.priority || task.priority || 'Medium', tags: [], timelineEnd: '', progress: 0,
-        depends: '', doc: '', notes: '', estHours: hours, estDays: null,
+        depends: '', notes: '', estHours: hours, estDays: null,
         estSource: hours != null ? 'claude' : 'none', taskType: s.taskType || 'Hands-on',
         history: [{ ts: now, field: 'created', from: null, to: null, source: o.source || 'unknown' }] };
     }));
@@ -4533,6 +4502,9 @@ var TSG_ESTIMATE_SYSTEM =
   'subitems: NEW steps only — concrete steps actually stated or clearly implied by the title/notes ' +
   'and not already present in CURRENT_STEPS. Each is {"title", "estHours", "taskType", "priority"} ' +
   'judged by the same rules as the task\'s own fields (hands-on hours from the calibration table). ' +
+  'A step\'s taskType is judged on that step ALONE, never copied from the parent: a task typed Claude ' +
+  'can have a Hands-on or Call step and a Hands-on task can have Claude or Email steps; look at what ' +
+  'the step itself makes someone do. ' +
   'Empty array if the task is a single atomic action. Never invent work that is not there.\n' +
   'taskType is one of: "Email"|"Call"|"Text/Chat"|"Meeting"|"Claude"|"Hands-on". Use "Email" or ' +
   '"Call" when the whole point of the task is sending one email or making one call. Use ' +
@@ -4962,13 +4934,6 @@ function tsgSetProgressFromNotes_(item, pct) {
   item.progress = pct;
   if (pct > 0 && status === 'Not Started') item.status = 'In Progress';
 }
-function tsgApplyProgressFromNotes_(item, prevNotes, progressExplicit, target) {
-  if (!tsgProgressWanted_(item, prevNotes, progressExplicit)) return false;
-  var pct = tsgProgressFromNotes_(item.title, String(item.notes || '').trim(), item.priority, target);
-  if (pct == null) return false;
-  tsgSetProgressFromNotes_(item, pct);
-  return true;
-}
 
 // Many items in one call (2026-09-16): a dashboard save that changed the notes on several
 // items used to cost one estimator call each; now every item whose notes changed goes to
@@ -5146,8 +5111,8 @@ function tsgTidyValidate_(doc, t, p) {
   var groups = Array.from(new Set((doc.tasks || []).map(function(x) { return x.group; }).filter(Boolean)));
   var before = tsgTidyBefore_(t);
   p = p || {};
-  var prios = (doc.meta && doc.meta.priority_values) || ['Critical', 'High', 'Medium', 'Low'];
-  var types = ['Email', 'Call', 'Text/Chat', 'Meeting', 'Claude', 'Hands-on'];
+  var prios = (doc.meta && doc.meta.priority_values) || TSG_PRIORITY_VALUES;
+  var types = TSG_TASK_TYPE_VALUES;
   var proposal = {
     title: String(p.title || before.title).trim().slice(0, 120) || before.title,
     notes: (typeof p.notes === 'string') ? p.notes.trim() : before.notes,
@@ -5527,20 +5492,11 @@ function tsgAttributeCalendarHours(startStr, endStr, apply) {
  * but never eats into Durand's tracked capacity, since this system has no
  * visibility into anyone else's actual calendar and won't pretend to.
  *
- * Confirming a delegate's work is itself real time — 0.5h per delegated
- * subitem — but per Durand (2026-08-26) that cost must never show up as a
- * visible item in the tracker; it's purely a scheduling/capacity concern of
- * his own. So there is no synthetic subitem for it. Instead: (1)
- * tsgRollupSubitemHours_ folds a flat 0.5h straight into the parent task's
- * top-level estHours for every subitem delegated to someone other than
- * Durand, alongside the real per-subitem hours it already sums — invisible
- * in the subitem list, but counted in the number Durand actually plans
- * against; and (2) tsgAutoScheduleDoc_ reserves 0.5h of Durand's own daily
- * capacity (the same dateLoad pool his real work draws from) on the first
- * workday after each non-Durand subitem's projected finish — both for steps
- * already scheduled in an earlier run (seed pass) and the instant one is
- * freshly placed in this run — so his calendar always has room set aside to
- * check the handoff, without a checkbox anyone has to look at or clear.
+ * Confirming a delegate's work is real time, but it is NOT a capacity slice any more
+ * (retired 2026-09-17, per Durand: it lives in the Morning Admin / Evening Wrap-Up blocks
+ * on the dashboard, costed at reviewPersonMin / reviewClaudeMin from Settings > Capacity).
+ * The only review cost the scheduler still reserves is the post-review update session of
+ * a Claude item flagged needsApproval (tsgReserveReviewSlices_).
  * tsgRollupSubitemHours_ also keeps every subitem-bearing task's own
  * top-level timelineEnd as the latest of all its subitems' own timelineEnd —
  * both recomputed on every run, for existing tasks and new ones alike, so
@@ -5698,6 +5654,12 @@ function tsgReadCapacity_(doc) {
   TSG_POST_REVIEW_MIN = tsgCapacityNumber_(cap, 'postReviewUpdateMin');
 }
 function tsgPostReviewHours_() { return Math.round(TSG_POST_REVIEW_MIN / 60 * 100) / 100; }
+/** The first workday on or after iso (a weekend date moves to Monday). */
+function tsgToWorkday_(iso) {
+  var d = iso, guard = 0;
+  while (!tsgIsWorkdayIso_(d) && guard++ < 7) d = tsgAddDays_(d, 1);
+  return d;
+}
 function tsgAddWorkdays_(iso, n) {
   var d = iso, guard = 0;
   while (n > 0 && guard++ < 60) { d = tsgAddDays_(d, 1); if (tsgIsWorkdayIso_(d)) n--; }
@@ -5705,7 +5667,7 @@ function tsgAddWorkdays_(iso, n) {
 }
 
 /**
- * Mirrors the dashboard's subitemBlockedBy() EXACTLY (dash_fixed2.html) — same default
+ * Mirrors the dashboard's subitemBlockedBy() EXACTLY (dashboard_final.html) — same default
  * (blocked by the immediately preceding not-done subitem) and same override (s.depends,
  * an INDEX into this same subitems array, never a task id). Keeping these two
  * implementations in lockstep matters: this is what decides both what the checkbox UI
@@ -5735,10 +5697,9 @@ function tsgSubitemBlockedByIdx_(subitems, idx) {
 
 /**
  * Keeps every subitem-bearing open task's own top-level estHours as a strict live sum of
- * all its real per-subitem hours PLUS an invisible 0.5h "confirm the handoff" cost for
- * every subitem delegated to someone other than Durand — see the AUTO-SCHEDULE note above.
- * That 0.5h is never a subitem of its own; it only ever shows up folded into this one
- * number. A done subitem's hours (and its 0.5h handoff cost) are excluded from the sum —
+ * its own share (estHoursOwn) plus all its real open per-subitem hours (2026-09-18 roll-up
+ * rule). The old invisible 0.5 h "confirm the handoff" cost is retired (2026-09-17); see
+ * tsgOpenSubitemHours_. A done subitem's hours are excluded from the sum —
  * this number tracks work remaining on the task, so finishing a subitem deducts its time
  * from the parent immediately (2026-09-01). Also keeps timelineEnd as the latest of all its
  * subitems' own timelineEnd, done or not. Recomputed every run — cheap, and it means the
@@ -5952,19 +5913,11 @@ function tsgAlignDependencies_(doc, now) {
     if (p.realisticEnd && p.realisticEnd > e) e = p.realisticEnd;
     return e;
   }
-  function nextWorkdayAfter(iso) {
-    var d = tsgAddDays_(iso, 1), guard = 0;
-    while (!tsgIsWorkdayIso_(d) && guard++ < 7) d = tsgAddDays_(d, 1);
-    return d;
-  }
-  function toWorkday(iso) {
-    var d = iso, guard = 0;
-    while (!tsgIsWorkdayIso_(d) && guard++ < 7) d = tsgAddDays_(d, 1);
-    return d;
-  }
-  function daysBetween(a, b) {
-    return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000);
-  }
+  // Shared helpers (audit 2026-09-22): tsgAddWorkdays_(iso, 1) is the next workday after iso,
+  // tsgToWorkday_ the first workday on or after it, tsgDaysBetweenIso_ the calendar-day gap.
+  var nextWorkdayAfter = function(iso) { return tsgAddWorkdays_(iso, 1); };
+  var toWorkday = tsgToWorkday_;
+  var daysBetween = tsgDaysBetweenIso_;
   var moved = 0, changed = true, guard = 0, stillFlagged = {};
   while (changed && guard++ < 50) {
     changed = false;
@@ -6064,11 +6017,11 @@ function tsgCaptureExplicitEditsFromSave_(prevTasks, nextTasks) {
 }
 
 /**
- * Reserves 0.5h of Durand's own daily capacity (the same dateLoad pool his real work
- * draws from) on the first workday after a non-Durand subitem's projected finish — the
- * invisible "confirm the handoff" cost described in the AUTO-SCHEDULE note above. Never
- * creates a work item or subitem; it only debits the shared capacity pool so later
- * placement decisions in this same run (and the seed pass on the next run) correctly see
+ * Reserves the post-review update session (postReviewUpdateMin, approvalWaitDays workdays
+ * after the finish) of a Claude item flagged needsApproval in Durand's daily capacity pool
+ * (the same dateLoad pool his real work draws from). The old 0.5 h "confirm the handoff"
+ * slice is retired (2026-09-17). Never creates a work item or subitem; it only debits the
+ * shared capacity pool so later placement decisions in this same run correctly see
  * that slice of Durand's day as already spoken for. No-ops if the finish date is in the
  * past relative to today (nothing to reserve for a handoff that already happened).
  */
@@ -6233,7 +6186,6 @@ function tsgOneWayMinutes_(base, location, method) {
   try { if (cache) cache.put(key, String(mins), 21600); } catch (e1) {}
   return mins;
 }
-function tsgRoundTripMinutes_(base, location) { return tsgOneWayMinutes_(base, location, 'drive') * 2; }
 /** One-way minutes per method; a method Maps cannot route (transit, often) is null. */
 function tsgTravelOptions_(base, location) {
   var out = {};
@@ -6396,8 +6348,8 @@ function tsgAutoScheduleDoc_(doc) {
     var r = it.ref;
     if (!tsgItemIsDurandWork_(it)) {
       // Not Durand's own work, so it never draws on his capacity pool directly — but if
-      // it's already scheduled from an earlier run, the 0.5h "confirm this is done" slice
-      // still needs to be reserved on his calendar the day after, same as a freshly
+      // it's already scheduled from an earlier run and needs approval, its post-review
+      // update session still needs to be reserved on his calendar, same as a freshly
       // placed one below.
       var existingSpan = tsgScheduledSpan_(r);
       if (existingSpan) tsgReserveReviewSlices_(addLoad, today, existingSpan.end, r, false);
@@ -6450,7 +6402,7 @@ function tsgAutoScheduleDoc_(doc) {
     oooDates.forEach(function(d) { if (d >= today) addLoad(d, tsgDayCapacity_(d)); });
   } catch (err) { /* calendar unavailable this run — proceed without it */ }
 
-  var rank = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+  var rank = TSG_PRIORITY_RANK;
   // Only whole tasks are valid dependency targets for OTHER tasks — nothing in this
   // codebase points a top-level "depends" at an individual subitem. A subitem's own
   // sequencing is handled separately below, via tsgSubitemBlockedByIdx_.
@@ -6609,8 +6561,8 @@ function tsgAutoScheduleDoc_(doc) {
       finishDate[t.id] = t.timelineEnd;
       if (!isDurandWork) tsgReserveReviewSlices_(addLoad, today, t.timelineEnd, t, true);
     } else {
-      // A subitem: it carries no history of its own, so the note goes on the parent
-      // task instead, naming which subitem it was. Nothing outside its own task ever
+      // A subitem: the auto-scheduled note goes on the parent task by design (the parent's
+      // history is where scheduling is read), naming which subitem it was. Nothing outside its own task ever
       // depends on it, so it never needs a finishDate[] entry of its own — the next
       // step in its chain reads its timelineEnd directly off this same object.
       item.parent.history = item.parent.history || [];

@@ -1200,3 +1200,28 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   now `Date.now() - 1 day`.
 - Open step 25 on the pinned Claude task (project audit) ran as a read-only agent; its findings
   land on the step, fixes are a follow-up decided with Durand.
+- AUDIT SAFE FIXES APPLIED (2026-09-22, per Durand "make the safe fixes"): Text/Chat badge slug bug
+  (`typeBadgeClass` now replaces `/` too, rule `.type-text-chat`); dead code removed
+  (`tsgRoundTripMinutes_`, `tsgApplyProgressFromNotes_`, `TSG_REPEATS`, dashboard `addLinkResult_`
+  + `LINK_RESULTS`, `claudeUrlFor_`, `parseTimeInput_`, `modalAddTag`, `TODAY_BREAK_MIN`, CSS
+  `.editnotice*`, `.modal-row-reestimate`, `.doc-link-text`, `.kc-empty-field`, `.today-unplaced`,
+  `.type-schedule-task`); the earlier CLAUDE.md mentions of `tsgRoundTripMinutes_` (travel) and
+  `parseTimeInput_` (time picker) are history, both gone; stale comments rewritten (retired 0.5 h
+  slice, dash_fixed2.html, anonymous access, "hourly" Routine in code, tooltip and README);
+  `doc: ''` no longer written on minted steps or dashboard-created tasks/steps (the person-page add
+  in `tsgPersonRpc` still writes it: team-view surface, untouched); `TSG_PRIORITY_VALUES` /
+  `TSG_TASK_TYPE_VALUES` / `TSG_PRIORITY_RANK` / dashboard `PRIORITY_RANK` reused at the literal
+  sites; `tsgToWorkday_` added and `tsgAlignDependencies_` uses the shared workday helpers;
+  dashboard `readFilters_` reads the seven filter values once per render (`FILTER_STATE`) and
+  `populateDynamicFilters` skips a rebuild when groups/owners/tags are unchanged (`LAST_FILTER_SIG`).
+  PATCH BY TITLE REMOVED the same day (Durand: "dont like patch by title, doesn't each task have a
+  unique ID? can we preface the title with that too?"): `tsgResolveTaskRef_` and its docs are gone;
+  the dashboard shows `#<id>` before every task title (row, card, modal header, `.task-id`) and
+  `<i>.` before every step title (the update_subitem index). STEP TYPES (Durand: "subtasks get
+  evaluated for their own task type, its not inherited"): the estimator prompt and the Routine
+  prompt now say a step's taskType is judged on the step alone; the code never inherited it
+  (minted steps default to Hands-on when the answer carries none). WHAT MAKES THE FILE BULKY
+  (measured 2026-09-22 on 697 KB): history 357 KB (51%: task 207 + step 150), notes 146 KB (21%:
+  task 98 + step 48), meta 41 KB of which judgments 19 KB (3 pending; one enrich request on the
+  FUB bonus task carries its 9.5 KB note). Judgments stopped being the problem after the 9/18
+  slimming; history is.

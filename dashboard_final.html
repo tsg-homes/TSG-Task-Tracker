@@ -159,24 +159,6 @@
     margin: 0 0 20px;
   }
 
-  .editnotice {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    background: var(--status-blocked-bg);
-    border: 1px solid rgba(181,84,28,0.35);
-    color: var(--text-primary);
-    border-radius: 9px;
-    padding: 12px 14px;
-    font-size: 13px;
-    line-height: 1.5;
-    margin-bottom: 24px;
-  }
-  .editnotice b { color: var(--status-blocked); }
-  .editnotice.ok { background: var(--status-good-bg); border-color: rgba(12,163,12,0.3); }
-  .editnotice.ok b { color: var(--status-good); }
-  .editnotice.error { background: var(--status-critical-bg); border-color: rgba(208,59,59,0.3); }
-  .editnotice.error b { color: var(--status-critical); }
 
   .sync-pill { display: inline-flex; align-items: center; cursor: default; flex: none; }
   .sync-pill .cap-body {
@@ -349,6 +331,8 @@
   tbody tr.task-row:hover { background: var(--surface-2); }
   tbody tr:last-child td { border-bottom: none; }
   td.title-cell { font-weight: 700; min-width: 190px; }
+  .task-id { font-size: 10.5px; font-weight: 700; color: var(--text-muted); margin-right: 5px; font-variant-numeric: tabular-nums; user-select: all; }
+  .task-id.sub-idx { margin-right: 4px; }
   td.title-cell .ttl-edit { cursor: text; }
   td.title-cell .ttl-edit:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
   td.notes-cell { color: var(--text-secondary); min-width: 260px; cursor: text; }
@@ -516,10 +500,8 @@
     margin: 0 3px 3px 0;
   }
   .type-badge.type-email { color: var(--brand); border-color: rgba(21,70,74,0.3); }
-  .type-badge.type-chat  { color: var(--brand); border-color: rgba(21,70,74,0.3); }
   .type-badge.type-call  { color: var(--brand); border-color: rgba(21,70,74,0.3); }
-  .type-badge.type-text  { color: var(--brand); border-color: rgba(21,70,74,0.3); }
-  .type-badge.type-schedule-task { color: var(--brand); border-color: rgba(21,70,74,0.3); }
+  .type-badge.type-text-chat { color: var(--brand); border-color: rgba(21,70,74,0.3); }
   .type-badge.type-hands-on { color: var(--text-muted); }
   .type-badge.type-meeting { color: var(--brand); border-color: rgba(21,70,74,0.3); }
   .type-badge.type-claude { color: var(--status-warn); border-color: rgba(150,112,10,0.45); background: var(--status-warn-bg); }
@@ -870,8 +852,6 @@
 
   .modal-row { align-items: center; }
   .modal-row-notes { align-items: flex-start; }
-  .modal-row-reestimate { margin-top: -4px; }
-  .modal-row-reestimate button { font-size: 11.5px; }
   .modal-edit { cursor: text; border-radius: 5px; padding: 2px 5px; margin: -2px -5px; }
   .modal-edit:hover { background: var(--surface-2); }
   .modal-edit:empty:before { content: attr(data-placeholder); color: var(--text-muted); opacity: 0.6; }
@@ -881,8 +861,6 @@
   .delegate-cell .avatar { width: 18px; height: 18px; font-size: 8px; }
   .modal-tags { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
   .modal-source { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
-  .doc-link-text { color: var(--brand); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
-  .doc-link-text:hover { text-decoration: underline; }
   .modal-empty { color: var(--text-muted); font-style: italic; font-size: 12.5px; }
   /* Source-link icon on rows/cards — small, quiet, doesn't compete with the title. */
   .doc-link { text-decoration: none; opacity: 0.65; font-size: 12px; margin-left: 2px; }
@@ -1032,7 +1010,7 @@
     animation: savedFadeIn 0.2s ease-out;
   }
   @keyframes savedFadeIn { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
-  .tc-empty-field, .kc-empty-field {
+  .tc-empty-field {
     display: inline-block; padding: 2px 8px; border: 1px dashed var(--border);
     border-radius: 999px; font-size: 11px; color: var(--text-muted);
   }
@@ -1267,7 +1245,7 @@
   .today-admin-line.kind-info:before { content: '\21BB'; }
   .today-admin-line.kind-nav:before { content: '\2192'; }
   .today-admin-sub { margin-left: auto; color: var(--text-muted); flex: none; font-size: 11px; }
-  .today-untimed, .today-unplaced { margin-top: 14px; font-size: 12px; color: var(--text-secondary); background: var(--surface-2); border-radius: 8px; padding: 10px 14px; }
+  .today-untimed { margin-top: 14px; font-size: 12px; color: var(--text-secondary); background: var(--surface-2); border-radius: 8px; padding: 10px 14px; }
   .today-layout { display: flex; flex-direction: column; gap: 24px; align-items: stretch; }
   .today-sides-row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
   .today-side { width: auto; flex: 1; min-width: 280px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1); padding: 14px; }
@@ -1907,7 +1885,7 @@
   // a checkbox, and only what Durand accepts is applied (logged as accepted from Claude).
   const TIDY_FIELDS = [['title', 'Title'], ['notes', 'Notes'], ['priority', 'Priority'], ['taskType', 'Type'], ['group', 'Group'], ['estHours', 'Estimate (h)'], ['tags', 'Tags']];
   let TIDY_STATE = null;
-  // With no API key the server queues the rewrite (meta.judgments) and the hourly Claude
+  // With no API key the server queues the rewrite (meta.judgments) and the once-a-weekday Claude
   // Routine answers into meta.tidyProposals[taskId]; the button then reads "Review tidy".
   // Tidy is automatic (2026-09-16, per Durand): every notes change re-judges the task and the
   // answer applies itself when it lands. The button forces a full re-run on demand.
@@ -1918,7 +1896,7 @@
     const pending = pendingJudgment_(id, 'enrich');
     btn.disabled = false;
     btn.innerHTML = pending ? '&#8987; Claude queued' : '&#10024; Re-run Claude';
-    btn.title = pending ? 'Queued for the hourly Claude Routine; the title, notes and fields update when it answers' : 'Queue a full Claude re-run: polished title and notes, every field re-judged (applied automatically)';
+    btn.title = pending ? 'Queued for the Claude Routine (once per weekday, 7:30 AM); the title, notes and fields update when it answers' : 'Queue a full Claude re-run: polished title and notes, every field re-judged (applied automatically)';
   }
   async function tidyTask(id) {
     const t = findTask(id);
@@ -2307,7 +2285,6 @@
     ((mail && mail.threads) || []).forEach(m => hits.push({ type: 'email', url: m.url, label: m.label, sub: (m.from || '') + (m.date ? ' · ' + m.date : '') + (m.count > 1 ? ' · ' + m.count + ' messages' : '') }));
     (LINK_MEETINGS || []).filter(ev => words.every(w => String(ev.title || '').toLowerCase().includes(w))).forEach(ev => hits.push({ type: 'meeting', ev: ev, url: ev.htmlLink, label: ev.title, sub: (ev.dateLabel || '') + (ev.timeLabel ? ' · ' + ev.timeLabel : '') }));
     LINK_HITS = hits;
-    LINK_RESULTS = ((drive && drive.files) || []);
     host.innerHTML = hits.length
       ? hits.map((h, i) => `<div class="meeting-row" onclick="addLinkHit_(${i})"><div class="meeting-row-main">${docIcon_(h)} <b>${escapeHtml(h.label)}</b></div><div class="meeting-row-sub">${escapeHtml(h.sub || '')}</div></div>`).join('')
       : '<div class="history-empty">Nothing in your Drive, Gmail or calendar matches that.</div>';
@@ -2393,7 +2370,6 @@
     ev.preventDefault();
     attachFiles_(files, target);
   });
-  let LINK_RESULTS = [];
   function linkKindLabel_(mime) {
     const m = String(mime || '');
     if (m.indexOf('document') !== -1) return 'Google Doc';
@@ -2402,11 +2378,6 @@
     if (m.indexOf('folder') !== -1) return 'Folder';
     if (m.indexOf('pdf') !== -1) return 'PDF';
     return m ? m.split('/').pop() : 'File';
-  }
-  function addLinkResult_(i) {
-    const f = LINK_RESULTS[i];
-    if (!f) return;
-    addDocToTarget_(f.url, f.name);
   }
   async function addPastedLink_() {
     const inp = document.getElementById('linkPaste');
@@ -2485,7 +2456,8 @@
   // shows and selects as the current name until the server rewrites it on its next write.
   const TASK_TYPE_ALIASES = { 'actionable task': 'Hands-on', 'schedule task': 'Hands-on', 'hands on': 'Hands-on' };
   function canonicalTaskType_(v) { const k = String(v || '').trim().toLowerCase(); return TASK_TYPE_ALIASES[k] || v; }
-  function typeBadgeClass(type) { return 'type-' + (type || '').toLowerCase().replace(/\s+/g, '-'); }
+  // Slug: whitespace AND the slash in Text/Chat become '-', so the badge colour rule matches (audit 2026-09-22).
+  function typeBadgeClass(type) { return 'type-' + (type || '').toLowerCase().replace(/[\s\/]+/g, '-'); }
   function typeBadgeHtml(t) {
     if (!t.taskType) return '';
     return `<span class="type-badge ${typeBadgeClass(t.taskType)}">${escapeHtml(t.taskType)}</span>`;
@@ -2885,14 +2857,16 @@
     return `<span class="group-battery-wrap">${statusBatteryHtml(counts, groupTasks.length, false)}<span class="group-battery-pct">${pct}%</span></span>`;
   }
 
+  // The seven filter values are read once per render (readFilters_ in renderAll), not once per
+  // task (audit 2026-09-22); a direct call outside a render reads them itself.
+  let FILTER_STATE = null;
+  function readFilters_() {
+    const v = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+    return { status: v('filterStatus'), priority: v('filterPriority'), search: v('filterSearch').toLowerCase(), group: v('filterGroup'), owner: v('filterOwner'), tag: v('filterTag'), missing: v('filterMissing') };
+  }
   function matchesFilters(t) {
-    const status = document.getElementById('filterStatus').value;
-    const priority = document.getElementById('filterPriority').value;
-    const search = document.getElementById('filterSearch').value.toLowerCase();
-    const group = document.getElementById('filterGroup').value;
-    const owner = document.getElementById('filterOwner').value;
-    const tag = document.getElementById('filterTag').value;
-    const missing = document.getElementById('filterMissing').value;
+    const f = FILTER_STATE || readFilters_();
+    const status = f.status, priority = f.priority, search = f.search, group = f.group, owner = f.owner, tag = f.tag, missing = f.missing;
     // 2026-09-03, per Durand: an earlier version of this filter hid Done tasks everywhere
     // by default. Superseded same-day — Done handling is now per-view instead of a single
     // global exclusion: Kanban shows Done normally in its column, Board/Cards group Done
@@ -2932,10 +2906,15 @@
   // Rebuilds the Group/Owner/Tag filter option lists from whatever's actually on the board
   // right now, preserving the current selection where it still exists. Called every render
   // so a newly-added group/tag/owner shows up without a page reload.
+  let LAST_FILTER_SIG = '';
   function populateDynamicFilters() {
     const groups = [...new Set([...GROUP_ORDER, ...TASKS.map(t => t.group)])].filter(g => TASKS.some(t => t.group === g));
     const owners = sortPeople_([...new Set(TASKS.map(t => t.owner).filter(Boolean))]);
     const tags = [...new Set(TASKS.flatMap(t => t.tags || []))].sort();
+    // Rebuilding the selects on every render is wasted work when nothing changed (audit 2026-09-22).
+    const sig = groups.join('\u0001') + '\u0002' + owners.join('\u0001') + '\u0002' + tags.join('\u0001');
+    if (sig === LAST_FILTER_SIG) return;
+    LAST_FILTER_SIG = sig;
     const tagDl = document.getElementById('tagOptions');
     if (tagDl) tagDl.innerHTML = tags.map(tg => `<option value="${escapeHtml(tg)}"></option>`).join('');
     function rebuild(id, values, allLabel) {
@@ -3055,7 +3034,6 @@
       cloud: 'https://claude.ai/code?prompt=' + q + (repo ? '&repositories=' + encodeURIComponent(repo) : '')
     };
   }
-  function claudeUrlFor_(t) { return claudeLinksFor_(t).cloud; }
   // "Judge now" (2026-09-17, per Durand "build the chip"): the queue is answered by a Claude
   // session, never by this page (no API key), so the chip hands a standalone prompt to a Cowork
   // session on this computer (shift: Claude Code in the cloud). You are the trigger, only when
@@ -3549,7 +3527,7 @@
     const delegateLine = hasSubs ? `<div class="tc-row tc-delegates" title="Delegated to">→ ${escapeHtml(delegateSummaryText(t))}</div>` : '';
     return `
       <div class="task-card" data-id="${t.id}" onclick="closeDayView(); onRowClick(event, ${t.id})">
-        <div class="tc-title"><span>${pinBtnHtml_(t)}${escapeHtml(t.title)}${subBadge}${commentBadgeHtml_(t.id)}</span>${docLinkHtml(t)}${savedPill}<button class="icon-btn danger tc-delete" title="Delete task" onclick="event.stopPropagation(); deleteTask(${t.id})">${TRASH_ICON_SVG}</button></div>
+        <div class="tc-title"><span>${pinBtnHtml_(t)}<span class="task-id" title="Task id ${t.id}">#${t.id}</span>${escapeHtml(t.title)}${subBadge}${commentBadgeHtml_(t.id)}</span>${docLinkHtml(t)}${savedPill}<button class="icon-btn danger tc-delete" title="Delete task" onclick="event.stopPropagation(); deleteTask(${t.id})">${TRASH_ICON_SVG}</button></div>
         <div class="tc-row">${avatarHtml(t.owner)}<span class="pill ${statusClass(rollupStatus(t))}" style="pointer-events:none;">${escapeHtml(rollupStatus(t))}</span><span class="pill ${priorityClass(rollupPriority(t))}" style="pointer-events:none;">${escapeHtml(rollupPriority(t))}</span>${typeHtml}</div>
         ${delegateLine}
         <div class="tc-row">${tagsHtml}${estHtml}${locHtml}<span class="tc-due ${isOverdue(t) ? 'overdue' : ''}">${t.timelineEnd ? formatDate(t.timelineEnd) : 'No due date'}</span></div>
@@ -4402,7 +4380,6 @@
                : { start: hmToMin(TODAY_DAY_START), end: hmToMin(TODAY_DAY_END), adminMin: TODAY_ADMIN_MIN, friday: false };
   }
   const TODAY_LUNCH_MIN = 60;
-  const TODAY_BREAK_MIN = 10;
   const TODAY_RELIEF_MIN = 20;
   const TODAY_ERRAND_MIN = 30;
   const TODAY_MAX_BLOCK_MIN = 120;
@@ -4531,7 +4508,7 @@
       const minutes = Math.max(15, Math.min(cap, totalMin));
       out.push({ task: t, minutes: minutes, overdue: overdue });
     });
-    const rank = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+    const rank = PRIORITY_RANK;
     out.sort((a, b) => {
       if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
       const pr = (rank[a.task.priority] != null ? rank[a.task.priority] : 4) - (rank[b.task.priority] != null ? rank[b.task.priority] : 4);
@@ -4852,7 +4829,7 @@
     const today = dateISO || todayISO();
     const end = addDays(today, 2);
     const list = getWorkItems(TASKS).filter(t => t.status !== 'Done' && t.timelineEnd && t.timelineEnd >= today && t.timelineEnd <= end && (t.delegate || 'Unassigned') !== CALENDAR_OWNER);
-    const rank = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+    const rank = PRIORITY_RANK;
     list.sort((a, b) => {
       if (a.timelineEnd !== b.timelineEnd) return a.timelineEnd.localeCompare(b.timelineEnd);
       return (rank[a.priority] != null ? rank[a.priority] : 4) - (rank[b.priority] != null ? rank[b.priority] : 4);
@@ -5200,7 +5177,7 @@
     let cursor = gridStart;
     while (cursor <= gridEnd) { cells.push(cursor); cursor = addDays(cursor, 1); }
     const todayStr = todayISO();
-    const rank = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+    const rank = PRIORITY_RANK;
     const weekdayHeader = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(w => `<div class="mcal-weekday">${w}</div>`).join('');
     const cellsHtml = cells.map(iso => {
       const inMonth = new Date(iso + 'T00:00:00').getMonth() === month;
@@ -5253,7 +5230,7 @@
         <input type="checkbox" ${s.done ? 'checked' : ''} ${blockedIdx != null ? 'title="Blocked by an earlier subitem — you can still check it off, but consider finishing that one first."' : ''} onchange="toggleSubitem(${t.id}, ${i}, this)">
         <div class="sub-item-body">
           <div class="sub-item-title-row">
-            <span class="sub-title-edit" contenteditable="true" onblur="onSubFieldEdit(${t.id}, ${i}, 'title', this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(s.title)}</span>
+            <span class="task-id sub-idx" title="Step index ${i} (update_subitem index)">${i}.</span><span class="sub-title-edit" contenteditable="true" onblur="onSubFieldEdit(${t.id}, ${i}, 'title', this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(s.title)}</span>
             <button class="icon-btn danger" title="Delete subitem" onclick="deleteSubitem(${t.id}, ${i})">${TRASH_ICON_SVG}</button>
           </div>
           ${blockedNote}
@@ -5385,7 +5362,7 @@
     let html = `
       <tr class="task-row" data-id="${t.id}" onclick="onRowClick(event, ${t.id})">
         <td>${hasSubs ? `<button class="icon-btn" onclick="toggleSub(${t.id})">${subOpen ? '▾' : '▸'}</button>` : ''}</td>
-        <td class="title-cell">${pinBtnHtml_(t)}<span class="ttl-edit" contenteditable="true" onblur="onTitleEdit(${t.id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>${commentBadgeHtml_(t.id)}${hasSubs ? `<span class="sub-count-badge" title="${t.subitems.filter(s=>s.done).length} of ${t.subitems.length} subtasks done">${t.subitems.filter(s=>s.done).length}/${t.subitems.length}</span>` : ''}${docLinkHtml(t)}</td>
+        <td class="title-cell">${pinBtnHtml_(t)}<span class="task-id" title="Task id ${t.id}">#${t.id}</span><span class="ttl-edit" contenteditable="true" onblur="onTitleEdit(${t.id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>${commentBadgeHtml_(t.id)}${hasSubs ? `<span class="sub-count-badge" title="${t.subitems.filter(s=>s.done).length} of ${t.subitems.length} subtasks done">${t.subitems.filter(s=>s.done).length}/${t.subitems.length}</span>` : ''}${docLinkHtml(t)}</td>
         <td class="cell-group">
           <div class="cell-group-stack">
             <div class="cell-group-row owner-cell" title="Owner — accountable for this task">${avatarHtml(t.owner)}${ownerSelect(t.id, t.owner)}</div>
@@ -6436,14 +6413,6 @@
     const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || '')); if (!m) return hm || '';
     const h = Number(m[1]); return ((h % 12) || 12) + ':' + m[2] + (h < 12 ? ' AM' : ' PM');
   }
-  function parseTimeInput_(raw) {
-    const t = String(raw || '').trim().toLowerCase(); if (!t) return '';
-    const m = /^(\d{1,2})(?::?(\d{2}))?\s*(a|p|am|pm)?$/.exec(t); if (!m) return null;
-    let h = Number(m[1]); const mm = m[2] ? Number(m[2]) : 0;
-    if (m[3]) { const pm = m[3][0] === 'p'; if (h === 12) h = pm ? 12 : 0; else if (pm) h += 12; }
-    if (h > 23 || mm > 59) return null;
-    return String(h).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
-  }
   function timeSelectHtml_(value, onchangeExpr, extraClass, hiddenId) {
     // A button showing the time; clicking it opens a pop-over with an hour column (6 AM to
     // 8 PM) and a minutes column (:00 :15 :30 :45), each scrolling past seven rows, plus "no
@@ -6566,15 +6535,6 @@
     t.estHours = after;
     if (before !== after) logHistory(t, 'estHours', before, after);
     renderAll(); openTaskCard(id); scheduleSave();
-  }
-  function modalAddTag(id) {
-    const tag = prompt('New tag:');
-    if (tag && tag.trim()) {
-      const t = findTask(id);
-      t.tags = [...(t.tags || []), tag.trim()];
-      logHistory(t, 'tag', null, tag.trim());
-      renderAll(); openTaskCard(id); scheduleSave();
-    }
   }
   // Tag input with autocomplete (2026-09-16, #250: "autocomplete and spell check in fields").
   // The datalist #tagOptions is refilled from every tag on the board by populateDynamicFilters.
@@ -6864,7 +6824,7 @@
     if (pinBtn) { pinBtn.classList.toggle('toggle-active', isPinned_(t)); pinBtn.innerHTML = isPinned_(t) ? '&#128204; Pinned' : '&#128204; Pin'; pinBtn.title = isPinned_(t) ? 'Unpin (drops back into its group)' : 'Pin to the top of every list'; }
     setTimeout(function() { const ov = document.getElementById('taskModal'); if (ov && ov.classList.contains('open') && !ov.contains(document.activeElement)) ov.focus(); }, 0);
     document.getElementById('modalTitle').innerHTML =
-      `<span class="modal-edit" contenteditable="true" spellcheck="true" autocorrect="on" autocapitalize="sentences" onblur="modalTitleEdit(${id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>`;
+      `<span class="task-id" title="Task id ${id}">#${id}</span><span class="modal-edit" contenteditable="true" spellcheck="true" autocorrect="on" autocapitalize="sentences" onblur="modalTitleEdit(${id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>`;
     const pct = taskProgress(t);
     const tagsChips = (t.tags || []).map(function(tag, i) {
       return `<span class="tag-chip modal-tag-chip ${tagClass(tag)}">${escapeHtml(tag)}<span class="rm" onclick="modalRemoveTag(${id}, ${i})" title="Remove tag">&#10005;</span></span>`;
@@ -6984,7 +6944,7 @@
       t.subitems.push({
         title: title, done: false, delegate: '', status: 'Not Started',
         priority: t.priority || 'Medium', tags: [], timelineEnd: '',
-        progress: 0, depends: '', doc: '', notes: '', estHours: null, estDays: null,
+        progress: 0, depends: '', notes: '', estHours: null, estDays: null,
         estSource: 'none', taskType: 'Hands-on', docs: []
       });
       logHistory(t, 'subitem', null, title);
@@ -7141,7 +7101,7 @@
       title, group, owner: 'Durand',
       status, priority, tags, timelineEnd: due,
       remindAt: (due && remindDefault_()) ? remindAtFor_({ timelineEnd: due }, 'daybefore8') : undefined,
-      progress: 0, depends: '', doc: '', notes, subitems: [],
+      progress: 0, depends: '', notes, subitems: [],
       history: [{ ts: new Date().toISOString(), field: 'created', from: null, to: null }]
     };
     if (delegate) { fields.delegate = delegate; if (isDelegatedAway_(delegate)) { fields.needsApproval = true; fields.history.push({ ts: new Date().toISOString(), field: 'needsApproval', from: 'false', to: 'true', source: 'Durand' }); } }
@@ -7266,7 +7226,7 @@
     const fields = {
       title, group: g, owner: 'Durand',
       status: val('status'), priority: val('priority'), tags: [],
-      timelineEnd: val('due'), progress: 0, depends: '', doc: '', notes: val('notes'), subitems: [],
+      timelineEnd: val('due'), progress: 0, depends: '', notes: val('notes'), subitems: [],
       history: [{ ts: new Date().toISOString(), field: 'created', from: null, to: null }]
     };
     if (keepOpen) openAddForms.add(g); else openAddForms.delete(g);
@@ -7287,7 +7247,7 @@
       const fields = {
         title: 'New task', group: name.trim(), owner: 'Durand',
         status: 'Not Started', priority: 'Medium', tags: [], timelineEnd: '',
-        progress: 0, depends: '', doc: '', notes: '', subitems: []
+        progress: 0, depends: '', notes: '', subitems: []
       };
       const result = await createTask(fields);
       if (result.note) alert(result.note);
@@ -7314,8 +7274,9 @@
 
   function renderAll() {
     populateDynamicFilters();
-    renderStats();
-    renderBoard();
+    FILTER_STATE = readFilters_();
+    try { renderStats(); renderBoard(); }
+    finally { FILTER_STATE = null; }
   }
 
   // ---- Live sync with Drive (via Apps Script Web App) ----
@@ -7850,7 +7811,7 @@
     const fields = {
       title: 'Offboarding: ' + p.name + ' — no longer in FUB', group: 'Team Ops', owner: 'Durand',
       status: 'Not Started', priority: 'Critical', tags: ['SOP Gap'], timelineEnd: todayISO(),
-      progress: 0, depends: '', doc: '', docs: [], subitems: [],
+      progress: 0, depends: '', docs: [], subitems: [],
       notes: p.name + ' (' + (p.email || 'no email on file') + ') disappeared from the FUB team list during an automatic sync on ' + todayISO() + ' — auto-detected, not manually confirmed. ' +
         (reassignedCount ? reassignedCount + ' task/subtask assignment' + (reassignedCount === 1 ? '' : 's') + ' auto-reassigned to Durand as a safe default — redistribute to the right person. ' : '') +
         'If this is a real departure, run SOP 11 (Termination / access revocation) and SOP 12 (same-day access revocation checklist). If this looks wrong (FUB hiccup, wrong filter, etc.), verify in FUB before acting.',

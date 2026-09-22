@@ -2217,7 +2217,7 @@ section('Task type rename: Actionable Task -> Hands-on, legacy values land as th
   check('an estimator answer using the old name is accepted and canonicalised, on the task and on a minted step', parsed.taskType === 'Hands-on' && parsed.subitems[0].taskType === 'Hands-on');
 }
 
-section('Index file, task reference by title, Needs Durand, critical-only reminder mail (2026-09-22)');
+section('Index file, Needs Durand, critical-only reminder mail (2026-09-22)');
 {
   const d = freshDoc();
   d.tasks.push({ id: 91, title: 'Draft the vendor letter', owner: 'Durand', delegate: 'Claude', status: 'In Progress', priority: 'Medium', group: 'Ops', notes: 'DRAFT — AWAITING APPROVAL: letter text below.', subitems: [{ title: 'Step one', done: false, status: 'Not Started', delegate: 'Claude', notes: '' }], tags: [], history: [] });
@@ -2228,31 +2228,7 @@ section('Index file, task reference by title, Needs Durand, critical-only remind
     idx.kind === 'tsg-task-tracker-index' && idx.backendVersion === vm.runInContext('TSG_CODE_VERSION', sandbox) && Array.isArray(idx.status_values) && idx.tasks.some(t => t.id === 91 && t.delegate === 'Claude' && t.steps.length === 1 && t.steps[0].i === 0 && t.steps[0].title === 'Step one') && idx.doneTasks.some(t => t.id === 92) && !idx.tasks.some(t => t.id === 92) && idx.tasks.every(t => !('notes' in t) && !('history' in t)));
   const bytes = JSON.stringify(idx).length;
   check('index stays small (no notes, history, docs bodies): ' + bytes + ' bytes for the fixture', bytes < 6000);
-  // title reference
-  const p1 = { op: 'update_task', title: '  draft the VENDOR letter ', fields: { priority: 'High' } };
-  sandbox.tsgResolveTaskRef_(d, p1);
-  check('update_task with `title` instead of `id` resolves exactly (trim, whitespace, case)', p1.id === 91 && p1.resolvedByTitle === true);
-  const p2 = { op: 'update_subitem', taskTitle: 'Draft the vendor letter', index: 0, fields: { status: 'Done' } };
-  sandbox.tsgResolveTaskRef_(d, p2);
-  check('any referencing op takes `taskTitle`', p2.id === 91);
-  let refused = '';
-  try { sandbox.tsgResolveTaskRef_(d, { op: 'update_task', title: 'Draft the vendor lettre', fields: {} }); } catch (e) { refused = e.message; }
-  check('a title that does not match exactly is refused by name with the closest titles, never fuzzy-applied', /no task titled/.test(refused) && /#91 "Draft the vendor letter"/.test(refused));
-  d.tasks.push({ id: 94, title: 'Done thing', owner: 'Durand', status: 'Not Started', priority: 'Low', group: 'Ops', subitems: [], tags: [], history: [] });
-  const p3 = { op: 'log_time', title: 'Done thing', minutes: 5, kind: 'manual' };
-  sandbox.tsgResolveTaskRef_(d, p3);
-  check('two matches prefer the one open task', p3.id === 94);
-  d.tasks.push({ id: 95, title: 'Done thing', owner: 'Durand', status: 'Not Started', priority: 'Low', group: 'Ops', subitems: [], tags: [], history: [] });
-  refused = '';
-  try { sandbox.tsgResolveTaskRef_(d, { op: 'update_task', title: 'Done thing', fields: {} }); } catch (e) { refused = e.message; }
-  check('two open matches are refused with both ids', /matches 3 tasks/.test(refused) && /#94/.test(refused) && /#95/.test(refused));
-  d.tasks = d.tasks.filter(t => t.id !== 94 && t.id !== 95);
-  const p4 = { op: 'add_comment', title: 'Draft the vendor letter', comment: {} };
-  sandbox.tsgResolveTaskRef_(d, p4);
-  check('an op outside the referencing set is left alone', p4.id == null);
-  // applied through applyDataPatch_
-  sandbox.applyDataPatch_(d, { op: 'update_task', title: 'Draft the vendor letter', source: 'Claude (session)', ts: '2026-09-22T12:00:00Z', fields: { priority: 'High' } });
-  check('applyDataPatch_ applies an update_task addressed by title', d.tasks.find(t => t.id === 91).priority === 'High');
+  check('no task reference by title: an op without an id is refused as before (Durand: ids only)', (() => { try { sandbox.applyDataPatch_(d, { op: 'update_task', title: 'Draft the vendor letter', fields: { priority: 'High' } }); return false; } catch (e) { return /not found/.test(e.message); } })());
   // Needs Durand
   sandbox.tsgFlagNeedsDurand_(d, '2026-09-22T12:00:00Z');
   const t91 = d.tasks.find(t => t.id === 91), t93 = d.tasks.find(t => t.id === 93);

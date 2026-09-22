@@ -173,11 +173,11 @@ task is tagged `At Risk` with `realisticEnd` = the date it would need, cleared o
 take part; prose in that field is ignored, so a patch that wants a real dependency must write the id
 (or `dependsOnTitle` in an enrich answer, which the server resolves to the id).
 
-## External sessions read the index, patch by title (2026-09-22)
+## External sessions read the index (2026-09-22)
 
 The data file passed 685 KB, which the Drive connector returns base64-encoded: far past what
 a session can hold, and in-page fetches of the Drive download URL are blocked, so a session
-that needed a task id had no way to get one. Two things ship for that; a third was weighed
+that needed a task id had no way to get one. One thing ships for that; two were weighed
 and rejected.
 
 - **Index file** (`tsgWriteIndex_`, after every applied data write in `processInbox_`): the
@@ -187,17 +187,11 @@ and rejected.
   runs (same as the data file today); and it carries no notes or history, so a session that
   must read the current note text still needs the big file (read one task's slice with `jq`
   from the base64 decode rather than the whole thing).
-- **Task reference by title** (`tsgResolveTaskRef_`, at the top of `applyDataPatch_`): any of
-  `update_task`, `update_subitem`, `add_subitem`, `log_time`, `delete_task`, `reorder_subitems`,
-  `request_steps`, `request_tidy` may carry `taskTitle` instead of `id`; `update_task`,
-  `delete_task`, `log_time`, `reorder_subitems`, `request_steps` and `request_tidy` also take
-  `title`. The match is exact after trimming, collapsing whitespace and ignoring case (so the
-  server's title capitalisation never matters); several matches use the one open task; any
-  other case is refused by name with the closest titles, and the file is filed FAILED- /
-  PARTIAL- as usual. Downsides: titles move (the enricher polishes them, Durand edits them), so
-  a remembered title can stop matching and the write is refused, never fuzzy-applied; two open
-  tasks with one title cannot be addressed this way at all; and the resolved id is only known
-  after the fact (the history line carries it, the file name does not).
+- **Rejected: patching by title.** Built and removed the same day (Durand: "dont like patch by
+  title, doesn't each task have a unique ID?"). Every task has a stable numeric id; the index file
+  carries it, and the dashboard now shows it in front of every title, so a session or a person
+  always has the id at hand. Titles move (the enricher polishes them, Durand edits them), so a
+  title match would either refuse or, worse, hit the wrong task.
 - **Rejected: trimming history harder.** History is already capped and archived (2026-09-18);
   the hot file's bulk is notes and pending judgments, and no trim gets 685 KB under a session's
   budget. It would lose audit trail for no read benefit.
