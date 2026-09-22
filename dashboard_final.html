@@ -1216,6 +1216,8 @@
   .today-item.schedule-clickable .today-content:hover { border-color: var(--text-secondary); }
   .today-meeting-meta { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
   .today-meeting-lead { padding: 1px 6px; border-radius: 999px; background: var(--surface-2); }
+  .ruleset-mirror { font-size: 11.5px; margin-left: 8px; color: var(--brand); text-decoration: none; }
+  .thread-code-toggle { font-size: 11.5px; color: var(--text-muted); margin: 0 8px; display: inline-flex; align-items: center; gap: 4px; }
   .today-meeting-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
   .today-meeting-links a { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); text-decoration: none; }
   .today-meeting-links a:hover { border-color: var(--brand); color: var(--brand); }
@@ -1587,7 +1589,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-22.3';
+  const UI_VERSION = '2026-09-22.4';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -8160,14 +8162,28 @@
         escapeHtml(h.action || '') + '</b> \u2014 ' + escapeHtml(h.summary || '') + '</span></div>';
     }).join('');
   }
+  // INSTRUCTION LAYERS (2026-09-22): General applies everywhere, Code sits on top for Claude
+  // Code sessions, each thread's set sits on top of those. The server mirrors every set to a
+  // Google Doc (meta.mirrorDocs) that a session reads in one call; the link is shown here.
+  function mirrorDocLink_(key) {
+    const rec = (RULESETS.meta && RULESETS.meta.mirrorDocs) ? RULESETS.meta.mirrorDocs[key] : null;
+    if (!rec || !rec.url) return '<span class="ruleset-pushed">no mirror Doc yet (written on the next save)</span>';
+    return '<a class="ruleset-mirror" href="' + escapeHtml(rec.url) + '" target="_blank" rel="noopener" title="Mirror Doc, rewritten by the tracker on every save">&#128196; Mirror Doc</a>';
+  }
+  function layerNote_(cat) {
+    if (cat === 'General') return 'Applies everywhere. Its Doc is what every session reads first.';
+    if (cat === 'Code') return 'Claude Code rules on top of General. Its Doc carries General + Code.';
+    return '';
+  }
   function renderRulesetsTab() {
     const cur = RULESETS.current || {};
-    const cats = Object.keys(cur);
-    let html = cats.map(function(cat) {
+    const cats = Object.keys(cur).sort(function(a, b) { const o = { General: 0, Code: 1 }; return ((o[a] == null ? 9 : o[a]) - (o[b] == null ? 9 : o[b])) || a.localeCompare(b); });
+    let html = '<div class="history-empty">Layers: General everywhere &rarr; Code for Claude Code sessions &rarr; each thread on top. Each set is mirrored to a Google Doc on every save; sessions read the Doc.</div>' + cats.map(function(cat) {
       const r = cur[cat];
       const changelog = (RULESETS.history || []).filter(function(h) { return h.target === cat; }).slice().reverse();
       return '<div class="ruleset-block">' +
-        '<div class="ruleset-block-head"><h3>' + escapeHtml(cat) + '</h3><span class="ruleset-pushed">Last pushed ' + formatDateTime(r.pushed) + '</span></div>' +
+        '<div class="ruleset-block-head"><h3>' + escapeHtml(cat) + '</h3><span class="ruleset-pushed">Last pushed ' + formatDateTime(r.pushed) + '</span> ' + mirrorDocLink_(cat) + '</div>' +
+        (layerNote_(cat) ? '<div class="thread-label">' + layerNote_(cat) + '</div>' : '') +
         '<div class="ruleset-content" contenteditable="true" onblur="rulesetContentEdit(\'' + jsAttr(cat) + '\', this)">' + escapeHtml(r.content || '') + '</div>' +
         '<div class="ruleset-changelog-toggle" onclick="this.nextElementSibling.classList.toggle(\'open\')">Changelog (' + changelog.length + ') &#9662;</div>' +
         '<div class="history-list ruleset-changelog">' + changelogHtml(changelog) + '</div>' +
@@ -8209,8 +8225,10 @@
         const changelog = (th.history || []).slice().reverse();
         const memories = th.memories || [];
         return '<div class="thread-block">' +
-          '<div class="ruleset-block-head"><h3>' + escapeHtml(name) + '</h3><button class="icon-btn danger" onclick="removeThread(\'' + jsAttr(name) + '\')" title="Remove thread">&#10005;</button></div>' +
-          '<div class="thread-label">Instructions</div>' +
+          '<div class="ruleset-block-head"><h3>' + escapeHtml(name) + '</h3>' + mirrorDocLink_('thread:' + name) +
+          ' <label class="thread-code-toggle" title="A code thread\'s Doc carries General + Code + this thread"><input type="checkbox" ' + (th.code ? 'checked' : '') + ' onchange="threadCodeToggle(\'' + jsAttr(name) + '\', this.checked)"> Code thread</label>' +
+          '<button class="icon-btn danger" onclick="removeThread(\'' + jsAttr(name) + '\')" title="Remove thread">&#10005;</button></div>' +
+          '<div class="thread-label">Instructions (on top of General' + (th.code ? ' + Code' : '') + ')</div>' +
           '<div class="ruleset-content" contenteditable="true" onblur="threadFieldEdit(\'' + jsAttr(name) + '\', this)">' + escapeHtml(th.instructions || '') + '</div>' +
           '<div class="thread-label">Critical memories</div>' +
           '<div class="memory-list">' + memories.map(function(m, i) {
@@ -8242,6 +8260,14 @@
   function removeThread(name) {
     if (!confirm('Remove thread "' + name + '"? This deletes its instructions, memories, and changelog.')) return;
     delete RULESETS.threads[name];
+    scheduleRulesetsSave();
+    renderSettings();
+  }
+  function threadCodeToggle(name, on) {
+    const th = RULESETS.threads[name];
+    if (!th || !!th.code === !!on) return;
+    th.code = !!on;
+    touchThreadHistory(name, 'update', on ? 'Marked as a code thread (Code layer applies).' : 'No longer a code thread.');
     scheduleRulesetsSave();
     renderSettings();
   }

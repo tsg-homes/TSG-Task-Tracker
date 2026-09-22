@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-22.5';
+const TSG_CODE_VERSION = '2026-09-22.6';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -158,6 +158,10 @@ function processInbox_() {
     }
 
     if (rulesetsDoc && applied.some(function(p) { return p.patch.target === 'rulesets'; })) {
+      // INSTRUCTION LAYERS (2026-09-22): every instruction set is mirrored to its Google Doc
+      // before the rulesets write so meta.mirrorDocs lands in the same save. Never fails the write.
+      try { tsgMirrorInstructions_(rulesetsDoc); }
+      catch (mirrorErr) { Logger.log('[mirror] instruction mirror skipped: ' + mirrorErr); }
       const rsJson = JSON.stringify(rulesetsDoc);
       rulesetsFile.setContent(rsJson);
       try { backupTrackerFile_('rulesets', rsJson); }
@@ -305,8 +309,24 @@ function applyRulesetPatchOp_(doc, patch) {
     doc.current[patch.category].content = cur.split(patch.find).join(patch.replace);
     doc.current[patch.category].pushed = now;
   } else if (patch.op === 'set_category') {
+    // Creates the category when it does not exist yet (2026-09-22: the Code set is born this way).
+    if (!doc.current) doc.current = {};
+    if (!doc.current[patch.category]) doc.current[patch.category] = { content: '', pushed: now };
     doc.current[patch.category].content = patch.text;
     doc.current[patch.category].pushed = now;
+  } else if (patch.op === 'remove_category') {
+    if (!doc.current || !Object.prototype.hasOwnProperty.call(doc.current, patch.category)) throw new Error('remove_category: category not found: ' + patch.category);
+    delete doc.current[patch.category];
+  } else if (patch.op === 'set_thread_code') {
+    // A code thread's mirror Doc carries the Code layer under General (INSTRUCTION LAYERS, 2026-09-22).
+    if (!tsgHasThread_(doc, patch.name)) throw new Error('set_thread_code: thread not found: ' + patch.name);
+    doc.threads[patch.name].code = !!patch.code;
+    doc.threads[patch.name].history.push({ ts: now, action: 'update', summary: (patch.code ? 'Marked as a code thread (Code layer applies).' : 'No longer a code thread.') });
+    doc.meta.last_updated = now.slice(0, 10);
+    return;
+  } else if (patch.op === 'mirror_instructions') {
+    // No change to the document; the write it triggers re-mirrors every instruction set.
+    return;
 
   } else if (patch.op === 'add_thread') {
     // Reserved-key guard + own-property existence check — see tsgAssertSafeThreadName_.
@@ -634,6 +654,109 @@ function tsgIndexDoc_(doc) {
     judgmentsPending: (meta.judgments || []).length, inboxErrors: (meta.inboxErrors || []).length,
     counts: { open: open.length, done: done.length }, tasks: open, doneTasks: done
   };
+}
+/**
+ * INSTRUCTION LAYERS (Durand, 2026-09-22): "the general set of instructions should be a
+ * generalized merge of all rules to be applied everywhere; the code instructions should be
+ * Claude Code specific rules that sit on top of the general instructions; each thread should
+ * push to its own instruction set, a set of thread/project specific instructions that sit on
+ * top of the general ones (and code ones for code threads)". The rulesets file holds the
+ * layers: current.General, current.Code, threads[name] (with `code: true` on a code thread).
+ * On every rulesets write the tracker mirrors each set to a Google Doc a session can read in
+ * one call (the Drive connector returns JSON base64-encoded, Docs as text): one Doc per set,
+ * COMPOSED so a session reads one Doc: General; Code = General + Code; a thread = General
+ * (+ Code for a code thread) + the thread's instructions and memories. Docs live in the
+ * "Instructions" folder under the tracker folder; ids and content hashes in meta.mirrorDocs
+ * (server-owned), so an unchanged set costs nothing and a Doc keeps its id (the pointer a
+ * session was given stays valid). The legacy 'Systems — Cowork Instructions' Doc (task 309)
+ * is reused as the General mirror.
+ */
+var TSG_INSTRUCTIONS_FOLDER = 'Instructions';
+var TSG_MIRROR_DOC_PREFIX = 'Systems — Instructions — ';
+var TSG_LEGACY_COWORK_MIRROR_DOC_ID = '1G-QI_F04Ye5SdEIJeOFq_Ex6da1v9oFDED49Ee-1HZM';
+function tsgHashText_(text) {
+  var h = 5381, str = String(text || '');
+  for (var i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(16) + ':' + str.length;
+}
+function tsgInstructionSets_(rs) {
+  var cur = (rs && rs.current) || {}, threads = (rs && rs.threads) || {};
+  var general = cur.General || { content: '', pushed: '' };
+  var code = cur.Code || null;
+  var stamp = 'Generated ' + new Date().toISOString() + ' by the TSG Task Tracker from its rulesets (docVersion ' + ((rs.meta && rs.meta.docVersion) || '?') + ').';
+  var howTo = 'MIRROR. Do not edit this Doc: edit in the tracker (Settings > Rulesets / Threads) or push through tsg-thread-sync; the tracker rewrites it on every save. Layers: General applies everywhere; Code sits on top for Claude Code sessions; a thread set sits on top of those for that thread.';
+  var section = function(title, block) { return '\n\n=== ' + title + (block && block.pushed ? ' (pushed ' + block.pushed + ')' : '') + ' ===\n' + ((block && block.content) || '(empty)'); };
+  var sets = [];
+  sets.push({ key: 'General', title: TSG_MIRROR_DOC_PREFIX + 'General', text: 'SYSTEMS — INSTRUCTIONS — GENERAL\n' + stamp + '\n' + howTo + section('GENERAL', general) });
+  sets.push({ key: 'Code', title: TSG_MIRROR_DOC_PREFIX + 'Code', text: 'SYSTEMS — INSTRUCTIONS — CODE (General + Code)\n' + stamp + '\n' + howTo + section('GENERAL', general) + section('CODE', code) });
+  Object.keys(threads).sort().forEach(function(name) {
+    var th = threads[name] || {};
+    var text = 'SYSTEMS — INSTRUCTIONS — THREAD: ' + name + (th.code ? ' (General + Code + thread)' : ' (General + thread)') + '\n' + stamp + '\n' + howTo + section('GENERAL', general);
+    if (th.code) text += section('CODE', code);
+    text += section('THREAD: ' + name, { content: th.instructions || '' });
+    var mems = Array.isArray(th.memories) ? th.memories : [];
+    text += '\n\nCritical memories (' + mems.length + '):' + (mems.length ? '\n- ' + mems.join('\n- ') : ' none');
+    sets.push({ key: 'thread:' + name, title: TSG_MIRROR_DOC_PREFIX + 'Thread — ' + name, text: text });
+  });
+  return sets;
+}
+function tsgInstructionsFolder_() {
+  var parent = DriveApp.getFolderById(TRACKER_FOLDER_ID);
+  var it = parent.getFoldersByName(TSG_INSTRUCTIONS_FOLDER);
+  return it.hasNext() ? it.next() : parent.createFolder(TSG_INSTRUCTIONS_FOLDER);
+}
+function tsgMirrorDocFor_(rs, set) {
+  var rec = rs.meta.mirrorDocs[set.key];
+  var doc = null;
+  if (rec && rec.id) { try { doc = DocumentApp.openById(rec.id); } catch (e0) { doc = null; } }
+  if (!doc && set.key === 'General') { try { doc = DocumentApp.openById(TSG_LEGACY_COWORK_MIRROR_DOC_ID); } catch (e1) { doc = null; } }
+  if (!doc) {
+    var folder = tsgInstructionsFolder_();
+    var it = folder.getFilesByName(set.title);
+    if (it.hasNext()) { doc = DocumentApp.openById(it.next().getId()); }
+    else {
+      doc = DocumentApp.create(set.title);
+      try { DriveApp.getFileById(doc.getId()).moveTo(folder); } catch (e2) { Logger.log('[mirror] could not move ' + set.title + ' into ' + TSG_INSTRUCTIONS_FOLDER + ': ' + e2); }
+    }
+  }
+  try { if (doc.getName && doc.getName() !== set.title && doc.setName) doc.setName(set.title); } catch (e3) {}
+  return doc;
+}
+function tsgMirrorInstructions_(rs) {
+  if (!rs) return 0;
+  rs.meta = rs.meta || {};
+  if (!rs.meta.mirrorDocs || typeof rs.meta.mirrorDocs !== 'object') rs.meta.mirrorDocs = {};
+  var sets = tsgInstructionSets_(rs), written = 0, live = {};
+  sets.forEach(function(set) {
+    live[set.key] = true;
+    var hash = tsgHashText_(set.text.replace(/^Generated .*$/m, ''));   // the stamp line never forces a rewrite
+    var rec = rs.meta.mirrorDocs[set.key];
+    if (rec && rec.id && rec.hash === hash) return;
+    try {
+      var doc = tsgMirrorDocFor_(rs, set);
+      var body = doc.getBody();
+      body.clear();
+      body.setText(set.text);
+      doc.saveAndClose && doc.saveAndClose();
+      rs.meta.mirrorDocs[set.key] = { id: doc.getId(), url: 'https://docs.google.com/document/d/' + doc.getId() + '/edit', title: set.title, hash: hash, ts: new Date().toISOString() };
+      written++;
+    } catch (err) {
+      Logger.log('[mirror] ' + set.key + ' not written: ' + err);
+    }
+  });
+  // A removed thread's record goes; its Doc stays in the folder for Durand to trash.
+  Object.keys(rs.meta.mirrorDocs).forEach(function(k) { if (!live[k]) delete rs.meta.mirrorDocs[k]; });
+  return written;
+}
+/** Editor-run: mirror every instruction set now (owner only), for the first fire or a repair. */
+function tsgMirrorInstructionsNow() {
+  tsgAssertOwner_('tsgMirrorInstructionsNow');
+  var file = getTrackerFile_('rulesets');
+  var rs = JSON.parse(file.getBlob().getDataAsString());
+  var n = tsgMirrorInstructions_(rs);
+  file.setContent(JSON.stringify(rs));
+  Logger.log('[mirror] wrote ' + n + ' doc(s): ' + JSON.stringify(rs.meta.mirrorDocs));
+  return rs.meta.mirrorDocs;
 }
 function tsgIndexFile_() {
   var props = PropertiesService.getScriptProperties();

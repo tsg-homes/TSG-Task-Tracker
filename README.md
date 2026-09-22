@@ -292,6 +292,45 @@ url is already on the item (Gmail as type `email`, sites as type `web`);
 every change gets its own history line with the answer's source. Verify by re-reading the data
 file after a minute: the answered ids are gone from `meta.judgments`.
 
+## Instruction layers and mirror Docs (2026-09-22)
+
+Per Durand: "the general set of instructions should be a generalized merge of all rules to be
+applied everywhere; the code instructions should be Claude Code specific rules that sit on top of
+the general instructions; each thread should push to its own instruction set, a set of
+thread/project specific instructions that sit on top of the general ones (and code ones for code
+threads)". The Rulesets file holds three layers and the tracker mirrors each to a Google Doc:
+
+- `current.General` — applies everywhere (the former Cowork block is merged into it; `Cowork` is retired).
+- `current.Code` — Claude Code rules on top of General.
+- `threads[name]` — that thread's `instructions` + `memories`, on top of General (+ Code when the
+  thread has `code: true`; toggle "Code thread" in Settings > Threads or the `set_thread_code` op).
+
+Mirror: after every rulesets write `tsgMirrorInstructions_` rewrites one Doc per set in the
+`Instructions` folder under the tracker folder, COMPOSED so a session reads ONE Doc:
+"Systems — Instructions — General" (General), "… — Code" (General + Code), "… — Thread — <name>"
+(General [+ Code] + thread + memories). Ids, urls and content hashes live in `meta.mirrorDocs`
+(server-owned); an unchanged set is not rewritten, a Doc keeps its id, a removed thread's record
+is dropped (its Doc stays for Durand to trash). The legacy 'Systems — Cowork Instructions' Doc
+is reused as the General mirror. `tsgMirrorInstructionsNow()` (editor, owner only) repairs or
+first-fires the mirror; the rulesets op `mirror_instructions` does the same through the inbox.
+Settings > Rulesets / Threads show each set's "Mirror Doc" link.
+
+Rulesets ops added: `set_category` now creates a missing category, `remove_category {category}`,
+`set_thread_code {name, code}`, `mirror_instructions {}`.
+
+WHAT A SESSION DOES: read its layer's Doc (the thread Doc when it has a thread, else the Code
+Doc in a code session, else General) at start; push its own durable rules and memories to ITS
+thread only (`update_thread_instructions`, `add_thread_memory`); never edit General or Code from
+a thread (Durand edits those in Settings or asks for a patch); the app-side "Instructions for
+Claude" field in Cowork / a project's CLAUDE.md carries a one-line pointer to the Doc, not a copy.
+
+Replacement text for the Cowork `tsg-thread-sync` skill (Durand applies it in Cowork): "Push this
+thread's instructions and critical memories to ITS OWN thread entry in the tracker's Rulesets
+(`update_thread_instructions` / `add_thread_memory` patches into `_Inbox`), never to General or
+Code. The tracker mirrors the composed set (General, Code when the thread is a code thread, then
+this thread) to the Google Doc 'Systems — Instructions — Thread — <name>' within a minute; read
+that Doc, not the Rulesets file. Mark a thread as a code thread with `set_thread_code`."
+
 ## The Routine's prompt lives in the repo (2026-09-18)
 
 `routines/judgment-routine-prompt.md` is the full prompt for the "Task Tracker Judgement

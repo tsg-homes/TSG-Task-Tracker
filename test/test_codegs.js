@@ -15,6 +15,13 @@ let gmailThreadsFixture = [];    // [{ id, subject, from, body, date }] consumed
 let sentMail = [];               // MailApp.sendEmail captures
 let guestCalendarEvents = null;  // null = guest calendar unreadable; [] or events = readable  // [{ id, title, start: Date, end: Date, allDay, location }] consumed by CalendarApp stub
 let driveDocTextById = {};       // { fileId: text } consumed by the DocumentApp.openById stub (tsgGetFileSnippet_)
+let mirrorDocStore = {};         // { docId: {name, text} } written through the DocumentApp stub (instruction mirror)
+let mirrorDocSeq = 0;
+function fakeDoc(id) {
+  const d = mirrorDocStore[id];
+  return { getId: () => id, getName: () => d.name, setName: (n) => { d.name = n; }, saveAndClose: () => {},
+    getBody: () => ({ getText: () => (driveDocTextById[id] != null ? driveDocTextById[id] : d.text), clear: () => { d.text = ''; }, setText: (t) => { d.text = String(t); } }) };
+}
 let driveSheetValuesById = {};   // { fileId: [[...]] } consumed by the SpreadsheetApp.openById stub
 let projectDashboardHtml = '';   // what HtmlService.createHtmlOutputFromFile('dashboard_final') returns
 let cacheStore = {};             // CacheService stub backing store
@@ -59,7 +66,7 @@ const sandbox = {
     fetchAll: (reqs) => reqs.map(r => fakeClaudeFetch(r))
   },
   DriveApp: {
-    getFolderById: () => ({ createFile: (blob) => driveFileStub(blob), getFilesByName: () => ({ hasNext: () => false }), getFoldersByName: () => ({ hasNext: () => !!attachFolder, next: () => attachFolder }), createFolder: (n) => { attachFolder = { name: n, createFile: (blob) => driveFileStub(blob) }; createdFolders.push(n); return attachFolder; } }),
+    getFolderById: () => ({ createFile: (blob) => driveFileStub(blob), getFilesByName: () => ({ hasNext: () => false }), getFoldersByName: () => ({ hasNext: () => !!attachFolder, next: () => attachFolder }), createFolder: (n) => { attachFolder = { name: n, createFile: (blob) => driveFileStub(blob), getFilesByName: () => ({ hasNext: () => false }) }; createdFolders.push(n); return attachFolder; } }),
     getFileById: () => ({}),
     searchFiles: (q) => {
       const items = driveFilesFixture.slice();
@@ -144,7 +151,13 @@ const sandbox = {
     PLAIN_TEXT: 'text/plain'
   },
   DocumentApp: {
-    openById: (id) => ({ getBody: () => ({ getText: () => driveDocTextById[id] || '' }) })
+    // Mirror docs (2026-09-22): a doc object with a writable body; ids the test never created throw like the real API.
+    openById: (id) => {
+      if (!mirrorDocStore[id] && driveDocTextById[id] == null) throw new Error('Document not found: ' + id);
+      if (!mirrorDocStore[id]) mirrorDocStore[id] = { name: 'doc-' + id, text: driveDocTextById[id] || '' };
+      return fakeDoc(id);
+    },
+    create: (name) => { const id = 'DOC' + (++mirrorDocSeq); mirrorDocStore[id] = { name, text: '' }; return fakeDoc(id); }
   },
   SpreadsheetApp: {
     openById: (id) => ({ getSheets: () => [{ getDataRange: () => ({ getValues: () => driveSheetValuesById[id] || [] }) }] })
@@ -2339,5 +2352,47 @@ section('Meeting block links in the calendar feed (2026-09-22)');
   check('the day feed carries htmlLink, meetLink and agendaDocUrl for each meeting', feed.length === 1 && /calendar\/event\?eid=/.test(feed[0].htmlLink) && feed[0].meetLink === 'https://meet.google.com/abc-defg-hij' && feed[0].agendaDocUrl === 'https://docs.google.com/document/d/AGENDA1/edit?usp=drivesdk');
   check('tsgFindMeetLink_ finds a Zoom link and returns empty when there is none', sandbox.tsgFindMeetLink_('call https://us02web.zoom.us/j/123456?pwd=x now') === 'https://us02web.zoom.us/j/123456?pwd=x' && sandbox.tsgFindMeetLink_('nothing here') === '');
   calendarEventsFixture = prev;
+}
+
+section('Instruction layers and the mirror Docs (2026-09-22)');
+{
+  mirrorDocStore = {}; mirrorDocSeq = 0; attachFolder = null;
+  const LEGACY = sandbox.TSG_LEGACY_COWORK_MIRROR_DOC_ID;
+  mirrorDocStore[LEGACY] = { name: 'Systems — Cowork Instructions', text: 'UNPOPULATED -- PLACEHOLDER ONLY' };
+  const rs = { meta: { docVersion: 7 }, history: [], current: { General: { content: 'G1 rule', pushed: '2026-09-22T14:20:00.000Z' } }, threads: {
+    'Alpha Code': { instructions: 'alpha rules', memories: ['m1', 'm2'], history: [] },
+    'Beta': { instructions: 'beta rules', memories: [], history: [] } } };
+  sandbox.applyRulesetPatch_(rs, { op: 'set_category', category: 'Code', text: 'C1 code rule', ts: '2026-09-22T16:00:00.000Z' });
+  check('set_category creates the Code category when it is missing', rs.current.Code && rs.current.Code.content === 'C1 code rule' && rs.current.Code.pushed === '2026-09-22T16:00:00.000Z');
+  sandbox.applyRulesetPatch_(rs, { op: 'set_thread_code', name: 'Alpha Code', code: true, ts: '2026-09-22T16:01:00.000Z' });
+  check('set_thread_code flags the thread and logs it', rs.threads['Alpha Code'].code === true && rs.threads['Alpha Code'].history.some(h => /code thread/.test(h.summary)));
+  let badThread = false; try { sandbox.applyRulesetPatch_(rs, { op: 'set_thread_code', name: 'Nope', code: true }); } catch (e) { badThread = true; }
+  check('set_thread_code refuses an unknown thread by name', badThread);
+  const v0 = rs.meta.docVersion;
+  sandbox.applyRulesetPatch_(rs, { op: 'mirror_instructions' });
+  check('mirror_instructions changes nothing but counts as a write (version bump)', rs.meta.docVersion === v0 + 1 && rs.current.General.content === 'G1 rule');
+  const n1 = sandbox.tsgMirrorInstructions_(rs);
+  const md = rs.meta.mirrorDocs;
+  check('first mirror writes General, Code and one Doc per thread', n1 === 4 && Object.keys(md).sort().join('|') === 'Code|General|thread:Alpha Code|thread:Beta');
+  check('General reuses the legacy Cowork mirror Doc and renames it', md.General.id === LEGACY && mirrorDocStore[LEGACY].name === 'Systems — Instructions — General' && /=== GENERAL/.test(mirrorDocStore[LEGACY].text) && !/UNPOPULATED/.test(mirrorDocStore[LEGACY].text));
+  check('the Code Doc is composed General + Code', /G1 rule[\s\S]*=== CODE[\s\S]*C1 code rule/.test(mirrorDocStore[md.Code.id].text));
+  const alpha = mirrorDocStore[md['thread:Alpha Code'].id].text, beta = mirrorDocStore[md['thread:Beta'].id].text;
+  check('a code thread Doc carries General + Code + the thread with its memories; a plain thread skips Code', /=== CODE/.test(alpha) && /alpha rules/.test(alpha) && /- m1\n- m2/.test(alpha) && !/=== CODE/.test(beta) && /beta rules/.test(beta) && /Critical memories \(0\): none/.test(beta));
+  check('new Docs land in the Instructions folder with the set title', createdFolders.indexOf('Instructions') !== -1 && mirrorDocStore[md['thread:Beta'].id].name === 'Systems — Instructions — Thread — Beta' && /docs\.google\.com\/document\/d\//.test(md.General.url));
+  const n2 = sandbox.tsgMirrorInstructions_(rs);
+  check('an unchanged set is not rewritten', n2 === 0);
+  sandbox.applyRulesetPatch_(rs, { op: 'update_thread_instructions', name: 'Beta', instructions: 'beta rules v2' });
+  const n3 = sandbox.tsgMirrorInstructions_(rs);
+  check('a thread change rewrites only that thread Doc', n3 === 1 && /beta rules v2/.test(mirrorDocStore[md['thread:Beta'].id].text));
+  sandbox.applyRulesetPatch_(rs, { op: 'set_category', category: 'General', text: 'G2 rule' });
+  check('a General change rewrites every Doc', sandbox.tsgMirrorInstructions_(rs) === 4 && /G2 rule/.test(beta ? mirrorDocStore[md['thread:Beta'].id].text : ''));
+  sandbox.applyRulesetPatch_(rs, { op: 'remove_thread', name: 'Beta' });
+  sandbox.tsgMirrorInstructions_(rs);
+  check('a removed thread drops its mirror record', !rs.meta.mirrorDocs['thread:Beta']);
+  sandbox.applyRulesetPatch_(rs, { op: 'remove_category', category: 'Code' });
+  check('remove_category deletes the block', !rs.current.Code);
+  let badCat = false; try { sandbox.applyRulesetPatch_(rs, { op: 'remove_category', category: 'Nope' }); } catch (e) { badCat = true; }
+  check('remove_category refuses an unknown category by name', badCat);
+  mirrorDocStore = {}; attachFolder = null;
 }
 

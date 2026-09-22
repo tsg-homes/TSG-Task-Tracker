@@ -42,6 +42,18 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 ### Ruleset ops (`target: "rulesets"`)
 `append_category`, `replace_category_text` (exact-substring find/replace; throws if `find` is not present verbatim — byte-check against a fresh read first), `set_category` (full overwrite; avoid), `add_thread`, `update_thread_instructions`, `add_thread_memory`. All three thread ops key the thread by `patch.name` (not `thread`); a wrong key fails silently.
 
+### Instruction layers (2026-09-22)
+
+The Rulesets file holds `current.General` (everywhere), `current.Code` (Claude Code rules on top of
+General) and `threads[name]` (this thread's rules on top of those; `code: true` marks a code thread).
+A session pushes ONLY to its own thread entry (`update_thread_instructions`, `add_thread_memory`,
+`remove_thread_memory`; `set_thread_code {name, code}` to mark it a code thread); General and Code are
+Durand's (Settings > Rulesets, or `set_category` / `remove_category` when he asks). The tracker mirrors
+each set to a Google Doc in the tracker folder's `Instructions` subfolder after every rulesets write
+("Systems — Instructions — General" / "— Code" / "— Thread — <name>", composed so one Doc holds the
+whole stack; links in `meta.mirrorDocs` and in Settings). Read the Doc, never the Rulesets JSON.
+`mirror_instructions {}` (target rulesets) forces a re-mirror.
+
 ## Steps for any write
 
 1. Read the current state fresh: the index file for ids, titles, step indices and status values; `download_file_content` on the Data file only for notes/history/judgments (decode and `jq` one task). Never patch against remembered content.

@@ -381,6 +381,24 @@ setTimeout(async () => {
       if (!/<b>Links<\/b>/.test(detail) || !/Linked and related task/.test(detail)) throw new Error('block detail lacks the Links row or the related cards');
     } finally { CAL.pop(); t2.docs = prevDocs; }
   });
+  // Instruction layers (2026-09-22): Settings shows the mirror Doc links and the code-thread toggle.
+  tryCall('Settings: Rulesets tab shows mirror Doc links and Threads tab has a Code thread toggle', () => {
+    w.eval("RULESETS = { meta: { docVersion: 3, mirrorDocs: { General: { id: 'G1', url: 'https://docs.google.com/document/d/G1/edit' }, 'thread:Alpha': { id: 'T1', url: 'https://docs.google.com/document/d/T1/edit' } } }, current: { Code: { content: 'code rules', pushed: '2026-09-22T16:00:00Z' }, General: { content: 'general rules', pushed: '2026-09-22T14:20:00Z' } }, history: [], threads: { Alpha: { instructions: 'a', memories: [], history: [], code: true }, Beta: { instructions: 'b', memories: [], history: [] } } }; rulesetsLoaded = true;");
+    const rs = w.renderRulesetsTab();
+    if (rs.indexOf('https://docs.google.com/document/d/G1/edit') === -1) throw new Error('General mirror link missing');
+    if (rs.indexOf('<h3>General</h3>') > rs.indexOf('<h3>Code</h3>')) throw new Error('General should render before Code');
+    if (!/no mirror Doc yet/.test(rs)) throw new Error('Code without a Doc should say so');
+    const th = w.renderThreadsTab();
+    if (th.indexOf('https://docs.google.com/document/d/T1/edit') === -1) throw new Error('thread mirror link missing');
+    const alphaIdx = th.indexOf('<h3>Alpha</h3>'), betaIdx = th.indexOf('<h3>Beta</h3>');
+    const alphaBlock = th.slice(alphaIdx, betaIdx), betaBlock = th.slice(betaIdx);
+    if (!/type="checkbox" checked/.test(alphaBlock) || /type="checkbox" checked/.test(betaBlock)) throw new Error('code-thread checkbox state wrong');
+    if (!/on top of General \+ Code/.test(alphaBlock) || /on top of General \+ Code/.test(betaBlock)) throw new Error('layer label wrong');
+    w.threadCodeToggle('Beta', true);
+    const beta = w.eval('RULESETS.threads.Beta');
+    if (beta.code !== true || !beta.history.some(h => /code thread/.test(h.summary))) throw new Error('toggle did not set code or log it');
+    w.eval("RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true;");
+  });
   // #250 backlog batch 1 (2026-09-16): Durand first, group dropdown, tag autocomplete, dependencies in the modal, dense cards
   tryCall('people lists put Durand first, then A to Z', () => {
     if (w.sortPeople_(['Ryan', 'Alex', 'Durand', 'Marj']).join() !== 'Durand,Alex,Marj,Ryan') throw new Error('sortPeople_ wrong');
