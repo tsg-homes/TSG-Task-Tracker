@@ -1141,3 +1141,12 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   (`canonicalTaskType_`); badge class `type-hands-on`. README and the protocol skill updated. The
   earlier "suggested name" for this rename was never recorded anywhere; the choice above is the
   record.
+- Deployed 2026-09-21 20:2x EDT: web app @93 = backend 2026-09-21.6 / UI 2026-09-21.9 (the Hands-on
+  rename) = commit b3847cb, `main` fast-forwarded. The clasp token had expired again (`invalid_rapt`,
+  about 4 h after the 14:52 login). FIFO WRITER RULE: the `( sleep … > fifo & )` form inside the
+  background command died and clasp saw end-of-input ("User force closed the prompt"); the form
+  that held was `nohup setsid sh -c "sleep 1800 > fifo" &` started before clasp. Auto-capture
+  (plain `clasp login`) is impossible from the cloud container: no inbound route, tunnels blocked
+  by the egress policy; Durand asked for it on 2026-09-21 and, after the accounting (one paste per
+  ~5 h of deploys vs a 15-min local setup with unverified connectors), chose to stay in the one
+  cloud session. Pinned Claude task: all 25 steps Done after this deploy.
