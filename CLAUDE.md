@@ -1265,3 +1265,27 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   / UI 2026-09-22.2 = commit 1d731c6, `main` fast-forwarded. SKILL RULE ADDED (Durand: "add the bulk
   rule to the skill"): one `bulk` file per session write so per-step enrich requests coalesce; split
   only past ~30 KB and then by parent task.
+- QUEUE PASS 2026-09-22 (11:45-12:10 EDT, "work the 12 judgments here"): the 16 pending enrich
+  requests were answered in `patch-2026-09-22-judgments-J171-J205.json` (25 ops, decided with Durand
+  via AskUserQuestion: the "From Meeting: Touch Base with Durand" task became the standing weekly
+  prep task for the Tuesday check-in with Ryan (Meeting, agenda doc + Gemini notes + calendar series
+  linked, Ryan's delegated tasks listed in the note, weekly Monday 4 PM reminder); SOP task step 8
+  folded into step 5 as the one SOP 04 working session with Alex (3 h, step 8 Cancelled); the two
+  Marj items from the check-in merged into one Marketing task with three steps (Durand sets it at
+  the 9/28 Marketing Update, Marj's posting calendar, Erika trained on listing drafts) and the second
+  task deleted; the five agent 1:1 email-check steps typed Meeting; backfill-review and holiday-
+  invitation tasks got three steps each; Done step, DNS and API-key steps dropped as echoes). While
+  it applied, a Cowork session filed eight check-in follow-up tasks (ids 326-333) with Log-style notes
+  and re-queued 13 requests; answered in `patch-2026-09-22-judgments-J206-J223.json` (notes rewritten
+  as current-state notes, Creative Pro quote thread linked, Q4 calendar's October/November picks Done).
+  GOTCHAS: (1) a judgment answer's title/notes/taskType are SKIPPED when another session touched the
+  task's notes after the request was queued (the Marj task lost its first answer that way and the
+  server queued a fresh request, answered in the second patch); (2) a parent's `due` in an answer
+  must be on or after its latest step or the At Risk flag fires (caught in the replay: answer `due:
+  null` and let the roll-up derive it); (3) `add_subitem` ops before the judgment and an answered
+  TOTAL keeps the kept-total rule honest (own share 0). FIX (backend 2026-09-22.4, not deployed):
+  `ownerCreated` no longer stamps a Durand history line on group 'Unsorted' (the free-flow form's
+  placeholder), which had made every free-flow task's group hand-set so the enrich pass could never
+  file it; groups on 322/323 were set by direct `update_task` in the patch. Offline replay of a patch
+  through the test sandbox (`replay19.js` / `replay20.js` in the session scratchpad, fed the decoded
+  live data file) is the pre-upload check that caught both gotchas.
