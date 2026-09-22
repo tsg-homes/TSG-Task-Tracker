@@ -144,8 +144,8 @@ The web app is deployed **domain-restricted**: only signed-in TSG Workspace acco
 the full dashboard; any other TSG account gets a per-person page. Consequences for
 automation (Claude sessions, scripts):
 
-- **Reads**: read the INDEX first, `Systems — Task Tracker Index — TSG.json` in the tracker
-  folder (`1PEyP4X_k1TxOfqZeGSbHyyaM8K64GwQ-`; find it by name, or by id once known): every
+- **Reads**: read the INDEX first, `Systems — Task Tracker Index — TSG.json`
+  (`1F4Lgzuq3KsawqUNGqrQBds4Mxu95yaxC`, in the tracker folder `1PEyP4X_k1TxOfqZeGSbHyyaM8K64GwQ-`): every
   open task's id, title, status, group, owner, delegate, due, tags and ALL its steps by index
   and title, Done tasks as id + title, the value lists and the deployed backend version, well
   under 50 KB. Fetch the full `Systems — Task Tracker Data — TSG.json`

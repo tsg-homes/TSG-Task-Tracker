@@ -1247,3 +1247,17 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   `tsgIsWorkday_`, `tsgWorkdaysBetween_`) and the `?api=sync` route. INDEX LAG, answered: the index
   is written in the same `processInbox_` pass right after the data file, so it is never behind the
   data file; both trail an uploaded patch only until the trigger applies it.
+- Deployed 2026-09-22 09:0x EDT: web app @94 = backend 2026-09-22.2 / UI 2026-09-22.2 = commit 8a57e7f,
+  `main` fast-forwarded. VERIFIED on the first write (docVersion 1672, 13:10Z): INDEX FILE created,
+  id `1F4Lgzuq3KsawqUNGqrQBds4Mxu95yaxC` (58 KB); task history 207 -> 154 KB (caps working; a task can
+  still hold more than 12 lines because the latest line per field and the latest hand edit per field
+  are always kept: 285 holds 27); `Needs Durand` landed on #256 (Claude task whose notes carry the
+  draft marker) and #283 (a Claude step with the marker, mirrored to the parent). The file did NOT
+  shrink overall (697 -> 707 KB): pending judgments went 3 -> 12 (19 -> 63 KB; six of them are
+  per-step enrich requests on the FUB bonus task written one patch at a time by another session, so
+  the bulk-only coalescing never saw them) and the closing notes on the eight pinned steps added 10 KB.
+  BUG FOUND AND FIXED (backend 2026-09-22.3, not yet deployed): `tsgTruncateHistoryValues_` counted a
+  line cut on an earlier pass (240 chars + ellipsis = 241) as over the cap again, so the first @94
+  write stashed 201 already-truncated notes lines as bogus `noteVersions` into
+  `History/history-2026-09-22T13-10-23-897Z.json`; the threshold is now CHARS + 1. Harmless in the
+  archive; nothing was lost. All 32 steps on the pinned Claude task are Done.

@@ -2253,6 +2253,8 @@ section('Notes: the hot file keeps the latest note, full previous versions go to
   const nv = doc.meta.noteVersions;
   check('a notes line that gets cut stashes its FULL from/to in meta.noteVersions, on tasks and steps', nv.length === 2 && nv[0].taskId === 1 && nv[0].subIdx === null && nv[0].from.length === 800 && nv[1].subIdx === 0 && nv[1].from.length === 560);
   check('the hot-file line is cut and flagged fullInArchive; a second pass does not stash again', doc.tasks[0].history.filter(h => h.field === 'notes')[0].fullInArchive === true && (sandbox.tsgTruncateHistoryValues_(doc), doc.meta.noteVersions.length === 2));
+  doc.tasks[0].history.push({ ts: '2026-09-22T10:01:00Z', field: 'notes', from: 'x'.repeat(240) + '…', to: 'short', source: 'Claude (queue)' });
+  check('a line already cut on an earlier pass (240 chars + ellipsis) is neither stashed nor cut again', sandbox.tsgTruncateHistoryValues_(doc) === 0 && doc.meta.noteVersions.length === 2 && !doc.tasks[0].history[doc.tasks[0].history.length - 1].fullInArchive);
   const archives = [];
   const folderStub = { getFoldersByName: () => ({ hasNext: () => true, next: () => ({ createFile: (name, content, mime) => { archives.push({ name, content, mime }); return { getName: () => name }; } }) }) };
   const savedFolder3 = sandbox.DriveApp.getFolderById;

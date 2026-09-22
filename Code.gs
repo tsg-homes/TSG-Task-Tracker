@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-22.2';
+const TSG_CODE_VERSION = '2026-09-22.3';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -5558,7 +5558,9 @@ function tsgTruncateHistoryValues_(doc) {
   function cut(h, taskId, subIdx) {
     if (!h) return;
     var isNotes = h.field === 'notes' || h.field === 'subitem-notes';
-    var over = ['from', 'to'].filter(function(k) { return typeof h[k] === 'string' && h[k].length > TSG_HISTORY_VALUE_CHARS; });
+    // A line cut on an earlier pass is CHARS + 1 long (the ellipsis) and must not count as over
+    // again: on the first @94 write every old cut line was stashed as a bogus note version.
+    var over = ['from', 'to'].filter(function(k) { return typeof h[k] === 'string' && h[k].length > TSG_HISTORY_VALUE_CHARS + 1; });
     if (!over.length) return;
     if (isNotes && !h.fullInArchive) {
       doc.meta.noteVersions.push({ ts: h.ts, taskId: taskId, subIdx: subIdx, field: h.field, source: h.source || null, from: h.from, to: h.to });
