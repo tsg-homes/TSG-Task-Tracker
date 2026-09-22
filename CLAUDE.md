@@ -1291,4 +1291,30 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   live data file) is the pre-upload check that caught both gotchas.
 - Deployed 2026-09-22 12:15 EDT: web app @96 = backend 2026-09-22.4 (Unsorted placeholder is not a
   hand-set group) / UI 2026-09-22.2 = commit b7c9505, `main` fast-forwarded. Durand's go: "deploy".
+- Deployed 2026-09-22 16:35 EDT: web app @97 = backend 2026-09-22.6 / UI 2026-09-22.4 = commit e9861b3,
+  `main` fast-forwarded. Durand's go: "and deploy". Ships: MEETING BLOCKS carry the event's links
+  (Join / Calendar / Agenda pills from `htmlLink` / `meetLink` / `agendaDocUrl` in the `api=calendar`
+  feed, `tsgFindMeetLink_`) and list every open task or step linking the event, its Meet link, its
+  agenda doc or the same series (`meetingRelatedItems_`, `meetingBlockItems_`; linkedItems untouched so
+  scheduling is unchanged). INSTRUCTION LAYERS (per Durand: General everywhere; Code on top for Claude
+  Code sessions; each thread pushes only to its own set on top of those): rulesets `current.General`,
+  `current.Code`, `threads[name].code`; ops `set_category` (creates), `remove_category`,
+  `set_thread_code`, `mirror_instructions`; `tsgMirrorInstructions_` after every rulesets write mirrors
+  each set to a COMPOSED Google Doc in the tracker folder's `Instructions` subfolder (General; Code =
+  General + Code; thread = General [+ Code] + thread + memories), ids/hashes in rulesets
+  `meta.mirrorDocs`, unchanged sets skipped, the legacy 'Systems — Cowork Instructions' Doc reused for
+  General; `tsgMirrorInstructionsNow()` editor repair. RULESETS HISTORY (Durand: "only the latest
+  instructions should be in the tracker, history logged separately, same as notes"):
+  `tsgArchiveRulesetsHistory_` keeps the newest 3 changelog lines per category and per thread and moves
+  the rest to `History/rulesets-history-<ISO>.json`. Settings > Rulesets/Threads show Mirror Doc links
+  and a "Code thread" checkbox. NOT DONE ON PURPOSE (Durand: "if you havent dont, i want to run the
+  skill in each thread first"): General and Cowork are NOT merged, the Code set is NOT written, no
+  thread is flagged code yet; the drafts sit in the session scratchpad (general_merged.txt,
+  code_set.txt) and in the 2026-09-22 chat. `skills/tsg-thread-sync/SKILL.md` is now in the repo as the
+  source of truth for the Cowork skill (Durand applies it): consolidated current set per thread, read
+  the thread's mirror Doc, never General/Code, no exec URL.
+- CLIENT EMAILS VIA FUB AS EMBEDDED HTML (Durand 2026-09-22): never a Gmail draft; the HTML is saved
+  as an .html file in Drive (tracker folder > Attachments, id 1DML3Sf_yPWsJBb6vfNll-x1faX7P7IaG) and
+  linked on the task. Rule appended to General by patch. The review-ask email's Gmail draft was deleted
+  and its HTML saved there.
 
