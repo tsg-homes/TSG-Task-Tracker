@@ -25,6 +25,7 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 ### Data ops (`target: "data"`)
 - `add_task {task}` — fields below; `skipDedup`/`skipEnrich` only when told. A near-duplicate title is merged as a step of the existing task, not added.
 - `update_task {id, fields}` — merged with `Object.assign`; cannot set `id`/`history`; `timelineEnd` also sets `dueOverride`; `assignee` is accepted and landed as `delegate`; `depends` lifts `dependsNone`.
+- NOTES ARE ONE CURRENT-STATE NOTE (2026-09-22): write a task or step note as where things stand now, the next action, what it is blocked on and the facts needed to act; do not append dated log entries or keep superseded lines. Every previous version of a note is archived in full by the tracker (History folder, `noteVersions`), so nothing is lost by replacing it.
 - IDS ONLY: every op that names a task needs its numeric `id` (from the index file; the dashboard shows it in front of every title as `#321`). There is no lookup by title.
 - `reorder_subitems {id, by: "due"}` or `{id, order: [old indices]}` — reorder a task's steps without resending them (backend >= 2026-09-18.15); a stable sort by `timelineEnd` (undated last) or an explicit permutation; the steps are untouched and the parent logs `subitems-reordered`.
 - `update_subitem {id, index, fields, expectTitle}` — one step by 0-based `index` (`subIdx` is accepted as an alias from backend 2026-09-18.8; before that only `index` worked and a `subIdx` patch was filed FAILED-); `expectTitle` guards against a moved index.

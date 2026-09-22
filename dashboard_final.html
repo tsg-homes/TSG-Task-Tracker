@@ -1066,12 +1066,6 @@
   .comment-head { font-size: 11.5px; color: var(--text-muted); margin-bottom: 4px; }
   .comment-anchor { color: var(--brand); cursor: pointer; text-decoration: underline dotted; }
   .comment-text { white-space: pre-wrap; font-size: 13px; margin-bottom: 6px; }
-  /* Tidy review */
-  .tidy-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
-  .tidy-row { display: grid; grid-template-columns: 20px 90px 1fr 1fr; gap: 8px; align-items: start; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; }
-  .tidy-field { font-weight: 700; }
-  .tidy-before { color: var(--text-muted); text-decoration: line-through; white-space: pre-wrap; }
-  .tidy-after { white-space: pre-wrap; }
   .link-paste-row input { flex: 1; }
   .series-link-btn { margin-left: 8px; }
   .tag-input { width: 110px; padding: 2px 6px; font-size: 11.5px; }
@@ -1589,7 +1583,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-22.1';
+  const UI_VERSION = '2026-09-22.2';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1880,16 +1874,9 @@
     renderAll(); openTaskCard(dst.id); scheduleSave();
   }
 
-  // ---- Tidy with Claude (2026-09-16, #250) ----
-  // POST target=tidy returns {before, proposal}; every changed field is shown before/after with
-  // a checkbox, and only what Durand accepts is applied (logged as accepted from Claude).
-  const TIDY_FIELDS = [['title', 'Title'], ['notes', 'Notes'], ['priority', 'Priority'], ['taskType', 'Type'], ['group', 'Group'], ['estHours', 'Estimate (h)'], ['tags', 'Tags']];
-  let TIDY_STATE = null;
-  // With no API key the server queues the rewrite (meta.judgments) and the once-a-weekday Claude
-  // Routine answers into meta.tidyProposals[taskId]; the button then reads "Review tidy".
-  // Tidy is automatic (2026-09-16, per Durand): every notes change re-judges the task and the
-  // answer applies itself when it lands. The button forces a full re-run on demand.
-  function tidyProposalFor_(id) { return null; }
+  // ---- Re-run Claude (2026-09-16, #250; 2026-09-22: proposal path removed) ----
+  // Tidy is automatic (per Durand): every notes change re-judges the task and the answer applies
+  // itself when it lands. The button forces a full re-run on demand; the server always queues it.
   function refreshTidyButton_(id) {
     const btn = document.getElementById('tidyBtn');
     if (!btn) return;
@@ -1901,79 +1888,20 @@
   async function tidyTask(id) {
     const t = findTask(id);
     if (!t) return;
-    const ready = tidyProposalFor_(id);
-    if (ready) { showTidyReview_(id, ready.before, ready.proposal, true); return; }
     const btn = document.getElementById('tidyBtn');
     if (btn) { btn.disabled = true; btn.textContent = 'Asking Claude…'; }
     try {
       const res = await apiFetch('target=tidy', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ taskId: id }) });
       const data = await res.json();
-      if (!data || !data.ok) throw new Error((data && data.error) || 'Tidy failed');
-      if (data.queued) {
-        RAW_META.judgments = ((RAW_META && RAW_META.judgments) || []).concat([{ id: 'pending', kind: 'enrich', taskId: id }]);
-        openTaskCard(id); // the Estimate row now reads "queued for Claude"
-        alert('Queued. Claude re-judges this task within the hour: polished title and notes, every field filled in, applied automatically.');
-        return;
-      }
-      showTidyReview_(id, data.before, data.proposal, false);
+      if (!data || !data.ok) throw new Error((data && data.error) || 'Re-run failed');
+      RAW_META.judgments = ((RAW_META && RAW_META.judgments) || []).concat([{ id: 'pending', kind: 'enrich', taskId: id }]);
+      openTaskCard(id); // the Estimate row now reads "queued for Claude"
+      alert('Queued. Claude re-judges this task on its next run: polished title and notes, every field filled in, applied automatically.');
     } catch (err) {
-      alert('Tidy failed: ' + (err.message || err));
+      alert('Re-run failed: ' + (err.message || err));
     } finally {
       refreshTidyButton_(id);
     }
-  }
-  async function clearTidyProposal_(id) {
-    if (RAW_META && RAW_META.tidyProposals) delete RAW_META.tidyProposals[String(id)];
-    try { await apiFetch('', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ op: 'clear_tidy_proposal', id: id }) }); } catch (err) {}
-    refreshTidyButton_(id);
-  }
-  function tidyValueText_(field, v) {
-    if (field === 'tags') return (v || []).join(', ') || '—';
-    if (v == null || v === '') return '—';
-    return String(v);
-  }
-  function showTidyReview_(id, before, proposal, fromQueue) {
-    const changed = TIDY_FIELDS.filter(([f]) => tidyValueText_(f, before[f]) !== tidyValueText_(f, proposal[f]));
-    TIDY_STATE = { id, before, proposal, changed: changed.map(([f]) => f), fromQueue: !!fromQueue };
-    const rows = changed.length ? changed.map(([f, label]) => `
-      <label class="tidy-row"><input type="checkbox" class="tidy-pick" value="${f}" checked><span class="tidy-field">${label}</span>
-        <span class="tidy-before">${escapeHtml(tidyValueText_(f, before[f]))}</span><span class="tidy-after">${escapeHtml(tidyValueText_(f, proposal[f]))}</span></label>`).join('')
-      : '<div class="history-empty">Claude found nothing to change.</div>';
-    document.getElementById('dayViewTitle').textContent = 'Tidy: review Claude\'s rewrite';
-    setDayViewAdd_(null);
-    document.getElementById('dayViewBody').innerHTML = `
-      <div class="sched-detail-note">${escapeHtml(proposal.rationale || '')}</div>
-      <div class="tidy-list">${rows}</div>
-      <div class="meeting-modal-footer">
-        <button class="btn small" onclick="closeDayView()">${fromQueue ? 'Keep for later' : 'Cancel'}</button>
-        ${fromQueue ? '<button class="btn small" onclick="dismissTidy_()">Discard proposal</button>' : ''}
-        ${changed.length ? '<button class="btn primary small" onclick="applyTidy_()">Apply selected</button>' : ''}
-      </div>`;
-    document.getElementById('dayViewModal').classList.add('open');
-  }
-  function applyTidy_() {
-    if (!TIDY_STATE) return;
-    const t = findTask(TIDY_STATE.id);
-    if (!t) return;
-    const picked = Array.from(document.querySelectorAll('.tidy-pick:checked')).map(el => el.value);
-    picked.forEach(f => {
-      const before = t[f], after = TIDY_STATE.proposal[f];
-      t[f] = f === 'tags' ? (after || []).slice() : after;
-      t.history = t.history || [];
-      t.history.push({ ts: new Date().toISOString(), field: f, from: f === 'tags' ? ((before || []).join(', ') || null) : (before == null || before === '' ? null : before), to: f === 'tags' ? ((after || []).join(', ') || null) : after, source: 'Claude (tidy), accepted by Durand' });
-    });
-    const fromQueue = TIDY_STATE.fromQueue;
-    TIDY_STATE = null;
-    closeDayView();
-    renderAll(); openTaskCard(t.id); scheduleSave();
-    if (fromQueue) clearTidyProposal_(t.id);
-  }
-  function dismissTidy_() {
-    if (!TIDY_STATE) return;
-    const id = TIDY_STATE.id;
-    TIDY_STATE = null;
-    closeDayView();
-    clearTidyProposal_(id);
   }
 
   // ---- Comment mode (2026-09-16, #250, per Durand: "a toggle where I can comment on any
@@ -7428,7 +7356,7 @@
   // per save, then the old reload-and-tell path.
   let BASELINE_DOC = null;
   let conflictReplays = 0;
-  const SERVER_OWNED_META = ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion', 'historyArchive', 'last_updated', 'version', 'created', 'featureTaskId'];
+  const SERVER_OWNED_META = ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion', 'historyArchive', 'last_updated', 'version', 'created', 'featureTaskId', 'noteVersions'];
   function cloneJson_(v) { return JSON.parse(JSON.stringify(v === undefined ? null : v)); }
   function sameJson_(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); }
   function localDocForDiff_() { return cloneJson_({ tasks: TASKS, meta: Object.assign({}, RAW_META, { teamRoster: TEAM_ROSTER }) }); }

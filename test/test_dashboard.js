@@ -269,17 +269,11 @@ setTimeout(async () => {
     try {
       w.openTaskCard(2);
       await w.tidyTask(2);
-      const rows = doc.querySelectorAll('.tidy-row');
-      if (!doc.getElementById('dayViewModal').classList.contains('open') || rows.length !== 3) throw new Error('review rows: ' + rows.length);
-      const notesPick = Array.from(doc.querySelectorAll('.tidy-pick')).find(el => el.value === 'notes'); notesPick.checked = false;
-      w.applyTidy_();
-      const t2 = w.findTask(2);
-      if (t2.title !== 'Text Marj: confirm the flyer proof is approved' || t2.tags.indexOf('Flyers') === -1) throw new Error('accepted fields not applied');
-      if (t2.notes !== '') throw new Error('unchecked notes were applied');
-      if (!t2.history.some(h => h.field === 'title' && /Claude \(tidy\)/.test(h.source))) throw new Error('tidy not logged with its source');
-      t2.title = 'Text Marj About The Flyer Proof'; t2.tags = [];
+      if (typeof w.applyTidy_ !== 'undefined' || typeof w.showTidyReview_ !== 'undefined' || doc.querySelectorAll('.tidy-row').length) throw new Error('proposal UI still present');
+      if (!/Claude queued/.test(doc.getElementById('tidyBtn').textContent)) throw new Error('button not showing the pending state: ' + doc.getElementById('tidyBtn').textContent);
+      w.eval('RAW_META').judgments = [];
       w.closeTaskCard();
-      console.log('OK   - tidy: the proposal is reviewed per field and only accepted fields apply, logged as Claude (tidy)');
+      console.log('OK   - tidy: the tick-box proposal path is gone; Re-run Claude always queues (2026-09-22)');
     } catch (e) { console.log('FAIL - tidy ->', e.message); FAILS++; }
     try {
       w.setView('board');

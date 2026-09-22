@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-22.1';
+const TSG_CODE_VERSION = '2026-09-22.2';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -204,6 +204,15 @@ function tsgJsonErrorExcerpt_(text, err) {
 }
 function tsgCachePut_(k, v, ttlSec) { try { CacheService.getScriptCache().put(k, v, ttlSec); } catch (err) {} }
 function tsgCacheGet_(k) { try { return CacheService.getScriptCache().get(k); } catch (err) { return null; } }
+// A JSON value computed by fn, cached ttlSec in the script cache (audit 2026-09-22: the two
+// 120-day calendar scans ran on every write). Never cached when over the 90 KB entry limit.
+function tsgCachedJson_(key, ttlSec, fn) {
+  var hit = tsgCacheGet_(key);
+  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+  var val = fn();
+  try { var js = JSON.stringify(val); if (js && js.length < 90000) tsgCachePut_(key, js, ttlSec); } catch (e2) {}
+  return val;
+}
 function tsgCacheRemove_(k) { try { CacheService.getScriptCache().remove(k); } catch (err) {} }
 
 /**
@@ -587,7 +596,7 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
 // Every data op this backend accepts (2026-09-18): named in the unknown-op error so a
 // session that sends an op the DEPLOYED script does not know yet reads exactly why.
 var TSG_DATA_OPS = ['add_task', 'update_task', 'update_subitem', 'add_subitem', 'delete_task', 'bulk', 'set_meta',
-  'replace_all', 'add_comment', 'update_comment', 'judgment', 'request_tidy', 'clear_tidy_proposal', 'request_steps',
+  'replace_all', 'add_comment', 'update_comment', 'judgment', 'request_tidy', 'request_steps',
   'log_time', 'retry_filed', 'dismiss_inbox_error', 'remove_dismissed_google_task_ids', 'reorder_subitems'];
 /**
  * TASK INDEX (2026-09-22). The data file is too large for an external session's context
@@ -1239,7 +1248,7 @@ function applyDataPatch_(doc, patch) {
     var metaFields = Object.assign({}, patch.fields || {});
     // comments is server-owned too (2026-09-16): use add_comment / update_comment so two
     // writers (the dashboard, a Claude session) never overwrite each other's threads.
-    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion'].forEach(function(k) { delete metaFields[k]; });  // server-owned
+    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion', 'historyArchive', 'noteVersions', 'featureTaskId', 'last_updated', 'version', 'created'].forEach(function(k) { delete metaFields[k]; });  // server-owned
     Object.assign(doc.meta, metaFields);
     if (Object.prototype.hasOwnProperty.call(metaFields, 'homeBase')) {
       try { PropertiesService.getScriptProperties().setProperty('TSG_HOME_BASE', String(metaFields.homeBase || '')); } catch (err) {}
@@ -1266,8 +1275,6 @@ function applyDataPatch_(doc, patch) {
     var tidyTask = (doc.tasks || []).filter(function(x) { return x && x.id === patch.id; })[0];
     if (!tidyTask) throw new Error('request_tidy: no task ' + patch.id);
     tsgEnrichTask_(doc, tidyTask, now, patch.source || 'Durand', { force: true });
-  } else if (patch.op === 'clear_tidy_proposal') {
-    if (doc.meta && doc.meta.tidyProposals) delete doc.meta.tidyProposals[String(patch.id)];
   } else if (patch.op === 'add_comment') {
     // Comment mode (2026-09-16, #250, per Durand: "a toggle where I can comment on any
     // visible element like Claude artifacts"). A comment is { id, ts, author, text,
@@ -1948,11 +1955,6 @@ function doGet(e) {
   tsgNoteLiveHeartbeat_();
   processInbox_();
 
-  if (e.parameter.api === 'sync') {
-    // Intentionally ungated: returns no data at all ({ok:true}), and its only effect is
-    // the processInbox_() call above, which already ran unconditionally.
-    return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
-  }
   // No ?api=whoami here, deliberately (2026-09-14): under ANONYMOUS access (the mode before
   // the 9/14 DOMAIN switch), Session.getActiveUser() makes Apps Script abort the whole request with
   // Google's "Sorry, unable to open the file at this time" page — it does not return ''.
@@ -4580,12 +4582,13 @@ var TSG_ESTIMATE_SYSTEM =
   'characters, specific (who/what), keeping names, addresses and numbers. When the notes are a ' +
   'free-flow thought and the title is a placeholder, derive the title from the notes. Return the ' +
   'current title unchanged when it is already good.\n\n' +
-  'notes — ONLY when requested: the notes rewritten into (1) a short "Current state" paragraph ' +
-  'saying exactly where things stand, then (2) a "Log" of dated bullets, oldest first, one per ' +
-  'event, each starting with its date (use TODAY for undated statements). Keep every fact, name, ' +
-  'date, phone number, dollar amount and URL verbatim; drop chatter, duplicates and instructions ' +
-  'that later lines superseded; never invent a fact. The raw text may be a free-flow thought — ' +
-  'turn it into that structure. Return the notes unchanged when they are already clean. Do the ' +
+  'notes — ONLY when requested: the notes rewritten as ONE compact "Current state" note: where ' +
+  'things stand right now, the next action, what it is blocked on, and every fact still needed to ' +
+  'act (names, dates, phone numbers, dollar amounts, URLs, decisions) kept verbatim. NO running log ' +
+  'of dated entries: superseded lines, chatter, duplicates and old instructions are dropped, because ' +
+  'the tracker archives every previous version of the note in full. A "DRAFT — AWAITING APPROVAL" ' +
+  'block is kept as written. Never invent a fact. The raw text may be a free-flow thought — ' +
+  'turn it into that note. Return the notes unchanged when they are already clean. Do the ' +
   'notes rewrite FIRST and derive every other field from the polished notes, not from the raw text. ' +
   'For a SUBTASK (CURRENT_FIELDS carries subtask: true) the same rules apply to its own title/notes.\n\n' +
   'location — ONLY when requested: the place or street address the title/notes say the work ' +
@@ -5077,83 +5080,13 @@ function tsgReestimate(apply, includeEstimated) {
   return ops;
 }
 
-var TSG_TIDY_SYSTEM =
-  'You tidy one task on the Director of Operations\' tracker for a residential real estate team. ' +
-  'Return a cleaned-up version of the task as JSON. Rules:\n' +
-  '- title: one imperative line, at most 80 characters, specific (who/what). Keep names, addresses and numbers.\n' +
-  '- notes: rewrite into (1) a short "Current state" paragraph saying exactly where things stand, then (2) a ' +
-  '"Log" of dated bullets, oldest first, one per event, each starting with its date. Keep every fact, name, ' +
-  'date, phone number, dollar amount and URL verbatim. Drop chatter, duplicates and stale instructions that ' +
-  'later lines superseded. Never invent a fact. If the notes are already clean, return them unchanged.\n' +
-  '- priority (Critical|High|Medium|Low), taskType (Email|Call|Text/Chat|Meeting|Claude|Hands-on), ' +
-  'group (one of EXISTING_GROUPS), estHours (number, 0.25-80), tags (0-3, prefer EXISTING_TAGS; never Triage, ' +
-  'Aging, Scheduling Stuck, Dependency Issue, needs-estimate, Claude): change a field ONLY when the title/notes ' +
-  'clearly justify it; otherwise return the current value.\n' +
-  '- rationale: one sentence on what you changed and why.\n' +
-  'Return ONLY the JSON object {"title","notes","priority","taskType","group","estHours","tags","rationale"}, no prose, no fences.';
-
-var TSG_TIDY_SCHEMA = {
-  type: 'object', additionalProperties: false,
-  required: ['title', 'notes', 'priority', 'taskType', 'group', 'estHours', 'tags', 'rationale'],
-  properties: {
-    title: { type: 'string' }, notes: { type: 'string' },
-    priority: { type: 'string' }, taskType: { type: 'string' }, group: { type: 'string' },
-    estHours: { type: 'number' }, tags: { type: 'array', items: { type: 'string' } }, rationale: { type: 'string' }
-  }
-};
-/** Proposal for the dashboard's Tidy button: current fields plus Claude's cleaned-up version, validated. */
-function tsgTidyBefore_(t) {
-  return { title: t.title || '', notes: t.notes || '', priority: t.priority || 'Medium', taskType: t.taskType || 'Hands-on', group: t.group || '',
-    estHours: (typeof t.estHours === 'number') ? t.estHours : null, tags: (t.tags || []).slice() };
-}
-/** Validates a raw tidy answer against the board: unknown values fall back to the current ones, system tags are kept. */
-function tsgTidyValidate_(doc, t, p) {
-  var groups = Array.from(new Set((doc.tasks || []).map(function(x) { return x.group; }).filter(Boolean)));
-  var before = tsgTidyBefore_(t);
-  p = p || {};
-  var prios = (doc.meta && doc.meta.priority_values) || TSG_PRIORITY_VALUES;
-  var types = TSG_TASK_TYPE_VALUES;
-  var proposal = {
-    title: String(p.title || before.title).trim().slice(0, 120) || before.title,
-    notes: (typeof p.notes === 'string') ? p.notes.trim() : before.notes,
-    priority: prios.indexOf(p.priority) !== -1 ? p.priority : before.priority,
-    taskType: types.indexOf(tsgCanonicalTaskType_(p.taskType)) !== -1 ? tsgCanonicalTaskType_(p.taskType) : before.taskType,
-    group: (p.group && groups.indexOf(p.group) !== -1) ? p.group : before.group,
-    estHours: (typeof p.estHours === 'number' && p.estHours > 0) ? Math.max(0.25, Math.min(80, Math.round(p.estHours * 4) / 4)) : before.estHours,
-    tags: Array.isArray(p.tags) ? p.tags.map(function(x) { return String(x).trim(); }).filter(function(x) { return x && TSG_RESERVED_TAGS.indexOf(x) === -1; }).slice(0, 3) : before.tags,
-    rationale: String(p.rationale || '').slice(0, 400)
-  };
-  // System tags on the task (Triage etc.) are never dropped by a tidy.
-  var keep = (t.tags || []).filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) !== -1 || tg === 'Self-created'; });
-  proposal.tags = Array.from(new Set(keep.concat(proposal.tags)));
-  return { before: before, proposal: proposal };
-}
-/**
- * Proposal for the dashboard's Tidy button. With a key: one Claude call, answered now. With
- * no key: a request_tidy inbox op queues the rewrite for the Routine and the dashboard shows
- * "Review tidy" on the card once meta.tidyProposals[taskId] exists.
- */
+/** The dashboard's Re-run Claude button: always queues a forced enrich request (2026-09-22: the
+ *  old API-key tick-box proposal path is gone, Tidy is automatic in every mode). */
 function tsgTidyProposal_(taskId) {
   if (!taskId) return { ok: false, error: 'taskId required' };
-  if (tsgJudgmentMode_()) {
-    var r = tsgQueueDataPatch_({ op: 'request_tidy', id: taskId, source: 'Durand' });
-    return { ok: true, queued: true, taskId: taskId, busy: !!(r && r.busy) };
-  }
-  var doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
-  var t = (doc.tasks || []).filter(function(x) { return x && x.id === taskId; })[0];
-  if (!t) return { ok: false, error: 'no task ' + taskId };
-  var groups = Array.from(new Set((doc.tasks || []).map(function(x) { return x.group; }).filter(Boolean)));
-  var tags = Array.from(new Set((doc.tasks || []).reduce(function(a, x) { return a.concat(x.tags || []); }, []))).filter(function(tg) { return TSG_RESERVED_TAGS.indexOf(tg) === -1; });
-  var before = tsgTidyBefore_(t);
-  var user = 'CURRENT TASK: ' + JSON.stringify(Object.assign({ id: t.id, status: t.status, due: t.timelineEnd || '', subitems: (t.subitems || []).map(function(s) { return s.title; }) }, before), null, 1) +
-    '\n\nEXISTING_GROUPS: ' + JSON.stringify(groups) + '\nEXISTING_TAGS: ' + JSON.stringify(tags);
-  var raw = tsgClaude_(TSG_TIDY_SYSTEM, user, 2000, false, { schema: TSG_TIDY_SCHEMA });
-  var p = raw ? tsgExtractJson_(raw) : null;
-  if (!p) return { ok: false, error: 'Claude did not return a proposal.' };
-  var v = tsgTidyValidate_(doc, t, p);
-  return { ok: true, taskId: t.id, before: v.before, proposal: v.proposal };
+  var r = tsgQueueDataPatch_({ op: 'request_tidy', id: taskId, source: 'Durand' });
+  return { ok: true, queued: true, taskId: taskId, busy: !!(r && r.busy) };
 }
-
 /* ------------------------------------------------------------------ *
  * Ask-Claude endpoint for the dashboard button.
  * POST ?target=claude  body: {"prompt":"...", "taskId":123}
@@ -5313,152 +5246,7 @@ function tsgActualsByType_(doc) {
   return out;
 }
 
-function tsgIsWorkday_(d) {
-  var day = d.getDay();
-  return day !== 0 && day !== 6;
-}
 
-function tsgWorkdaysBetween_(startIso, endIso) {
-  if (!startIso || !endIso) return null;
-  var s = tsgParseIsoDate_(String(startIso).slice(0, 10));
-  var e = tsgParseIsoDate_(String(endIso).slice(0, 10));
-  if (!s || !e || isNaN(s) || isNaN(e) || e < s) return null;
-  var n = 0, cur = new Date(s);
-  while (cur <= e) {
-    if (tsgIsWorkday_(cur)) n++;
-    cur.setDate(cur.getDate() + 1);
-  }
-  return Math.max(1, n);
-}
-
-/**
- * Fill in actualDays for completed tasks, and report velocity.
- *   tsgDeriveActuals()     -> dry run
- *   tsgDeriveActuals(true) -> write a patch into _Inbox
- */
-function tsgDeriveActuals(apply) {
-  tsgAssertOwner_('tsgDeriveActuals');
-  const doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
-  const done = (doc.tasks || []).filter(function (t) {
-    return String(t.status) === 'Done' && t.completedAt && !t.actualDays;
-  });
-
-  if (!done.length) {
-    Logger.log('[actuals] nothing to derive. Tasks need startedAt/completedAt, which are ' +
-               'stamped automatically from now on — this fills in as work completes.');
-    return [];
-  }
-
-  var ops = [];
-  done.forEach(function (t) {
-    var start = t.startedAt || t.scheduledStart || null;
-    if (!start) {
-      Logger.log('  #' + t.id + '  no start point — skipped: ' + t.title);
-      return;
-    }
-    var days = tsgWorkdaysBetween_(start, t.completedAt);
-    if (!days) { Logger.log('  #' + t.id + '  unusable dates — skipped'); return; }
-
-    // A task left sitting in a non-Done status for weeks was abandoned, not worked.
-    // Flag rather than pretend the elapsed span was effort.
-    var confidence = days <= (t.estDays || 1) * 3 ? 'ok' : 'low';
-
-    Logger.log('  #' + t.id + '  est ' + (t.estDays || '-') + 'd -> actual ' + days + 'd  (' +
-               confidence + ')  ' + t.title.slice(0, 50));
-    ops.push({ op: 'update_task', id: t.id, fields: {
-      actualDays: days,
-      actualSource: 'status-transitions',
-      actualConfidence: confidence
-    }});
-  });
-
-  if (!ops.length) return [];
-  if (!apply) {
-    Logger.log('[actuals] DRY RUN — ' + ops.length + ' task(s). Call tsgDeriveActuals(true) to write the patch.');
-    return ops;
-  }
-  var name = 'actuals-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd-HHmmss') + '.json';
-  DriveApp.getFolderById(INBOX_FOLDER_ID)
-    .createFile(name, JSON.stringify({ target: 'data', op: 'bulk', ops: ops }, null, 2), MimeType.PLAIN_TEXT);
-  Logger.log('[actuals] wrote ' + name + ' with ' + ops.length + ' op(s). Hit ?api=sync to apply.');
-  return ops;
-}
-
-/**
- * Velocity report — estDays / actualDays across completed work.
- * Run it once there are ~10 completed tasks with actualDays; below that the
- * distribution is too thin to read anything into.
- */
-function tsgVelocityReport() {
-  tsgAssertOwner_('tsgVelocityReport');
-  const doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
-  const rows = (doc.tasks || []).filter(function (t) {
-    return t.actualDays && t.estDays && t.actualConfidence !== 'low';
-  });
-
-  if (rows.length < 5) {
-    Logger.log('[velocity] only ' + rows.length + ' usable data point(s) — not enough to calibrate. ' +
-               'Needs ~10. Keep working; this fills in on its own.');
-    return null;
-  }
-
-  var v = rows.map(function (t) { return t.estDays / t.actualDays; }).sort(function (a, b) { return a - b; });
-  var median = v.length % 2 ? v[v.length >> 1] : (v[(v.length >> 1) - 1] + v[v.length >> 1]) / 2;
-  var mean = v.reduce(function (a, b) { return a + b; }, 0) / v.length;
-
-  rows.forEach(function (t) {
-    Logger.log('  ' + (t.estDays / t.actualDays).toFixed(2) + '   est ' + t.estDays + 'd / actual ' +
-               t.actualDays + 'd   ' + t.title.slice(0, 50));
-  });
-  Logger.log('[velocity] n=' + v.length + '  median ' + median.toFixed(2) + '  mean ' + mean.toFixed(2) +
-             '  p10 ' + v[Math.floor(v.length * 0.1)].toFixed(2) +
-             '  p90 ' + v[Math.floor(v.length * 0.9)].toFixed(2));
-  Logger.log(median < 0.85 ? '  -> Work runs LONGER than planned. Divide future estDays by ' + median.toFixed(2) + '.'
-           : median > 1.15 ? '  -> Work finishes EARLY. Estimates are padded by about ' + Math.round((median - 1) * 100) + '%.'
-           : '  -> Estimates are well calibrated. No correction needed.');
-  return { n: v.length, median: median, mean: mean };
-}
-
-/**
- * Optional: fill actualHours from calendar events whose title matches a task.
- * Only does anything for work you actually put on the calendar — it never guesses.
- *   tsgAttributeCalendarHours('2026-08-01', '2026-08-31')
- */
-function tsgAttributeCalendarHours(startStr, endStr, apply) {
-  tsgAssertOwner_('tsgAttributeCalendarHours');
-  const doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
-  const events = getCalendarHours_(startStr, endStr);
-  const tasks = (doc.tasks || []).filter(function (t) { return t.title; });
-
-  var byTask = {};
-  events.forEach(function (ev) {
-    var best = null, bestScore = 0;
-    tasks.forEach(function (t) {
-      var s = tsgTitleSimilarity_(ev.title, t.title);
-      if (s > bestScore) { bestScore = s; best = t; }
-    });
-    if (best && bestScore >= 0.60) {
-      byTask[best.id] = (byTask[best.id] || 0) + ev.hours;
-      Logger.log('  ' + ev.date + '  ' + ev.hours + 'h  "' + ev.title + '" -> #' + best.id +
-                 ' (' + Math.round(bestScore * 100) + '%)');
-    }
-  });
-
-  var ops = Object.keys(byTask).map(function (id) {
-    return { op: 'update_task', id: Number(id), fields: {
-      actualHours: Math.round(byTask[id] * 4) / 4, actualSource: 'calendar'
-    }};
-  });
-
-  if (!ops.length) { Logger.log('[calendar] no events matched a task title.'); return []; }
-  if (!apply) { Logger.log('[calendar] DRY RUN — ' + ops.length + ' task(s). Pass apply=true to write.'); return ops; }
-
-  var name = 'calendar-actuals-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd-HHmmss') + '.json';
-  DriveApp.getFolderById(INBOX_FOLDER_ID)
-    .createFile(name, JSON.stringify({ target: 'data', op: 'bulk', ops: ops }, null, 2), MimeType.PLAIN_TEXT);
-  Logger.log('[calendar] wrote ' + name + '. Hit ?api=sync to apply.');
-  return ops;
-}
 
 /**
  * ============================================================================
@@ -5750,20 +5538,42 @@ function tsgRollupSubitemHours_(doc, now) {
 // reads) and the newest `low` lines; the rest go to a dated file in the tracker folder's
 // History subfolder (tsgArchiveHistory_, called only by processInbox_ before the data write).
 var TSG_HISTORY_VALUE_CHARS = 240;
-var TSG_HISTORY_KEEP = { task: 40, taskLow: 24, done: 12, doneLow: 8, sub: 12, subLow: 8 };
+// Hot-file caps (Durand 2026-09-22, "the rest can go to the history": history was 51% of the
+// file): 12 lines per open task, 4 per Done task, 4 per step; the archive keeps everything.
+var TSG_HISTORY_KEEP = { task: 12, taskLow: 8, done: 4, doneLow: 3, sub: 4, subLow: 3 };
 var TSG_HISTORY_FOLDER = 'History';
+var TSG_NOTE_VERSIONS_CAP = 300;
+/**
+ * Truncates history values to TSG_HISTORY_VALUE_CHARS. A NOTES line (field `notes` or
+ * `subitem-notes`) whose full text would be cut is first stashed in meta.noteVersions
+ * (server-owned) so tsgArchiveHistory_ can write the complete previous note to the History
+ * folder on this same pass (Durand 2026-09-22: the tracker holds only the latest polished
+ * note, every earlier version goes to the history). The hot file keeps the short line
+ * flagged fullInArchive.
+ */
 function tsgTruncateHistoryValues_(doc) {
   var n = 0;
-  function cut(h) {
+  doc.meta = doc.meta || {};
+  if (!Array.isArray(doc.meta.noteVersions)) doc.meta.noteVersions = [];
+  function cut(h, taskId, subIdx) {
     if (!h) return;
-    ['from', 'to'].forEach(function(k) {
-      if (typeof h[k] === 'string' && h[k].length > TSG_HISTORY_VALUE_CHARS) { h[k] = h[k].slice(0, TSG_HISTORY_VALUE_CHARS) + '…'; n++; }
-    });
+    var isNotes = h.field === 'notes' || h.field === 'subitem-notes';
+    var over = ['from', 'to'].filter(function(k) { return typeof h[k] === 'string' && h[k].length > TSG_HISTORY_VALUE_CHARS; });
+    if (!over.length) return;
+    if (isNotes && !h.fullInArchive) {
+      doc.meta.noteVersions.push({ ts: h.ts, taskId: taskId, subIdx: subIdx, field: h.field, source: h.source || null, from: h.from, to: h.to });
+      h.fullInArchive = true;
+    }
+    over.forEach(function(k) { h[k] = h[k].slice(0, TSG_HISTORY_VALUE_CHARS) + '…'; n++; });
   }
   (doc && doc.tasks || []).forEach(function(t) {
-    (t.history || []).forEach(cut);
-    (t.subitems || []).forEach(function(s) { (s && s.history || []).forEach(cut); });
+    (t.history || []).forEach(function(h) { cut(h, t.id, null); });
+    (t.subitems || []).forEach(function(s, i) { (s && s.history || []).forEach(function(h) { cut(h, t.id, i); }); });
   });
+  if (doc.meta.noteVersions.length > TSG_NOTE_VERSIONS_CAP) {
+    Logger.log('[history] noteVersions over cap (' + doc.meta.noteVersions.length + '); dropping the oldest, the archive write must be failing');
+    doc.meta.noteVersions = doc.meta.noteVersions.slice(-TSG_NOTE_VERSIONS_CAP);
+  }
   return n;
 }
 /** Which lines of one history to keep / prune; null when the item is within its cap or nothing would go. */
@@ -5802,15 +5612,18 @@ function tsgArchiveHistory_(doc, now) {
       if (p) items.push({ ref: s, taskId: t.id, subIdx: i, title: s.title, plan: p });
     });
   });
-  if (!items.length) return 0;
+  var noteVersions = (doc && doc.meta && Array.isArray(doc.meta.noteVersions)) ? doc.meta.noteVersions : [];
+  if (!items.length && !noteVersions.length) return 0;
   var lines = items.reduce(function(a, it) { return a + it.plan.pruned.length; }, 0);
   var payload = { archivedAt: now, backendVersion: TSG_CODE_VERSION, lines: lines,
-    items: items.map(function(it) { return { taskId: it.taskId, subIdx: it.subIdx, title: it.title, lines: it.plan.pruned }; }) };
+    items: items.map(function(it) { return { taskId: it.taskId, subIdx: it.subIdx, title: it.title, lines: it.plan.pruned }; }),
+    noteVersions: noteVersions };
   var file = tsgHistoryFolder_().createFile('history-' + String(now).replace(/[:.]/g, '-') + '.json', JSON.stringify(payload), 'application/json');
   items.forEach(function(it) { it.ref.history = it.plan.keep; });
   doc.meta = doc.meta || {};
+  doc.meta.noteVersions = [];
   var prev = doc.meta.historyArchive || {};
-  doc.meta.historyArchive = { lastAt: now, files: (prev.files || 0) + 1, lines: (prev.lines || 0) + lines, lastFile: file && file.getName ? file.getName() : undefined };
+  doc.meta.historyArchive = { lastAt: now, files: (prev.files || 0) + 1, lines: (prev.lines || 0) + lines, noteVersions: (prev.noteVersions || 0) + noteVersions.length, lastFile: file && file.getName ? file.getName() : undefined };
   Logger.log('[history] ' + lines + ' line(s) from ' + items.length + ' item(s) archived');
   return lines;
 }
@@ -6382,7 +6195,7 @@ function tsgAutoScheduleDoc_(doc) {
   // Seed: real calendar meetings actually eat into the day too. Never let a calendar
   // hiccup block a save — schedule on task load alone if it's unreachable.
   try {
-    var events = getCalendarHours_(today, tsgAddDays_(today, 120));
+    var events = tsgCachedJson_('calHours:' + today, 300, function() { return getCalendarHours_(today, tsgAddDays_(today, 120)); });
     // bufferedHours (meeting duration + prep/travel — see getCalendarHours_) is what
     // actually reserves capacity here; ev.hours stays the raw duration used elsewhere
     // for real actual-time attribution (tsgAttributeCalendarHours) and must not be
@@ -6398,7 +6211,7 @@ function tsgAutoScheduleDoc_(doc) {
   // date, so it's handled here instead: saturate that day's capacity outright rather
   // than adding a plausible-but-fake hour count.
   try {
-    var oooDates = tsgGetOOODates_(today, tsgAddDays_(today, 120));
+    var oooDates = tsgCachedJson_('oooDates:' + today, 300, function() { return tsgGetOOODates_(today, tsgAddDays_(today, 120)); });
     oooDates.forEach(function(d) { if (d >= today) addLoad(d, tsgDayCapacity_(d)); });
   } catch (err) { /* calendar unavailable this run — proceed without it */ }
 

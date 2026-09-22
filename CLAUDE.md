@@ -1225,3 +1225,25 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   task 98 + step 48), meta 41 KB of which judgments 19 KB (3 pending; one enrich request on the
   FUB bonus task carries its 9.5 KB note). Judgments stopped being the problem after the 9/18
   slimming; history is.
+- BEHAVIOUR BATCH (2026-09-22, decided with Durand via AskUserQuestion; backend 2026-09-22.2 / UI
+  2026-09-22.2): (1) NOTES = ONE CURRENT-STATE NOTE: the estimator prompt (`TSG_ESTIMATE_SYSTEM`
+  notes rule), the Routine prompt and the skill say a note is where things stand now, next action,
+  blockers, facts verbatim, NO dated log; existing Log-style notes are rewritten when they next
+  change. FULL NOTE VERSIONS ARCHIVED: `tsgTruncateHistoryValues_` stashes any `notes` /
+  `subitem-notes` history line it would cut into `meta.noteVersions` (server-owned, cap
+  `TSG_NOTE_VERSIONS_CAP` 300, line flagged `fullInArchive`), and `tsgArchiveHistory_` writes them
+  as `noteVersions[]` in the dated History file on the same pass even with no over-cap lines, then
+  clears the stash (`meta.historyArchive.noteVersions` counts). (2) HISTORY CAPS `TSG_HISTORY_KEEP`
+  task 12 / taskLow 8 / done 4 / doneLow 3 / sub 4 / subLow 3 (was 40/24/12/8/12/8). (3) TIDY
+  PROPOSAL PATH REMOVED: `TSG_TIDY_SYSTEM`, `TSG_TIDY_SCHEMA`, `tsgTidyBefore_`, `tsgTidyValidate_`,
+  the live branch of `tsgTidyProposal_` (now always queues `request_tidy`), the `clear_tidy_proposal`
+  op, dashboard `TIDY_*`, `showTidyReview_`, `applyTidy_`, `dismissTidy_`, `clearTidyProposal_`,
+  `tidyProposalFor_` and the `.tidy-*` CSS; `meta.tidyProposals` stays in the deny list as a dead
+  key. (4) CALENDAR SCANS CACHED: `tsgCachedJson_(key, ttl, fn)` (script cache, skipped over 90 KB)
+  wraps the two 120-day scans in `tsgAutoScheduleDoc_` for 300 s (`calHours:<today>`,
+  `oooDates:<today>`). (5) SET_META DENY LIST + `historyArchive`, `noteVersions`, `featureTaskId`,
+  `last_updated`, `version`, `created`; dashboard `SERVER_OWNED_META` + `noteVersions`. (6) RETIRED
+  `tsgDeriveActuals`, `tsgVelocityReport`, `tsgAttributeCalendarHours` (and their private helpers
+  `tsgIsWorkday_`, `tsgWorkdaysBetween_`) and the `?api=sync` route. INDEX LAG, answered: the index
+  is written in the same `processInbox_` pass right after the data file, so it is never behind the
+  data file; both trail an uploaded patch only until the trigger applies it.

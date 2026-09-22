@@ -47,7 +47,9 @@ with the Drive connector. Note `meta.backendVersion` (what the deployed script a
 STEP 2 — Judgment queue. Read every pending request in `meta.judgments`. Answer each one
 under your own judgment, exactly in the answer shapes documented in README.md "Judgment
 queue" of the GitHub repo tsg-homes/task-tracker: only the fields in `need`; polish the notes
-first and derive the rest from the polished text; each step's `taskType` is judged on the step
+first (ONE compact current-state note: next action, blockers, facts kept verbatim, NO dated
+log; the tracker archives every previous version in full) and derive the rest from the
+polished text; each step's `taskType` is judged on the step
 alone (never copied from the parent: a Claude task can hold Hands-on or Call steps and the
 reverse); steps as one entry per index in
 `currentSteps`; hours from the one estimation workflow in the skill (measured actuals in

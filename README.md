@@ -246,7 +246,7 @@ judgment, and writes the answers back as inbox ops. Until an answer lands a new 
 ```json
 {"target":"data","op":"bulk","source":"Claude (queue)","ops":[
   {"op":"judgment","id":"J17","answer":{"title":"Send Farina the listing agreement for signature",
-   "notes":"Current state: …\n\nLog:\n- 2026-09-16: …","estHours":0.5,"taskType":"Email",
+   "notes":"Current state: … Next: … Blocked on: …","estHours":0.5,"taskType":"Email",
    "subitems":[{"title":"Chase the signed copy","estHours":0.25,"taskType":"Email","priority":"High"}],
    "steps":[{"index":0,"title":"Draft the agreement","notes":"Current state: drafted.","estHours":0.5,"taskType":"Hands-on","priority":"High","tags":[],"progress":100,"location":null,"due":null}],
    "priority":"High","group":"Ops","dependsOnTitle":null,"tags":["Listings"],
@@ -265,7 +265,7 @@ server pushes such a date to the next workday and notes it (2026-09-17).
 
 Rules are the estimator's own (`TSG_ESTIMATE_SYSTEM` in `Code.gs`): only fields in `need`;
 `title` one imperative line, max 80 chars, derived from a free-flow note when the title is a
-placeholder; `notes` rewritten as "Current state" + dated "Log" keeping every fact verbatim;
+placeholder; `notes` rewritten as ONE compact "Current state" note (next action, blockers, the facts still needed, verbatim; NO running log: every previous version of a note is archived in full to the History folder, 2026-09-22);
 hours are hands-on time from the calibration table; `taskType` one of Email | Call |
 Text/Chat | Meeting | Claude | Hands-on; `priority` one of Critical | High | Medium |
 Low; `group` an existing group unless nothing fits; `dependsOnTitle` an exact open title or
@@ -345,6 +345,16 @@ side it was "consumed with nothing recorded". Now:
   and `meta.inboxErrors` say why not. Nothing else counts as evidence.
 
 ## History retention (2026-09-18): the hot file stays small
+
+**2026-09-22 (Durand: "the tracker only needs the latest polished note, the rest can go to the
+history"):** the hot-file caps are now 12 lines per open task, 4 per Done task, 4 per step (was
+40 / 12 / 12; history was 51% of a 697 KB file). A notes history line whose text would be cut
+to 240 characters first stashes the FULL previous and new note in `meta.noteVersions`
+(server-owned), and the archive pass writes those to the same dated History file
+(`noteVersions[]`) on the same write, even when no line is over its cap. So the complete text
+of every note version lives in the History folder; the hot file keeps the short line flagged
+`fullInArchive`. The enricher now writes a note as one compact current state with no running
+log. Existing notes that carry a Log are rewritten the next time they change, not all at once.
 
 Measured 2026-09-18 on the live data file (930 KB): 1,328 history lines held 405 KB, notes lines
 alone (the whole old and new notes text per line) 231 KB, and `meta.judgments` 284 KB; one 2 KB

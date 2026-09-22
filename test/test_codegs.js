@@ -590,14 +590,6 @@ section('Claude call plumbing (2026-09-16 efficiency pass)');
   check('tsgProgressFromNotesMany_: 21 items -> two requests (20 + 1), empty notes are 0 with no call', claudeRequests.length === 2 && pcts[0] === 5 && pcts[19] === 100 && pcts[20] === 5 && pcts[21] === 0);
   check('...every progress request runs at effort low with the items schema', claudeRequests.every(r => r.output_config.effort === 'low' && r.output_config.format.schema.required.includes('items')));
 
-  // Tidy sends its schema too.
-  claudeRequests = [];
-  claudeResponder = () => ({ title: 'T', notes: 'n', priority: 'Medium', taskType: 'Call', group: 'Ops', estHours: 1, tags: [], rationale: 'r' });
-  const origGetFile = sandbox.DriveApp.getFileById;
-  sandbox.DriveApp.getFileById = () => ({ getBlob: () => ({ getDataAsString: () => JSON.stringify({ meta: {}, tasks: [{ id: 7, title: 'Old', notes: '', group: 'Ops', tags: [], subitems: [] }] }) }) });
-  sandbox.tsgTidyProposal_(7);
-  sandbox.DriveApp.getFileById = origGetFile;
-  check('Tidy uses a structured-output schema and the default effort', claudeRequests.length === 1 && claudeRequests[0].output_config.format.schema.required.includes('notes') && !claudeRequests[0].output_config.effort);
 
   vm.runInContext('TSG_CLAUDE_RUN_CALLS = ' + savedCalls, sandbox);
   claudeHttp = null;
@@ -1417,16 +1409,6 @@ section('Comments ops and the Tidy proposal (2026-09-16)');
   let threw2 = false; try { sandbox.applyDataPatch_(fd, { op: 'update_subitem', id: 1, fields: { status: 'Done' } }); } catch (e) { threw2 = /missing index/.test(e.message); }
   check('update_subitem with neither index nor subIdx is refused with a clear message', threw2);
 
-  // Tidy proposal: validated field by field, system tags kept
-  const FILE_IDS5 = vm.runInContext('FILE_IDS', sandbox);
-  const origGet5 = sandbox.DriveApp.getFileById;
-  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS5.data ? JSON.stringify(d) : '{}') }) });
-  claudeResponder = (system, user) => { if (!/tidy one task/i.test(system)) throw new Error('wrong prompt'); return { title: 'Plan the fall farming mailer with Hello Creative Pro', notes: 'Current state: vendor quoted $665.78 (standard postage) against the 500-contact list.\n\nLog:\n- 2026-09-15: talked to vendor; quote 665.78 standard; need the 500 list', priority: 'Bogus', taskType: 'Hands-on', group: 'Nowhere', estHours: 3.1, tags: ['Mailers', 'Triage', 'x', 'y', 'z'], rationale: 'Split state from log.' }; };
-  const prop = sandbox.tsgTidyProposal_(1);
-  check('tidy returns before + proposal with the rewritten title and notes', prop.ok && prop.before.title === 'Plan the fall mailer' && /Hello Creative Pro/.test(prop.proposal.title) && /Current state/.test(prop.proposal.notes));
-  check('tidy keeps the current priority/group when the model proposes an unknown one, rounds hours, keeps system tags and caps topical tags at 3', prop.proposal.priority === 'Medium' && prop.proposal.group === 'Marketing' && prop.proposal.estHours === 3 && prop.proposal.tags.indexOf('Triage') !== -1 && prop.proposal.tags.filter(x => x !== 'Triage').length <= 3);
-  check('tidy never touches the document', d.tasks[0].title === 'Plan the fall mailer');
-  sandbox.DriveApp.getFileById = origGet5;
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 
@@ -2121,7 +2103,7 @@ section('Write amplification: slim judgments, coalesced step requests, history r
   t.subitems = [{ title: 'S', status: 'Not Started', history: [] }];
   for (let i = 0; i < 20; i++) t.subitems[0].history.push({ ts: '2026-09-02T00:00:' + String(i).padStart(2, '0') + 'Z', field: 'status', from: 'a', to: 'b' + i, source: 'Claude' });
   const archivedLines = sandbox.tsgArchiveHistory_(doc, '2026-09-18T16:10:00.000Z');
-  check('an over-cap task is pruned to well under the cap and a step to its own cap', t.history.length <= 40 && t.history.length >= 24 && t.subitems[0].history.length <= 12);
+  check('an over-cap task is pruned to well under the cap and a step to its own cap', t.history.length <= 12 && t.history.length >= 8 && t.subitems[0].history.length <= 4);
   check('created, the hand-set estHours line and the newest lines survive; tsgUserTouched_ still sees the hand edit', t.history[0].field === 'created' && t.history.some(h => h.field === 'estHours' && h.source === 'Durand') && t.history[t.history.length - 1].to === '60' && sandbox.tsgUserTouched_(t, 'estHours') === true);
   const payload = JSON.parse(archives[0].content);
   check('the pruned lines went to one dated JSON file in the History folder, by task and step', archives.length === 1 && /^history-2026-09-18T16-10-00-000Z\.json$/.test(archives[0].name) && archives[0].mime === 'application/json' && payload.lines === archivedLines && payload.items.length === 2 && payload.items[0].taskId === 1 && payload.items[0].subIdx === null && payload.items[1].subIdx === 0 && payload.items[0].lines.length + t.history.length === 61);
@@ -2260,6 +2242,36 @@ section('Index file, Needs Durand, critical-only reminder mail (2026-09-22)');
     check('meta.reminderEmails = all mails every reminder', sentMail.length === 2);
     sandbox.DriveApp.getFileById = origGetFile6; sandbox.DriveApp.getFolderById = origFolder6; sandbox.PropertiesService.getScriptProperties = origProps6; sentMail = []; cacheStore = {};
   }
+}
+
+section('Notes: the hot file keeps the latest note, full previous versions go to the archive; smaller history caps; deny list; tidy path gone; calendar cache (2026-09-22)');
+{
+  const doc = freshDoc();
+  doc.tasks[0].history.push({ ts: '2026-09-22T10:00:00Z', field: 'notes', from: 'OLD '.repeat(200), to: 'NEW '.repeat(200), source: 'Claude (queue)' });
+  doc.tasks[0].subitems = [{ title: 'S', status: 'Not Started', history: [{ ts: '2026-09-22T10:00:00Z', field: 'notes', from: 'old step note '.repeat(40), to: 'x', source: 'Durand' }] }];
+  sandbox.tsgTruncateHistoryValues_(doc);
+  const nv = doc.meta.noteVersions;
+  check('a notes line that gets cut stashes its FULL from/to in meta.noteVersions, on tasks and steps', nv.length === 2 && nv[0].taskId === 1 && nv[0].subIdx === null && nv[0].from.length === 800 && nv[1].subIdx === 0 && nv[1].from.length === 560);
+  check('the hot-file line is cut and flagged fullInArchive; a second pass does not stash again', doc.tasks[0].history.filter(h => h.field === 'notes')[0].fullInArchive === true && (sandbox.tsgTruncateHistoryValues_(doc), doc.meta.noteVersions.length === 2));
+  const archives = [];
+  const folderStub = { getFoldersByName: () => ({ hasNext: () => true, next: () => ({ createFile: (name, content, mime) => { archives.push({ name, content, mime }); return { getName: () => name }; } }) }) };
+  const savedFolder3 = sandbox.DriveApp.getFolderById;
+  sandbox.DriveApp.getFolderById = () => folderStub;
+  const n = sandbox.tsgArchiveHistory_(doc, '2026-09-22T12:00:00.000Z');
+  const payload = archives.length ? JSON.parse(archives[0].content) : null;
+  check('the archive pass writes the note versions to the History file even with no over-cap lines, and clears the stash', n === 0 && archives.length === 1 && payload.noteVersions.length === 2 && payload.noteVersions[0].from.length === 800 && doc.meta.noteVersions.length === 0 && doc.meta.historyArchive.noteVersions === 2);
+  sandbox.DriveApp.getFolderById = savedFolder3;
+  check('history caps are 12 / 4 / 4', sandbox.TSG_HISTORY_KEEP.task === 12 && sandbox.TSG_HISTORY_KEEP.done === 4 && sandbox.TSG_HISTORY_KEEP.sub === 4);
+  const d2 = freshDoc(); d2.meta.historyArchive = { files: 3 }; d2.meta.featureTaskId = 285;
+  sandbox.applyDataPatch_(d2, { op: 'set_meta', fields: { historyArchive: { files: 0 }, featureTaskId: 1, noteVersions: [1], created: 'x', version: 9, last_updated: 'y', homeBase: 'HQ' }, source: 'Claude' });
+  check('set_meta cannot write historyArchive, noteVersions, featureTaskId, created, version, last_updated; other keys still land', d2.meta.historyArchive.files === 3 && d2.meta.featureTaskId === 285 && (d2.meta.noteVersions || []).length === 0 && d2.meta.created !== 'x' && d2.meta.version !== 9 && d2.meta.last_updated !== 'y' && d2.meta.homeBase === 'HQ');
+  check('the tidy proposal path is gone: clear_tidy_proposal is refused as an unknown op and tsgTidyProposal_ always queues', (() => { try { sandbox.applyDataPatch_(freshDoc(), { op: 'clear_tidy_proposal', id: 1 }); return false; } catch (e) { return /clear_tidy_proposal|unknown|op/i.test(e.message); } })() && !('TSG_TIDY_SYSTEM' in sandbox));
+  check('the pre-timeLog editor scripts and ?api=sync are gone', !('tsgDeriveActuals' in sandbox) && !('tsgVelocityReport' in sandbox) && !('tsgAttributeCalendarHours' in sandbox) && !/api === 'sync'/.test(vm.runInContext('doGet.toString()', sandbox)));
+  let calls = 0; cacheStore = {};
+  const v1 = sandbox.tsgCachedJson_('k1', 300, () => { calls++; return { a: 1 }; });
+  const v2 = sandbox.tsgCachedJson_('k1', 300, () => { calls++; return { a: 2 }; });
+  check('tsgCachedJson_ computes once and serves the cached value inside the TTL', calls === 1 && v1.a === 1 && v2.a === 1);
+  cacheStore = {};
 }
 
 section('Friday is a 10-2 day: floor, meeting-slot blocks (2026-09-21)');
