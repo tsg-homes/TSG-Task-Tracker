@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-22.3';
+const TSG_CODE_VERSION = '2026-09-22.4';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -927,9 +927,13 @@ function applyDataPatch_(doc, patch) {
       if (task.timelineEnd == null) task.timelineEnd = '';
       // A value Durand typed into the New Task form is hand-set from the start (2026-09-17):
       // a history line with his name is what protects it from later enrichment passes.
+      // 'Unsorted' is the free-flow form's placeholder, not a choice (2026-09-22: it was
+      // being stamped as hand-set, so the enrich pass could never file the task).
       if (patch.ownerCreated) {
         ['priority', 'group', 'estHours', 'taskType', 'timelineEnd', 'location', 'delegate'].forEach(function(f) {
-          if (task[f] != null && task[f] !== '') task.history.push({ ts: now, field: f, from: null, to: task[f], source: 'Durand' });
+          if (task[f] == null || task[f] === '') return;
+          if (f === 'group' && task[f] === 'Unsorted') return;
+          task.history.push({ ts: now, field: f, from: null, to: task[f], source: 'Durand' });
         });
       }
       if (originalTitleForCleanup && originalTitleForCleanup !== task.title) {

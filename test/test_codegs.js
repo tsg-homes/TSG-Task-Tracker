@@ -1682,6 +1682,11 @@ section('Hand edits win, disagreements flagged, dependency clears stick (2026-09
   claudeResponder = () => ({ rationale: 'no rush', title: t3.title, notes: t3.notes, estHours: 4, taskType: 'Hands-on', priority: 'Low', group: 'Marketing', tags: [], subitems: [], dependsOnTitle: null, location: null, due: '2026-11-30', progress: 0, needsConfirmation: false });
   sandbox.applyDataPatch_(d3, { op: 'update_task', id: t3.id, fields: { notes: 'print shop needs the order by wednesday. quote received' }, source: 'Durand' });
   check('...so a later pass keeps them and flags the disagreement (Critical vs Low, 9/25 vs 11/30)', t3.priority === 'Critical' && t3.timelineEnd === '2026-09-25' && t3.tags.includes('Review') && (t3.reviewFlags || []).some(f => f.field === 'timelineEnd' && f.claude === '2026-11-30'));
+  // the free-flow form's 'Unsorted' placeholder is not a hand-set group (2026-09-22)
+  const d4 = freshDoc();
+  sandbox.applyDataPatch_(d4, { op: 'add_task', task: { title: 'Sort me later', owner: 'Durand', priority: 'Medium', group: 'Unsorted', notes: 'free flow note', tags: [] }, source: 'Durand', ownerCreated: true, skipDedup: true });
+  const t4 = d4.tasks[d4.tasks.length - 1];
+  check("an ownerCreated task with group 'Unsorted' gets no Durand history line for group (priority still does)", !t4.history.some(h => h.field === 'group' && h.source === 'Durand') && t4.history.some(h => h.field === 'priority' && h.source === 'Durand'));
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
 }
 
