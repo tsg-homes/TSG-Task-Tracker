@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-21.6';
+const TSG_CODE_VERSION = '2026-09-22.1';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -174,6 +174,9 @@ function processInbox_() {
       const dataJson = JSON.stringify(dataDoc);
       dataFile.setContent(dataJson);
       tsgCachePut_('docVersion', String(dataDoc.meta && dataDoc.meta.docVersion), 21600);
+      // Small index beside the data file for sessions that cannot hold the whole document
+      // (2026-09-22); a failure here never fails the write.
+      try { tsgWriteIndex_(dataDoc); } catch (idxErr) { Logger.log('[index] write failed: ' + idxErr.message); }
       try { backupTrackerFile_('data', dataJson); }
       catch (backupErr) { Logger.log('Backup snapshot failed for data: ' + backupErr); }
     }
@@ -586,6 +589,126 @@ function tsgApplyJudgmentOp_(doc, patch, now) {
 var TSG_DATA_OPS = ['add_task', 'update_task', 'update_subitem', 'add_subitem', 'delete_task', 'bulk', 'set_meta',
   'replace_all', 'add_comment', 'update_comment', 'judgment', 'request_tidy', 'clear_tidy_proposal', 'request_steps',
   'log_time', 'retry_filed', 'dismiss_inbox_error', 'remove_dismissed_google_task_ids', 'reorder_subitems'];
+/**
+ * TASK INDEX (2026-09-22). The data file is too large for an external session's context
+ * (685 KB, base64 through the Drive connector), so every applied write also rewrites a
+ * small sibling file in the tracker folder: every open task with its id, fields a patch
+ * needs and ALL its steps by index (update_subitem needs the index and the exact title),
+ * Done tasks as id + title only, plus the value lists and the backend version. Found by
+ * name in TRACKER_FOLDER_ID, created once; the id is cached in a script property.
+ */
+var TSG_INDEX_FILE_NAME = 'Systems — Task Tracker Index — TSG.json';
+var TSG_INDEX_PROP = 'TSG_INDEX_FILE_ID';
+function tsgIndexDoc_(doc) {
+  var meta = (doc && doc.meta) || {};
+  var open = [], done = [];
+  (doc && doc.tasks || []).forEach(function(t) {
+    if (!t) return;
+    if (t.status === 'Done' || t.status === 'Cancelled') { done.push({ id: t.id, title: t.title || '', status: t.status }); return; }
+    open.push({
+      id: t.id, title: t.title || '', status: t.status || '', priority: t.priority || '', group: t.group || '',
+      owner: t.owner || '', delegate: tsgTaskDelegate_(t) || '', due: t.timelineEnd || '', dueTime: t.dueTime || '',
+      progress: typeof t.progress === 'number' ? t.progress : 0, estHours: typeof t.estHours === 'number' ? t.estHours : null,
+      taskType: t.taskType || '', tags: (t.tags || []).slice(), pinned: !!t.pinned, needsApproval: !!t.needsApproval,
+      docs: (t.docs || []).length,
+      steps: (t.subitems || []).map(function(s, i) {
+        return { i: i, title: (s && s.title) || '', status: s && (s.done ? 'Done' : (s.status || '')), delegate: (s && s.delegate) || '', due: (s && s.timelineEnd) || '', estHours: (s && typeof s.estHours === 'number') ? s.estHours : null };
+      })
+    });
+  });
+  return {
+    kind: 'tsg-task-tracker-index', generatedAt: new Date().toISOString(), backendVersion: TSG_CODE_VERSION,
+    docVersion: meta.docVersion || null, dataFileId: FILE_IDS.data,
+    status_values: meta.status_values || [], priority_values: meta.priority_values || [], taskTypes: TSG_TASK_TYPE_VALUES.slice(),
+    groups: Array.from(new Set(open.map(function(t) { return t.group; }).filter(Boolean))).sort(),
+    roster: (meta.teamRoster || []).map(function(p) { return typeof p === 'string' ? p : (p && p.name); }).filter(Boolean),
+    judgmentsPending: (meta.judgments || []).length, inboxErrors: (meta.inboxErrors || []).length,
+    counts: { open: open.length, done: done.length }, tasks: open, doneTasks: done
+  };
+}
+function tsgIndexFile_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty(TSG_INDEX_PROP);
+  if (id) { try { var f = DriveApp.getFileById(id); if (!f.isTrashed()) return f; } catch (e) {} }
+  var folder = DriveApp.getFolderById(TRACKER_FOLDER_ID);
+  var it = folder.getFilesByName(TSG_INDEX_FILE_NAME);
+  var file = it.hasNext() ? it.next() : folder.createFile(TSG_INDEX_FILE_NAME, '{}', 'application/json');
+  props.setProperty(TSG_INDEX_PROP, file.getId());
+  return file;
+}
+function tsgWriteIndex_(doc) {
+  var file = tsgIndexFile_();
+  file.setContent(JSON.stringify(tsgIndexDoc_(doc)));
+  return file.getId();
+}
+/**
+ * TASK REFERENCE BY TITLE (2026-09-22): an op that names a task may carry `taskTitle`
+ * (any op below) or `title` (update_task, delete_task, log_time, reorder_subitems,
+ * request_steps, request_tidy) instead of `id`. The match is exact after trimming,
+ * collapsing whitespace and ignoring case; several matches prefer the one open task;
+ * anything else is refused by name with the closest titles so the caller can pick an id
+ * from the index. Never a fuzzy match: a wrong task updated silently is worse than a
+ * refusal.
+ */
+var TSG_TITLE_REF_OPS = ['update_task', 'update_subitem', 'add_subitem', 'log_time', 'delete_task', 'reorder_subitems', 'request_steps', 'request_tidy'];
+var TSG_TITLE_KEY_OPS = ['update_task', 'delete_task', 'log_time', 'reorder_subitems', 'request_steps', 'request_tidy'];
+function tsgTitleKey_(s) { return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase(); }
+function tsgResolveTaskRef_(doc, patch) {
+  if (!patch || patch.id != null || TSG_TITLE_REF_OPS.indexOf(patch.op) === -1) return;
+  var ref = patch.taskTitle != null ? patch.taskTitle : (TSG_TITLE_KEY_OPS.indexOf(patch.op) !== -1 ? patch.title : null);
+  if (ref == null || !String(ref).trim()) return;
+  var key = tsgTitleKey_(ref);
+  var hits = (doc.tasks || []).filter(function(t) { return t && tsgTitleKey_(t.title) === key; });
+  if (hits.length > 1) {
+    var openHits = hits.filter(function(t) { return t.status !== 'Done' && t.status !== 'Cancelled'; });
+    if (openHits.length === 1) hits = openHits;
+  }
+  if (hits.length === 1) { patch.id = hits[0].id; patch.resolvedByTitle = true; return; }
+  if (hits.length > 1) throw new Error(patch.op + ': title matches ' + hits.length + ' tasks (' + hits.map(function(t) { return '#' + t.id; }).join(', ') + '); send the id');
+  var near = (doc.tasks || []).filter(function(t) { return t && t.title; }).map(function(t) {
+    var k = tsgTitleKey_(t.title); var score = (k.indexOf(key) !== -1 || key.indexOf(k) !== -1) ? 2 : (k.split(' ').filter(function(w) { return w.length > 3 && key.indexOf(w) !== -1; }).length);
+    return { t: t, score: score };
+  }).filter(function(x) { return x.score > 0; }).sort(function(a, b) { return b.score - a.score; }).slice(0, 3);
+  throw new Error(patch.op + ': no task titled "' + ref + '"' + (near.length ? '; closest: ' + near.map(function(x) { return '#' + x.t.id + ' "' + x.t.title + '"'; }).join(', ') : '') + '. Read the index file (' + TSG_INDEX_FILE_NAME + ') for ids.');
+}
+/**
+ * NEEDS DURAND (2026-09-22, tracker task: "How are Claude's tasks that need Durand's
+ * intervention handed back to him?"). Derived on every write: an open item delegated to
+ * Claude whose status is Blocked or Waiting, or whose notes carry "DRAFT — AWAITING
+ * APPROVAL" or "NEEDS DURAND", gets the reserved tag `Needs Durand`; a step's flag is
+ * mirrored onto its parent so the board row shows it. Cleared on the write where the
+ * condition is gone. The dashboard shows a chip, an alert row and the Triage filter.
+ */
+var TSG_NEEDS_DURAND_TAG = 'Needs Durand';
+var TSG_NEEDS_DURAND_RE = /DRAFT\s*[\u2014\u2013-]+\s*AWAITING\s+APPROVAL|NEEDS\s+DURAND/i;
+function tsgItemNeedsDurand_(item, delegate) {
+  if (!item || item.done || item.status === 'Done' || item.status === 'Cancelled') return false;
+  if (String(delegate || '').trim().toLowerCase() !== 'claude') return false;
+  return item.status === 'Blocked' || item.status === 'Waiting' || TSG_NEEDS_DURAND_RE.test(String(item.notes || ''));
+}
+function tsgSetReservedTag_(item, tag, on, historyArr, now, field, note) {
+  var tags = Array.isArray(item.tags) ? item.tags : [];
+  var had = tags.indexOf(tag) !== -1;
+  if (on && !had) { item.tags = tags.concat([tag]); if (historyArr) historyArr.push({ ts: now, field: field, from: null, to: tag, source: 'rollup', note: note }); return true; }
+  if (!on && had) { item.tags = tags.filter(function(x) { return x !== tag; }); if (historyArr) historyArr.push({ ts: now, field: field, from: tag, to: null, source: 'rollup' }); return true; }
+  return false;
+}
+function tsgFlagNeedsDurand_(doc, now) {
+  var changed = 0;
+  (doc && doc.tasks || []).forEach(function(t) {
+    if (!t) return;
+    var open = t.status !== 'Done' && t.status !== 'Cancelled';
+    var any = open && tsgItemNeedsDurand_(t, tsgTaskDelegate_(t));
+    (t.subitems || []).forEach(function(s) {
+      if (!s) return;
+      var need = open && tsgItemNeedsDurand_(s, s.delegate);
+      if (tsgSetReservedTag_(s, TSG_NEEDS_DURAND_TAG, need, t.history = t.history || [], now, 'subitem-needs-durand', s.title)) changed++;
+      if (need) any = true;
+    });
+    if (tsgSetReservedTag_(t, TSG_NEEDS_DURAND_TAG, any, t.history = t.history || [], now, 'needs-durand', 'a Claude item is blocked, waiting, or holds a draft awaiting approval')) changed++;
+  });
+  return changed;
+}
 // In-place restore of a document from a JSON snapshot: the caller's reference stays valid.
 function tsgRestoreDoc_(doc, snapJson) {
   var snap = JSON.parse(snapJson);
@@ -643,6 +766,7 @@ function applyDataPatch_(doc, patch) {
   // An envelope with `ops` but no `op` can only mean a bulk (2026-09-18); accepting it costs
   // nothing and one less way for a routine-written file to be filed FAILED-.
   if (!patch.op && Array.isArray(patch.ops)) patch.op = 'bulk';
+  tsgResolveTaskRef_(doc, patch);   // `taskTitle` / `title` instead of `id` (2026-09-22)
 
   if (patch.op === 'bulk') {
     // 2026-09-10 per Durand: dependsOnTitle inference should see every task in this same
@@ -1538,10 +1662,16 @@ function tsgReminderTick_() {
   var pending = tsgPendingReminders_(doc);
   var due = pending.filter(function(r) { return r.at <= now && !tsgCacheGet_('reminderFired:' + r.key); });
   var ops = [], extraTouched = {};
+  // Email only for Critical work by default (Durand 2026-09-22: "I only want emails on
+  // critical tasks"); meta.reminderEmails = 'all' restores every reminder. Every reminder
+  // is still stamped sent, so the dashboard's notification/toast fires for all of them.
+  var mailMode = (doc.meta && doc.meta.reminderEmails) || 'critical';
   due.forEach(function(r) {
     var subject = 'Reminder' + (r.repeat ? ' (' + r.repeat + ')' : '') + ': ' + r.item.title + (r.item.timelineEnd ? ' — due ' + r.item.timelineEnd + (r.item.dueTime ? ' ' + r.item.dueTime : '') : '');
-    try { MailApp.sendEmail(OWNER_EMAIL, subject, tsgReminderBody_(r)); }
-    catch (mailErr) { Logger.log('[reminders] send failed for ' + r.key + ': ' + mailErr.message); return; }
+    if (mailMode === 'all' || tsgReminderIsCritical_(r)) {
+      try { MailApp.sendEmail(OWNER_EMAIL, subject, tsgReminderBody_(r)); }
+      catch (mailErr) { Logger.log('[reminders] send failed for ' + r.key + ': ' + mailErr.message); return; }
+    }
     tsgCachePut_('reminderFired:' + r.key, '1', 900);
     var sentAt = now.toISOString();
     if (r.extraIdx != null) {
@@ -1568,6 +1698,9 @@ function tsgReminderTick_() {
   var later = tsgPendingReminders_(doc).filter(function(r) { return r.at > now; });   // re-read: repeating extras were re-armed above
   try { PropertiesService.getScriptProperties().setProperty(TSG_REMINDER_PROP, later.length ? later[0].at.toISOString() : ''); } catch (err) {}
   return { ok: true, fired: ops.length, next: later.length ? later[0].at.toISOString() : '' };
+}
+function tsgReminderIsCritical_(r) {
+  return (r.item && r.item.priority === 'Critical') || (r.task && r.task.priority === 'Critical');
 }
 function tsgInstallInboxTrigger() {
   tsgAssertOwner_('tsgInstallInboxTrigger');
@@ -4515,7 +4648,7 @@ var TSG_ESTIMATE_SYSTEM =
 // Set by the system itself — never something the estimator should be allowed to hand back,
 // even if it ignores the instruction not to. Filtered out of parsed.tags defensively below.
 var TSG_REVIEW_TAG = 'Triage';
-var TSG_RESERVED_TAGS = ['Triage', 'Review', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude', 'At Risk'];
+var TSG_RESERVED_TAGS = ['Triage', 'Review', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude', 'At Risk', 'Needs Durand'];
 
 /**
  * Review gate (2026-09-15, per Durand: "when new tasks are pushed, tag them for review
@@ -6223,6 +6356,7 @@ function tsgAutoScheduleDoc_(doc) {
   tsgMigrateDocToDocs_(doc);
   tsgNormalizeTaskShapes_(doc);
   tsgApplyDelegateApproval_(doc);
+  tsgFlagNeedsDurand_(doc, new Date().toISOString());
   tsgRollupSubitemHours_(doc, new Date().toISOString());
   tsgApplyTravelTimes_(doc);
   tsgFlagAgingTasks_(doc, tsgTodayIso_());

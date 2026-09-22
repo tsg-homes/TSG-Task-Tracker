@@ -982,7 +982,7 @@ section('Inbox pipeline: lock busy, trash-after-write, unreadable document, whit
     return { getFiles: () => { let i = 0; return { hasNext: () => i < files.length, next: () => files[i++] }; }, createFile: () => {}, getFilesByName: () => ({ hasNext: () => false }) };
   }
   function fakePatchFile(name, obj) {
-    const f = { name, trashed: false, isTrashed: () => f.trashed, getName: () => f.name, setName: (n) => { f.name = n; }, setTrashed: (v) => { f.trashed = v; }, getDateCreated: () => new Date('2026-09-15T00:00:00Z'), getBlob: () => ({ getDataAsString: () => (typeof obj === 'string' ? obj : JSON.stringify(obj)) }) };
+    const f = { name, trashed: false, isTrashed: () => f.trashed, getName: () => f.name, setName: (n) => { f.name = n; }, setTrashed: (v) => { f.trashed = v; }, getDateCreated: () => new Date(Date.now() - 86400000), getBlob: () => ({ getDataAsString: () => (typeof obj === 'string' ? obj : JSON.stringify(obj)) }) };
     return f;
   }
   let dataOnDisk = JSON.stringify({ meta: { docVersion: 10, next_id: 5 }, tasks: [{ id: 1, title: 'A', status: 'Not Started', history: [], subitems: [] }] });
@@ -1624,7 +1624,7 @@ section('Reminders and due time (2026-09-17)');
   const origProps3 = sandbox.PropertiesService.getScriptProperties;
   const RM1 = futureLocal_(30, '10:15'), RM2 = futureLocal_(29, '08:00'); // always ahead of the clock
   sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (props[k] == null ? null : props[k]), setProperty: (k, v) => { props[k] = v; } });
-  const d = freshDoc();
+  const d = freshDoc(); d.meta.reminderEmails = 'all';   // this section tests delivery; the default is critical-only (2026-09-22)
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { dueTime: '10:30', remindAt: RM1 }, source: 'Durand', ts: '2026-09-17T12:00:00Z' });
   check('dueTime and remindAt are logged task fields', d.tasks[0].dueTime === '10:30' && d.tasks[0].history.some(h => h.field === 'remindAt' && h.to === RM1));
   sandbox.tsgAutoScheduleDoc_(d);
@@ -2217,6 +2217,75 @@ section('Task type rename: Actionable Task -> Hands-on, legacy values land as th
   check('an estimator answer using the old name is accepted and canonicalised, on the task and on a minted step', parsed.taskType === 'Hands-on' && parsed.subitems[0].taskType === 'Hands-on');
 }
 
+section('Index file, task reference by title, Needs Durand, critical-only reminder mail (2026-09-22)');
+{
+  const d = freshDoc();
+  d.tasks.push({ id: 91, title: 'Draft the vendor letter', owner: 'Durand', delegate: 'Claude', status: 'In Progress', priority: 'Medium', group: 'Ops', notes: 'DRAFT — AWAITING APPROVAL: letter text below.', subitems: [{ title: 'Step one', done: false, status: 'Not Started', delegate: 'Claude', notes: '' }], tags: [], history: [] });
+  d.tasks.push({ id: 92, title: 'Done thing', owner: 'Durand', status: 'Done', priority: 'Low', group: 'Ops', subitems: [], tags: [], history: [] });
+  d.tasks.push({ id: 93, title: 'Blocked Claude step parent', owner: 'Durand', status: 'Not Started', priority: 'Low', group: 'Ops', subitems: [{ title: 'Waiting step', done: false, status: 'Waiting', delegate: 'Claude', notes: '' }, { title: 'Durand step', done: false, status: 'Blocked', delegate: 'Durand', notes: '' }], tags: [], history: [] });
+  const idx = sandbox.tsgIndexDoc_(d);
+  check('index lists open tasks with id, fields and every step by index, Done tasks as id + title, plus value lists and versions',
+    idx.kind === 'tsg-task-tracker-index' && idx.backendVersion === vm.runInContext('TSG_CODE_VERSION', sandbox) && Array.isArray(idx.status_values) && idx.tasks.some(t => t.id === 91 && t.delegate === 'Claude' && t.steps.length === 1 && t.steps[0].i === 0 && t.steps[0].title === 'Step one') && idx.doneTasks.some(t => t.id === 92) && !idx.tasks.some(t => t.id === 92) && idx.tasks.every(t => !('notes' in t) && !('history' in t)));
+  const bytes = JSON.stringify(idx).length;
+  check('index stays small (no notes, history, docs bodies): ' + bytes + ' bytes for the fixture', bytes < 6000);
+  // title reference
+  const p1 = { op: 'update_task', title: '  draft the VENDOR letter ', fields: { priority: 'High' } };
+  sandbox.tsgResolveTaskRef_(d, p1);
+  check('update_task with `title` instead of `id` resolves exactly (trim, whitespace, case)', p1.id === 91 && p1.resolvedByTitle === true);
+  const p2 = { op: 'update_subitem', taskTitle: 'Draft the vendor letter', index: 0, fields: { status: 'Done' } };
+  sandbox.tsgResolveTaskRef_(d, p2);
+  check('any referencing op takes `taskTitle`', p2.id === 91);
+  let refused = '';
+  try { sandbox.tsgResolveTaskRef_(d, { op: 'update_task', title: 'Draft the vendor lettre', fields: {} }); } catch (e) { refused = e.message; }
+  check('a title that does not match exactly is refused by name with the closest titles, never fuzzy-applied', /no task titled/.test(refused) && /#91 "Draft the vendor letter"/.test(refused));
+  d.tasks.push({ id: 94, title: 'Done thing', owner: 'Durand', status: 'Not Started', priority: 'Low', group: 'Ops', subitems: [], tags: [], history: [] });
+  const p3 = { op: 'log_time', title: 'Done thing', minutes: 5, kind: 'manual' };
+  sandbox.tsgResolveTaskRef_(d, p3);
+  check('two matches prefer the one open task', p3.id === 94);
+  d.tasks.push({ id: 95, title: 'Done thing', owner: 'Durand', status: 'Not Started', priority: 'Low', group: 'Ops', subitems: [], tags: [], history: [] });
+  refused = '';
+  try { sandbox.tsgResolveTaskRef_(d, { op: 'update_task', title: 'Done thing', fields: {} }); } catch (e) { refused = e.message; }
+  check('two open matches are refused with both ids', /matches 3 tasks/.test(refused) && /#94/.test(refused) && /#95/.test(refused));
+  d.tasks = d.tasks.filter(t => t.id !== 94 && t.id !== 95);
+  const p4 = { op: 'add_comment', title: 'Draft the vendor letter', comment: {} };
+  sandbox.tsgResolveTaskRef_(d, p4);
+  check('an op outside the referencing set is left alone', p4.id == null);
+  // applied through applyDataPatch_
+  sandbox.applyDataPatch_(d, { op: 'update_task', title: 'Draft the vendor letter', source: 'Claude (session)', ts: '2026-09-22T12:00:00Z', fields: { priority: 'High' } });
+  check('applyDataPatch_ applies an update_task addressed by title', d.tasks.find(t => t.id === 91).priority === 'High');
+  // Needs Durand
+  sandbox.tsgFlagNeedsDurand_(d, '2026-09-22T12:00:00Z');
+  const t91 = d.tasks.find(t => t.id === 91), t93 = d.tasks.find(t => t.id === 93);
+  check('a Claude task holding DRAFT — AWAITING APPROVAL is tagged Needs Durand with a history line', t91.tags.indexOf('Needs Durand') !== -1 && t91.history.some(h => h.field === 'needs-durand' && h.to === 'Needs Durand'));
+  check('a Waiting Claude step is tagged and mirrored onto its parent; a Blocked Durand step is not', t93.subitems[0].tags.indexOf('Needs Durand') !== -1 && !(t93.subitems[1].tags || []).length && t93.tags.indexOf('Needs Durand') !== -1);
+  t91.notes = 'Sent.'; t93.subitems[0].status = 'In Progress';
+  sandbox.tsgFlagNeedsDurand_(d, '2026-09-22T12:05:00Z');
+  check('the tag clears on the write where the condition is gone', t91.tags.indexOf('Needs Durand') === -1 && t93.tags.indexOf('Needs Durand') === -1 && t93.subitems[0].tags.indexOf('Needs Durand') === -1);
+  check('Needs Durand is a reserved tag (never handed out by enrichment)', sandbox.TSG_RESERVED_TAGS.indexOf('Needs Durand') !== -1);
+  // critical-only mail
+  check('a reminder on a Critical task or step is mailed; others are not unless meta.reminderEmails is all',
+    sandbox.tsgReminderIsCritical_({ item: { priority: 'Low' }, task: { priority: 'Critical' } }) === true && sandbox.tsgReminderIsCritical_({ item: { priority: 'Critical' }, task: { priority: 'Low' } }) === true && sandbox.tsgReminderIsCritical_({ item: { priority: 'High' }, task: { priority: 'Medium' } }) === false);
+  {
+    const props = {}; const origProps6 = sandbox.PropertiesService.getScriptProperties;
+    sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (props[k] == null ? null : props[k]), setProperty: (k, v) => { props[k] = v; } });
+    const dd = freshDoc();
+    dd.tasks[0].priority = 'Medium'; dd.tasks[0].remindAt = '2020-01-02T09:00'; delete dd.tasks[0].reminderSentAt;
+    dd.tasks.push({ id: 96, title: 'Critical one', owner: 'Durand', status: 'Not Started', priority: 'Critical', group: 'Ops', remindAt: '2020-01-02T09:00', subitems: [], tags: [], history: [] });
+    const origGetFile6 = sandbox.DriveApp.getFileById, origFolder6 = sandbox.DriveApp.getFolderById;
+    let queued = [];
+    sandbox.DriveApp.getFileById = () => ({ getBlob: () => ({ getDataAsString: () => JSON.stringify(dd) }), setContent: () => {}, getName: () => 'data' });
+    sandbox.DriveApp.getFolderById = () => ({ createFile: (name, body) => { queued.push(JSON.parse(body)); }, getFilesByName: () => ({ hasNext: () => false }), getFiles: () => ({ hasNext: () => false }), getFoldersByName: () => ({ hasNext: () => true, next: () => ({ createFile: (n) => ({ getName: () => n }) }) }) });
+    props.TSG_NEXT_REMINDER = '2020-01-02T09:00:00.000Z'; sentMail = []; cacheStore = {};
+    const r = sandbox.tsgReminderTick_();
+    check('tick: only the Critical reminder is emailed, both are stamped sent', r.ok && sentMail.length === 1 && /Critical one/.test(sentMail[0].subject) && queued.length === 1 && queued[0].ops.length === 2);
+    dd.meta.reminderEmails = 'all'; delete dd.tasks[0].reminderSentAt; delete dd.tasks.find(t => t.id === 96).reminderSentAt;
+    props.TSG_NEXT_REMINDER = '2020-01-02T09:00:00.000Z'; sentMail = []; cacheStore = {}; queued = [];
+    sandbox.tsgReminderTick_();
+    check('meta.reminderEmails = all mails every reminder', sentMail.length === 2);
+    sandbox.DriveApp.getFileById = origGetFile6; sandbox.DriveApp.getFolderById = origFolder6; sandbox.PropertiesService.getScriptProperties = origProps6; sentMail = []; cacheStore = {};
+  }
+}
+
 section('Friday is a 10-2 day: floor, meeting-slot blocks (2026-09-21)');
 {
   const fri1300 = new Date('2026-09-25T13:00:00-04:00'), fri1400 = new Date('2026-09-25T14:00:00-04:00'), thu1500 = new Date('2026-09-24T15:00:00-04:00');
@@ -2240,7 +2309,7 @@ section('Multiple and recurring reminders: extraReminders[] fire, re-arm and spe
   check('daily / weekly / monthly advance; monthly clamps the day', sandbox.tsgNextRepeat_('2026-09-30T09:15', 'daily') === '2026-10-01T09:15' && sandbox.tsgNextRepeat_('2026-09-21T09:15', 'weekly') === '2026-09-28T09:15' && sandbox.tsgNextRepeat_('2026-01-31T09:15', 'monthly') === '2026-02-28T09:15');
   const props = {}; const origProps5 = sandbox.PropertiesService.getScriptProperties;
   sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (props[k] == null ? null : props[k]), setProperty: (k, v) => { props[k] = v; } });
-  const d = freshDoc();
+  const d = freshDoc(); d.meta.reminderEmails = 'all';
   d.tasks[0].extraReminders = [{ at: '2020-01-06T09:00', repeat: 'weekly' }, { at: '2020-01-02T09:00', repeat: '' }, { at: '2020-01-03T09:00', repeat: '', sentAt: '2020-01-03T09:00:05.000Z' }];
   d.tasks[0].subitems = [{ title: 'Step one', done: false, status: 'Not Started', notes: '', extraReminders: [{ at: '2020-01-01T07:00', repeat: 'daily' }] }];
   const pend = sandbox.tsgPendingReminders_(d);

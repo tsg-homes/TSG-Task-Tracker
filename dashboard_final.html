@@ -702,8 +702,13 @@
      does not; the lock always releases (finally + a hard timeout), so a failed or retried save
      never locks the page out. */
   body.save-lock > *:not(#saveLockBar) { pointer-events: none; }
-  #saveLockBar { position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 10000; font-size: 11px; font-weight: 700; padding: 3px 12px; border-radius: 0 0 8px 8px; background: var(--brand); color: #fff; display: none; }
-  body.save-lock #saveLockBar { display: block; }
+  #saveLockBar { position: fixed; inset: 0; z-index: 10000; display: none; align-items: center; justify-content: center; background: rgba(20, 20, 20, 0.35); backdrop-filter: grayscale(0.6); }
+  body.save-lock #saveLockBar { display: flex; }
+  .save-lock-toast { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-radius: 12px; background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); box-shadow: 0 12px 40px rgba(0,0,0,0.35); font-size: 13px; font-weight: 700; max-width: 420px; }
+  .save-lock-spinner { width: 18px; height: 18px; border-radius: 50%; border: 3px solid var(--gridline); border-top-color: var(--brand); animation: saveLockSpin 0.8s linear infinite; flex: none; }
+  @keyframes saveLockSpin { to { transform: rotate(360deg); } }
+  .save-lock-pill { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 8px; border-radius: 999px; background: var(--brand); color: #fff; flex: none; }
+  .save-lock-pill.queued, .save-lock-pill.reloading, .save-lock-pill.retrying { background: var(--status-warn); }
   .today-task-loc { color: var(--muted); font-size: 0.85em; }
   .modal-est-wrap { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .modal-travel { display: inline-flex; align-items: center; gap: 6px; }
@@ -780,6 +785,13 @@
   .modal-row b { color: var(--text-muted); font-weight: 700; min-width: 90px; flex: none; }
   .modal-row span { color: var(--text-primary); }
   .modal-section { margin-top: 18px; }
+  /* Task card (2026-09-22, tracker task): header and fields stay put; the step list is the part
+     that scrolls once the card reaches its full height, so the task itself is always visible. */
+  #taskModal .modal-card { display: flex; flex-direction: column; overflow: hidden; }
+  #taskModal .modal-header, #taskModal .modal-meta { flex: none; }
+  #taskModal .modal-meta { max-height: 45vh; overflow-y: auto; }
+  #taskModal #modalSubitemsWrap { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  #taskModal .modal-section:last-child { flex: none; }
   .modal-section h3 {
     font-size: 11px;
     text-transform: uppercase;
@@ -1239,8 +1251,9 @@
   .sched-detail-row b { color: var(--text-muted); font-weight: 700; }
   .sched-detail-note { font-size: 12px; color: var(--text-muted); font-style: italic; }
   .remind-extra { display: flex; gap: 6px; align-items: center; margin-top: 3px; font-size: 12px; flex-wrap: wrap; }
-  .today-pinned { margin: 8px 0 12px; padding: 8px 10px; border: 1px solid var(--gridline); border-radius: 8px; background: var(--surface-2); }
-  .today-pinned-head { font-weight: 700; font-size: 12px; margin-bottom: 4px; }
+  .today-pinned { margin: 8px 0 12px; }
+  .today-item.type-pinned .today-content { border-left: 3px solid var(--status-warn); background: var(--status-warn-bg); }
+  .today-item.type-pinned .today-time { padding-top: 10px; }
   .today-admin-line { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 5px; border-radius: 5px; }
   .today-admin-line.clickable { cursor: pointer; }
   .today-admin-line.clickable:hover { background: var(--surface-2); }
@@ -1436,7 +1449,7 @@
     <button class="btn" id="timerChip" type="button" style="display:none" onclick="openTimerTask_()" title="Timer running — click to open the task"></button>
     <button class="btn" id="judgeChip" type="button" style="display:none" onclick="judgeNow(event)" title="Judgments waiting for Claude. Click: answer them now in a Cowork session on this computer. Shift-click: Claude Code in the cloud. The 7:30 AM Routine is the backstop."></button>
     <span class="toolbar-sep"></span>
-    <span class="team-views" id="teamViews" title="A team member's tasks and delegated steps, as a pop-up. Shift-click opens the page they see."></span>
+    <span class="team-views" id="teamViews" title="Open the page a team member sees, exactly as they see it. Shift-click lists their items as a pop-up here."></span>
     <span class="count" id="resultCount"></span>
   </div>
 
@@ -1598,7 +1611,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-21.9';
+  const UI_VERSION = '2026-09-22.1';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1842,7 +1855,7 @@
       .sort(function(a, b) { return a.localeCompare(b); });
     host.innerHTML = names.length
       ? '<span class="lbl">Views</span>' + names.map(function(n) {
-          return '<button type="button" class="btn small" data-person-view="' + escapeHtml(n) + '" title="' + escapeHtml(n) + '\'s tasks and delegated steps, as a pop-up here. Shift-click opens the page they see.">' + escapeHtml(n) + '</button>';
+          return '<button type="button" class="btn small" data-person-view="' + escapeHtml(n) + '" title="Open ' + escapeHtml(n) + '\'s page as they see it (held Triage items hidden, their steps only). Shift-click lists their items as a pop-up here.">' + escapeHtml(n) + '</button>';
         }).join('')
       : '';
   }
@@ -1854,8 +1867,11 @@
     const b = e.target.closest('[data-person-view]');
     if (!b) return;
     const name = b.getAttribute('data-person-view');
-    if (e.shiftKey) { window.open(personViewUrl_(name), 'tsg-view-' + name.replace(/\W+/g, '-'), 'width=1280,height=860,noopener'); return; }
-    openPersonView(name);
+    // The preview must mirror what they see (2026-09-22, tracker task): the plain click opens
+    // the person page itself (server-rendered by the same slice they get); the pop-up moved
+    // to shift-click and now applies the same review gate (held Triage items hidden).
+    if (e.shiftKey) { openPersonView(name); return; }
+    window.open(personViewUrl_(name), 'tsg-view-' + name.replace(/\W+/g, '-'), 'width=1280,height=860,noopener');
   });
   // ---- Merge one task into another (2026-09-16, #250: "link tasks to merge them") ----
   function mergeOptionsHtml_(t) {
@@ -2745,6 +2761,16 @@
         ids: atRisk.map(function(t) { return t.id; })
       });
     }
+    // Needs Durand (2026-09-22): Claude work handed back (blocked, waiting, or a draft awaiting
+    // approval). The tag is server-derived on every write; this row is the one place to find them.
+    const needsYou = TASKS.filter(function(t) { return t.status !== 'Done' && (t.tags || []).indexOf('Needs Durand') !== -1; });
+    if (needsYou.length) {
+      alerts.push({
+        level: 'warn',
+        text: needsYou.length + (needsYou.length === 1 ? ' Claude item needs' : ' Claude items need') + ' you: blocked, waiting on a decision, or a draft awaiting your approval. Open the card, act, and clear the status or the note.',
+        ids: needsYou.map(function(t) { return t.id; })
+      });
+    }
     return alerts;
   }
   let LAST_ALERTS = [];
@@ -2874,7 +2900,7 @@
     // renderCompletedCardsGroupHtml_), and Timeline/Workload show Done work items but keep
     // them out of the workload hour totals (computeDailyHours already filters status !==
     // 'Done' there). matchesFilters itself no longer touches Done at all.
-    if (triageOnly && (t.tags || []).indexOf('Triage') === -1 && (t.tags || []).indexOf('Review') === -1 && (t.tags || []).indexOf('At Risk') === -1) return false;
+    if (triageOnly && (t.tags || []).indexOf('Triage') === -1 && (t.tags || []).indexOf('Review') === -1 && (t.tags || []).indexOf('At Risk') === -1 && (t.tags || []).indexOf('Needs Durand') === -1) return false;
     if (status && t.status !== status) return false;
     if (priority && t.priority !== priority) return false;
     if (group && t.group !== group) return false;
@@ -3513,7 +3539,7 @@
     // Empty fields get a fillable ghost affordance instead of just vanishing — a card
     // with no tags/type/estimate should visibly invite filling them in, not look identical
     // to one where those fields were deliberately left blank on purpose.
-    const tagsHtml = (t.tags || []).length ? (t.tags || []).map(tag => tag === 'At Risk' ? atRiskChipHtml(t) : tagChipHtml(tag)).join('') : '<span class="tc-empty-field">+ tags</span>';
+    const tagsHtml = (t.tags || []).length ? (t.tags || []).map(tag => tag === 'At Risk' ? atRiskChipHtml(t) : tag === 'Needs Durand' ? needsDurandChipHtml(t) : tagChipHtml(tag)).join('') : '<span class="tc-empty-field">+ tags</span>';
     const typeHtml = typeBadgeHtml(t) || '<span class="tc-empty-field">+ type</span>';
     const estHtml = t.estHours ? `<span class="tc-est">${t.estHours}h est</span>` : '<span class="tc-empty-field">+ estimate</span>';
     const locHtml = t.location ? `<span class="tc-est" title="${escapeHtml(t.location)}">&#128205; ${travelMinutesFor_(t) ? travelModeLabel_(t) + (t.estHours ? ' · ' + fmtHours_(t.estHours + travelMinutesFor_(t) / 60) + ' total' : '') : (typeof t.travelMin === 'number' && t.travelMin > 0 ? 'no travel counted' : 'located')}</span>` : '';
@@ -4928,9 +4954,19 @@
       const open = (t.subitems || []).filter(s => !(s.done || s.status === 'Done'));
       const next = open[0];
       const sub = taskProgress(t) + '% · ' + open.length + ' open step' + (open.length === 1 ? '' : 's') + (next ? ' · next: ' + next.title : '') + (t.timelineEnd ? ' · due ' + formatDate(t.timelineEnd) : '');
-      return `<div class="today-admin-line kind-action clickable" onclick="event.stopPropagation(); openTaskCard(${t.id})"><span>${escapeHtml(t.title)}</span><span class="today-admin-sub">${escapeHtml(sub)}</span></div>`;
+      return `<div class="today-task-line" onclick="event.stopPropagation(); openTaskCard(${t.id})">${avatarHtml(taskDelegate(t) || t.owner)}<span>${escapeHtml(t.title)}</span><span class="today-admin-sub">${escapeHtml(sub)}</span></div>`;
     }).join('');
-    return `<div class="today-pinned"><div class="today-pinned-head">&#128204; Pinned</div>${rows}</div>`;
+    // Same row shape, outline and click as every schedule block (2026-09-22, tracker task: "the
+    // pin block needs to have the same selectable and outlining behavior as the others"): the
+    // row opens the pinned tasks as full cards, each line opens its own card.
+    return `<div class="today-pinned"><div class="today-item type-pinned schedule-clickable" onclick="event.stopPropagation(); openPinnedDetail()" title="View the pinned tasks as full cards">
+      <div class="today-time">&#128204; Pinned</div>
+      <div class="today-content"><div class="today-title">Pinned</div><div class="today-tasklist">${rows}</div></div>
+    </div></div>`;
+  }
+  function openPinnedDetail() {
+    const ids = TASKS.filter(t => isPinned_(t) && t.status !== 'Done' && t.status !== 'Cancelled').map(t => t.id);
+    if (ids.length) openMultiTaskModal('Pinned', ids);
   }
   // One admin-checklist line's markup. What it does on click (and which marker it shows)
   // depends on kind: 'action' opens the one task behind it; 'group' opens all the tasks
@@ -5274,6 +5310,11 @@
     const m = String((t && t.realisticEnd) || '').match(/^\d{4}-(\d{2})-(\d{2})$/);
     return m ? 'At Risk \u00b7 steps run to ' + Number(m[1]) + '/' + Number(m[2]) : 'At Risk';
   }
+  // Needs Durand (2026-09-22): the server tags a Claude item that is Blocked, Waiting or holds a
+  // "DRAFT — AWAITING APPROVAL" note; the chip opens the card so the hand-back is one click away.
+  function needsDurandChipHtml(t) {
+    return `<button type="button" class="tag-chip tag-risk" title="A Claude item on this task is blocked, waiting on you, or holds a draft awaiting your approval. Open the card." onclick="event.stopPropagation(); openTaskCard(${t.id})">Needs you</button>`;
+  }
   function atRiskChipHtml(t) {
     return `<button type="button" class="tag-chip tag-risk review-chip" onclick="event.stopPropagation(); openTaskCard(${t.id})" title="The open steps run past the due date you set (they end ${escapeHtml(t.realisticEnd || 'later')}). Your date is kept. Re-estimate a step, drop one, or move the date.">${escapeHtml(atRiskLabel_(t))}</button>`;
   }
@@ -5324,9 +5365,11 @@
   // person's whole slice, as a scoped list pop-up on this board. Shift-click opens the
   // page they actually see, from this tab's session.
   function personTaskIds_(name) {
+    const held = function(x) { return (x && x.tags || []).indexOf('Triage') !== -1; };
     return TASKS.filter(function(t) {
+      if (held(t)) return false;   // hidden from their page until released
       if (t.owner === name || taskDelegate(t) === name) return true;
-      return (t.subitems || []).some(function(s) { return s.delegate === name; });
+      return (t.subitems || []).some(function(s) { return s.delegate === name && !held(s); });
     }).map(function(t) { return t.id; });
   }
   function openPersonView(name) {
@@ -5338,7 +5381,7 @@
     const pct = taskProgress(t);
     const hasSubs = t.subitems && t.subitems.length > 0;
     const subOpen = hasSubs && expandedSubtasks.has(t.id);
-    const tagsHtml = (t.tags || []).map(tag => tag === 'Triage' ? reviewChipHtml(t.id) : tag === 'Review' ? disagreeChipHtml(t.id) : tag === 'At Risk' ? atRiskChipHtml(t) : tagChipHtml(tag)).join('');
+    const tagsHtml = (t.tags || []).map(tag => tag === 'Triage' ? reviewChipHtml(t.id) : tag === 'Review' ? disagreeChipHtml(t.id) : tag === 'At Risk' ? atRiskChipHtml(t) : tag === 'Needs Durand' ? needsDurandChipHtml(t) : tagChipHtml(tag)).join('');
     let html = `
       <tr class="task-row" data-id="${t.id}" onclick="onRowClick(event, ${t.id})">
         <td>${hasSubs ? `<button class="icon-btn" onclick="toggleSub(${t.id})">${subOpen ? '▾' : '▸'}</button>` : ''}</td>
@@ -6480,6 +6523,15 @@
     const s = String(v);
     return REMIND_PRESETS.some(p => p[0] === s && s !== 'custom') ? s : '';
   }
+  // Reminder emails (2026-09-22, Durand: "I only want emails on critical tasks"): the server
+  // mails a due reminder only for Critical work unless meta.reminderEmails is 'all'.
+  function reminderEmails_() { return RAW_META.reminderEmails === 'all' ? 'all' : 'critical'; }
+  async function setReminderEmails(val) {
+    const v = val === 'all' ? 'all' : 'critical';
+    RAW_META.reminderEmails = v;
+    await postCommentOp_({ op: 'set_meta', fields: { reminderEmails: v }, source: 'Durand' });
+    setSyncStatus('saved', 'Reminder emails: ' + (v === 'all' ? 'every reminder' : 'critical tasks only'));
+  }
   async function setRemindDefault(val) {
     const v = String(val || '');
     RAW_META.remindDefault = v;
@@ -7108,11 +7160,26 @@
     const line = String(notes || '').trim().split(/\n/)[0].replace(/\s+/g, ' ').trim();
     return line.length > 80 ? line.slice(0, 77).replace(/\s+\S*$/, '') + '…' : line;
   }
+  // Free-form note (2026-09-22, tracker task: "show your interpretation for review before
+  // dismissing it"): when the title comes from the note, the page says how it read the note
+  // (title, group, due, delegate, tags, location, reminder) and waits for OK before creating.
+  function freeFormSummary_(fields) {
+    const lines = ['Title: ' + fields.title, 'Group: ' + (fields.group || 'Unsorted')];
+    if (fields.timelineEnd) lines.push('Due: ' + fields.timelineEnd + (fields.remindAt ? ' (reminder ' + fields.remindAt.replace('T', ' ') + ')' : ''));
+    if (fields.delegate) lines.push('Delegate: ' + fields.delegate + (fields.needsApproval ? ' (approval required)' : ''));
+    if (fields.taskType) lines.push('Type: ' + fields.taskType);
+    if (fields.tags && fields.tags.length) lines.push('Tags: ' + fields.tags.join(', '));
+    if (fields.location) lines.push('Location: ' + fields.location);
+    lines.push('Notes: kept as written; Claude polishes them and fills the rest on its next pass.');
+    return lines.join('\n');
+  }
   async function confirmNewTask(btn) {
     const fields = newTaskFieldsFromModal_();
-    if (!fields.title && fields.notes) fields.title = titleFromNotes_(fields.notes);
+    const freeForm = !fields.title && !!fields.notes;
+    if (freeForm) fields.title = titleFromNotes_(fields.notes);
     if (!fields.title) { alert('Write a title or a note first.'); return; }
     if (!fields.group) { if (fields.notes) fields.group = 'Unsorted'; else { alert('Pick or type a group for this task.'); return; } }
+    if (freeForm && !confirm('Here is how I read your note:\n\n' + freeFormSummary_(fields) + '\n\nOK creates it as read. Cancel goes back so you can adjust.')) return;
     const modal = document.getElementById('newTaskModal');
     btn.disabled = true; btn.textContent = 'Creating…';
     NT_BUSY = true; modal.classList.add('busy');
@@ -7512,7 +7579,7 @@
     applyLoadedDoc_(fresh);
     BASELINE_DOC = freshBaseline; // the diff for a second conflict must still find the edit
     setSyncStatus('saving', 'The tracker changed elsewhere; re-applying your edit to the latest version');
-    setPageLock_(true, 'Re-applying your edit…');
+    setPageLock_(true, 'Re-applying your edit…', false, 'retrying');
     LAST_CONFLICT_REPLAY = summary;
     return true;
   }
@@ -7523,10 +7590,13 @@
   // that failed and is being retried out of band (queued behind another write, or a conflict
   // that falls back to a reload) keeps the page locked until the next document lands
   // (applyLoadedDoc_ releases it), not just until the request returns.
-  function setPageLock_(on, label, sticky) {
+  // The lock greys the whole page and shows a centered toast (2026-09-22, tracker task):
+  // spinner, the label, and a status pill (Saving / Queued / Retrying / Reloading).
+  function setPageLock_(on, label, sticky, status) {
     let bar = document.getElementById('saveLockBar');
     if (!bar) { bar = document.createElement('div'); bar.id = 'saveLockBar'; bar.setAttribute('role', 'status'); document.body.appendChild(bar); }
-    bar.textContent = on ? (label || 'Saving…') : '';
+    const pill = String(status || (sticky ? 'queued' : 'saving')).toLowerCase();
+    bar.innerHTML = on ? `<div class="save-lock-toast"><span class="save-lock-spinner" aria-hidden="true"></span><span class="save-lock-label">${escapeHtml(label || 'Saving…')}</span><span class="save-lock-pill ${escapeHtml(pill)}">${escapeHtml(pill)}</span></div>` : '';
     document.body.classList.toggle('save-lock', !!on);
     PAGE_LOCK_STICKY = !!(on && sticky);
     clearTimeout(PAGE_LOCK_TIMER);
@@ -7571,7 +7641,7 @@
             return doSaveNow_();
           }
           setSyncStatus('conflict', 'The tracker changed elsewhere since this loaded — reloading the latest version. Please redo your last change.');
-          setPageLock_(true, 'The tracker changed elsewhere; reloading the latest version…', true);
+          setPageLock_(true, 'The tracker changed elsewhere; reloading the latest version…', true, 'reloading');
           // keepStatus: loadData otherwise ends with setSyncStatus('loaded') ("Synced"),
           // wiping the conflict warning set one line above within a few hundred ms — the
           // save failed and Durand never saw it.
@@ -7582,7 +7652,7 @@
           // The save is queued server-side (its inbox file exists) and the minute trigger
           // applies it; the next poll picks up the new version. Not an error to alarm about.
           setSyncStatus('saving', 'Queued: another write is being applied; syncing shortly');
-          setPageLock_(true, 'Queued: another write is being applied; your save lands within a minute…', true);
+          setPageLock_(true, 'Queued: another write is being applied; your save lands within a minute…', true, 'queued');
           setTimeout(pollForRemoteChanges, 20000);
           return;
         }
@@ -7938,6 +8008,11 @@
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Reminder notifications</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">Due reminders are emailed by the tracker; while this page is open they also pop up here as a browser notification (or an in-page toast when notifications are blocked). Browser permission: <b id="notifyState">${escapeHtml(notifyPermission_())}</b>${(notifyPermission_() === 'default' && window.top === window) ? ' <button type="button" class="btn small" onclick="enableNotificationsClick_()">Enable</button>' : ''}${notifyPermission_() === 'granted' ? ' <button type="button" class="btn small" onclick="testNotification_()">Test</button>' : ''}<div class="history-empty" id="notifyWhy" style="margin-top:4px;">${escapeHtml(notifyStateText_(notifyPermission_()))}${window.top !== window && notifyPermission_() !== 'granted' ? ' <button type="button" class="btn small" onclick="copyText_(location.origin, this, \'The tracker address\')">Copy address</button>' : ''}</div></div>
+      </div>
+      <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Reminder emails</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Which due reminders are also emailed. Every reminder still shows here as a notification or toast.</div>
+        <select class="pill-select" id="reminderEmailsSelect" onchange="setReminderEmails(this.value)"><option value="critical" ${reminderEmails_() === 'critical' ? 'selected' : ''}>Critical tasks only</option><option value="all" ${reminderEmails_() === 'all' ? 'selected' : ''}>Every reminder</option></select>
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Default reminder</h3></div>

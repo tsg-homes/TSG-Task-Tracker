@@ -223,18 +223,25 @@ setTimeout(async () => {
   });
   w.alert = function() {};
   w.findTask(2).delegate = 'Ryan'; w.findTask(3).delegate = 'Ryan';   // two, so the list pop-up opens rather than a single card
-  doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
-  tryCall("clicking a team view button opens that person's filtered pop-up on this board", () => {
+  doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true, shiftKey: true }));
+  tryCall("shift-clicking a team view button opens that person's filtered pop-up on this board (2026-09-22: swapped)", () => {
     const modal = doc.getElementById('dayViewModal');
     if (!modal.classList.contains('open')) throw new Error('pop-up not open');
     if (doc.getElementById('dayViewTitle').textContent !== "Ryan's view") throw new Error('title: ' + doc.getElementById('dayViewTitle').textContent);
-    if (opened.length) throw new Error('a window was opened on a plain click');
+    if (opened.length) throw new Error('a window was opened on a shift-click');
   });
   doc.getElementById('dayViewModal').classList.remove('open');
-  doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true, shiftKey: true }));
-  tryCall("shift-clicking opens ?person=<Name> in its own window", () => {
+  doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  tryCall("a plain click opens ?person=<Name> in its own window: the preview mirrors what they see", () => {
     if (opened.length !== 1 || !/\?person=Ryan$/.test(opened[0].url) || opened[0].name !== 'tsg-view-Ryan') throw new Error('opened: ' + JSON.stringify(opened));
     if (/__TSG_API_URL__/.test(opened[0].url)) throw new Error('placeholder leaked into the URL');
+  });
+  tryCall("the pop-up applies the review gate: a Triage-held task or step is not listed for the person", () => {
+    const before = w.personTaskIds_('Ryan');
+    w.findTask(2).tags = (w.findTask(2).tags || []).concat(['Triage']);
+    const after = w.personTaskIds_('Ryan');
+    if (before.indexOf(2) === -1 || after.indexOf(2) !== -1) throw new Error('held task still listed: ' + JSON.stringify({ before, after }));
+    w.findTask(2).tags = w.findTask(2).tags.filter(x => x !== 'Triage');
   });
   w.findTask(2).delegate = undefined; w.findTask(3).delegate = undefined;
 
@@ -1300,6 +1307,10 @@ setTimeout(async () => {
     const t = w.findTask(1); const was = t.pinned; t.pinned = true;
     const html = w.renderTodayView();
     if (!/today-pinned/.test(html) || !html.includes(w.escapeHtml(t.title)) || !html.includes('openTaskCard(1)')) throw new Error('pinned strip missing');
+    if (!/today-item type-pinned schedule-clickable/.test(html) || !html.includes('openPinnedDetail()')) throw new Error('pinned block is not a selectable schedule row (2026-09-22)');
+    w.openPinnedDetail();   // one pinned task opens straight as its card (the pop-up convention)
+    if (!(doc.getElementById('dayViewModal').classList.contains('open') && doc.getElementById('dayViewTitle').textContent === 'Pinned') && w.eval('currentModalTaskId') !== 1) throw new Error('pinned detail did not open');
+    w.closeDayView(); w.closeTaskCard();
     t.pinned = was;
     if (/today-pinned/.test(w.renderTodayView()) && !w.eval('TASKS.some(x => x.pinned && x.status !== "Done")')) throw new Error('strip shown with nothing pinned');
   });
@@ -1425,6 +1436,51 @@ setTimeout(async () => {
     const f2 = w.newTaskFieldsFromModal_();
     if (f2.needsApproval) throw new Error('undelegated new task must not require approval');
     w.eval('NT_BUSY = false'); w.closeNewTaskModal();
+  });
+  tryCall('page lock is a whole-page overlay with a centered toast, spinner and status pill (2026-09-22)', () => {
+    w.setPageLock_(true, 'Saving…', false);
+    const bar = doc.getElementById('saveLockBar');
+    if (!doc.body.classList.contains('save-lock') || !bar.querySelector('.save-lock-toast') || !bar.querySelector('.save-lock-spinner')) throw new Error('overlay/toast missing');
+    if (bar.querySelector('.save-lock-pill').textContent !== 'saving') throw new Error('pill: ' + bar.querySelector('.save-lock-pill').textContent);
+    w.setPageLock_(true, 'Queued…', true, 'queued');
+    if (!/queued/.test(bar.querySelector('.save-lock-pill').className)) throw new Error('queued pill class missing');
+    w.setPageLock_(false);
+    if (doc.body.classList.contains('save-lock') || bar.innerHTML !== '') throw new Error('lock not cleared');
+  });
+  tryCall('free-form note: the page shows its interpretation and waits for OK before creating (2026-09-22)', () => {
+    w.openNewTaskModal({ group: 'Marketing' });
+    doc.getElementById('ntTitle').value = '';
+    doc.getElementById('ntNotes').value = 'Order the fall flyers from Hello Creative\nneed 500 by the 10th';
+    const asked = []; const origConfirm = w.confirm; w.confirm = (msg) => { asked.push(msg); return false; };
+    const fetches = (w.__posts || []).length;
+    w.confirmNewTask(doc.querySelector('#newTaskModal .btn.primary') || doc.createElement('button'));
+    w.confirm = origConfirm;
+    if (asked.length !== 1 || !/Title: Order the fall flyers from Hello Creative/.test(asked[0]) || !/Group: Marketing/.test(asked[0])) throw new Error('interpretation not shown: ' + JSON.stringify(asked));
+    if ((w.__posts || []).length !== fetches) throw new Error('task created despite Cancel');
+    w.eval('NT_BUSY = false'); w.closeNewTaskModal();
+  });
+  tryCall('Needs Durand: chip on the row, alert row, and the Triage filter (2026-09-22)', () => {
+    const t = w.findTask(1); const tags = (t.tags || []).slice(); t.tags = tags.concat(['Needs Durand']);
+    if (!/Needs you/.test(w.taskRowHtml(t)) || !/needsDurandChipHtml|openTaskCard\(1\)/.test(w.taskRowHtml(t))) throw new Error('chip missing');
+    const row = w.computeAlerts().find(a => /Claude item needs you/.test(a.text));
+    if (!row || row.ids.indexOf(1) === -1) throw new Error('alert row missing');
+    w.eval('triageOnly = true');
+    if (!w.matchesFilters(t)) throw new Error('Triage filter hides a Needs Durand task');
+    w.eval('triageOnly = false');
+    t.tags = tags;
+  });
+  tryCall('Settings > General has a Reminder emails select defaulting to critical only; a change posts set_meta (2026-09-22)', () => {
+    const html = w.renderGeneralTab();
+    if (!/reminderEmailsSelect/.test(html) || !/value="critical" selected/.test(html)) throw new Error('select missing or wrong default');
+    w.__posts = [];
+    w.setReminderEmails('all');
+    const p = JSON.parse((w.__posts || []).find(x => x.body && x.body.includes('reminderEmails')).body);
+    if (p.fields.reminderEmails !== 'all' || w.reminderEmails_() !== 'all') throw new Error('set_meta not posted: ' + JSON.stringify(p));
+    w.eval("RAW_META.reminderEmails = 'critical'");
+  });
+  tryCall('task card: the card is a flex column whose step section is the scrolling part (2026-09-22)', () => {
+    const css = doc.querySelector('style').textContent;
+    if (!/#taskModal \.modal-card \{ display: flex; flex-direction: column/.test(css) || !/#taskModal #modalSubitemsWrap \{ flex: 1 1 auto; min-height: 0; overflow-y: auto/.test(css)) throw new Error('modal scroll CSS missing');
   });
   tryCall('applyLoadedDoc_ maps the old type name Actionable Task to Hands-on on tasks and steps (2026-09-21)', () => {
     const before = w.eval('cloneJson_({ tasks: TASKS, meta: RAW_META })');
