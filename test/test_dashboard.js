@@ -362,6 +362,25 @@ setTimeout(async () => {
     } catch (e) { console.log('FAIL - recurring series ->', e.message); FAILS++; }
   })();
 
+  // Pinned-task step (2026-09-22): meeting blocks carry the event's links and list related work.
+  tryCall('meeting blocks carry the event links and list every task that links the event or its agenda', () => {
+    const today = w.todayISO();
+    const CAL = w.eval('CALENDAR_EVENTS');
+    CAL.push({ title: 'Marketing Update', seriesId: 'SERIES-MU', date: today, start: '13:30', end: '14:00', hours: 0.5, bufferedHours: 0.67, htmlLink: 'https://www.google.com/calendar/event?eid=MU1', meetLink: 'https://meet.google.com/abc-defg-hij', agendaDocUrl: 'https://docs.google.com/document/d/AGENDA1/edit' });
+    const t2 = w.findTask(2); const prevDocs = t2.docs;
+    t2.docs = [{ url: 'https://docs.google.com/document/d/AGENDA1/edit', label: 'Agenda', type: 'link' }];
+    try {
+      const block = w.buildTodayAgenda(today).schedule.find(it => it.kind === 'calendar' && it.title === 'Marketing Update');
+      if (!block) throw new Error('no calendar block for the event');
+      if (block.meetLink !== 'https://meet.google.com/abc-defg-hij' || !block.htmlLink || !block.agendaDocUrl) throw new Error('links missing on the block');
+      if (!(block.relatedItems || []).some(c => c.id === 2 && c.subIdx == null)) throw new Error('task carrying the agenda doc link is not related: ' + JSON.stringify(block.relatedItems));
+      const html = w.renderTodayDayFull(today);
+      if (!/today-meeting-links/.test(html) || html.indexOf('https://meet.google.com/abc-defg-hij') === -1) throw new Error('links not rendered on the block');
+      if (html.indexOf('Text Marj About The Flyer Proof') === -1) throw new Error('related task not listed under the meeting');
+      const detail = w.scheduleBlockDetailBody(block);
+      if (!/<b>Links<\/b>/.test(detail) || !/Linked and related task/.test(detail)) throw new Error('block detail lacks the Links row or the related cards');
+    } finally { CAL.pop(); t2.docs = prevDocs; }
+  });
   // #250 backlog batch 1 (2026-09-16): Durand first, group dropdown, tag autocomplete, dependencies in the modal, dense cards
   tryCall('people lists put Durand first, then A to Z', () => {
     if (w.sortPeople_(['Ryan', 'Alex', 'Durand', 'Marj']).join() !== 'Durand,Alex,Marj,Ryan') throw new Error('sortPeople_ wrong');

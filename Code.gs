@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-22.4';
+const TSG_CODE_VERSION = '2026-09-22.5';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -2148,9 +2148,17 @@ function getCalendarHours_(startStr, endStr) {
     var bufferHours = (prepMin + travelMin * 2) / 60;
     var seriesId = null;
     try { if (ev.isRecurringEvent && ev.isRecurringEvent()) seriesId = ev.getEventSeries().getId(); } catch (e0) {}
+    // Links the day view shows on the meeting block (2026-09-22, pinned-task step "google
+    // meeting blocks should include their links and related tasks"): the Calendar event
+    // itself, a video-call link found in the description or location, and the agenda doc.
+    var desc = '';
+    try { desc = ev.getDescription() || ''; } catch (e1) {}
     out.push({
       title: title,
       seriesId: seriesId,
+      htmlLink: tsgCalendarEventLink_(ev, cal),
+      meetLink: tsgFindMeetLink_(desc + ' ' + location),
+      agendaDocUrl: tsgFindAgendaDocUrl_(desc),
       date: Utilities.formatDate(ev.getStartTime(), tz, 'yyyy-MM-dd'),
       hours: Math.round(hours * 4) / 4,
       bufferedHours: Math.round((hours + bufferHours) * 4) / 4,
@@ -2180,6 +2188,14 @@ function tsgCalendarEventLink_(ev, cal) {
   var id = ev.getId().replace(/@google\.com$/, '');
   var eid = Utilities.base64EncodeWebSafe(id + ' ' + cal.getId()).replace(/=+$/, '');
   return 'https://www.google.com/calendar/event?eid=' + eid;
+}
+
+// First video-call link in a description/location: Google Meet, Zoom, Teams, Webex.
+var TSG_MEET_LINK_RE = /https:\/\/(?:meet\.google\.com\/[a-z0-9-]+|[a-z0-9.-]*zoom\.us\/[jw]\/[^\s"'<>]+|teams\.microsoft\.com\/l\/meetup-join\/[^\s"'<>]+|[a-z0-9.-]*webex\.com\/[^\s"'<>]+)/i;
+function tsgFindMeetLink_(text) {
+  if (!text) return '';
+  var m = String(text).match(TSG_MEET_LINK_RE);
+  return m ? m[0] : '';
 }
 
 function tsgFindAgendaDocUrl_(text) {

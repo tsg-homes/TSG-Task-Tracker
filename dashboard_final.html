@@ -1216,6 +1216,10 @@
   .today-item.schedule-clickable .today-content:hover { border-color: var(--text-secondary); }
   .today-meeting-meta { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
   .today-meeting-lead { padding: 1px 6px; border-radius: 999px; background: var(--surface-2); }
+  .today-meeting-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .today-meeting-links a { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); text-decoration: none; }
+  .today-meeting-links a:hover { border-color: var(--brand); color: var(--brand); }
+  .sched-detail-row .today-meeting-links { margin-top: 0; }
   .today-offsite-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
   .sched-detail-admin { display: flex; flex-direction: column; gap: 4px; }
   .sched-detail-meeting { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
@@ -1583,7 +1587,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-22.2';
+  const UI_VERSION = '2026-09-22.3';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -4602,7 +4606,9 @@
           start: meetingStart - prepMin - travelMin, end: meetingEnd + travelMin,
           meetingStart: meetingStart, meetingEnd: meetingEnd,
           location: ev.location || '', offSite: offSite, prepMin: prepMin, travelMin: travelMin,
-          linkedItems: linkableToday.filter(t => (t.meetingSeriesId && ev.seriesId && t.meetingSeriesId === ev.seriesId) || (t.meetingDate === today && t.meetingStart === ev.start))
+          seriesId: ev.seriesId || null, htmlLink: ev.htmlLink || '', meetLink: ev.meetLink || '', agendaDocUrl: ev.agendaDocUrl || '',
+          linkedItems: linkableToday.filter(t => (t.meetingSeriesId && ev.seriesId && t.meetingSeriesId === ev.seriesId) || (t.meetingDate === today && t.meetingStart === ev.start)),
+          relatedItems: meetingRelatedItems_(ev)
         };
       })
       .filter(ev => ev.end > ev.start);
@@ -4708,6 +4714,49 @@
     });
     if (cursor < dayEnd) gaps.push({ start: cursor, end: dayEnd });
     return gaps.filter(g => g.end > g.start);
+  }
+  // Meeting block links and related work (2026-09-22, pinned-task step "google meeting
+  // blocks should include their links and related tasks"). Related = every open task or
+  // step, whoever it is delegated to, that carries the event's Calendar link, its Meet
+  // link or its agenda doc in docs[], or is linked to the same recurring series. Kept
+  // separate from linkedItems (the owner's own meeting-typed items, which the scheduler
+  // already pulls out of the filler blocks) so scheduling is untouched.
+  function meetingRelatedItems_(ev) {
+    const urls = [ev.htmlLink, ev.meetLink, ev.agendaDocUrl].filter(Boolean);
+    const docHit = (docs) => (docs || []).some(d => d && ((d.url && urls.indexOf(d.url) !== -1) || (ev.seriesId && d.seriesId === ev.seriesId)));
+    const out = [];
+    (TASKS || []).forEach(t => {
+      if (!t || t.status === 'Done' || t.status === 'Cancelled') return;
+      if (docHit(t.docs) || (ev.seriesId && t.meetingSeriesId === ev.seriesId)) {
+        out.push({ id: t.id, subIdx: null, displayTitle: t.title, delegate: taskDelegate(t) || t.owner || 'Unassigned' });
+      }
+      (t.subitems || []).forEach((s, i) => {
+        if (!s || s.status === 'Done' || s.status === 'Cancelled') return;
+        if (docHit(s.docs) || (ev.seriesId && s.meetingSeriesId === ev.seriesId)) {
+          out.push({ id: t.id, subIdx: i, displayTitle: t.title + ' → ' + s.title, delegate: s.delegate || taskDelegate(t) || t.owner || 'Unassigned' });
+        }
+      });
+    });
+    return out;
+  }
+  function meetingLinksHtml_(item) {
+    const links = [];
+    if (item.meetLink) links.push(['&#127909; Join', item.meetLink]);
+    if (item.htmlLink) links.push(['&#128197; Calendar', item.htmlLink]);
+    if (item.agendaDocUrl) links.push(['&#128196; Agenda', item.agendaDocUrl]);
+    if (!links.length) return '';
+    return '<div class="today-meeting-links">' + links.map(l => `<a href="${escapeHtml(l[1])}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${l[0]}</a>`).join('') + '</div>';
+  }
+  // Linked (owner's meeting items) first, then related work not already listed.
+  function meetingBlockItems_(item) {
+    const seen = {};
+    const out = [];
+    [].concat(item.linkedItems || [], item.relatedItems || []).forEach(c => {
+      const key = c.id + ':' + (c.subIdx == null ? '' : c.subIdx);
+      if (seen[key]) return;
+      seen[key] = true; out.push(c);
+    });
+    return out;
   }
   function buildTodayAgenda(dateISO) {
     const today = dateISO || todayISO();
@@ -4946,11 +4995,12 @@
         if (item.travelMin) leadBits.push(item.travelMin + 'm travel');
         if (item.prepMin) leadBits.push(item.prepMin + 'm prep');
         const leadHtml = leadBits.length ? `<span class="today-meeting-lead">+ ${leadBits.join(' + ')}</span>` : '';
-        const linkedHtml = (item.linkedItems && item.linkedItems.length)
-          ? `<div class="today-tasklist">` + item.linkedItems.map(c => `<div class="today-task-line" onclick="event.stopPropagation(); openTaskCard(${c.id})">${avatarHtml(c.delegate)}<span>${escapeHtml(c.displayTitle)}</span></div>`).join('') + '</div>'
+        const blockItems = meetingBlockItems_(item);
+        const linkedHtml = blockItems.length
+          ? `<div class="today-tasklist">` + blockItems.map(c => `<div class="today-task-line" onclick="event.stopPropagation(); openTaskCard(${c.id})">${avatarHtml(c.delegate)}<span>${escapeHtml(c.displayTitle)}</span></div>`).join('') + '</div>'
           : '';
         content = `<div class="today-title">${escapeHtml(item.title)}${item.offSite ? ' <span class="today-offsite-tag">off-site</span>' : ''}</div>` +
-          `<div class="today-meeting-meta"><span>${minToLabel(item.meetingStart)} – ${minToLabel(item.meetingEnd)}</span>${leadHtml}</div>` + linkedHtml;
+          `<div class="today-meeting-meta"><span>${minToLabel(item.meetingStart)} – ${minToLabel(item.meetingEnd)}</span>${leadHtml}</div>` + meetingLinksHtml_(item) + linkedHtml;
       } else if (item.kind === 'gap') {
         const mins = item.end - item.start;
         const h = Math.floor(mins / 60), m = mins % 60;
@@ -5007,9 +5057,14 @@
       }
       if (item.prepMin) rows.push(['Prep', item.prepMin + ' min — blocked from ' + minToLabel(item.start)]);
       rows.push(['Blocked on schedule', timeLabel]);
-      const linkedCardsHtml = (item.linkedItems && item.linkedItems.length)
-        ? '<div class="sched-detail-note">Linked task' + (item.linkedItems.length > 1 ? 's' : '') + ':</div><div class="card-grid">'
-          + item.linkedItems.map(c => taskCardHtml(findTask(c.id))).filter(Boolean).join('') + '</div>'
+      const linksHtml = meetingLinksHtml_(item);
+      if (linksHtml) rows.push(['Links', linksHtml]);
+      const blockItems = meetingBlockItems_(item);
+      const seenTask = {};
+      const cardIds = blockItems.map(c => c.id).filter(id => { if (seenTask[id]) return false; seenTask[id] = true; return true; });
+      const linkedCardsHtml = cardIds.length
+        ? '<div class="sched-detail-note">Linked and related task' + (cardIds.length > 1 ? 's' : '') + ':</div><div class="card-grid">'
+          + cardIds.map(id => taskCardHtml(findTask(id))).filter(Boolean).join('') + '</div>'
         : '';
       return '<div class="sched-detail-meeting">' +
         rows.map(r => `<div class="sched-detail-row"><b>${r[0]}</b><span>${r[1]}</span></div>`).join('') +

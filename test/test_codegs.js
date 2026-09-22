@@ -2329,3 +2329,15 @@ section('Multiple and recurring reminders: extraReminders[] fire, re-arm and spe
   check('re-arm keeps a weekday reminder on a workday', sandbox.tsgReArmRepeat_('2026-09-19T07:00', 'weekdays', now) === '2026-09-22T07:00' && sandbox.tsgReArmRepeat_('2026-09-25T16:00', 'weekdays', new Date('2026-09-25T16:30:00-04:00')) === '2026-09-28T16:00');
   check('a future reminder is left alone', sandbox.tsgReArmRepeat_('2027-01-01T07:00', 'weekly', now) === '2027-01-01T07:00');
 }
+
+section('Meeting block links in the calendar feed (2026-09-22)');
+{
+  const prev = calendarEventsFixture;
+  const s0 = new Date('2026-10-06T14:00:00Z');
+  calendarEventsFixture = [{ id: 'ev-links@google.com', title: 'Marketing Update', start: s0, end: new Date(s0.getTime() + 1800000), location: '', description: 'Agenda: https://docs.google.com/document/d/AGENDA1/edit?usp=drivesdk\nJoin: https://meet.google.com/abc-defg-hij' }];
+  const feed = sandbox.getCalendarHours_('2026-10-06', '2026-10-06');
+  check('the day feed carries htmlLink, meetLink and agendaDocUrl for each meeting', feed.length === 1 && /calendar\/event\?eid=/.test(feed[0].htmlLink) && feed[0].meetLink === 'https://meet.google.com/abc-defg-hij' && feed[0].agendaDocUrl === 'https://docs.google.com/document/d/AGENDA1/edit?usp=drivesdk');
+  check('tsgFindMeetLink_ finds a Zoom link and returns empty when there is none', sandbox.tsgFindMeetLink_('call https://us02web.zoom.us/j/123456?pwd=x now') === 'https://us02web.zoom.us/j/123456?pwd=x' && sandbox.tsgFindMeetLink_('nothing here') === '');
+  calendarEventsFixture = prev;
+}
+
