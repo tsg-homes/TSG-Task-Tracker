@@ -9,6 +9,7 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 
 - Backend: Apps Script project "TSG Task Tracker API" (id `1YfbOa3_KqFuTrLBZNfjEPjDk0_TX25dMDUkmGMCquQejGEsft3dCoA6L`). Source of truth for the code: GitHub `tsg-homes/task-tracker` (`Code.gs`, `dashboard_final.html`, `person.html`); `README.md` there documents every op and the judgment-queue answer shapes and wins over this file when they disagree.
 - Data lives in Drive JSON files: `Systems — Task Tracker Data — TSG.json` (`1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt`) and `Systems — Task Tracker Rulesets.json` (`1RKkNUEfh6Q0qlQXbNlME7aIfh_h8FE-R`), both in the Task Tracker folder (`1PEyP4X_k1TxOfqZeGSbHyyaM8K64GwQ-`).
+- READ THE INDEX FIRST (2026-09-22): `Systems — Task Tracker Index — TSG.json` in the Task Tracker folder (search Drive by that exact name; it is rewritten by the backend after every applied write): every open task's `id`, `title`, `status`, `group`, `owner`, `delegate`, `due`, `tags`, `needsApproval` and all its `steps` (`i` = the index `update_subitem` needs, `title` = its `expectTitle`), Done tasks as id + title, `status_values`, `priority_values`, `taskTypes`, `groups`, `roster`, `backendVersion`, `docVersion`. It is a few tens of KB. The full Data file (685 KB+) is for notes, history, docs and `meta.judgments` only; when you need one task's notes, decode the base64 in a shell and pull that task with `jq`, never the whole file into context.
 - Writes never touch those files. A JSON patch file goes into `_Inbox` (`1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi`) through the Drive connector's `create_file`; the installed 1-minute trigger (`tsgInboxTick`) applies every patch and trashes the file, success or failure. Nothing needs to hit the web app.
 - ACCESS IS DOMAIN-RESTRICTED (since 2026-09-14): the exec URL answers only a signed-in TSG Google account. `curl`, `WebFetch` and any automation get a sign-in page. NEVER curl the exec URL, never use `?api=sync`, never drive the dashboard with a browser tool. Read state with `download_file_content` on the Data/Rulesets file ids; verify writes by re-reading a minute later.
 - Every judgment (estimate, type, title/notes polish, links, progress, steps) that the script would ask Claude for is queued in `meta.judgments` because no API key is provisioned. The hourly Routine "TSG Tracker — judgment queue" answers them; the request and answer shapes are in README "Judgment queue". A session that finds pending requests on a task it is working may answer them in the same patch.
@@ -24,6 +25,7 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 ### Data ops (`target: "data"`)
 - `add_task {task}` — fields below; `skipDedup`/`skipEnrich` only when told. A near-duplicate title is merged as a step of the existing task, not added.
 - `update_task {id, fields}` — merged with `Object.assign`; cannot set `id`/`history`; `timelineEnd` also sets `dueOverride`; `assignee` is accepted and landed as `delegate`; `depends` lifts `dependsNone`.
+- NO ID? Any of `update_task`, `update_subitem`, `add_subitem`, `log_time`, `delete_task`, `reorder_subitems`, `request_steps`, `request_tidy` may carry `taskTitle` instead of `id` (backend >= 2026-09-22.1); `update_task`, `delete_task`, `log_time`, `reorder_subitems`, `request_steps`, `request_tidy` also accept `title`. Exact match only (trim, whitespace, case ignored); two open tasks with the same title, or no match, are REFUSED by name with the closest titles and the file is filed. Prefer the id from the index; use the title when you only know the title.
 - `reorder_subitems {id, by: "due"}` or `{id, order: [old indices]}` — reorder a task's steps without resending them (backend >= 2026-09-18.15); a stable sort by `timelineEnd` (undated last) or an explicit permutation; the steps are untouched and the parent logs `subitems-reordered`.
 - `update_subitem {id, index, fields, expectTitle}` — one step by 0-based `index` (`subIdx` is accepted as an alias from backend 2026-09-18.8; before that only `index` worked and a `subIdx` patch was filed FAILED-); `expectTitle` guards against a moved index.
 - `add_subitem {id, subitem}` — `{title, estHours, taskType, priority, delegate, notes}`; always enriched.
@@ -40,7 +42,7 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 
 ## Steps for any write
 
-1. Read the current state fresh (`download_file_content`). Never patch against remembered content.
+1. Read the current state fresh: the index file for ids, titles, step indices and status values; `download_file_content` on the Data file only for notes/history/judgments (decode and `jq` one task). Never patch against remembered content.
 2. Build the patch as a data structure and serialize it with a real JSON encoder (never paste notes into a hand-written JSON string: an unescaped quote filed the J49 answer as MALFORMED- on 2026-09-18); `json.loads` the exact text you will upload before uploading.
 3. For `replace_category_text`, confirm `find in current_content` in Python first.
 4. Upload with `create_file` (`textContent`, `contentMimeType: application/json`, `disableConversionToGoogleType: true`) into `_Inbox`.
@@ -76,6 +78,10 @@ Read the current figures from the Rulesets "Daily capacity & task scheduling rul
 ## Comments (added 2026-09-17)
 
 `meta.comments` is Durand's channel to you. On every tracker write-back also read the unresolved comments not authored by Claude on the items you touched (all of them in a queue-answering session): do what they ask when it is tracker work, reply with `add_comment {comment: {text, author: "Claude", replyTo: <id>, anchor: <same anchor>}}`, and resolve with `update_comment {id, fields: {resolved: true}}` only once done. Never resolve a comment you did not act on.
+
+## Handing work back to Durand (added 2026-09-22)
+
+There is now a real hand-back signal. On every write the server tags an open item delegated to Claude with the reserved tag `Needs Durand` when its status is `Blocked` or `Waiting`, or its notes contain `DRAFT — AWAITING APPROVAL` or `NEEDS DURAND`; a step's flag is mirrored onto its parent. The dashboard shows a "Needs you" chip, an alert row and lists them under the Triage filter. So: when you leave a draft, write the marker line `DRAFT — AWAITING APPROVAL` at the top of the draft in the notes; when you are blocked on a decision, set `status: "Blocked"` (or `"Waiting"`) and say in the notes exactly what you need. Never set the tag yourself (reserved); the server clears it on the write where the status moves on and the marker is gone.
 
 ## Session effort report (added 2026-09-17)
 

@@ -144,9 +144,14 @@ The web app is deployed **domain-restricted**: only signed-in TSG Workspace acco
 the full dashboard; any other TSG account gets a per-person page. Consequences for
 automation (Claude sessions, scripts):
 
-- **Reads**: fetch `Systems — Task Tracker Data — TSG.json` (`1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt`)
-  or `Systems — Task Tracker Rulesets.json` (`1RKkNUEfh6Q0qlQXbNlME7aIfh_h8FE-R`) directly
-  from Drive. `?api=data` / `?api=rulesets` are for the signed-in dashboard only.
+- **Reads**: read the INDEX first, `Systems — Task Tracker Index — TSG.json` in the tracker
+  folder (`1PEyP4X_k1TxOfqZeGSbHyyaM8K64GwQ-`; find it by name, or by id once known): every
+  open task's id, title, status, group, owner, delegate, due, tags and ALL its steps by index
+  and title, Done tasks as id + title, the value lists and the deployed backend version, well
+  under 50 KB. Fetch the full `Systems — Task Tracker Data — TSG.json`
+  (`1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt`) only when notes, history, docs or judgments are
+  needed, and `Systems — Task Tracker Rulesets.json` (`1RKkNUEfh6Q0qlQXbNlME7aIfh_h8FE-R`)
+  for rulesets. `?api=data` / `?api=rulesets` are for the signed-in dashboard only.
 - **Writes**: unchanged — drop a patch file into `_Inbox` (`1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi`).
   A one-minute time-driven trigger (`tsgInboxTick`) applies it; nothing needs to poke
   `?api=sync` any more. Verify by re-reading the Drive file after a minute.
@@ -167,6 +172,35 @@ workdays, and logs `due` with source `Dependency`. A hand-set date (`dueOverride
 task is tagged `At Risk` with `realisticEnd` = the date it would need, cleared once it fits. Only numeric task ids in `depends` (comma list)
 take part; prose in that field is ignored, so a patch that wants a real dependency must write the id
 (or `dependsOnTitle` in an enrich answer, which the server resolves to the id).
+
+## External sessions read the index, patch by title (2026-09-22)
+
+The data file passed 685 KB, which the Drive connector returns base64-encoded: far past what
+a session can hold, and in-page fetches of the Drive download URL are blocked, so a session
+that needed a task id had no way to get one. Two things ship for that; a third was weighed
+and rejected.
+
+- **Index file** (`tsgWriteIndex_`, after every applied data write in `processInbox_`): the
+  file named above, rebuilt from the document just written. Downsides: one extra Drive write
+  per applied patch (about a second of trigger time); it lags the data file by exactly that
+  write, so a session that just uploaded a patch sees the pre-patch index until the trigger
+  runs (same as the data file today); and it carries no notes or history, so a session that
+  must read the current note text still needs the big file (read one task's slice with `jq`
+  from the base64 decode rather than the whole thing).
+- **Task reference by title** (`tsgResolveTaskRef_`, at the top of `applyDataPatch_`): any of
+  `update_task`, `update_subitem`, `add_subitem`, `log_time`, `delete_task`, `reorder_subitems`,
+  `request_steps`, `request_tidy` may carry `taskTitle` instead of `id`; `update_task`,
+  `delete_task`, `log_time`, `reorder_subitems`, `request_steps` and `request_tidy` also take
+  `title`. The match is exact after trimming, collapsing whitespace and ignoring case (so the
+  server's title capitalisation never matters); several matches use the one open task; any
+  other case is refused by name with the closest titles, and the file is filed FAILED- /
+  PARTIAL- as usual. Downsides: titles move (the enricher polishes them, Durand edits them), so
+  a remembered title can stop matching and the write is refused, never fuzzy-applied; two open
+  tasks with one title cannot be addressed this way at all; and the resolved id is only known
+  after the fact (the history line carries it, the file name does not).
+- **Rejected: trimming history harder.** History is already capped and archived (2026-09-18);
+  the hot file's bulk is notes and pending judgments, and no trim gets 685 KB under a session's
+  budget. It would lose audit trail for no read benefit.
 
 ## Judgment queue (2026-09-16): Claude answers without an API key
 

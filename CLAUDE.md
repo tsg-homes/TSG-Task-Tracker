@@ -1150,3 +1150,53 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   by the egress policy; Durand asked for it on 2026-09-22 and, after the accounting (one paste per
   ~5 h of deploys vs a 15-min local setup with unverified connectors), chose to stay in the one
   cloud session. Pinned Claude task: all 25 steps Done after this deploy.
+
+## External read fix, hand-back, pinned-task batch 2 (2026-09-22, backend 2026-09-22.1, dashboard UI 2026-09-22.1)
+
+- TEAM VIEWS RULE CHANGED (Durand 2026-09-22: "they're no longer off limits if you're explicitly
+  instructed to do so and it is confirmed"): `person.html` and the person RPC surface may be edited
+  when Durand explicitly instructs it in that exchange and confirms; the 9/17 standing ban is
+  lifted only for such instructed work. Not edited in this batch (the preview fix lives on the
+  dashboard side).
+- CLIENT SCORING RECORD: no tracker task existed for the FUB client-scoring v4 rewrite (92 tasks
+  searched by title, notes, docs, steps) when its go-live status arrived on 2026-09-22, so it was
+  CREATED as the Done record, id 321 "FUB Client Scoring V4 — Formula Rewrite and Go-Live" (Claude,
+  FUB / CRM, 4 links, timeLog 300 min / 60 turns, source "Claude session (Client Scoring)"). Tasks
+  319 and 320 (filed by that session at 11:55Z) landed as their own tasks, not merged.
+- INDEX FILE (`tsgIndexDoc_` / `tsgWriteIndex_` / `tsgIndexFile_`): `Systems — Task Tracker Index —
+  TSG.json` in the tracker folder, rewritten after every applied data write in `processInbox_`
+  (failure logged, never fails the write); found by name, id cached in script property
+  `TSG_INDEX_FILE_ID`. Open tasks with ids/fields/all steps by index, Done tasks as id + title,
+  value lists, versions. The file is created by the first write after deploy; record its id here
+  once seen. TASK REFERENCE BY TITLE (`tsgResolveTaskRef_`, top of `applyDataPatch_`, so bulk
+  sub-ops get it): `taskTitle` on any referencing op, `title` on the ops that have no title field of
+  their own; exact match after trim/whitespace/case; several matches prefer the one open task; else
+  refused by name with the closest titles (`TSG_TITLE_REF_OPS`, `TSG_TITLE_KEY_OPS`). README section
+  "External sessions read the index, patch by title" carries the downsides; the skill says read the
+  index first and decode + `jq` one task from the big file.
+- NEEDS DURAND (`tsgFlagNeedsDurand_` in `tsgAutoScheduleDoc_`, reserved tag `Needs Durand`): an
+  open item delegated to Claude that is Blocked/Waiting or whose notes match
+  `DRAFT — AWAITING APPROVAL` / `NEEDS DURAND` (`TSG_NEEDS_DURAND_RE`) is tagged, a step's flag
+  mirrored onto its parent, cleared when the condition is gone; history `needs-durand` /
+  `subitem-needs-durand` source `rollup`. Dashboard: "Needs you" chip (`needsDurandChipHtml`), warn
+  alert row, in the Triage filter. Skill section "Handing work back to Durand".
+- REMINDER EMAILS CRITICAL ONLY (Durand: "I only want emails on critical tasks"):
+  `tsgReminderTick_` mails only when `tsgReminderIsCritical_(r)` (item or parent priority Critical)
+  unless `meta.reminderEmails === 'all'`; every reminder is still stamped sent so the page toast /
+  notification fires. Settings > General "Reminder emails" select (`setReminderEmails`, `set_meta`).
+  The two delivery tests set `meta.reminderEmails = 'all'`.
+- DASHBOARD: Today's Pinned block is a `.today-item.type-pinned.schedule-clickable` row (row click
+  `openPinnedDetail()` = pinned tasks as cards, lines open their card); the save lock is a
+  whole-page overlay (`#saveLockBar` inset 0, grey + centered `.save-lock-toast` with spinner, label
+  and status pill: `setPageLock_(on, label, sticky, status)` with saving / queued / retrying /
+  reloading); a free-form New Task (title derived from the note) shows `freeFormSummary_` in a
+  confirm before creating (Cancel returns to the form); Views buttons: PLAIN click opens
+  `?person=<Name>` (what they see), SHIFT-click the board pop-up, and `personTaskIds_` now applies
+  the review gate (Triage-held tasks/steps excluded); task card `#taskModal .modal-card` is a flex
+  column where only `#modalSubitemsWrap` scrolls (meta capped at 45vh); `matchesFilters` is the
+  filter function name (tests).
+- DATE-PINNED FIXTURE: the inbox test's `fakePatchFile` created files dated 2026-09-15, which
+  crossed the 7-day keep window on 2026-09-22 and made "not trashed while younger" fail; it is
+  now `Date.now() - 1 day`.
+- Open step 25 on the pinned Claude task (project audit) ran as a read-only agent; its findings
+  land on the step, fixes are a follow-up decided with Durand.
