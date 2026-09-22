@@ -315,6 +315,11 @@ is reused as the General mirror. `tsgMirrorInstructionsNow()` (editor, owner onl
 first-fires the mirror; the rulesets op `mirror_instructions` does the same through the inbox.
 Settings > Rulesets / Threads show each set's "Mirror Doc" link.
 
+Only the latest instructions live in the hot file (Durand 2026-09-22: "history logged separately,
+same as notes"): after every rulesets write `tsgArchiveRulesetsHistory_` keeps the newest 3
+changelog lines per category and per thread and moves the rest to
+`History/rulesets-history-<ISO>.json` (counts in rulesets `meta.historyArchive`).
+
 Rulesets ops added: `set_category` now creates a missing category, `remove_category {category}`,
 `set_thread_code {name, code}`, `mirror_instructions {}`.
 

@@ -162,6 +162,9 @@ function processInbox_() {
       // before the rulesets write so meta.mirrorDocs lands in the same save. Never fails the write.
       try { tsgMirrorInstructions_(rulesetsDoc); }
       catch (mirrorErr) { Logger.log('[mirror] instruction mirror skipped: ' + mirrorErr); }
+      // Only the latest instructions stay in the hot file; older changelog lines move to History/.
+      try { tsgArchiveRulesetsHistory_(rulesetsDoc, new Date().toISOString()); }
+      catch (rsArchErr) { Logger.log('[history] rulesets archive skipped, nothing pruned: ' + rsArchErr.message); }
       const rsJson = JSON.stringify(rulesetsDoc);
       rulesetsFile.setContent(rsJson);
       try { backupTrackerFile_('rulesets', rsJson); }
@@ -5742,6 +5745,42 @@ function tsgHistoryFolder_() {
   var parent = DriveApp.getFolderById(TRACKER_FOLDER_ID);
   var it = parent.getFoldersByName(TSG_HISTORY_FOLDER);
   return it.hasNext() ? it.next() : parent.createFolder(TSG_HISTORY_FOLDER);
+}
+/**
+ * RULESETS HISTORY (Durand, 2026-09-22: "only the latest instructions should be in the tracker,
+ * history logged separately, same as notes"). The hot Rulesets file keeps each set's current
+ * text plus the newest TSG_RULESETS_HISTORY_KEEP changelog lines per target (so "Last pushed"
+ * and the latest summaries still show); everything older moves to
+ * History/rulesets-history-<ISO>.json on the same write. Writes the archive FIRST; a throw
+ * prunes nothing. Counts in rulesets meta.historyArchive.
+ */
+var TSG_RULESETS_HISTORY_KEEP = 3;
+function tsgArchiveRulesetsHistory_(rs, now) {
+  if (!rs) return 0;
+  var K = TSG_RULESETS_HISTORY_KEEP, pruned = { history: [], threads: {} }, lines = 0;
+  var top = Array.isArray(rs.history) ? rs.history : [];
+  var keepTop = [], byTarget = {};
+  // Top-level changelog: newest K per target (category), oldest lines archived.
+  for (var i = top.length - 1; i >= 0; i--) {
+    var h = top[i], tg = (h && h.target) || '';
+    byTarget[tg] = (byTarget[tg] || 0) + 1;
+    if (byTarget[tg] <= K) keepTop.unshift(h); else pruned.history.unshift(h);
+  }
+  var threadKeep = {};
+  Object.keys(rs.threads || {}).forEach(function(name) {
+    var th = rs.threads[name]; if (!th || !Array.isArray(th.history)) return;
+    if (th.history.length > K) { pruned.threads[name] = th.history.slice(0, th.history.length - K); threadKeep[name] = th.history.slice(-K); }
+  });
+  lines = pruned.history.length + Object.keys(pruned.threads).reduce(function(a, n) { return a + pruned.threads[n].length; }, 0);
+  if (!lines) return 0;
+  var payload = { archivedAt: now, kind: 'rulesets-history', docVersion: rs.meta && rs.meta.docVersion, history: pruned.history, threads: pruned.threads };
+  var file = tsgHistoryFolder_().createFile('rulesets-history-' + String(now).replace(/[:.]/g, '-') + '.json', JSON.stringify(payload), 'application/json');
+  rs.history = keepTop;
+  Object.keys(threadKeep).forEach(function(name) { rs.threads[name].history = threadKeep[name]; });
+  rs.meta = rs.meta || {};
+  var prev = rs.meta.historyArchive || {};
+  rs.meta.historyArchive = { lastAt: now, files: (prev.files || 0) + 1, lines: (prev.lines || 0) + lines, lastFile: file && file.getName ? file.getName() : undefined };
+  return lines;
 }
 /** Prunes over-cap histories into one dated archive file. Writes the archive FIRST; a throw prunes nothing. */
 function tsgArchiveHistory_(doc, now) {

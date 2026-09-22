@@ -2396,3 +2396,20 @@ section('Instruction layers and the mirror Docs (2026-09-22)');
   mirrorDocStore = {}; attachFolder = null;
 }
 
+section('Rulesets history stays out of the hot file (2026-09-22)');
+{
+  const rsArchives = [];
+  const rsFolderStub = { getFoldersByName: () => ({ hasNext: () => true, next: () => ({ createFile: (name, content, mime) => { rsArchives.push({ name, content, mime }); return { getName: () => name }; } }) }), createFolder: () => { throw new Error('not expected'); } };
+  const savedRsFolder = sandbox.DriveApp.getFolderById;
+  sandbox.DriveApp.getFolderById = () => rsFolderStub;
+  const mk = (n, tg) => Array.from({ length: n }, (_, i) => ({ ts: '2026-09-0' + ((i % 9) + 1) + 'T00:00:00Z', target: tg, action: 'update', summary: tg + ' line ' + i }));
+  const rs = { meta: { docVersion: 9 }, history: mk(6, 'General').concat(mk(2, 'Code')), current: { General: { content: 'g' }, Code: { content: 'c' } },
+    threads: { A: { instructions: 'a', memories: [], history: mk(7, 'A') }, B: { instructions: 'b', memories: [], history: mk(2, 'B') } } };
+  const n = sandbox.tsgArchiveRulesetsHistory_(rs, '2026-09-22T20:00:00.000Z');
+  check('older changelog lines are archived, the newest 3 per target and per thread stay', n === 3 + 4 && rs.history.filter(h => h.target === 'General').length === 3 && rs.history.filter(h => h.target === 'Code').length === 2 && rs.threads.A.history.length === 3 && rs.threads.B.history.length === 2 && rs.threads.A.history[2].summary === 'A line 6');
+  const f = rsArchives[rsArchives.length - 1];
+  check('the archive file is written to History/ with the pruned lines', rsArchives.length === 1 && f.name === 'rulesets-history-2026-09-22T20-00-00-000Z.json' && JSON.parse(f.content).threads.A.length === 4 && JSON.parse(f.content).history.length === 3 && rs.meta.historyArchive.lines === 7);
+  check('a second pass with nothing over the cap writes nothing', sandbox.tsgArchiveRulesetsHistory_(rs, '2026-09-22T20:01:00.000Z') === 0 && rsArchives.length === 1);
+  sandbox.DriveApp.getFolderById = savedRsFolder;
+}
+
