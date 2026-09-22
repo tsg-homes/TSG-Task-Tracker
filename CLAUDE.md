@@ -1289,3 +1289,6 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   file it; groups on 322/323 were set by direct `update_task` in the patch. Offline replay of a patch
   through the test sandbox (`replay19.js` / `replay20.js` in the session scratchpad, fed the decoded
   live data file) is the pre-upload check that caught both gotchas.
+- Deployed 2026-09-22 12:15 EDT: web app @96 = backend 2026-09-22.4 (Unsorted placeholder is not a
+  hand-set group) / UI 2026-09-22.2 = commit b7c9505, `main` fast-forwarded. Durand's go: "deploy".
+
