@@ -1261,3 +1261,7 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   write stashed 201 already-truncated notes lines as bogus `noteVersions` into
   `History/history-2026-09-22T13-10-23-897Z.json`; the threshold is now CHARS + 1. Harmless in the
   archive; nothing was lost. All 32 steps on the pinned Claude task are Done.
+- Deployed 2026-09-22 09:2x EDT: web app @95 = backend 2026-09-22.3 (truncation threshold CHARS + 1)
+  / UI 2026-09-22.2 = commit 1d731c6, `main` fast-forwarded. SKILL RULE ADDED (Durand: "add the bulk
+  rule to the skill"): one `bulk` file per session write so per-step enrich requests coalesce; split
+  only past ~30 KB and then by parent task.
