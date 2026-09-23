@@ -561,8 +561,10 @@
   .vis-chip.off { background: var(--status-warn-bg); color: var(--status-warn); border-color: transparent; }
   .vis-chip.static { cursor: default; }
   .vis-line { margin-top: 4px; }
-  .thread-id { margin-right: 6px; }
-  .thread-id.pending { opacity: 0.6; font-style: italic; }
+  .workstream-id { margin-right: 6px; }
+  .workstream-id.pending { opacity: 0.6; font-style: italic; }
+  .workstream-links { font-size: 12.5px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .workstream-session-id { font-size: 11px; color: var(--text-muted); margin-left: 4px; }
   .pending-approve { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }
   .pending-approve .btn { padding: 2px 8px; font-size: 11px; }
   .feedback-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; margin: 2px 0 4px; }
@@ -827,7 +829,7 @@
   .hist-desc { color: var(--text-primary); }
   .history-empty { color: var(--text-muted); font-size: 12.5px; }
 
-  /* Settings modal (Rulesets + Threads) */
+  /* Settings modal (Rulesets + Workstreams) */
 
   .settings-tabs {
     display: flex; gap: 4px; border-bottom: 1px solid var(--gridline); margin-bottom: 16px;
@@ -843,7 +845,7 @@
   .settings-tab:hover { color: var(--text-primary); }
   .settings-tab.active { color: var(--brand); border-bottom-color: var(--brand); }
   .settings-body { max-height: 62vh; overflow-y: auto; padding-right: 4px; }
-  .ruleset-block, .thread-block {
+  .ruleset-block, .workstream-block {
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
     padding: 14px 16px; margin-bottom: 14px;
   }
@@ -856,7 +858,7 @@
     margin-bottom: 8px; cursor: text; min-height: 20px;
   }
   .ruleset-content:focus { outline: 2px solid var(--brand); outline-offset: -1px; }
-  .thread-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 10px 0 6px; }
+  .workstream-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 10px 0 6px; }
   .memory-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
   .memory-chip {
     display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
@@ -1237,7 +1239,7 @@
   .today-meeting-meta { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
   .today-meeting-lead { padding: 1px 6px; border-radius: 999px; background: var(--surface-2); }
   .ruleset-mirror { font-size: 11.5px; margin-left: 8px; color: var(--brand); text-decoration: none; }
-  .thread-code-toggle { font-size: 11.5px; color: var(--text-muted); margin: 0 8px; display: inline-flex; align-items: center; gap: 4px; }
+  .workstream-code-toggle { font-size: 11.5px; color: var(--text-muted); margin: 0 8px; display: inline-flex; align-items: center; gap: 4px; }
   .today-meeting-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
   .today-meeting-links a { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); text-decoration: none; }
   .today-meeting-links a:hover { border-color: var(--brand); color: var(--brand); }
@@ -1353,7 +1355,7 @@
       <span class="sub">Internal Use Only</span>
       <button class="btn small" id="btnCommentMode" type="button" onclick="toggleCommentMode()" title="Comment mode: click anything on the board to leave a note on it (Esc ends it)">&#128172; Comment</button>
       <button class="btn small" id="btnComments" type="button" onclick="openCommentsPanel()" title="All comments">Comments <span class="count-badge" id="commentCount"></span></button>
-      <button class="theme-toggle" id="btnSettings" type="button" aria-label="Settings" title="Rulesets &amp; Threads" onclick="openSettings()">&#9881;&#65039;</button>
+      <button class="theme-toggle" id="btnSettings" type="button" aria-label="Settings" title="Rulesets &amp; Workstreams" onclick="openSettings()">&#9881;&#65039;</button>
       <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle dark mode">&#127769;</button>
     </div>
   </header>
@@ -1509,7 +1511,7 @@
     </div>
     <div class="settings-tabs" id="settingsTabs">
       <button class="settings-tab active" data-tab="rulesets" onclick="setSettingsTab('rulesets')">Rulesets</button>
-      <button class="settings-tab" data-tab="threads" onclick="setSettingsTab('threads')">Threads</button>
+      <button class="settings-tab" data-tab="workstreams" onclick="setSettingsTab('workstreams')">Workstreams</button>
       <button class="settings-tab" data-tab="team" onclick="setSettingsTab('team')">Team</button>
       <button class="settings-tab" data-tab="general" onclick="setSettingsTab('general')">General</button>
       <button class="settings-tab" data-tab="capacity" onclick="setSettingsTab('capacity')">Capacity</button>
@@ -1609,7 +1611,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-23.2';
+  const UI_VERSION = '2026-09-23.3';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -8070,7 +8072,7 @@
     await createTask(fields);
   }
 
-  // ---- Settings: Rulesets & Threads ----
+  // ---- Settings: Rulesets & Workstreams ----
   let RULESETS = null;
   let settingsTab = 'rulesets';
   let rulesetsLoaded = false;
@@ -8109,14 +8111,16 @@
       const res = await apiFetch('api=rulesets');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       RULESETS = await res.json();
-      if (!RULESETS.threads) RULESETS.threads = {};
+      // Threads became workstreams (2026-09-23); an un-migrated copy still reads.
+      if (!RULESETS.workstreams) RULESETS.workstreams = RULESETS.threads || {};
+      delete RULESETS.threads;
       if (!RULESETS.current) RULESETS.current = {};
       if (!Array.isArray(RULESETS.history)) RULESETS.history = [];
       RULESETS_DOC_VERSION = (RULESETS.meta && typeof RULESETS.meta.docVersion === 'number')
         ? RULESETS.meta.docVersion : null;
       rulesetsLoaded = true;
     } catch (err) {
-      RULESETS = RULESETS || { meta: {}, current: {}, history: [], threads: {} };
+      RULESETS = RULESETS || { meta: {}, current: {}, history: [], workstreams: {} };
       document.getElementById('settingsBody').innerHTML =
         '<div class="history-empty">Could not load rulesets: ' + escapeHtml(err.message || String(err)) + '</div>';
     }
@@ -8205,7 +8209,7 @@
     if (settingsTab === 'team') { body.innerHTML = renderTeamTab(); return; }
     if (settingsTab === 'general') { body.innerHTML = renderGeneralTab(); return; }
     if (settingsTab === 'capacity') { body.innerHTML = renderCapacityTab(); return; }
-    body.innerHTML = settingsTab === 'rulesets' ? renderRulesetsTab() : renderThreadsTab();
+    body.innerHTML = settingsTab === 'rulesets' ? renderRulesetsTab() : renderWorkstreamsTab();
   }
   // ---- Settings: General (2026-09-17, per Durand "why is all of that on Team"): home base,
   // reminder notifications, the Claude Code repo and the inbox trace, each its own thing ----
@@ -8433,7 +8437,7 @@
     }).join('');
   }
   // INSTRUCTION LAYERS (2026-09-22): General applies everywhere, Code sits on top for Claude
-  // Code sessions, each thread's set sits on top of those. The server mirrors every set to a
+  // Code sessions, each workstream's set sits on top of those. The server mirrors every set to a
   // Google Doc (meta.mirrorDocs) that a session reads in one call; the link is shown here.
   function mirrorDocLink_(key) {
     const rec = (RULESETS.meta && RULESETS.meta.mirrorDocs) ? RULESETS.meta.mirrorDocs[key] : null;
@@ -8448,12 +8452,12 @@
   function renderRulesetsTab() {
     const cur = RULESETS.current || {};
     const cats = Object.keys(cur).sort(function(a, b) { const o = { General: 0, Code: 1 }; return ((o[a] == null ? 9 : o[a]) - (o[b] == null ? 9 : o[b])) || a.localeCompare(b); });
-    let html = '<div class="history-empty">Layers: General everywhere &rarr; Code for Claude Code sessions &rarr; each thread on top. Each set is mirrored to a Google Doc on every save; sessions read the Doc.</div>' + cats.map(function(cat) {
+    let html = '<div class="history-empty">Layers: General everywhere &rarr; Code for Claude Code sessions &rarr; each workstream on top. Each set is mirrored to a Google Doc on every save; sessions read the Doc.</div>' + cats.map(function(cat) {
       const r = cur[cat];
       const changelog = (RULESETS.history || []).filter(function(h) { return h.target === cat; }).slice().reverse();
       return '<div class="ruleset-block">' +
         '<div class="ruleset-block-head"><h3>' + escapeHtml(cat) + '</h3><span class="ruleset-pushed">Last pushed ' + formatDateTime(r.pushed) + '</span> ' + mirrorDocLink_(cat) + '</div>' +
-        (layerNote_(cat) ? '<div class="thread-label">' + layerNote_(cat) + '</div>' : '') +
+        (layerNote_(cat) ? '<div class="workstream-label">' + layerNote_(cat) + '</div>' : '') +
         '<div class="ruleset-content" contenteditable="true" onblur="rulesetContentEdit(\'' + jsAttr(cat) + '\', this)">' + escapeHtml(r.content || '') + '</div>' +
         '<div class="ruleset-changelog-toggle" onclick="this.nextElementSibling.classList.toggle(\'open\')">Changelog (' + changelog.length + ') &#9662;</div>' +
         '<div class="history-list ruleset-changelog">' + changelogHtml(changelog) + '</div>' +
@@ -8483,57 +8487,99 @@
     scheduleRulesetsSave();
     renderSettings();
   }
-  function renderThreadsTab() {
-    const threads = RULESETS.threads || {};
-    const names = Object.keys(threads);
+  // Workstreams (renamed from threads 2026-09-23): each card carries its id, mirror Doc, the
+  // Claude Project and repo links (set_workstream_links) and the sessions that worked on it
+  // (record_session, newest first, ids only).
+  const WS_SESSIONS_SHOWN = 10;
+  function workstreamLinksHtml_(name, ws) {
+    const l = ws.links || {};
+    const parts = [];
+    if (l.projectUrl) parts.push('<a href="' + escapeHtml(l.projectUrl) + '" target="_blank" rel="noopener">Claude Project</a>');
+    if (l.repo) parts.push('<a href="https://github.com/' + escapeHtml(l.repo) + '" target="_blank" rel="noopener">' + escapeHtml(l.repo) + '</a>');
+    if (l.notes) parts.push('<span>' + escapeHtml(l.notes) + '</span>');
+    return '<div class="workstream-label">Links</div><div class="workstream-links">' + (parts.length ? parts.join(' &middot; ') : '<span class="ruleset-pushed">none recorded</span>') +
+      (ws.id ? ' <button class="btn small" onclick="editWorkstreamLinks(\'' + jsAttr(name) + '\')" title="Set the Claude Project URL, repo and a note">Edit links</button>' : '') + '</div>';
+  }
+  function workstreamSessionsHtml_(ws) {
+    const ss = Array.isArray(ws.sessions) ? ws.sessions : [];
+    if (!ss.length) return '<div class="workstream-label">Sessions</div><div class="ruleset-pushed">none recorded yet (sessions push record_session at start)</div>';
+    const rows = ss.slice(0, WS_SESSIONS_SHOWN).map(function(x) {
+      return '<div class="history-entry"><span class="hist-time">' + escapeHtml(x.lastSeen ? formatDateTime(x.lastSeen) : '') + '</span><span class="hist-desc"><b>' +
+        escapeHtml(x.surface || '?') + '</b> — ' + escapeHtml(x.title || '(untitled)') + ' <code class="workstream-session-id">' + escapeHtml(x.sessionId || '') + '</code></span></div>';
+    }).join('');
+    return '<div class="workstream-label">Sessions (' + ss.length + (ss.length > WS_SESSIONS_SHOWN ? ', latest ' + WS_SESSIONS_SHOWN + ' shown' : '') + ')</div><div class="history-list workstream-sessions">' + rows + '</div>';
+  }
+  function renderWorkstreamsTab() {
+    const wss = RULESETS.workstreams || {};
+    const names = Object.keys(wss);
     let html = '';
     if (!names.length) {
-      html += '<div class="history-empty">No threads yet.</div>';
+      html += '<div class="history-empty">No workstreams yet.</div>';
     } else {
       html += names.map(function(name) {
-        const th = threads[name];
-        const changelog = (th.history || []).slice().reverse();
-        const memories = th.memories || [];
-        // Thread ids (2026-09-23): server-assigned on creation, never changed; sessions address the
-        // thread by id. A thread added here shows "id pending" until the save comes back.
-        const idBadge = th.id ? '<span class="task-id thread-id" title="Thread id: sessions address this thread by it; it never changes">' + escapeHtml(th.id) + '</span>' : '<span class="task-id thread-id pending" title="The tracker assigns the id when this save lands">id pending</span>';
-        return '<div class="thread-block">' +
-          '<div class="ruleset-block-head"><h3>' + idBadge + escapeHtml(name) + '</h3>' + mirrorDocLink_('thread:' + (th.id || name)) +
-          ' <label class="thread-code-toggle" title="A code thread\'s Doc carries General + Code + this thread"><input type="checkbox" ' + (th.code ? 'checked' : '') + ' onchange="threadCodeToggle(\'' + jsAttr(name) + '\', this.checked)"> Code thread</label>' +
-          (th.id ? '<button class="btn small" onclick="renameThread(\'' + jsAttr(name) + '\')" title="Rename the thread; its id and Doc stay the same">Rename</button>' : '') +
-          '<button class="icon-btn danger" onclick="removeThread(\'' + jsAttr(name) + '\')" title="Remove thread">&#10005;</button></div>' +
-          '<div class="thread-label">Instructions (on top of General' + (th.code ? ' + Code' : '') + ')</div>' +
-          '<div class="ruleset-content" contenteditable="true" onblur="threadFieldEdit(\'' + jsAttr(name) + '\', this)">' + escapeHtml(th.instructions || '') + '</div>' +
-          '<div class="thread-label">Critical memories</div>' +
+        const ws = wss[name];
+        const changelog = (ws.history || []).slice().reverse();
+        const memories = ws.memories || [];
+        // Workstream ids (2026-09-23): server-assigned on creation, never changed; sessions address
+        // the workstream by id. One added here shows "id pending" until the save comes back.
+        const idBadge = ws.id ? '<span class="task-id workstream-id" title="Workstream id: sessions address this workstream by it; it never changes">' + escapeHtml(ws.id) + '</span>' : '<span class="task-id workstream-id pending" title="The tracker assigns the id when this save lands">id pending</span>';
+        return '<div class="workstream-block">' +
+          '<div class="ruleset-block-head"><h3>' + idBadge + escapeHtml(name) + '</h3>' + mirrorDocLink_('workstream:' + (ws.id || name)) +
+          ' <label class="workstream-code-toggle" title="A code workstream\'s Doc carries General + Code + this workstream"><input type="checkbox" ' + (ws.code ? 'checked' : '') + ' onchange="workstreamCodeToggle(\'' + jsAttr(name) + '\', this.checked)"> Code workstream</label>' +
+          (ws.id ? '<button class="btn small" onclick="renameWorkstream(\'' + jsAttr(name) + '\')" title="Rename the workstream; its id and Doc stay the same">Rename</button>' : '') +
+          '<button class="icon-btn danger" onclick="removeWorkstream(\'' + jsAttr(name) + '\')" title="Remove workstream">&#10005;</button></div>' +
+          '<div class="workstream-label">Instructions (on top of General' + (ws.code ? ' + Code' : '') + ')</div>' +
+          '<div class="ruleset-content" contenteditable="true" onblur="workstreamFieldEdit(\'' + jsAttr(name) + '\', this)">' + escapeHtml(ws.instructions || '') + '</div>' +
+          '<div class="workstream-label">Critical memories</div>' +
           '<div class="memory-list">' + memories.map(function(m, i) {
-            return '<div class="memory-chip"><span class="modal-edit" contenteditable="true" onblur="threadMemoryEdit(\'' + jsAttr(name) + '\', ' + i + ', this)">' + escapeHtml(m) + '</span><span class="rm" onclick="removeThreadMemory(\'' + jsAttr(name) + '\', ' + i + ')" title="Remove">&#10005;</span></div>';
+            return '<div class="memory-chip"><span class="modal-edit" contenteditable="true" onblur="workstreamMemoryEdit(\'' + jsAttr(name) + '\', ' + i + ', this)">' + escapeHtml(m) + '</span><span class="rm" onclick="removeWorkstreamMemory(\'' + jsAttr(name) + '\', ' + i + ')" title="Remove">&#10005;</span></div>';
           }).join('') + '</div>' +
-          '<button class="btn small" onclick="addThreadMemory(\'' + jsAttr(name) + '\')">+ Memory</button>' +
+          '<button class="btn small" onclick="addWorkstreamMemory(\'' + jsAttr(name) + '\')">+ Memory</button>' +
+          workstreamLinksHtml_(name, ws) +
+          workstreamSessionsHtml_(ws) +
           '<div class="ruleset-changelog-toggle" onclick="this.nextElementSibling.classList.toggle(\'open\')">Changelog (' + changelog.length + ') &#9662;</div>' +
           '<div class="history-list ruleset-changelog">' + changelogHtml(changelog) + '</div>' +
           '</div>';
       }).join('');
     }
-    html += '<button class="btn" onclick="addThread()">+ Add thread</button>';
+    html += '<button class="btn" onclick="addWorkstream()">+ Add workstream</button>';
     return html;
   }
-  function touchThreadHistory(name, action, summary) {
-    const th = RULESETS.threads[name];
+  // Links go straight to the server as one op (set_workstream_links), like a rename.
+  async function editWorkstreamLinks(name) {
+    const ws = RULESETS.workstreams[name];
+    if (!ws || !ws.id) { alert('This workstream has no id yet; wait for the save to land.'); return; }
+    const l = ws.links || {};
+    const projectUrl = prompt('Claude Project URL for ' + ws.id + ' "' + name + '" (https://claude.ai/project/...; blank clears):', l.projectUrl || '');
+    if (projectUrl == null) return;
+    const repo = prompt('Repo (owner/repo; blank clears):', l.repo || '');
+    if (repo == null) return;
+    const notes = prompt('Note (optional; blank clears):', l.notes || '');
+    if (notes == null) return;
+    try {
+      await postRulesetsOp_({ op: 'set_workstream_links', id: ws.id, projectUrl: projectUrl.trim(), repo: repo.trim(), notes: notes.trim() });
+      setSyncStatus('saved', 'Links saved for ' + ws.id);
+    } catch (err) {
+      alert('Could not save links: ' + (err.message || err));
+    }
+  }
+  function touchWorkstreamHistory(name, action, summary) {
+    const th = RULESETS.workstreams[name];
     if (!Array.isArray(th.history)) th.history = [];
     th.history.push({ ts: new Date().toISOString(), action: action, summary: summary });
   }
-  function addThread() {
-    const name = prompt('Thread name:');
+  function addWorkstream() {
+    const name = prompt('Workstream name (Title Case):');
     if (!name || !name.trim()) return;
-    if (RULESETS.threads[name]) { alert('That thread already exists.'); return; }
+    if (RULESETS.workstreams[name]) { alert('That workstream already exists.'); return; }
     // No id here: the server assigns it on this save (never the client), shown as "id pending".
-    RULESETS.threads[name] = { instructions: '', memories: [], history: [] };
-    touchThreadHistory(name, 'baseline', 'Thread added from Task Tracker Settings.');
+    RULESETS.workstreams[name] = { instructions: '', memories: [], history: [] };
+    touchWorkstreamHistory(name, 'baseline', 'Workstream added from Task Tracker Settings.');
     scheduleRulesetsSave();
     renderSettings();
   }
   // One rulesets op straight to the server (2026-09-23), then a reload so the panel shows the
-  // server's copy. Used for rename_thread: a renamed key is never saved through replace_all.
+  // server's copy. Used for rename_workstream and set_workstream_links: a renamed key is never saved through replace_all.
   async function postRulesetsOp_(op) {
     const res = await apiFetch('target=rulesets', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(op) });
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -8545,68 +8591,68 @@
     renderSettings();
     return resp;
   }
-  async function renameThread(name) {
-    const th = RULESETS.threads[name];
-    if (!th || !th.id) { alert('This thread has no id yet; wait for the save to land, then rename.'); return; }
+  async function renameWorkstream(name) {
+    const th = RULESETS.workstreams[name];
+    if (!th || !th.id) { alert('This workstream has no id yet; wait for the save to land, then rename.'); return; }
     const newName = prompt('New name for ' + th.id + ' "' + name + '":', name);
     if (newName == null) return;
     const clean = newName.trim();
     if (!clean || clean === name) return;
-    if (RULESETS.threads[clean]) { alert('A thread named "' + clean + '" already exists.'); return; }
+    if (RULESETS.workstreams[clean]) { alert('A workstream named "' + clean + '" already exists.'); return; }
     try {
-      await postRulesetsOp_({ op: 'rename_thread', id: th.id, newName: clean });
-      setSyncStatus('saved', 'Thread ' + th.id + ' renamed to "' + clean + '"');
+      await postRulesetsOp_({ op: 'rename_workstream', id: th.id, newName: clean });
+      setSyncStatus('saved', 'Workstream ' + th.id + ' renamed to "' + clean + '"');
     } catch (err) {
       alert('Could not rename: ' + (err.message || err));
     }
   }
-  function removeThread(name) {
-    if (!confirm('Remove thread "' + name + '"? This deletes its instructions, memories, and changelog.')) return;
-    delete RULESETS.threads[name];
+  function removeWorkstream(name) {
+    if (!confirm('Remove workstream "' + name + '"? This deletes its instructions, memories, and changelog.')) return;
+    delete RULESETS.workstreams[name];
     scheduleRulesetsSave();
     renderSettings();
   }
-  function threadCodeToggle(name, on) {
-    const th = RULESETS.threads[name];
+  function workstreamCodeToggle(name, on) {
+    const th = RULESETS.workstreams[name];
     if (!th || !!th.code === !!on) return;
     th.code = !!on;
-    touchThreadHistory(name, 'update', on ? 'Marked as a code thread (Code layer applies).' : 'No longer a code thread.');
+    touchWorkstreamHistory(name, 'update', on ? 'Marked as a code workstream (Code layer applies).' : 'No longer a code workstream.');
     scheduleRulesetsSave();
     renderSettings();
   }
-  function threadFieldEdit(name, el) {
-    const th = RULESETS.threads[name];
+  function workstreamFieldEdit(name, el) {
+    const th = RULESETS.workstreams[name];
     const val = el.textContent;
     if (!th || val === th.instructions) return;
     th.instructions = val;
-    touchThreadHistory(name, 'update', 'Instructions edited from Task Tracker Settings.');
+    touchWorkstreamHistory(name, 'update', 'Instructions edited from Task Tracker Settings.');
     scheduleRulesetsSave();
     renderSettings();
   }
-  function addThreadMemory(name) {
+  function addWorkstreamMemory(name) {
     const text = prompt('New critical memory:');
     if (!text || !text.trim()) return;
-    const th = RULESETS.threads[name];
+    const th = RULESETS.workstreams[name];
     if (!th.memories) th.memories = [];
     th.memories.push(text.trim());
-    touchThreadHistory(name, 'update', 'Memory added from Task Tracker Settings.');
+    touchWorkstreamHistory(name, 'update', 'Memory added from Task Tracker Settings.');
     scheduleRulesetsSave();
     renderSettings();
   }
-  function threadMemoryEdit(name, idx, el) {
-    const th = RULESETS.threads[name];
+  function workstreamMemoryEdit(name, idx, el) {
+    const th = RULESETS.workstreams[name];
     const val = el.textContent;
     if (!th || !th.memories || th.memories[idx] === val) return;
     th.memories[idx] = val;
-    touchThreadHistory(name, 'update', 'Memory edited from Task Tracker Settings.');
+    touchWorkstreamHistory(name, 'update', 'Memory edited from Task Tracker Settings.');
     scheduleRulesetsSave();
     renderSettings();
   }
-  function removeThreadMemory(name, idx) {
-    const th = RULESETS.threads[name];
+  function removeWorkstreamMemory(name, idx) {
+    const th = RULESETS.workstreams[name];
     if (!th || !th.memories) return;
     th.memories.splice(idx, 1);
-    touchThreadHistory(name, 'update', 'Memory removed from Task Tracker Settings.');
+    touchWorkstreamHistory(name, 'update', 'Memory removed from Task Tracker Settings.');
     scheduleRulesetsSave();
     renderSettings();
   }
@@ -8618,7 +8664,7 @@
   // The sync pill sits behind the Settings modal, so a conflict raised while Settings is
   // open also needs to say so inside the panel itself. Deliberately NOT on a timer: it
   // stays until the next renderSettings() replaces the body, so it can't disappear before
-  // Durand has read it. Single-op patches (add/remove one thread memory) carry no version
+  // Durand has read it. Single-op patches (add/remove one workstream memory) carry no version
   // and can't conflict — this is only for the whole-document replace below.
   function showRulesetsConflictBanner_() {
     const body = document.getElementById('settingsBody');
@@ -8668,8 +8714,8 @@
         RULESETS_DOC_VERSION = resp.docVersion;
         RULESETS.meta.docVersion = resp.docVersion;
       }
-      // A thread added here has no id until the server assigns one: reload so it shows (2026-09-23).
-      if (Object.keys(RULESETS.threads || {}).some(function(n) { return RULESETS.threads[n] && !RULESETS.threads[n].id; })) {
+      // A workstream added here has no id until the server assigns one: reload so it shows (2026-09-23).
+      if (Object.keys(RULESETS.workstreams || {}).some(function(n) { return RULESETS.workstreams[n] && !RULESETS.workstreams[n].id; })) {
         rulesetsLoaded = false;
         await loadRulesets();
         renderSettings();
