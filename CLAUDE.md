@@ -1418,3 +1418,15 @@ mirror records to id keys reusing the same Doc ids. Tests: backend "Thread ids: 
 creation, never changed, never reused (2026-09-23)" (the 2026-09-22 mirror section now expects id
 keys); dashboard "Threads tab shows each thread id ...". README "Instruction layers and mirror Docs"
 THREAD IDS paragraph; both skills say ops carry `id`.
+- Deployed 2026-09-23 10:47 EDT: web app @98 = backend 2026-09-23.2 / UI 2026-09-23.2 / person UI
+  2026-09-23.1 = commit e89219d (ships the thread ids AND the delegate visibility / Done - Pending /
+  activity / feedback build), `main` fast-forwarded to it. Durand's go: "deploy" (two clasp logins were
+  needed: the first `nohup setsid` login died before his paste, voiding that one-time code; the
+  `run_in_background: true` fifo form held). VERIFIED LIVE at 10:49 EDT on the `mirror_instructions`
+  write (patch-2026-09-23-thread-ids-mirror.json; rulesets docVersion 137 -> 138): all 29 threads carry
+  unique T001-T029 ids in the order above, `meta.next_thread_id` = 30, thread count unchanged, every
+  thread's instructions/memories/code byte-identical to the backup, all 29 `meta.mirrorDocs` records
+  moved to `thread:T###` keys with the SAME Doc ids as before (no name-keyed leftovers, General and Code
+  ids unchanged), every Doc in the Instructions folder retitled `... — Thread — T### — <name>` (30 files
+  there: 29 threads + Code; General is the legacy Doc elsewhere), no new or duplicate Docs, and `_Inbox`
+  holds no FAILED-/MALFORMED- file (only the routine's earlier PARTIAL- from 12:21Z, unrelated).
