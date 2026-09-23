@@ -93,8 +93,8 @@ Rulesets JSON.
 4. Upload with `create_file` (`textContent`, `contentMimeType: application/json`, `disableConversionToGoogleType: true`) into `_Inbox`.
 5. Wait a minute, re-read, diff against the expected result before telling Durand it is done. If the change is missing, look in `_Inbox` for your file renamed `FAILED-` (rolled back), `PARTIAL-` (a bulk: the failing sub-ops rolled back, the rest applied) or `MALFORMED-` (not JSON), and read `meta.inboxErrors[]` in the data file for the exact error (it names the failing sub-op by index and lists the ops the deployed backend accepts; a malformed file's entry carries the parse position and the text around it). Every filed patch is raised as a critical dashboard alert plus a toast on load (no email, per Durand). A vanished file with the change present is success; anything else is not.
 6. Keep patches lean: one write costs the data file roughly its own size again (history lines plus one queued judgment per touched item, coalesced per parent in a bulk); history over the per-item cap is archived to the `History` folder, never in the hot file, and a from/to value in a history line is cut at 240 chars, so never read old notes text back out of `history[]`.
-6. BEFORE sending an op, check `meta.backendVersion` in the data file: it is the deployed backend, which can trail the repo. `log_time` needs `>= 2026-09-17.7`; `update_subitem`, `judgment`, `request_steps`, `request_tidy`, `add_comment` need `>= 2026-09-16.5`. An op the deployed backend lacks is rolled back and filed, never applied.
-7. Multi-KB content (a restore, a large rewrite): never retype it through tool calls; SHA-256 it, deliver the file, have Durand upload it as a new version, verify by re-hashing.
+7. BEFORE sending an op, check `meta.backendVersion` in the data file: it is the deployed backend, which can trail the repo. `log_time` needs `>= 2026-09-17.7`; `update_subitem`, `judgment`, `request_steps`, `request_tidy`, `add_comment` need `>= 2026-09-16.5`. An op the deployed backend lacks is rolled back and filed, never applied.
+8. Multi-KB content (a restore, a large rewrite): never retype it through tool calls; SHA-256 it, deliver the file, have Durand upload it as a new version, verify by re-hashing.
 
 ## Field checklist
 
@@ -151,6 +151,6 @@ At every write-back for a tracker task the session worked on (progress, notes, D
 - Never assume a trashed inbox file means success; re-read and diff.
 - Never fabricate `estHours`/`estDays`; follow the one workflow above or leave `estSource: "none"`.
 - Never set `Triage` or `Review` yourself, never unpin the bonus tasks, never write `assignee` or `doc`.
-- Never state a FUB go-live date: it is PENDING until Durand sets one.
+- FUB is TSG's main CRM (Durand, 2026-09-23); Lofty is phasing out and stays only as a backstop for anything missed in the transfer. Never describe FUB as pending or Lofty as the operating CRM, and never invent a go-live or Lofty shut-off date.
 - Dates are America/New_York. A cloud session's clock is UTC, which is already "tomorrow" after 8 PM Eastern; compute TODAY and every `due` / `timelineEnd` in Eastern and never propose a due date on a day whose workday (ends 4:30 PM) is over. Stored `ts` values stay UTC ISO.
 - Check any op or field you have not used before against `applyDataPatch_` in `Code.gs`; a wrong name fails silently.

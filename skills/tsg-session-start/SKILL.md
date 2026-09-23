@@ -64,7 +64,11 @@ Name the session under the General rules' NAMING rule (Title Case, under 60 char
 system or project and what the session is doing to it, not after the first message). Use the
 `set_session_title` tool with session id `self` where it exists; otherwise propose the title in chat.
 
-## 6. Work that fits no workstream
+## 6. Catch-up for a session that was never recorded
+
+If this session has earlier history (it started before 2026-09-23, or before it was recorded) and it established durable rules, decisions or facts, list every one that is not already in the workstream's Doc. Show Durand the exact text, push nothing until he approves, then push them with tsg-workstream-sync. A session that started before the Instructions for Claude box changed on 2026-09-23 is still running the old box text: step 1 replaces it, so do step 1 first.
+
+## 7. Work that fits no workstream
 
 If the work is ongoing (it will span more than this session) and fits no workstream, propose a new
 one to Durand: a Title Case name and a one-paragraph instruction set. Create it with `add_workstream`
