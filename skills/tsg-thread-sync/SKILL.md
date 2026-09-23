@@ -1,6 +1,6 @@
 ---
 name: tsg-thread-sync
-description: Push this Claude thread's own instruction set (its CURRENT rules, consolidated, replacing the previous text) and its critical memories into the TSG Task Tracker's Rulesets under threads[<name>], via the _Inbox patch protocol. The tracker mirrors General → Code (code threads) → this thread into one Google Doc the thread reads back. Use when a thread has accumulated durable rules or facts worth surfacing, when Durand asks, or when he runs the consolidation pass across every thread (2026-09-22).
+description: Push this Claude thread's own instruction set (its CURRENT rules, consolidated, replacing the previous text) and its critical memories into the TSG Task Tracker's Rulesets under the thread's own entry, via the _Inbox patch protocol. The tracker mirrors General, then Code (code threads), then this thread into one Google Doc the thread reads back. Use when a thread has accumulated durable rules or facts worth surfacing, when Durand asks, or when he runs the consolidation pass across every thread (2026-09-22).
 ---
 
 # TSG Thread Sync (revised 2026-09-22: instruction layers)
