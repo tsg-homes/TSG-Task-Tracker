@@ -1,5 +1,7 @@
 # TSG Task Tracker — standing facts for Claude Code sessions
 
+Every session: read the General rules Doc https://docs.google.com/document/d/1G-QI_F04Ye5SdEIJeOFq_Ex6da1v9oFDED49Ee-1HZM/edit and, for work in this repo, the Code layer Doc 'Systems — Instructions — Code' in the tracker's Instructions folder. Durand's current message wins.
+
 Read README.md for the file map, test commands, and conventions. This file holds the
 identifiers and environment facts that are otherwise only known from chat.
 
@@ -1418,3 +1420,43 @@ mirror records to id keys reusing the same Doc ids. Tests: backend "Thread ids: 
 creation, never changed, never reused (2026-09-23)" (the 2026-09-22 mirror section now expects id
 keys); dashboard "Threads tab shows each thread id ...". README "Instruction layers and mirror Docs"
 THREAD IDS paragraph; both skills say ops carry `id`.
+
+## Threads renamed to workstreams, sessions and links (2026-09-23, backend 2026-09-23.3, dashboard UI 2026-09-23.3)
+
+Per Durand's brief (2026-09-23): "rename thread to workstream everywhere and track which sessions
+belong to which workstream". Every earlier note in this file that says thread / `threads` /
+`next_thread_id` / `thread:<id>` / `*_thread` / "Settings > Threads" / tsg-thread-sync is history;
+the names below are current.
+- Storage: `workstreams` (was `threads`), `meta.next_workstream_id` (was `next_thread_id`), mirror
+  records `workstream:<id>` (was `thread:<id>`). `tsgMigrateWorkstreams_` (idempotent) runs first in
+  `tsgEnsureWorkstreamIds_` (was `tsgEnsureThreadIds_`), so every rulesets write path migrates, and
+  `?api=rulesets` serves the migrated shape before the first write. Ids keep their values; never
+  renumbered, never reused. Functions renamed: `tsgResolveWorkstream_`, `tsgAssertSafeWorkstreamName_`,
+  `tsgHasWorkstream_`, `tsgWorkstreamIdFor_`, `tsgWorkstreamNameById_`.
+- Ops: `add_workstream`, `update_workstream_instructions`, `add_workstream_memory`,
+  `remove_workstream_memory`, `remove_workstream`, `rename_workstream`, `set_workstream_code`; every
+  old `*_thread` name is an alias (`TSG_WORKSTREAM_OP_ALIASES`, `tsgCanonicalRulesetOp_`). NEW
+  `record_session {id, sessionId, surface, title, startedAt}` (`sessions[]` newest first, update by
+  sessionId, lastSeen = patch ts, ids only (a pasted link is reduced to its id), surfaces
+  `TSG_SESSION_SURFACES`, 50 kept, overflow to `meta.sessionArchiveStash` -> the rulesets-history
+  archive file as `sessions`; no changelog line) and `set_workstream_links {id, projectUrl?, repo?,
+  notes?}` (`links` object, claude.ai/project URL and owner/repo validated, empty clears).
+- Mirror Docs: `Systems — Instructions — Workstream — <id> — <name>`, first line
+  `SYSTEMS — INSTRUCTIONS — WORKSTREAM <id>: <name>`, new MIRROR line (`TSG_MIRROR_HOW_TO`), links and
+  the latest 10 sessions (`tsgWorkstreamMirrorExtras_`) after the memories. The first rulesets write
+  after deploy rewrites every Doc (the MIRROR line changed), which renames them in place by `setName`.
+  `TSG_LEGACY_COWORK_MIRROR_DOC_ID` stays `1G-QI_F04Ye5SdEIJeOFq_Ex6da1v9oFDED49Ee-1HZM`: the
+  Instructions for Claude box links to that exact Doc.
+- Dashboard: Settings > Workstreams (`renderWorkstreamsTab`, `workstreamLinksHtml_`,
+  `workstreamSessionsHtml_`, `editWorkstreamLinks` -> `postRulesetsOp_`), CSS `.workstream-*`.
+  `loadRulesets` reads `threads` when `workstreams` is missing.
+- Skills: `skills/tsg-workstream-sync` (renamed from tsg-thread-sync), `skills/tsg-session-start`
+  (new: General Doc, find workstream, read its Doc, record_session, name the session, propose a new
+  workstream only with Durand's approval), protocol skill ruleset section rewritten (one op per
+  ruleset patch file). Durand saves them from Cowork.
+- Replay against the live Rulesets (docVersion 208, 15 workstreams, next_thread_id 35, downloaded
+  2026-09-23 18:06 EDT): 15 -> 15 with the same ids, next_workstream_id 35, General unchanged, all 17
+  mirror records kept their Doc ids, no new Docs.
+- Local Claude Code pointer (`~/.claude/CLAUDE.md`, brief step 7) cannot be written from a cloud
+  session; it is Durand's local step.
+

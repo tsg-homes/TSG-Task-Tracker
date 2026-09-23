@@ -292,69 +292,103 @@ url is already on the item (Gmail as type `email`, sites as type `web`);
 every change gets its own history line with the answer's source. Verify by re-reading the data
 file after a minute: the answered ids are gone from `meta.judgments`.
 
-## Instruction layers and mirror Docs (2026-09-22)
+## Instruction layers, workstreams and mirror Docs (2026-09-22; workstreams 2026-09-23)
 
 Per Durand: "the general set of instructions should be a generalized merge of all rules to be
 applied everywhere; the code instructions should be Claude Code specific rules that sit on top of
 the general instructions; each thread should push to its own instruction set, a set of
 thread/project specific instructions that sit on top of the general ones (and code ones for code
-threads)". The Rulesets file holds three layers and the tracker mirrors each to a Google Doc:
+threads)". On 2026-09-23 Durand renamed "thread" to "workstream" everywhere and asked the tracker to
+record which sessions belong to which workstream. The Rulesets file holds three layers and the
+tracker mirrors each to a Google Doc:
 
 - `current.General` — applies everywhere (the former Cowork block is merged into it; `Cowork` is retired).
 - `current.Code` — Claude Code rules on top of General.
-- `threads[name]` — that thread's `instructions` + `memories`, on top of General (+ Code when the
-  thread has `code: true`; toggle "Code thread" in Settings > Threads or the `set_thread_code` op).
+- `workstreams[name]` — that workstream's `instructions` + `memories` (+ `links`, `sessions`), on top
+  of General (+ Code when it has `code: true`; toggle "Code workstream" in Settings > Workstreams or
+  the `set_workstream_code` op).
+
+STORAGE KEYS AND MIGRATION (backend 2026-09-23.3). `threads` -> `workstreams`,
+`meta.next_thread_id` -> `meta.next_workstream_id`, mirror records `thread:<id>` ->
+`workstream:<id>`. `tsgMigrateWorkstreams_` moves them in place, idempotently; it runs first inside
+`tsgEnsureWorkstreamIds_`, i.e. on every rulesets write (`applyRulesetPatch_`, `processInbox_`,
+`tsgMirrorInstructions_`, `tsgArchiveRulesetsHistory_`), and `?api=rulesets` serves the migrated
+shape before the first write persists it. An un-migrated file still reads everywhere. Ids keep their
+values (never renumbered, never reused); the counter keeps its value under the new key. A file with
+both keys keeps the `workstreams` copy and carries over any name only under `threads`. A dashboard
+page loaded before the rename still saves `threads`; `replace_all` lands either key as
+`workstreams`.
+
+WORKSTREAM IDS. Every workstream object carries an immutable `id` ('T' + zero-padded number: T002,
+T018 ...) from the server-owned counter. Never derived from the count, never reused, never set by a
+patch or a Settings save: `add_workstream` ignores a supplied id, `replace_all` restores the server's
+id for a workstream of the same name and drops any other, a client copy cannot touch the counter.
+Every workstream op resolves `id` first, then `name` (`tsgResolveWorkstream_`; a disagreeing pair,
+an unknown id or neither is refused by name).
+
+Rulesets ops (one op per patch file; `target: "rulesets"`):
+
+| Op | Fields | Notes |
+|---|---|---|
+| `append_category` | `category, text` | appends to General / Code (Durand's) |
+| `replace_category_text` | `category, find, replace` | exact substring; throws when `find` is absent |
+| `set_category` | `category, text` | full overwrite; creates a missing category |
+| `remove_category` | `category` | |
+| `add_workstream` | `name, instructions?, memories?` | server assigns the id |
+| `update_workstream_instructions` | `id \| name, instructions, historyEntry?` | replaces the text |
+| `add_workstream_memory` | `id \| name, memory` | |
+| `remove_workstream_memory` | `id \| name, index` | index required |
+| `remove_workstream` | `id \| name` | its number is never reused |
+| `rename_workstream` | `id \| name, newName` | keeps id, memories, code, links, sessions, history, same Doc |
+| `set_workstream_code` | `id \| name, code` | code workstream: its Doc carries the Code layer |
+| `set_workstream_links` | `id \| name, projectUrl?, repo?, notes?` | Claude Project URL (`https://claude.ai/project/...`), repo as `owner/repo` (a github.com link is reduced); an empty value clears the key; logs "Links updated (...)" |
+| `record_session` | `id \| name, sessionId, surface, title, startedAt` | appends or updates by `sessionId`; `lastSeen` = patch `ts`, `firstSeen` kept; newest first; no changelog line |
+| `mirror_instructions` | — | forces a re-mirror |
+| `replace_all` | `baseVersion, doc` | the dashboard's Settings save only |
+
+ALIASES: `add_thread`, `update_thread_instructions`, `add_thread_memory`, `remove_thread_memory`,
+`remove_thread`, `rename_thread`, `set_thread_code` are accepted and applied as the matching
+workstream op (`TSG_WORKSTREAM_OP_ALIASES`), because sessions and skills still send them.
+
+SESSIONS. `workstreams[name].sessions[]` = `{sessionId, surface, title, startedAt, firstSeen,
+lastSeen}`. `surface` is `chat | cowork | code-local | code-cloud | scheduled | routine`. Only
+session IDs are stored (`session_01...`, `cse_...`), never links (a link dies with its session): a
+pasted link is reduced to the id it carries, else refused. The 50 most recent stay; older entries go
+to `meta.sessionArchiveStash` and `tsgArchiveRulesetsHistory_` writes them as `sessions` (keyed by
+workstream id) into the same `History/rulesets-history-<ISO>.json` file, counted in
+`meta.historyArchive.sessions`.
 
 Mirror: after every rulesets write `tsgMirrorInstructions_` rewrites one Doc per set in the
 `Instructions` folder under the tracker folder, COMPOSED so a session reads ONE Doc:
-"Systems — Instructions — General" (General), "… — Code" (General + Code), "… — Thread — <name>"
-(General [+ Code] + thread + memories). Ids, urls and content hashes live in `meta.mirrorDocs`
-(server-owned); an unchanged set is not rewritten, a Doc keeps its id, a removed thread's record
-is dropped (its Doc stays for Durand to trash). The legacy 'Systems — Cowork Instructions' Doc
-is reused as the General mirror. `tsgMirrorInstructionsNow()` (editor, owner only) repairs or
-first-fires the mirror; the rulesets op `mirror_instructions` does the same through the inbox.
-Settings > Rulesets / Threads show each set's "Mirror Doc" link.
+"Systems — Instructions — General" (General), "… — Code" (General + Code),
+"Systems — Instructions — Workstream — <id> — <name>" (General [+ Code] + workstream + memories +
+links + the latest 10 sessions), first line `SYSTEMS — INSTRUCTIONS — WORKSTREAM <id>: <name>`. Every
+Doc carries the line "MIRROR. Do not edit this Doc. It is rewritten from the TSG Task Tracker
+Rulesets after every change. To change it: propose the exact text in chat, get Durand's approval,
+push an _Inbox ruleset patch (tsg-task-tracker-protocol skill), then re-read this Doc. Layers:
+General applies everywhere; Code sits on top for Claude Code sessions; a workstream set sits on top
+of those for that workstream." Ids, urls and content hashes live in `meta.mirrorDocs` (server-owned);
+an unchanged set is not rewritten, a Doc keeps its file id when it is renamed (`setName` in place),
+a removed workstream's record is dropped (its Doc stays for Durand to trash). The General mirror is
+`TSG_LEGACY_COWORK_MIRROR_DOC_ID` (`1G-QI_F04Ye5SdEIJeOFq_Ex6da1v9oFDED49Ee-1HZM`): the Instructions
+for Claude box links to that exact Doc, so its id must never change. `tsgMirrorInstructionsNow()`
+(editor, owner only) repairs or first-fires the mirror. Settings > Rulesets / Workstreams show each
+set's "Mirror Doc" link; each workstream card also shows its id, links (Edit links posts
+`set_workstream_links`) and sessions.
 
 Only the latest instructions live in the hot file (Durand 2026-09-22: "history logged separately,
 same as notes"): after every rulesets write `tsgArchiveRulesetsHistory_` keeps the newest 3
-changelog lines per category and per thread and moves the rest to
-`History/rulesets-history-<ISO>.json` (counts in rulesets `meta.historyArchive`).
+changelog lines per category and per workstream and moves the rest to
+`History/rulesets-history-<ISO>.json` (key `workstreams`; files before 2026-09-23.3 say `threads`).
 
-Rulesets ops added: `set_category` now creates a missing category, `remove_category {category}`,
-`set_thread_code {name, code}`, `mirror_instructions {}`.
-
-THREAD IDS (2026-09-23, per Durand: "threads identify themselves by an ID generated on creation
-that never changes, so there are no title-change errors"). `threads` stays keyed by name, but every
-thread object carries an immutable `id` ('T' + zero-padded number: T001, T002 ...) allocated from
-the server-owned counter `meta.next_thread_id`. Never derived from the count, never reused (a removed
-thread's number is gone), never set by a patch or a Settings save: `add_thread` ignores a supplied
-id, `replace_all` restores the server's id for a thread of the same name and drops any other, and a
-client copy cannot touch the counter (`tsgEnsureThreadIds_`, idempotent, also the one-time backfill
-that ran on the first rulesets write after deploy in first-history-ts order, then by name). Every
-thread op (`update_thread_instructions`, `add_thread_memory`, `remove_thread_memory`, `remove_thread`,
-`set_thread_code`) takes `id` or `name` (`tsgResolveThread_`: id wins, a disagreeing pair is refused
-by name). New op `rename_thread {id, newName}` moves the object to the new key keeping id,
-instructions, memories, code and history and logs "Renamed from <old> to <new>." (Settings > Threads
-has a Rename button that uses it; a renamed key is never saved through replace_all). Mirror Docs are
-keyed `thread:<id>` in `meta.mirrorDocs` and titled `Systems — Instructions — Thread — <id> — <name>`
-with the id in the body header, so a rename retitles the SAME Doc; the name-keyed records were
-migrated in place (same Doc ids, no new Docs). Settings > Threads shows the id ("id pending" on a
-thread added there until the save lands). Sessions: read your id from the Doc title and send it on
-every op; a thread with no Doc yet does not exist (`add_thread`, then the id is in the title a minute
-later).
-
-WHAT A SESSION DOES: read its layer's Doc (the thread Doc when it has a thread, else the Code
-Doc in a code session, else General) at start; push its own durable rules and memories to ITS
-thread only (`update_thread_instructions`, `add_thread_memory`); never edit General or Code from
-a thread (Durand edits those in Settings or asks for a patch); the app-side "Instructions for
-Claude" field in Cowork / a project's CLAUDE.md carries a one-line pointer to the Doc, not a copy.
-
-Replacement text for the Cowork `tsg-thread-sync` skill (Durand applies it in Cowork): "Push this
-thread's instructions and critical memories to ITS OWN thread entry in the tracker's Rulesets
-(`update_thread_instructions` / `add_thread_memory` patches into `_Inbox`), never to General or
-Code. The tracker mirrors the composed set (General, Code when the thread is a code thread, then
-this thread) to the Google Doc 'Systems — Instructions — Thread — <name>' within a minute; read
-that Doc, not the Rulesets file. Mark a thread as a code thread with `set_thread_code`."
+WHAT A SESSION DOES (skills in `skills/`, Durand saves them from Cowork): `tsg-session-start` reads
+the General Doc, finds the workstream (the Claude Project's instructions name its id; otherwise
+match by name and ask Durand when more than one or none fits, never guess), reads the workstream
+Doc, pushes `record_session`, names the session, and proposes a new workstream for Durand's approval
+when ongoing work fits none. `tsg-workstream-sync` (formerly `tsg-thread-sync`) pushes a
+workstream's consolidated instructions and memories to ITS OWN entry; a workstream never edits
+General or Code. The Instructions for Claude box and a project's CLAUDE.md carry a one-line
+pointer to the Doc, never a copy.
 
 ## The Routine's prompt lives in the repo (2026-09-18)
 
