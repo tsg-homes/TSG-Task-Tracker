@@ -1460,3 +1460,17 @@ the names below are current.
 - Local Claude Code pointer (`~/.claude/CLAUDE.md`, brief step 7) cannot be written from a cloud
   session; it is Durand's local step.
 
+- Deployed 2026-09-23 18:21 EDT: web app @99 = backend 2026-09-23.3 / UI 2026-09-23.3 = commit 6d8359a,
+  `main` fast-forwarded (PR tsg-homes/TSG-Task-Tracker#1 shows merged). Durand's go in chat. clasp
+  login used the paste fallback (Durand chose it after the automatic method was refused in the cloud
+  container: a tunnel into the container is blocked as a containment escape). VERIFIED LIVE after one
+  `mirror_instructions` patch (applied 22:22Z): Rulesets docVersion 209 -> 210, `threads` key gone,
+  15 workstreams with the same names and ids as immediately before deploy, `next_workstream_id` 35 =
+  the old `next_thread_id`, `next_thread_id` gone, General content byte-identical (sha256 601358dc…),
+  17 mirror records now `workstream:<id>` with the same 17 Doc file ids; every Doc retitled in place
+  ("Systems — Instructions — Workstream — T018 — TSG Task Tracker" etc.), General Doc id
+  1G-QI_F04Ye5SdEIJeOFq_Ex6da1v9oFDED49Ee-1HZM unchanged and rewritten with the new MIRROR line.
+  Twenty orphan "… — Thread — T0xx — …" Docs in the Instructions folder belong to workstreams removed
+  earlier on 2026-09-23 (not in the 15); the tracker leaves them for Durand to trash. General's own text
+  still says "'Systems — Instructions — Thread — <id> — <name>' until the tracker's thread-to-workstream
+  rename ships": that wording is Durand's to change.
