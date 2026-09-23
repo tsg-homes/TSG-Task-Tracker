@@ -97,6 +97,10 @@ Read the current figures from the Rulesets "Daily capacity & task scheduling rul
 
 There is now a real hand-back signal. On every write the server tags an open item delegated to Claude with the reserved tag `Needs Durand` when its status is `Blocked` or `Waiting`, or its notes contain `DRAFT — AWAITING APPROVAL` or `NEEDS DURAND`; a step's flag is mirrored onto its parent. The dashboard shows a "Needs you" chip, an alert row and lists them under the Triage filter. So: when you leave a draft, write the marker line `DRAFT — AWAITING APPROVAL` at the top of the draft in the notes; when you are blocked on a decision, set `status: "Blocked"` (or `"Waiting"`) and say in the notes exactly what you need. Never set the tag yourself (reserved); the server clears it on the write where the status moves on and the marker is gone.
 
+## Delegate visibility, pending approval and feedback (added 2026-09-23)
+
+A task reaches a delegate's page only while `delegateVisible: true`, and only Durand can set that (the server strips `true` from every other source, so never send it). Any meaningful change a session makes to a visible task (title, notes, due, priority, type, hours, delegate, location, links, or any step's title/notes/delegate/hours/due) hides it again until Durand re-checks it; a status or tag change does not. When you change a delegated task on purpose, say in the note that Durand should turn visibility back on. Delegates can only reach `Done - Pending`; Durand approves to `Done`. Do not close a delegate's item for them unless Durand asked. `meta.delegateActivity` and `meta.status_values` are the server's; feedback items are steps with a `feedback` object on a task with `feedbackFor` and must not be enriched, retitled or closed by a session (Durand implements or declines them on the dashboard; an accepted one closes itself when the linked Claude step on the tracker feature task, `feedbackRef`, is Done).
+
 ## Session effort report (added 2026-09-17)
 
 At every write-back for a tracker task the session worked on (progress, notes, Done), also push:

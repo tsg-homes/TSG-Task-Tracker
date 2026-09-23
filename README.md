@@ -428,6 +428,56 @@ they ask when it is tracker work (field changes ride in the same bulk patch), re
 and resolves with `update_comment {id, fields: {resolved: true}}` only when done. A Claude-authored
 comment (e.g. an estimate settlement) is Durand's to resolve after reading.
 
+## Delegate visibility, pending approval, activity, feedback (2026-09-23)
+
+Per Durand: a delegate sees a task only when he has switched it on, can never close work
+himself, every change he makes is logged and surfaced, and his feedback collects on one
+pinned task per person.
+
+- **Visibility switch** `delegateVisible` (task field, default off). `tsgPersonSlice_` shows a
+  task the person does not own only while it is `true`. The dashboard chip (row Delegate cell,
+  cards, the card's Delegate row) toggles it; the Views pop-up applies it. Only the owner can
+  turn it on: `update_task` / `add_task` from any other source have `delegateVisible: true`
+  stripped (`tsgStripVisibilityFromFields_`). Any automation write (a judgment answer, a session
+  patch, the routine: anything whose `source` is not a person) that changes the task's meaningful
+  content turns it off again (`tsgSnapshotVisibility_` before the op, `tsgResetVisibilityOnChange_`
+  after; hash over title, notes, priority, type, hours, delegate, location, due, due time, links
+  and every step's title/notes/delegate/hours/due/location/links). Status, progress, tags and
+  schedule bookkeeping are not meaningful. The person's own edits and the owner's dashboard saves
+  never turn it off. A task the person owns (self-created) is always theirs to see. Downside to
+  know: the switch is off on every existing delegated task at deploy, so every delegate page is
+  empty until Durand turns tasks on one by one.
+- **Pending approval**: the person page offers `TSG_PERSON_STATUSES` (`Not Started`, `In Progress`,
+  `Blocked`, `Waiting`, `Done - Pending`), never `Done`; a `Done` or `Cancelled` from a delegate
+  lands as `Done - Pending` with progress 100 (the owner previewing with `?person=` may still
+  close). A pending item is out of the scheduler, the reminder tick and the open-hours roll-up.
+  The dashboard shows Approve (status `Done`, history `approval` "Verified and approved by Durand")
+  and Send back (status `In Progress`, `RETURNED <date> by Durand: <note>` at the top of the notes)
+  on rows, steps and the card, plus a critical alert row. `meta.status_values` carries the value.
+- **Activity log** `meta.delegateActivity[]` (server-owned, cap 200): every delegate write records
+  `{ts, person, taskId, subIdx, title, kind: update|pending|add|feedback, field, from, to}` (values
+  cut at 240 chars). Dashboard: warn alert row with per-person counts, the activity panel (Open /
+  Approve / Mark all seen -> `set_meta {delegateActivitySeen}`), toasts for entries new to this
+  browser (`localStorage tsgSeenDelegateActivityTs`) and a native notification when the frame's
+  origin is allowed. `meta.delegateEmails === 'on'` (Settings > General) also mails each entry to
+  the owner; default off.
+- **Feedback**: one pinned task per delegate with `feedbackFor: <Name>` (created 2026-09-23 for
+  the nine roster members, group `Team Feedback`, tag `Feedback` (reserved), linked to the
+  delegate how-to Doc, never enriched, aging- and stale-exempt). The person page's Feedback button
+  calls `tsgPersonRpc('feedback', {kind: Bug | Feature request | Feedback, text})`, which files an
+  `add_subitem` on that task: title `[Kind] first line`, notes = the text, delegate = the person,
+  `feedback: {kind, by, ts}`, `skipEnrich`, never held for review. The person sees the item with
+  its state (sent / accepted / declined / implemented) and can only edit its notes. On the
+  dashboard each item shows Implement (a Claude step lands on the tracker feature task with
+  `feedbackRef {taskId, index, title}`; the item goes `In Progress` with `ACCEPTED <date>` on top)
+  or Decline (`Cancelled`, `DECLINED <date> by Durand: <reason>` on top); an accepted item closes
+  itself when its linked step is Done (`tsgSyncFeedbackImplementations_`, every write). The
+  feedback panel (alert row, Settings > General) lists them all.
+- For sessions: never send `delegateVisible: true`; expect any meaningful change you make to a
+  visible task to hide it again (say so in the note if Durand should re-check it); never set
+  `Done` on a delegate's item on their behalf unless Durand asked; `delegateActivity` is
+  server-owned.
+
 ## Actual time (2026-09-17): one log, three ways in
 
 Nothing measured actual time before this. Now every item (task or step) carries `timeLog[]`

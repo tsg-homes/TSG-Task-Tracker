@@ -1318,3 +1318,73 @@ judgment-queue section now pins `tsgEarliestDueIso_` to 2026-09-01, reminder fix
   linked on the task. Rule appended to General by patch. The review-ask email's Gmail draft was deleted
   and its HTML saved there.
 
+
+## Delegate visibility, pending approval, activity log, feedback (2026-09-23, backend 2026-09-23.1, dashboard UI 2026-09-23.1, person UI 2026-09-23.1)
+
+Per Durand (2026-09-23): "create a pinned task for each delegate that is used to collect their bug
+reports, feature requests, general feedback"; "a report of the full differences in capability,
+functionality, and display between my view and the delegates view"; "each task with a delegate needs a
+clear indicator to me only of whether or not the delegate can see it (toggleable, default off, only I
+can turn it on, and if you make any meaningful change you turn it off)"; "the pinned task should link
+to the how to doc"; "I'll need to be alerted to delegates changing their tasks or adding new ones, they
+can only set to done - pending, and going to fully done requires my approval and verification of the
+workproduct"; "a way to review and implement or decline their feedback". Team-views rule: this message
+is the explicit instruction that allowed `person.html` and the person RPC surface to be edited.
+- `delegateVisible` (task field, default off; in `TSG_TASK_DIFF_FIELDS`). `tsgPersonSlice_` shows a task
+  the person does not own only while true (steps and context rows included). Only the owner turns it
+  on: `tsgStripVisibilityFromFields_` drops `true` from any non-`Durand` source in update_task /
+  add_task (`TSG_OWNER_NAME`). Automation writes (source not a person: Claude answers, session patches,
+  judgment ops) snapshot `tsgVisibilityHash_` per visible task before the op and
+  `tsgResetVisibilityOnChange_` turns it off with a `delegateVisible` history line when the hash moved
+  (title, notes, priority, type, hours, delegate, location, due, dueTime, links, each step's
+  title/notes/delegate/hours/due/location/links; NOT status, progress, tags, schedule fields). Bulk
+  sub-ops are checked one by one; replace_all and person sources are skipped. Dashboard: `visChipHtml_`
+  (row Delegate cell, cards via `visLineHtml_`, card Delegate row), `toggleDelegateVisible`,
+  `personTaskIds_` applies it. LIVE EFFECT AT DEPLOY: every delegate page goes empty until Durand flips
+  tasks on (11 Marj + 6 Ryan + 3 Jason + 2 Erika + 1 Rayma whole-task delegations, plus parents with
+  delegated steps, plus the nine feedback tasks).
+- `TSG_PENDING_STATUS = 'Done - Pending'`, `TSG_PERSON_STATUSES` (no Done). `tsgPersonRpc` maps a
+  delegate's Done/Cancelled to pending (owner preview may still close); `update_subitem` sets progress
+  100 on pending, `done` stays false. Pending is skipped by the scheduler (`tsgAutoScheduleDoc_`,
+  `tsgWorkItemsOf_`), `tsgReminderPending_`, `tsgOpenSubitemHours_`; `tsgStatusOfSubs_` and the dashboard
+  `rollupStatus` report pending when every open step is pending. Dashboard: `pendingApprovalItems_`,
+  `pendingApprovalHtml_` (rows, steps, card Status row), `approvePending` (Done + `approval` history
+  line + actual-time capture), `sendBackPending` (In Progress, `RETURNED <date> by Durand: …` on top of
+  the notes, `returned` history), critical alert row. `STATUSES` carries the value; `statusClass`
+  collapses non-alphanumerics (`status-done-pending`) on both pages. `meta.status_values` updated live
+  by the 2026-09-23 patch.
+- `meta.delegateActivity[]` (server-owned, cap 200, `tsgRecordDelegateActivity_`; entries from
+  update_task / update_subitem per changed field via `tsgLogDelegateFieldActivity_`, personCreated
+  add_task, add_subitem; kinds update | pending | add | feedback). `tsgIsDelegateSource_` = a person who
+  is not the owner. `meta.delegateActivitySeen` (set_meta, Mark all seen), `meta.delegateEmails` 'on'
+  mails each entry (Settings > General; default off). Dashboard: `unseenActivity_`, warn alert row with
+  per-person counts (`onOpen` alerts open a panel), `openActivityPanel`, `checkDelegateActivityToasts_`
+  on load (localStorage `tsgSeenDelegateActivityTs`, native Notification when granted).
+- Feedback: `feedbackFor` task field; `tsgFeedbackTaskFor_`; `tsgPersonRpc('feedback', {kind, text})`
+  (`TSG_FEEDBACK_KINDS` Bug | Feature request | Feedback) files `add_subitem {skipEnrich, feedback:true}`:
+  title `[Kind] first line` (90 chars), notes = text, delegate = person, `feedback {kind, by, ts}`. add_subitem
+  now honours `skipEnrich`, never holds a feedback step or a delegate's own add for Triage, and
+  logs `feedback-filed` / `subitem-added`. Feedback steps: editable notes only on the person page,
+  no needsApproval, not work items. Dashboard: `feedbackItems_`, `feedbackRowHtml_` (kind/state badge,
+  Implement / Decline), `implementFeedback` (Claude step on `featureTask_()` with `feedbackRef
+  {taskId, index, title}`, item In Progress with `ACCEPTED <date>` on top, `feedback.decision/decidedAt/
+  implTaskId`), `declineFeedback` (Cancelled, `DECLINED <date> by Durand: <reason>`), `openFeedbackPanel`,
+  warn alert row. Server `tsgSyncFeedbackImplementations_` (every write) closes an accepted item when
+  the linked step is Done (`IMPLEMENTED <date>` note, source rollup). `Feedback` is a reserved tag;
+  feedbackFor tasks are exempt from Aging and the dashboard's stale alerts. Person page: `#btnFeedback`
+  + `#feedbackBack` form, doc chips (`docChipsHtml`, the how-to link), pin mark, pending notes, checkbox
+  sends pending, status pill only when editable.
+- LIVE (applied 2026-09-23 09:57 EDT by `patch-2026-09-23-feedback-tasks.json`, docVersion 1858, on
+  backend 2026-09-22.6): nine pinned feedback tasks 358 Ryan, 359 Alex, 360 Jason, 361 Francini, 362
+  Rayma, 363 Chelsey, 364 Erika, 365 Perly, 366 Marj (group Team Feedback, tag Feedback, docs = the
+  delegate guide 1xPaWmUeORFQ8WKp9HZoRiQdJMW2bNZMSiUu54PxUYqU, `ownerCreated: true` so no Triage hold,
+  `skipEnrich`), and `meta.status_values` now includes Done - Pending. The patch `ts` was written as
+  17:56Z by mistake (four hours ahead); their `created` lines carry it. `delegateVisible` is unset on
+  all nine: Durand flips them on after deploy.
+- Docs: delegate how-to Doc 1xPaWmUeORFQ8WKp9HZoRiQdJMW2bNZMSiUu54PxUYqU and the owner-vs-delegate
+  differences report 13wboZWnG-Ui5fhOxFN2pEzcw7RyJq2UYqery_Qx6JsA, both in TSG — Systems & Operations.
+  README section "Delegate visibility, pending approval, activity, feedback (2026-09-23)"; skill section
+  of the same name. Tests: backend section "Delegate visibility, pending approval, activity log,
+  feedback (2026-09-23)" (the backend summary line moved to the END of test_codegs.js: sections added
+  after it since 2026-09-18 could fail without failing `npm test`); dashboard four tryCalls; person test
+  extended (feedback fixture rows, pending checkbox).

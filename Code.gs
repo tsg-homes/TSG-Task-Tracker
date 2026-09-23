@@ -6309,6 +6309,7 @@ var TSG_AGING_DAYS = 30;
 function tsgFlagAgingTasks_(doc, todayIso) {
   (doc.tasks || []).forEach(function(t) {
     if (t.status === 'Done' || t.status === 'Cancelled') return;
+    if (t.feedbackFor) return;   // a standing collection task is never "aging" (2026-09-23)
     if ((t.tags || []).indexOf('Aging') !== -1) return;
     var created = (t.history || []).filter(function(h) { return h && h.field === 'created' && h.ts; })[0];
     if (!created) return; // no reliable creation timestamp — don't guess
