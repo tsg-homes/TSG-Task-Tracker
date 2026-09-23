@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-22.6';
+const TSG_CODE_VERSION = '2026-09-23.1';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -642,9 +642,12 @@ function tsgIndexDoc_(doc) {
       owner: t.owner || '', delegate: tsgTaskDelegate_(t) || '', due: t.timelineEnd || '', dueTime: t.dueTime || '',
       progress: typeof t.progress === 'number' ? t.progress : 0, estHours: typeof t.estHours === 'number' ? t.estHours : null,
       taskType: t.taskType || '', tags: (t.tags || []).slice(), pinned: !!t.pinned, needsApproval: !!t.needsApproval,
+      delegateVisible: t.delegateVisible === true, feedbackFor: t.feedbackFor || '',
       docs: (t.docs || []).length,
       steps: (t.subitems || []).map(function(s, i) {
-        return { i: i, title: (s && s.title) || '', status: s && (s.done ? 'Done' : (s.status || '')), delegate: (s && s.delegate) || '', due: (s && s.timelineEnd) || '', estHours: (s && typeof s.estHours === 'number') ? s.estHours : null };
+        var row = { i: i, title: (s && s.title) || '', status: s && (s.done ? 'Done' : (s.status || '')), delegate: (s && s.delegate) || '', due: (s && s.timelineEnd) || '', estHours: (s && typeof s.estHours === 'number') ? s.estHours : null };
+        if (tsgIsFeedbackStep_(s)) row.feedback = { kind: s.feedback.kind || '', by: s.feedback.by || '', decision: s.feedback.decision || '' };
+        return row;
       })
     });
   });
@@ -871,6 +874,10 @@ function applyDataPatch_(doc, patch) {
   // An envelope with `ops` but no `op` can only mean a bulk (2026-09-18); accepting it costs
   // nothing and one less way for a routine-written file to be filed FAILED-.
   if (!patch.op && Array.isArray(patch.ops)) patch.op = 'bulk';
+  // Delegate visibility (2026-09-23): an automation write (not the owner, not a person on
+  // their page) that changes the meaningful content of a visible task hides it again. Bulk
+  // sub-ops are checked one by one through the recursive call; replace_all is the owner's.
+  var visBefore = (patch.op !== 'bulk' && patch.op !== 'replace_all' && !tsgIsPersonSource_(patch.source)) ? tsgSnapshotVisibility_(doc) : null;
 
   if (patch.op === 'bulk') {
     // 2026-09-10 per Durand: dependsOnTitle inference should see every task in this same
@@ -939,6 +946,7 @@ function applyDataPatch_(doc, patch) {
     // without `subitems` could never take a subtask from the add box).
     if (!Array.isArray(task.subitems)) task.subitems = [];
     if (!Array.isArray(task.tags)) task.tags = [];
+    tsgStripVisibilityFromFields_(task, patch.source);   // only the owner turns a task on for its delegate
     // 2026-09-09 per Durand: standardize title formatting on the way in, before dedup
     // matching even runs (tsgClassifyIncoming_ already normalizes case for matching, so
     // this doesn't change match behavior either way). originalTitleForCleanup is only
@@ -1214,6 +1222,9 @@ function applyDataPatch_(doc, patch) {
       }
       doc.tasks.push(task);
       addResult = { verdict: 'added', taskId: task.id, title: task.title };
+      if (patch.personCreated && tsgIsDelegateSource_(patch.source)) {
+        tsgRecordDelegateActivity_(doc, { ts: now, person: patch.source, taskId: task.id, subIdx: null, title: task.title || '', kind: 'add', field: null, from: null, to: null });
+      }
     }
     // Audit trail a caller can read back by nonce (see doPost's target=data handler) to
     // learn what actually happened to the task it just submitted — necessary now that
@@ -1237,6 +1248,7 @@ function applyDataPatch_(doc, patch) {
       ? t.subitems.map(function(s) { return Object.assign({}, s); })
       : [];
     if (patch.fields) { ['id', 'history'].forEach(function(k) { delete patch.fields[k]; }); }  // server-owned
+    tsgStripVisibilityFromFields_(patch.fields, patch.source);
     if (patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'assignee')) {   // legacy name for delegate
       if (!Object.prototype.hasOwnProperty.call(patch.fields, 'delegate')) patch.fields.delegate = patch.fields.assignee;
       delete patch.fields.assignee;
@@ -1247,6 +1259,7 @@ function applyDataPatch_(doc, patch) {
     var notesChanged = tsgNotesChanged_(t, prevTaskSnapshot.notes);
     t.history = t.history || [];
     tsgLogFieldChanges_(t.history, prevTaskSnapshot, t, TSG_TASK_DIFF_FIELDS, now, patch.source);
+    if (tsgIsDelegateSource_(patch.source)) tsgLogDelegateFieldActivity_(doc, patch.source, t, null, t.title, prevTaskSnapshot, t, Object.keys(patch.fields || {}), now);
     // Free-flow notes (2026-09-16): a notes change re-judges the whole task (title/notes
     // polish, fields left blank or set by automation, progress). Runs AFTER the field log so
     // the enrichment's own history lines carry their own source, not this patch's.
@@ -1349,11 +1362,12 @@ function applyDataPatch_(doc, patch) {
     const prevSubs = subs.map(function(x) { return Object.assign({}, x); });
     const f = Object.assign({}, patch.fields || {});
     delete f.history;
-    if (Object.prototype.hasOwnProperty.call(f, 'status')) { f.done = (f.status === 'Done'); if (f.done) f.progress = 100; }
+    if (Object.prototype.hasOwnProperty.call(f, 'status')) { f.done = (f.status === 'Done'); if (f.done || f.status === TSG_PENDING_STATUS) f.progress = 100; }
     else if (Object.prototype.hasOwnProperty.call(f, 'done')) { f.status = f.done ? 'Done' : (sub.status === 'Done' ? 'In Progress' : (sub.status || 'Not Started')); if (f.done) f.progress = 100; }
     Object.assign(sub, f);
     var subNotesChanged = tsgNotesChanged_(sub, prevSubs[patch.index].notes);
     tsgStampSubitemTouchesForTask_(prevSubs, subs, now, patch.source);
+    if (tsgIsDelegateSource_(patch.source)) tsgLogDelegateFieldActivity_(doc, patch.source, pt, patch.index, sub.title, prevSubs[patch.index], sub, Object.keys(f), now);
     // A subtask's notes change re-judges the subtask the same way a task's does (2026-09-16).
     if (subNotesChanged) tsgEnrichItem_(doc, pt, sub, patch.index, now, patch.source || 'unknown', { progressExplicit: Object.prototype.hasOwnProperty.call(f, 'progress') });
   } else if (patch.op === 'add_subitem') {
@@ -1364,10 +1378,17 @@ function applyDataPatch_(doc, patch) {
     }
     t.subitems = t.subitems || [];
     t.subitems.push(patch.subitem);
-    tsgEnrichItem_(doc, t, patch.subitem, t.subitems.length - 1, now, patch.source || 'unknown', { allowEmptyNotes: true });
-    if (tsgIsDelegatePerson_(patch.subitem.delegate)) {
+    var isFeedbackStep = tsgIsFeedbackStep_(patch.subitem);
+    if (!patch.skipEnrich && !isFeedbackStep) tsgEnrichItem_(doc, t, patch.subitem, t.subitems.length - 1, now, patch.source || 'unknown', { allowEmptyNotes: true });
+    if (tsgIsDelegatePerson_(patch.subitem.delegate) && !isFeedbackStep && !tsgIsDelegateSource_(patch.source)) {
       t.history = t.history || [];
       tsgHoldForReview_(patch.subitem, t.history, now, 'Subitem "' + patch.subitem.title + '" held off ' + patch.subitem.delegate + "'s view until reviewed");
+    }
+    if (tsgIsDelegateSource_(patch.source)) {
+      t.history = t.history || [];
+      t.history.push({ ts: now, field: isFeedbackStep ? 'feedback-filed' : 'subitem-added', from: null, to: patch.subitem.title, source: patch.source });
+      tsgRecordDelegateActivity_(doc, { ts: now, person: patch.source, taskId: t.id, subIdx: t.subitems.length - 1, title: patch.subitem.title || '',
+        kind: isFeedbackStep ? 'feedback' : 'update', field: isFeedbackStep ? (patch.subitem.feedback.kind || 'Feedback') : 'step added', from: null, to: isFeedbackStep ? String(patch.subitem.notes || '').slice(0, 240) : null });
     }
   } else if (patch.op === 'set_meta') {
     // Generic, reusable merge into doc.meta — unlike remove_dismissed_google_task_ids
@@ -1378,7 +1399,7 @@ function applyDataPatch_(doc, patch) {
     var metaFields = Object.assign({}, patch.fields || {});
     // comments is server-owned too (2026-09-16): use add_comment / update_comment so two
     // writers (the dashboard, a Claude session) never overwrite each other's threads.
-    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion', 'historyArchive', 'noteVersions', 'featureTaskId', 'last_updated', 'version', 'created'].forEach(function(k) { delete metaFields[k]; });  // server-owned
+    ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion', 'historyArchive', 'noteVersions', 'featureTaskId', 'last_updated', 'version', 'created', 'delegateActivity'].forEach(function(k) { delete metaFields[k]; });  // server-owned
     Object.assign(doc.meta, metaFields);
     if (Object.prototype.hasOwnProperty.call(metaFields, 'homeBase')) {
       try { PropertiesService.getScriptProperties().setProperty('TSG_HOME_BASE', String(metaFields.homeBase || '')); } catch (err) {}
@@ -1478,6 +1499,7 @@ function applyDataPatch_(doc, patch) {
   } else {
     throw new Error('Unknown data patch op: ' + patch.op + ' (backend ' + TSG_CODE_VERSION + ' accepts: ' + TSG_DATA_OPS.join(', ') + ')');
   }
+  if (visBefore) tsgResetVisibilityOnChange_(doc, visBefore, now, patch.source);
   doc.meta.last_updated = now;
   doc.meta.docVersion = (doc.meta.docVersion || 0) + 1;
 }
@@ -1673,7 +1695,7 @@ function tsgReminderDate_(remindAt) {
 }
 function tsgReminderPending_(item) {
   if (!item || !item.remindAt || item.reminderSentAt) return false;
-  if (item.done || item.status === 'Done') return false;
+  if (item.done || item.status === 'Done' || tsgIsPendingStatus_(item)) return false;
   return !!tsgReminderDate_(item.remindAt);
 }
 // Extra reminders (2026-09-21, tracker task "allow setting multiple and recurring reminders"):
@@ -1915,6 +1937,7 @@ function tsgPersonNameForRequest_(doc, asOverride) {
 function tsgStatusOfSubs_(subs) {
   if (!subs.length) return 'Not Started';
   if (subs.every(function(s) { return s.done; })) return 'Done';
+  if (subs.every(function(s) { return s.done || tsgIsPendingStatus_(s); })) return TSG_PENDING_STATUS;
   if (subs.some(function(s) { return s.status === 'Blocked'; })) return 'Blocked';
   if (subs.some(function(s) { return s.done || s.status === 'In Progress'; })) return 'In Progress';
   if (subs.some(function(s) { return s.status === 'Waiting'; })) return 'Waiting';
@@ -1931,6 +1954,9 @@ function tsgPersonSlice_(doc, name) {
   (doc.tasks || []).forEach(function(t) {
     if (!t || tsgIsHeldForReview_(t)) return;
     var isOwn = t.owner === name;
+    // Visibility gate (2026-09-23): a task the person does not own reaches their page only
+    // while the owner has turned delegateVisible on (default off; automation turns it off).
+    if (!isOwn && !tsgVisibleToDelegates_(t)) return;
     var isAssigned = !isOwn && tsgTaskDelegate_(t) === name;
     var subs = t.subitems || [];
     var mine = [];
@@ -1945,6 +1971,7 @@ function tsgPersonSlice_(doc, name) {
       priority: t.priority || '',
       progress: context ? Math.round((mineDone / mineSubs.length) * 100) : tsgTaskProgress_(t),
       due: t.timelineEnd || '', notes: context ? '' : (t.notes || ''), group: t.group || '', owner: t.owner || '',
+      pinned: !!t.pinned, feedbackFor: t.feedbackFor || '', docs: context ? [] : (t.docs || []).map(function(d) { return d ? { url: d.url || '', label: d.label || d.name || d.url || '', type: d.type || 'link' } : null; }).filter(Boolean),
       tags: context ? [] : (t.tags || []).slice(), taskType: context ? '' : (t.taskType || ''),
       estHours: (!context && typeof t.estHours === 'number') ? t.estHours : null,
       subTotal: context ? mineSubs.length : subs.length,
@@ -1958,11 +1985,155 @@ function tsgPersonSlice_(doc, name) {
         status: s.done ? 'Done' : (s.status || 'Not Started'), priority: s.priority || t.priority || '',
         progress: s.done ? 100 : (typeof s.progress === 'number' ? s.progress : 0), done: !!s.done,
         due: s.timelineEnd || '', notes: s.notes || '', group: t.group || '', owner: t.owner || '', subTotal: 0,
-        editable: TSG_PERSON_SUB_FIELDS.slice()
+        feedback: tsgIsFeedbackStep_(s) ? { kind: s.feedback.kind || 'Feedback', decision: s.feedback.decision || '', decidedAt: s.feedback.decidedAt || '', implementedAt: s.feedback.implementedAt || '' } : null,
+        editable: tsgIsFeedbackStep_(s) ? ['notes'] : TSG_PERSON_SUB_FIELDS.slice()
       });
     });
   });
   return rows;
+}
+
+/**
+ * ============================================================================
+ * DELEGATE VISIBILITY, PENDING APPROVAL, ACTIVITY LOG, FEEDBACK (2026-09-23, per Durand)
+ *
+ * - `delegateVisible` (task field, default off): a task with a delegate reaches that
+ *   person's page ONLY while this is true. Only the owner can turn it on (a patch that says
+ *   true from any other source is stripped); any MEANINGFUL change by automation (a Claude
+ *   answer, a session patch: title, notes, due, priority, delegate, steps, links, hours,
+ *   location, type) turns it off again so nothing half-edited is seen before Durand looks.
+ *   A person's own edits never turn it off; the owner's dashboard edits never do either.
+ *   A task the person owns (self-created) is always theirs to see.
+ * - Delegates can close nothing themselves: a Done or Cancelled from the person page lands
+ *   as `Done - Pending` (TSG_PENDING_STATUS). Only the owner moves it to Done, after
+ *   verifying the work product (dashboard Approve), or sends it back. Pending items are
+ *   out of the scheduler, out of the reminder tick and out of the open-hours roll-up.
+ * - `meta.delegateActivity[]` (server-owned) records every change a delegate makes: field
+ *   edits, status moves to pending, tasks they add, feedback they file. The dashboard
+ *   raises an alert row and toasts from it; `meta.delegateActivitySeen` is the owner's
+ *   read marker; `meta.delegateEmails === 'on'` also mails each entry (default off).
+ * - Feedback: one pinned collection task per delegate (`feedbackFor: <Name>`); the person
+ *   page files an item as a step on it ({feedback: {kind, by, ts}}, delegate = the person
+ *   so it shows on their page, never enriched, never held for review). Durand implements
+ *   (a Claude step on the tracker feature task, linked by `feedbackRef`) or declines; a
+ *   linked step going Done marks the feedback item Done (tsgSyncFeedbackImplementations_).
+ * ---------------------------------------------------------------------------
+ */
+var TSG_OWNER_NAME = 'Durand';
+var TSG_PENDING_STATUS = 'Done - Pending';
+var TSG_PERSON_STATUSES = ['Not Started', 'In Progress', 'Blocked', 'Waiting', TSG_PENDING_STATUS];
+var TSG_DELEGATE_ACTIVITY_CAP = 200;
+var TSG_FEEDBACK_KINDS = ['Bug', 'Feature request', 'Feedback'];
+var TSG_FEEDBACK_TITLE_CHARS = 90;
+
+function tsgIsOwnerSource_(source) { return String(source || '').trim().toLowerCase() === TSG_OWNER_NAME.toLowerCase(); }
+/** A named person who is not the owner: a delegate writing from their own page. */
+function tsgIsDelegateSource_(source) { return tsgIsPersonSource_(source) && !tsgIsOwnerSource_(source); }
+function tsgIsPendingStatus_(item) { return !!item && item.status === TSG_PENDING_STATUS; }
+function tsgVisibleToDelegates_(t) { return !!t && t.delegateVisible === true; }
+
+/** The fields whose change is "meaningful" to the person reading the task. Status, progress, tags, schedule and travel bookkeeping are not. */
+function tsgVisibilityHash_(t) {
+  if (!t) return '';
+  var steps = (t.subitems || []).map(function(s) {
+    return s ? [s.title || '', s.notes || '', s.delegate || '', s.estHours == null ? '' : s.estHours, s.timelineEnd || '', s.location || '', (s.docs || []).map(function(d) { return d && d.url; }).join('|')].join('\u0001') : '';
+  }).join('\u0002');
+  return [t.title || '', t.notes || '', t.priority || '', t.taskType || '', t.estHours == null ? '' : t.estHours, tsgTaskDelegate_(t), t.location || '',
+    t.timelineEnd || '', t.dueTime || '', (t.docs || []).map(function(d) { return d && d.url; }).join('|'), steps].join('\u0003');
+}
+function tsgSnapshotVisibility_(doc) {
+  var out = {};
+  (doc && doc.tasks || []).forEach(function(t) { if (t && tsgVisibleToDelegates_(t)) out[t.id] = tsgVisibilityHash_(t); });
+  return out;
+}
+/** After an automation write: every visible task whose meaningful content moved is hidden again, with a history line saying why. */
+function tsgResetVisibilityOnChange_(doc, before, now, source) {
+  var reset = 0;
+  (doc && doc.tasks || []).forEach(function(t) {
+    if (!t || !tsgVisibleToDelegates_(t) || !Object.prototype.hasOwnProperty.call(before, t.id)) return;
+    if (before[t.id] === tsgVisibilityHash_(t)) return;
+    t.delegateVisible = false; reset++;
+    t.history = t.history || [];
+    t.history.push({ ts: now, field: 'delegateVisible', from: 'true', to: 'false', source: source || 'unknown', note: 'hidden from the delegate again: the task changed by automation; review and turn it back on' });
+  });
+  return reset;
+}
+/** Only the owner turns visibility on. Anyone else asking for true is ignored (false is always accepted). */
+function tsgStripVisibilityFromFields_(fields, source) {
+  if (!fields || !Object.prototype.hasOwnProperty.call(fields, 'delegateVisible')) return false;
+  if (fields.delegateVisible === true && !tsgIsOwnerSource_(source)) { delete fields.delegateVisible; return true; }
+  fields.delegateVisible = fields.delegateVisible === true;
+  return false;
+}
+
+function tsgFeedbackTaskFor_(doc, name) {
+  var want = String(name || '').trim().toLowerCase();
+  if (!want) return null;
+  return (doc && doc.tasks || []).filter(function(t) {
+    return t && t.status !== 'Done' && t.status !== 'Cancelled' && String(t.feedbackFor || '').trim().toLowerCase() === want;
+  })[0] || null;
+}
+function tsgIsFeedbackStep_(s) { return !!(s && s.feedback && typeof s.feedback === 'object'); }
+
+function tsgRecordDelegateActivity_(doc, entry) {
+  if (!doc || !entry) return;
+  if (!doc.meta) doc.meta = {};
+  var list = Array.isArray(doc.meta.delegateActivity) ? doc.meta.delegateActivity : [];
+  list.push(entry);
+  if (list.length > TSG_DELEGATE_ACTIVITY_CAP) list = list.slice(-TSG_DELEGATE_ACTIVITY_CAP);
+  doc.meta.delegateActivity = list;
+  if (doc.meta.delegateEmails === 'on') {
+    try {
+      MailApp.sendEmail(OWNER_EMAIL, 'Tracker: ' + entry.person + ' ' + tsgActivityVerb_(entry) + ' "' + (entry.title || '') + '"',
+        entry.person + ' ' + tsgActivityVerb_(entry) + ' #' + entry.taskId + (entry.subIdx != null ? ' step ' + entry.subIdx : '') + ' "' + (entry.title || '') + '"' +
+        (entry.field ? '\n' + entry.field + ': ' + String(entry.from == null ? '—' : entry.from).slice(0, 300) + ' -> ' + String(entry.to == null ? '—' : entry.to).slice(0, 300) : '') + '\n\nOpen the tracker to review.');
+    } catch (mailErr) { Logger.log('[delegate-activity] mail failed: ' + mailErr.message); }
+  }
+}
+function tsgActivityVerb_(e) {
+  if (!e) return '';
+  if (e.kind === 'add') return 'added a task';
+  if (e.kind === 'feedback') return 'filed ' + String(e.field || 'feedback').toLowerCase();
+  if (e.kind === 'pending') return 'marked done (awaiting your approval)';
+  return 'changed ' + (e.field || 'a field') + ' on';
+}
+/** One activity entry per changed field of a delegate's write (the cut values keep the log small). */
+function tsgLogDelegateFieldActivity_(doc, person, task, subIdx, title, before, after, keys, now) {
+  (keys || []).forEach(function(k) {
+    if (k === 'history' || k === 'id') return;
+    if (tsgValuesEqual_(before[k], after[k])) return;
+    var cut = function(v) { if (v == null || v === '') return null; v = typeof v === 'string' ? v : JSON.stringify(v); return v.length > 240 ? v.slice(0, 240) + '…' : v; };
+    tsgRecordDelegateActivity_(doc, { ts: now, person: person, taskId: task.id, subIdx: subIdx == null ? null : subIdx, title: title || '',
+      kind: (k === 'status' && after[k] === TSG_PENDING_STATUS) ? 'pending' : 'update', field: k === 'timelineEnd' ? 'due' : k, from: cut(before[k]), to: cut(after[k]) });
+  });
+}
+/**
+ * A feedback item Durand accepted is linked (feedbackRef on the Claude step) to the tracker
+ * feature task; when that step is Done the feedback item closes itself with a note. Runs on
+ * every write.
+ */
+function tsgSyncFeedbackImplementations_(doc, now) {
+  var closed = 0;
+  var tasks = doc && doc.tasks || [];
+  var implSteps = [];
+  tasks.forEach(function(t) { (t && t.subitems || []).forEach(function(s) { if (s && s.feedbackRef && (s.done || s.status === 'Done')) implSteps.push({ ref: s.feedbackRef, step: s, task: t }); }); });
+  if (!implSteps.length) return 0;
+  tasks.forEach(function(t) {
+    if (!t || !t.feedbackFor) return;
+    (t.subitems || []).forEach(function(s, i) {
+      if (!tsgIsFeedbackStep_(s) || s.done || s.status === 'Done' || s.feedback.decision !== 'accepted') return;
+      var hit = implSteps.filter(function(x) { return x.ref && x.ref.taskId === t.id && (x.ref.index === i || (x.ref.title && x.ref.title === s.title)); })[0];
+      if (!hit) return;
+      s.done = true; s.status = 'Done'; s.progress = 100; s.feedback.implementedAt = now;
+      s.notes = 'IMPLEMENTED ' + String(now).slice(0, 10) + ': shipped as "' + (hit.step.title || '') + '" on #' + hit.task.id + '.\n\n' + String(s.notes || '');
+      s.history = Array.isArray(s.history) ? s.history : [];
+      s.history.push({ ts: now, field: 'status', from: TSG_PENDING_STATUS === s.status ? TSG_PENDING_STATUS : 'In Progress', to: 'Done', source: 'rollup', note: 'implementation step done on #' + hit.task.id });
+      t.history = t.history || [];
+      t.history.push({ ts: now, field: 'subitem-status', from: s.title, to: 'Done (implemented on #' + hit.task.id + ')', source: 'rollup' });
+      closed++;
+    });
+  });
+  return closed;
 }
 
 /** Queue one data patch and apply it now. Returns {ok, busy?, docVersion?}. */
@@ -1997,8 +2168,11 @@ function tsgPersonRpc(action, payloadJson) {
   if (action === 'load') {
     return JSON.stringify({
       ok: true, person: name, docVersion: doc.meta && doc.meta.docVersion, codeVersion: TSG_CODE_VERSION,
-      statuses: (doc.meta && doc.meta.status_values) || ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'],
+      // A delegate can never pick Done: the list ends at Done - Pending; Durand approves.
+      statuses: TSG_PERSON_STATUSES.slice(), pendingStatus: TSG_PENDING_STATUS,
       priorities: (doc.meta && doc.meta.priority_values) || TSG_PRIORITY_VALUES,
+      feedbackTaskId: (function() { var ft = tsgFeedbackTaskFor_(doc, name); return ft ? ft.id : null; })(),
+      feedbackKinds: TSG_FEEDBACK_KINDS.slice(),
       rows: tsgPersonSlice_(doc, name)
     });
   }
@@ -2016,7 +2190,12 @@ function tsgPersonRpc(action, payloadJson) {
       if (row.editable.indexOf(key) === -1) { rejected.push(k); return; }
       var v = offered[k];
       if (key === 'progress') { v = Math.max(0, Math.min(100, Math.round(Number(v) || 0))); }
-      if (key === 'status' && ((doc.meta && doc.meta.status_values) || []).length && (doc.meta.status_values).indexOf(v) === -1) { rejected.push(k); return; }
+      if (key === 'status') {
+        // Done / Cancelled from a delegate lands as pending; the owner (previewing) may still close.
+        if ((v === 'Done' || v === 'Cancelled') && actor === name) v = TSG_PENDING_STATUS;
+        var allowed = TSG_PERSON_STATUSES.concat(actor === name ? [] : ['Done', 'Cancelled']);
+        if (allowed.indexOf(v) === -1) { rejected.push(k); return; }
+      }
       if (key === 'priority' && ((doc.meta && doc.meta.priority_values) || []).length && (doc.meta.priority_values).indexOf(v) === -1) { rejected.push(k); return; }
       if (key === 'timelineEnd' && v && !tsgIsValidIsoDate_(v)) { rejected.push(k); return; }
       if (key === 'title' && !String(v || '').trim()) { rejected.push(k); return; }
@@ -2029,8 +2208,25 @@ function tsgPersonRpc(action, payloadJson) {
     var op = (row.kind === 'sub')
       ? { op: 'update_subitem', id: row.id, index: row.index, expectTitle: row.title, fields: fields, source: actor }
       : { op: 'update_task', id: row.id, fields: fields, source: actor };
-    if (row.kind === 'task' && fields.status === 'Done') op.fields.progress = 100;
+    if (row.kind === 'task' && (fields.status === 'Done' || fields.status === TSG_PENDING_STATUS)) op.fields.progress = 100;
     return JSON.stringify(tsgQueueDataPatch_(op));
+  }
+  if (action === 'feedback') {
+    // Bug report / feature request / feedback, filed as a step on the person's own pinned
+    // feedback task (feedbackFor = name). Never enriched, never held for review; the step is
+    // delegated to the person so it stays on their page with its decision.
+    var ft = tsgFeedbackTaskFor_(doc, name);
+    if (!ft) return JSON.stringify({ ok: false, error: 'no feedback task for ' + name + ' yet; ask Durand' });
+    var text = String(payload.text || '').replace(/\r/g, '').trim();
+    if (!text) return JSON.stringify({ ok: false, error: 'text required' });
+    var kind = TSG_FEEDBACK_KINDS.indexOf(payload.kind) !== -1 ? payload.kind : 'Feedback';
+    var firstLine = text.split('\n')[0].trim();
+    var fbTitle = '[' + kind + '] ' + (firstLine.length > TSG_FEEDBACK_TITLE_CHARS ? firstLine.slice(0, TSG_FEEDBACK_TITLE_CHARS - 1) + '…' : firstLine);
+    var fbNow = new Date().toISOString();
+    var sub = { title: fbTitle, notes: text, delegate: name, status: 'Not Started', done: false, progress: 0, priority: ft.priority || 'Medium',
+      taskType: 'Hands-on', tags: [], docs: [], estHours: null, feedback: { kind: kind, by: name, ts: fbNow },
+      history: [{ ts: fbNow, field: 'created', from: null, to: null, source: actor }] };
+    return JSON.stringify(tsgQueueDataPatch_({ op: 'add_subitem', id: ft.id, subitem: sub, source: actor, skipEnrich: true, feedback: true }));
   }
   if (action === 'add') {
     var title = String(payload.title || '').trim();
@@ -3258,7 +3454,7 @@ function tsgApplyDelegateApproval_(doc) {
       t.history.push({ ts: now, field: 'needsApproval', from: was, to: 'true', source: 'Delegation' });
     }
     (t.subitems || []).forEach(function(s) {
-      if (!s || s.done || s.status === 'Done' || s.status === 'Cancelled') return;
+      if (!s || s.done || s.status === 'Done' || s.status === 'Cancelled' || tsgIsFeedbackStep_(s)) return;
       if (tsgIsDelegatedAway_(s.delegate) && s.needsApproval !== true) {
         s.needsApproval = true; changed++;
         if (!Array.isArray(t.history)) t.history = [];
@@ -3898,7 +4094,7 @@ function backupTrackerFile_(key, payload) {
 // edits (replace_all) or 'unknown' if a caller genuinely didn't say. tags is diffed as
 // one whole-array entry rather than per-tag; every other field here is a plain scalar.
 var TSG_TASK_DIFF_FIELDS = ['title', 'owner', 'delegate', 'status', 'priority', 'group', 'timelineEnd',
-  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned', 'dueTime', 'remindAt', 'dependsNone', 'actualHours', 'needsApproval'];
+  'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'dueOverride', 'location', 'travelMode', 'travelMethod', 'pinned', 'dueTime', 'remindAt', 'dependsNone', 'actualHours', 'needsApproval', 'delegateVisible'];
 var TSG_SUBITEM_DIFF_FIELDS = ['title', 'delegate', 'status', 'priority', 'timelineEnd',
   'progress', 'depends', 'doc', 'notes', 'estHours', 'estDays', 'taskType', 'done', 'location', 'travelMode', 'travelMethod', 'dueTime', 'remindAt', 'actualHours', 'needsApproval'];
 
@@ -4769,7 +4965,7 @@ var TSG_ESTIMATE_SYSTEM =
 // Set by the system itself — never something the estimator should be allowed to hand back,
 // even if it ignores the instruction not to. Filtered out of parsed.tags defensively below.
 var TSG_REVIEW_TAG = 'Triage';
-var TSG_RESERVED_TAGS = ['Triage', 'Review', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude', 'At Risk', 'Needs Durand'];
+var TSG_RESERVED_TAGS = ['Triage', 'Review', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude', 'At Risk', 'Needs Durand', 'Feedback'];
 
 /**
  * Review gate (2026-09-15, per Durand: "when new tasks are pushed, tag them for review
@@ -5834,7 +6030,7 @@ function tsgOpenSubitemHours_(t) {
   (t.subitems || []).forEach(function(s) {
     var hadInfo = (s.estHours != null && !isNaN(s.estHours)) || (s.delegate && !tsgIsDurandDelegate_(s));
     if (hadInfo) any = true;
-    if (!s.done) {
+    if (!s.done && !tsgIsPendingStatus_(s)) {
       if (s.estHours != null && !isNaN(s.estHours)) hours += Number(s.estHours);
       if (tsgIsClaudeDelegate_(s) && s.needsApproval) hours += tsgPostReviewHours_(); // post-approval update session (real work; Settings > Capacity)
       if (s.timelineEnd && (!latestOpenEnd || s.timelineEnd > latestOpenEnd)) latestOpenEnd = s.timelineEnd;
@@ -6058,7 +6254,7 @@ function tsgWorkItemsOf_(t) {
   if (t.subitems && t.subitems.length) {
     var items = [];
     t.subitems.forEach(function(s, idx) {
-      if (s.done) return;
+      if (s.done || tsgIsPendingStatus_(s) || tsgIsFeedbackStep_(s)) return;
       items.push({ ref: s, parent: t, idx: idx, isSubitem: true,
         label: '"' + s.title + '" (subitem of #' + t.id + ' "' + t.title + '")' });
     });
@@ -6305,6 +6501,7 @@ function tsgAutoScheduleDoc_(doc) {
   tsgMigrateDocToDocs_(doc);
   tsgNormalizeTaskShapes_(doc);
   tsgApplyDelegateApproval_(doc);
+  try { tsgSyncFeedbackImplementations_(doc, new Date().toISOString()); } catch (fbErr) { Logger.log('[feedback] sync failed: ' + fbErr.message); }
   tsgFlagNeedsDurand_(doc, new Date().toISOString());
   tsgRollupSubitemHours_(doc, new Date().toISOString());
   tsgApplyTravelTimes_(doc);
@@ -6313,7 +6510,7 @@ function tsgAutoScheduleDoc_(doc) {
 
   var allItems = [];
   tasks.forEach(function(t) {
-    if (t.status === 'Done' || t.status === 'Cancelled') return;
+    if (t.status === 'Done' || t.status === 'Cancelled' || tsgIsPendingStatus_(t)) return;
     tsgWorkItemsOf_(t).forEach(function(it) { allItems.push(it); });
   });
 

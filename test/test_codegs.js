@@ -1105,10 +1105,10 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   const roster = [{ name: 'Durand', email: '' }, { name: 'Marj', email: '' }, { name: 'Perly', email: '' }];
   function personDoc() {
     return { meta: { docVersion: 100, next_id: 50, teamRoster: roster, status_values: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'], priority_values: ['Critical', 'High', 'Medium', 'Low'] }, tasks: [
-      { id: 1, title: 'Durand task with Marj sub', owner: 'Durand', status: 'In Progress', priority: 'High', progress: 0, timelineEnd: '2026-09-20', notes: 'parent notes', history: [], subitems: [
+      { id: 1, title: 'Durand task with Marj sub', owner: 'Durand', delegateVisible: true, status: 'In Progress', priority: 'High', progress: 0, timelineEnd: '2026-09-20', notes: 'parent notes', history: [], subitems: [
         { title: 'Marj part', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, timelineEnd: '2026-09-18', notes: '' },
         { title: 'Perly part', delegate: 'Perly', done: true, status: 'Done', progress: 100, timelineEnd: '', notes: '' } ] },
-      { id: 2, title: 'Assigned to Marj', owner: 'Durand', delegate: 'Marj', status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '2026-09-25', notes: '', history: [], subitems: [] },
+      { id: 2, title: 'Assigned to Marj', owner: 'Durand', delegate: 'Marj', delegateVisible: true, status: 'Not Started', priority: 'Medium', progress: 0, timelineEnd: '2026-09-25', notes: '', history: [], subitems: [] },
       { id: 3, title: "Marj's own task", owner: 'Marj', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'mine', history: [], subitems: [] },
       { id: 4, title: 'Nothing to do with Marj', owner: 'Durand', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: 'secret', history: [], subitems: [] },
       { id: 5, title: 'Marj task with steps', owner: 'Marj', delegate: 'Marj', status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'n', tags: ['Self-created', 'Flyers'], taskType: 'Hands-on', estHours: 3, history: [], subitems: [
@@ -1163,7 +1163,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   };
 
   let r = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
-  check('load: Marj gets her rows and the status/priority vocab', r.ok && r.person === 'Marj' && r.rows.length === 7 && r.statuses.includes('Done') && r.priorities.includes('High'));
+  check('load: Marj gets her rows and the status/priority vocab; Done is not on her list, Done - Pending is', r.ok && r.person === 'Marj' && r.rows.length === 7 && !r.statuses.includes('Done') && r.statuses.includes('Done - Pending') && r.pendingStatus === 'Done - Pending' && r.priorities.includes('High'));
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { priority: 'Critical' } })));
   check('update: priority on an assigned task is refused server-side', r.ok === false && /not editable: priority/.test(r.error));
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { due: '2026-10-01' } })));
@@ -1201,7 +1201,7 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
 
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'sub', id: 1, index: 0, fields: { status: 'Done' } })));
   d = JSON.parse(disk);
-  check('update: a delegated subitem marked Done sets done and progress 100 via update_subitem', r.ok === true && d.tasks[0].subitems[0].done === true && d.tasks[0].subitems[0].progress === 100);
+  check('update: a delegated subitem marked Done by the person lands as Done - Pending (not done) with progress 100, and the activity log records it', r.ok === true && d.tasks[0].subitems[0].done === false && d.tasks[0].subitems[0].status === 'Done - Pending' && d.tasks[0].subitems[0].progress === 100 && (d.meta.delegateActivity || []).some(a => a.person === 'Marj' && a.kind === 'pending' && a.taskId === 1 && a.subIdx === 0));
   claudeCalls = []; progressAnswer = 50;
   r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'sub', id: 5, index: 1, fields: { notes: 'half the copy is drafted' } })));
   d = JSON.parse(disk);
@@ -1357,7 +1357,7 @@ section('Review gate: pushed delegate items carry Triage and stay off the person
   sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { delegate: 'Perly' }, source: 'Claude' });
   check('update_task re-pointing a task at a person holds the task and logs the delegate change', d.tasks[0].tags.includes('Triage') && d.tasks[0].history.some(h => h.field === 'delegate' && h.to === 'Perly'));
   // legacy `assignee`: still read, migrated on the next write, accepted in a patch under the old name
-  const legacy = { meta: { docVersion: 1 }, tasks: [ { id: 9, title: 'Old shape', owner: 'Durand', delegate: 'Marj', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: '', tags: [], history: [], subitems: [] } ] };
+  const legacy = { meta: { docVersion: 1 }, tasks: [ { id: 9, title: 'Old shape', owner: 'Durand', delegate: 'Marj', delegateVisible: true, status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: '', tags: [], history: [], subitems: [] } ] };
   check('a task still carrying assignee is sliced to that person until migrated', sandbox.tsgPersonSlice_(legacy, 'Marj').some(r => r.id === 9 && r.own === false));
   sandbox.tsgAutoScheduleDoc_(legacy);
   check('the scheduling pass migrates assignee to delegate and drops the old field', legacy.tasks[0].delegate === 'Marj' && !('assignee' in legacy.tasks[0]));
@@ -1366,7 +1366,7 @@ section('Review gate: pushed delegate items carry Triage and stay off the person
   // what the people see
   let rows = sandbox.tsgPersonSlice_(d, 'Marj');
   check("Marj's page hides the held task, the held parent and its steps, and the held new subitems", !rows.some(r => /fall postcard|brand refresh/i.test(r.title)) && !rows.some(r => r.id === 1));
-  d.tasks[0].tags = [];
+  d.tasks[0].tags = []; d.tasks[0].delegateVisible = true;
   rows = sandbox.tsgPersonSlice_(d, 'Marj');
   check("clearing Triage on the parent releases it: her old step shows, the held new step still does not", rows.some(r => r.kind === 'sub' && r.title === 'old step') && !rows.some(r => r.kind === 'sub' && r.title === 'another for Marj'));
   check('a person-created task is exempt (covered above) and Triage stays a reserved tag the model cannot hand out', vm.runInContext('TSG_RESERVED_TAGS', sandbox).includes('Triage') && vm.runInContext('TSG_REVIEW_TAG', sandbox) === 'Triage');
@@ -2025,8 +2025,6 @@ section('Steps share a day; a hand-set parent date is flagged, never moved (2026
   check('At Risk is a reserved tag', sandbox.TSG_RESERVED_TAGS.includes('At Risk'));
 }
 
-console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
-if (FAILS) process.exitCode = 1;
 
 section('Write amplification: slim judgments, coalesced step requests, history retention, failure mail (2026-09-18)');
 {
@@ -2413,3 +2411,121 @@ section('Rulesets history stays out of the hot file (2026-09-22)');
   sandbox.DriveApp.getFolderById = savedRsFolder;
 }
 
+section('Delegate visibility, pending approval, activity log, feedback (2026-09-23)');
+{
+  const roster = [{ name: 'Durand', email: '' }, { name: 'Marj', email: '' }, { name: 'Perly', email: '' }];
+  function vdoc() {
+    return { meta: { docVersion: 5, next_id: 60, teamRoster: roster, priority_values: ['Critical', 'High', 'Medium', 'Low'] }, tasks: [
+      { id: 1, title: 'Delegated to Marj, hidden', owner: 'Durand', delegate: 'Marj', status: 'In Progress', priority: 'Medium', progress: 20, timelineEnd: '2026-10-02', notes: 'draft', tags: [], history: [], subitems: [] },
+      { id: 2, title: 'Delegated to Marj, visible', owner: 'Durand', delegate: 'Marj', delegateVisible: true, status: 'In Progress', priority: 'Medium', progress: 20, timelineEnd: '2026-10-03', notes: 'ready', tags: [], history: [], subitems: [] },
+      { id: 3, title: "Marj's own", owner: 'Marj', delegate: 'Marj', status: 'Not Started', priority: 'Low', progress: 0, timelineEnd: '', notes: '', tags: ['Self-created'], history: [], subitems: [] },
+      { id: 4, title: 'Durand parent with a Marj step, visible', owner: 'Durand', delegateVisible: true, status: 'In Progress', priority: 'High', progress: 0, timelineEnd: '2026-10-05', notes: '', tags: [], history: [], subitems: [
+        { title: 'Marj step', delegate: 'Marj', done: false, status: 'In Progress', progress: 30, timelineEnd: '2026-10-01', notes: '', tags: [], history: [], estHours: 1 } ] },
+      { id: 5, title: '@Marj — Bug reports, feature requests and feedback', owner: 'Durand', delegate: 'Marj', delegateVisible: true, feedbackFor: 'Marj', pinned: true, status: 'In Progress', priority: 'Medium', progress: 0, timelineEnd: '', notes: 'how to', tags: ['Feedback'], history: [], subitems: [] },
+      { id: 6, title: '@Claude - Track all Task Tracker Feature/Bug Requests/Reports Here', owner: 'Durand', delegate: 'Claude', pinned: true, status: 'In Progress', priority: 'High', progress: 0, timelineEnd: '', notes: '', tags: [], history: [], subitems: [] }
+    ] };
+  }
+  driveFilesFixture = []; calendarEventsFixture = []; gmailThreadsFixture = [];
+  claudeResponder = () => ({ rationale: 'quiet' });
+  // slice: the switch
+  let rows = sandbox.tsgPersonSlice_(vdoc(), 'Marj');
+  check('slice: a delegated task with delegateVisible off is not on her page; the visible one, her own task, the visible parent with her step and her feedback task are', !rows.some(r => r.id === 1) && rows.some(r => r.kind === 'task' && r.id === 2) && rows.some(r => r.id === 3) && rows.some(r => r.kind === 'sub' && r.id === 4) && rows.some(r => r.id === 5 && r.pinned === true && r.feedbackFor === 'Marj'));
+  let d = vdoc(); d.tasks[3].delegateVisible = false;
+  rows = sandbox.tsgPersonSlice_(d, 'Marj');
+  check('slice: the switch covers the steps too: the parent off hides her step', !rows.some(r => r.id === 4));
+  // only the owner turns it on
+  d = vdoc();
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { delegateVisible: true }, source: 'Claude session (x)' });
+  check('update_task: delegateVisible true from a session is stripped', d.tasks[0].delegateVisible !== true);
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 1, fields: { delegateVisible: true }, source: 'Durand' });
+  check('update_task: delegateVisible true from the owner lands and is logged', d.tasks[0].delegateVisible === true && d.tasks[0].history.some(h => h.field === 'delegateVisible' && h.to === true && h.source === 'Durand'));
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Pushed for Marj', owner: 'Durand', delegate: 'Marj', delegateVisible: true, priority: 'Low', group: 'Ops', notes: '', tags: [] }, source: 'Claude', skipDedup: true, skipEnrich: true });
+  check('add_task: a pushed task cannot arrive visible', d.tasks.find(t => /pushed for marj/i.test(t.title)).delegateVisible !== true);
+  // automation changes turn it off; a person's own edit and a status-only change do not
+  d = vdoc();
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 2, fields: { status: 'Blocked' }, source: 'Claude (routine)' });
+  check('a status-only change by automation keeps the task visible', d.tasks[1].delegateVisible === true);
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 2, fields: { notes: 'Claude rewrote this' }, source: 'Claude (routine)' });
+  check('a notes change by automation turns the switch off with a history line naming the source', d.tasks[1].delegateVisible === false && d.tasks[1].history.some(h => h.field === 'delegateVisible' && h.from === 'true' && h.to === 'false' && h.source === 'Claude (routine)'));
+  d = vdoc();
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 2, fields: { notes: 'Marj typed this' }, source: 'Marj' });
+  check("a person's own edit never turns it off", d.tasks[1].delegateVisible === true);
+  d = vdoc();
+  sandbox.applyDataPatch_(d, { op: 'bulk', ops: [{ op: 'update_subitem', id: 4, index: 0, fields: { title: 'Marj step, retitled' } }], source: 'Claude session (y)' });
+  check('a step change inside a bulk by automation turns the parent off', d.tasks[3].delegateVisible === false);
+  d = vdoc();
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 2, fields: { timelineEnd: '2026-10-09' }, source: 'Durand' });
+  check("the owner's own edit keeps it on", d.tasks[1].delegateVisible === true);
+  // pending status is out of the scheduler, the reminder tick and the open-hours roll-up
+  d = vdoc();
+  d.tasks[0].status = 'Done - Pending'; d.tasks[0].timelineEnd = ''; d.tasks[0].estHours = 2;
+  d.tasks[3].subitems[0].status = 'Done - Pending';
+  sandbox.tsgAutoScheduleDoc_(d);
+  check('a Done - Pending task is not scheduled; a Done - Pending step costs no open hours on its parent', !d.tasks[0].scheduledStart && !d.tasks[0].timelineEnd && sandbox.tsgOpenSubitemHours_(d.tasks[3]).hours === 0);
+  check('a Done - Pending item has no pending reminder', sandbox.tsgReminderPending_({ remindAt: '2026-09-01T09:00', status: 'Done - Pending' }) === false);
+  check('set_meta cannot write delegateActivity', (function() { const x = vdoc(); sandbox.applyDataPatch_(x, { op: 'set_meta', fields: { delegateActivity: [{ fake: true }], delegateActivitySeen: '2026-09-23T00:00:00Z' }, source: 'Durand' }); return !x.meta.delegateActivity && x.meta.delegateActivitySeen === '2026-09-23T00:00:00Z'; })());
+  // RPC as Marj: pending, activity, feedback
+  const origSession = sandbox.Session, origGetFileById = sandbox.DriveApp.getFileById, origGetFolderById = sandbox.DriveApp.getFolderById, origLock = sandbox.LockService.getScriptLock;
+  const FILE_IDS5 = vm.runInContext('FILE_IDS', sandbox);
+  let disk = JSON.stringify(vdoc());
+  let queued = [];
+  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS5.data ? disk : '{}') }), setContent: (c) => { if (id === FILE_IDS5.data) disk = c; } });
+  sandbox.DriveApp.getFolderById = () => ({
+    createFile: (name, content) => { queued.push({ name, content }); },
+    getFiles: () => { const items = queued.splice(0).map(q => ({ isTrashed: () => false, getName: () => q.name, setName: () => {}, setTrashed: () => {}, getDateCreated: () => new Date(), getBlob: () => ({ getDataAsString: () => q.content }) })); let i = 0; return { hasNext: () => i < items.length, next: () => items[i++] }; },
+    getFilesByName: () => ({ hasNext: () => false })
+  });
+  sandbox.LockService.getScriptLock = () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} });
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'marj@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  let claudeCalls = [];
+  claudeResponder = (system, user) => { claudeCalls.push(user); return { rationale: 'quiet' }; };
+  let r = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
+  check('load: the page gets her feedback task id and the feedback kinds', r.ok && r.feedbackTaskId === 5 && r.feedbackKinds.join() === 'Bug,Feature request,Feedback');
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { status: 'Done' } })));
+  let dd = JSON.parse(disk);
+  check('update: Done from a delegate lands as Done - Pending with progress 100, logged as her write, and in the activity log as kind pending', r.ok === true && dd.tasks[1].status === 'Done - Pending' && dd.tasks[1].progress === 100 && dd.tasks[1].history.some(h => h.field === 'status' && h.to === 'Done - Pending' && h.source === 'Marj') && dd.meta.delegateActivity.some(a => a.kind === 'pending' && a.person === 'Marj' && a.taskId === 2 && a.from === 'In Progress' && a.to === 'Done - Pending'));
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'task', id: 2, fields: { status: 'Cancelled' } })));
+  dd = JSON.parse(disk);
+  check('update: Cancelled from a delegate also lands as Done - Pending', r.ok === true && dd.tasks[1].status === 'Done - Pending');
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'sub', id: 4, index: 0, fields: { status: 'Done' } })));
+  dd = JSON.parse(disk);
+  check('update: a step ticked by a delegate is Done - Pending, not done', r.ok === true && dd.tasks[3].subitems[0].status === 'Done - Pending' && dd.tasks[3].subitems[0].done === false && dd.tasks[3].subitems[0].progress === 100);
+  r = JSON.parse(sandbox.tsgPersonRpc('add', JSON.stringify({ title: 'Marj adds one', priority: 'Low', due: '', notes: '' })));
+  dd = JSON.parse(disk);
+  check('add: a task she adds is logged as activity kind add', r.ok === true && dd.meta.delegateActivity.some(a => a.kind === 'add' && a.person === 'Marj' && /marj adds one/i.test(a.title)));
+  claudeCalls = [];
+  r = JSON.parse(sandbox.tsgPersonRpc('feedback', JSON.stringify({ kind: 'Bug', text: 'The due date picker jumps to next month\nSteps: open a card, click the date.' })));
+  dd = JSON.parse(disk);
+  const fb = dd.tasks[4].subitems[0];
+  check('feedback: lands as a step on her feedback task with the kind in the title, the text as notes, delegated to her, feedback {kind, by, ts}, no enrich call, no Triage, no approval flag', r.ok === true && !!fb && fb.title === '[Bug] The due date picker jumps to next month' && /Steps: open a card/.test(fb.notes) && fb.delegate === 'Marj' && fb.feedback.kind === 'Bug' && fb.feedback.by === 'Marj' && claudeCalls.length === 0 && !(fb.tags || []).includes('Triage') && !fb.needsApproval && !(dd.meta.judgments || []).length);
+  check('feedback: recorded as activity kind feedback and on the parent history', dd.meta.delegateActivity.some(a => a.kind === 'feedback' && a.field === 'Bug' && a.taskId === 5) && dd.tasks[4].history.some(h => h.field === 'feedback-filed'));
+  rows = sandbox.tsgPersonSlice_(dd, 'Marj');
+  const fbRow = rows.find(x => x.kind === 'sub' && x.id === 5);
+  check('slice: the feedback item shows on her page with notes editable only and its decision state', !!fbRow && fbRow.editable.join() === 'notes' && fbRow.feedback && fbRow.feedback.kind === 'Bug' && fbRow.feedback.decision === '');
+  r = JSON.parse(sandbox.tsgPersonRpc('update', JSON.stringify({ kind: 'sub', id: 5, index: 0, fields: { status: 'Done' } })));
+  check('a delegate cannot change the status of a feedback item', r.ok === false && /not editable/.test(r.error));
+  r = JSON.parse(sandbox.tsgPersonRpc('feedback', JSON.stringify({ kind: 'Feature request', text: '' })));
+  check('feedback: empty text is refused', r.ok === false && /text required/.test(r.error));
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'perly@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  r = JSON.parse(sandbox.tsgPersonRpc('feedback', JSON.stringify({ kind: 'Bug', text: 'x' })));
+  check('feedback: a person with no feedback task yet gets a clear refusal', r.ok === false && /no feedback task for Perly/.test(r.error));
+  // the pushed-from-page feedback is closed when its implementation step is done
+  dd = JSON.parse(disk);
+  dd.tasks[4].subitems[0].feedback.decision = 'accepted'; dd.tasks[4].subitems[0].status = 'In Progress';
+  dd.tasks[5].subitems.push({ title: 'The due date picker jumps to next month', delegate: 'Claude', done: true, status: 'Done', progress: 100, feedbackRef: { taskId: 5, index: 0, title: '[Bug] The due date picker jumps to next month' }, tags: [], history: [] });
+  sandbox.tsgAutoScheduleDoc_(dd);
+  check('an accepted feedback item closes itself when the linked Claude step is Done, with an IMPLEMENTED note', dd.tasks[4].subitems[0].done === true && dd.tasks[4].subitems[0].status === 'Done' && /^IMPLEMENTED \d{4}-\d{2}-\d{2}: shipped as/.test(dd.tasks[4].subitems[0].notes) && dd.tasks[4].subitems[0].feedback.implementedAt);
+  // activity mail is off by default and on when asked
+  sentMail = [];
+  dd = vdoc(); dd.meta.delegateEmails = 'on';
+  sandbox.applyDataPatch_(dd, { op: 'update_task', id: 2, fields: { notes: 'hello' }, source: 'Marj' });
+  check('delegateEmails on: a delegate write mails the owner; off (default): it does not', sentMail.length === 1 && /Marj changed notes/.test(sentMail[0].subject) && (function() { sentMail = []; const x = vdoc(); sandbox.applyDataPatch_(x, { op: 'update_task', id: 2, fields: { notes: 'hi' }, source: 'Marj' }); return sentMail.length === 0; })());
+  const idx = sandbox.tsgIndexDoc_(vdoc());
+  check('the index carries delegateVisible and feedbackFor per open task', idx.tasks.find(t => t.id === 2).delegateVisible === true && idx.tasks.find(t => t.id === 1).delegateVisible === false && idx.tasks.find(t => t.id === 5).feedbackFor === 'Marj');
+  check('Feedback is a reserved tag the model cannot hand out', vm.runInContext('TSG_RESERVED_TAGS', sandbox).includes('Feedback'));
+  sandbox.Session = origSession; sandbox.DriveApp.getFileById = origGetFileById; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.LockService.getScriptLock = origLock;
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+}
+
+console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
+if (FAILS) process.exitCode = 1;

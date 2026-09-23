@@ -12,7 +12,8 @@ html = html.split('__TSG_PERSON__').join('Marj').split('__TSG_AS__').join('').sp
 
 const slice = {
   ok: true, person: 'Marj', docVersion: 100, codeVersion: '2026-09-15.5',
-  statuses: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'], priorities: ['Critical', 'High', 'Medium', 'Low'],
+  statuses: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done - Pending'], pendingStatus: 'Done - Pending', priorities: ['Critical', 'High', 'Medium', 'Low'],
+  feedbackTaskId: 7, feedbackKinds: ['Bug', 'Feature request', 'Feedback'],
   rows: [
     { kind: 'task', id: 1, own: false, context: true, title: 'Durand task with Marj sub', status: 'Not Started', priority: 'High', progress: 0, due: '2026-09-20', notes: '', owner: 'Durand', tags: [], taskType: '', estHours: null, subTotal: 1, subDone: 0, editable: [] },
     { kind: 'sub', id: 1, index: 0, own: false, parentOwn: false, parentTitle: 'Durand task with Marj sub', title: 'Marj part', status: 'Not Started', priority: 'High', progress: 0, done: false, due: '2026-09-18', notes: '', owner: 'Durand', subTotal: 0, editable: ['status', 'notes'] },
@@ -21,7 +22,10 @@ const slice = {
     { kind: 'task', id: 5, own: true, title: 'Flyer print run', status: 'In Progress', priority: 'Medium', progress: 50, due: '2026-09-30', notes: 'n', owner: 'Marj', tags: ['Self-created', 'Flyers'], taskType: 'Hands-on', estHours: 3, subTotal: 2, subDone: 1, editable: ['title', 'status', 'priority', 'timelineEnd', 'notes'] },
     { kind: 'sub', id: 5, index: 0, own: false, parentOwn: true, parentTitle: 'Flyer print run', title: 'Draft the copy', status: 'Done', priority: 'Medium', progress: 100, done: true, due: '2026-09-22', notes: '', owner: 'Marj', subTotal: 0, editable: ['status', 'notes'] },
     { kind: 'sub', id: 5, index: 1, own: false, parentOwn: true, parentTitle: 'Flyer print run', title: 'Send to printer', status: 'Not Started', priority: 'Medium', progress: 0, done: false, due: '2026-09-29', notes: '', owner: 'Marj', subTotal: 0, editable: ['status', 'notes'] },
-    { kind: 'task', id: 6, own: true, title: 'Finished thing', status: 'Done', priority: 'Low', progress: 100, due: '2026-09-10', notes: '', owner: 'Marj', tags: [], taskType: '', estHours: 0.5, subTotal: 0, subDone: 0, editable: ['title', 'status', 'priority', 'timelineEnd', 'notes'] }
+    { kind: 'task', id: 6, own: true, title: 'Finished thing', status: 'Done', priority: 'Low', progress: 100, due: '2026-09-10', notes: '', owner: 'Marj', tags: [], taskType: '', estHours: 0.5, subTotal: 0, subDone: 0, editable: ['title', 'status', 'priority', 'timelineEnd', 'notes'] },
+    { kind: 'task', id: 7, own: false, pinned: true, feedbackFor: 'Marj', title: '@Marj — Bug reports, feature requests and feedback', status: 'In Progress', priority: 'Medium', progress: 0, due: '', notes: 'File anything here.', owner: 'Durand', tags: ['Feedback'], taskType: '', estHours: null, subTotal: 1, subDone: 0, editable: ['status', 'notes'], docs: [{ url: 'https://docs.google.com/document/d/GUIDE/edit', label: 'How-to: Task Tracker for Delegates', type: 'link' }] },
+    { kind: 'sub', id: 7, index: 0, own: false, parentOwn: false, parentTitle: '@Marj — Bug reports, feature requests and feedback', title: '[Bug] Date picker jumps', status: 'Not Started', priority: 'Medium', progress: 0, done: false, due: '', notes: 'Opens on the wrong month', owner: 'Durand', subTotal: 0, editable: ['notes'], feedback: { kind: 'Bug', decision: '', decidedAt: '', implementedAt: '' } },
+    { kind: 'task', id: 8, own: false, title: 'Pending one', status: 'Done - Pending', priority: 'Medium', progress: 100, due: '2026-09-26', notes: 'all done', owner: 'Durand', tags: [], taskType: 'Hands-on', estHours: null, subTotal: 0, subDone: 0, editable: ['status', 'notes'] }
   ]
 };
 const calls = [];
@@ -41,6 +45,7 @@ const dom = new JSDOM(html, {
         else if (action === 'version') reply = { ok: true, docVersion: 100 };
         else if (action === 'update') reply = payload.fields.priority !== undefined && payload.kind === 'task' && payload.id === 2 ? { ok: false, error: 'field not editable: priority' } : { ok: true, docVersion: 101 };
         else if (action === 'add') reply = { ok: true, docVersion: 102 };
+        else if (action === 'feedback') reply = { ok: true, docVersion: 103 };
         else reply = { ok: false, error: 'unknown' };
         setTimeout(() => chain._ok(JSON.stringify(reply)), 0);
       };
@@ -65,7 +70,7 @@ setTimeout(async () => {
   check('board-style groups: Delegated to you, Your tasks, Completed', doc.querySelectorAll('.group-section .group-head .gname').length === 3 && doc.getElementById('completed').hidden === false);
   const delegatedRows = doc.querySelectorAll('#delegated tr[data-key]');
   const ownRows = doc.querySelectorAll('#own tr[data-key]');
-  check("delegated group has Durand's parent as a context row and the assigned task", delegatedRows.length === 2 && doc.getElementById('delegatedCount').textContent === '2');
+  check("delegated group has Durand's parent as a context row, the assigned task, the pinned feedback task and the pending one", delegatedRows.length === 4 && doc.getElementById('delegatedCount').textContent === '4');
   const ctxRow = doc.querySelector('#delegated tr.task-row.context[data-id="1"]');
   check('context row: read-only (no selects, no inputs, no editable title/notes), names the owner', !!ctxRow && !ctxRow.querySelector('select, input') && !ctxRow.querySelector('[contenteditable="true"]') && /Durand/.test(ctxRow.querySelector('.ctx-note').textContent) && ctxRow.querySelector('.sub-count-badge').textContent === '0/1');
   check('her step is nested under the context row and open by default', doc.querySelectorAll('tr.sub-row[data-subrow="1"] .sub-item').length === 1 && doc.querySelector('tr.sub-row[data-subrow="1"]').style.display !== 'none');
@@ -85,11 +90,11 @@ setTimeout(async () => {
   // status change on the delegated subitem -> update with kind/id/index/fields
   const subRow = doc.querySelector('tr.sub-row[data-subrow="1"] .sub-item[data-kind="sub"]');
   const statusSel = subRow.querySelector('select[data-field="status"]');
-  statusSel.value = 'Done';
+  statusSel.value = 'Done - Pending';
   statusSel.dispatchEvent(new w.Event('change', { bubbles: true }));
   await wait(30);
   let upd = lastUpdate();
-  check('status change sends update {kind:sub,id:1,index:0,fields:{status:Done}}', !!upd && upd.payload.kind === 'sub' && upd.payload.id === 1 && upd.payload.index === 0 && upd.payload.fields.status === 'Done');
+  check('status change sends update {kind:sub,id:1,index:0,fields:{status:Done - Pending}}', !!upd && upd.payload.kind === 'sub' && upd.payload.id === 1 && upd.payload.index === 0 && upd.payload.fields.status === 'Done - Pending');
   check('a save reloads the slice afterwards', calls.filter(c => c.action === 'load').length >= 2);
   check('sync label reports Saved', /Saved|Up to date/.test(doc.getElementById('sync').textContent));
 
@@ -114,7 +119,22 @@ setTimeout(async () => {
   box.dispatchEvent(new w.Event('change', { bubbles: true }));
   await wait(30);
   upd = lastUpdate();
-  check('checking a subtask sends update {kind:sub,id:5,index:1,fields:{status:Done}}', !!upd && upd.payload.kind === 'sub' && upd.payload.id === 5 && upd.payload.index === 1 && upd.payload.fields.status === 'Done');
+  check('checking a subtask sends update {kind:sub,id:5,index:1,fields:{status:Done - Pending}}: a delegate never sends Done (2026-09-23)', !!upd && upd.payload.kind === 'sub' && upd.payload.id === 5 && upd.payload.index === 1 && upd.payload.fields.status === 'Done - Pending');
+  check('the status list offered has no Done; Done - Pending is on it and styled as a pending pill', !Array.from(doc.querySelectorAll('select[data-field="status"] option')).some(o => o.value === 'Done') && Array.from(doc.querySelectorAll('select[data-field="status"] option')).some(o => o.value === 'Done - Pending') && !!doc.querySelector('#delegated tr[data-id="8"] select.pill.status-done-pending') && /Waiting for Durand/.test(doc.querySelector('#delegated tr[data-id="8"]').textContent));
+  // feedback task: pinned, links the how-to, its item is read-only except the notes, and the Feedback button files a new one
+  const fbTask = doc.querySelector('#delegated tr[data-id="7"]');
+  check('the feedback task row is marked pinned and links the how-to guide', !!fbTask && !!fbTask.querySelector('.pin-mark') && fbTask.querySelector('a.doc-chip').getAttribute('href') === 'https://docs.google.com/document/d/GUIDE/edit' && /How-to/.test(fbTask.querySelector('a.doc-chip').textContent));
+  const fbItem = doc.querySelector('tr.sub-row[data-subrow="7"] .sub-item');
+  check('a feedback item shows its kind and state, no checkbox, no status select, notes editable', !!fbItem && /Bug · sent to Durand/.test(fbItem.querySelector('.fb-badge').textContent) && !fbItem.querySelector('input[type="checkbox"]') && !fbItem.querySelector('select') && fbItem.querySelector('[data-field="notes"]').getAttribute('contenteditable') === 'true');
+  check('the Feedback button is shown because she has a feedback task', doc.getElementById('btnFeedback').hidden === false);
+  doc.getElementById('btnFeedback').click();
+  check('the Feedback button opens the form with the three kinds', doc.getElementById('feedbackBack').hidden === false && Array.from(doc.querySelectorAll('#fbKind option')).map(o => o.value).join() === 'Bug,Feature request,Feedback');
+  doc.getElementById('fbKind').value = 'Feature request';
+  doc.getElementById('fbText').value = 'A dark mode toggle on the card too\nWould help at night';
+  doc.getElementById('feedbackForm').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  await wait(30);
+  const fb = calls.filter(c => c.action === 'feedback').pop();
+  check('submitting sends rpc feedback {kind, text} and closes the form', !!fb && fb.payload.kind === 'Feature request' && /dark mode toggle/.test(fb.payload.text) && doc.getElementById('feedbackBack').hidden === true && /Sent to Durand|Up to date/.test(doc.getElementById('sync').textContent));
 
   // add form -> add with title/priority/due/notes
   doc.getElementById('btnOpenAdd').click();

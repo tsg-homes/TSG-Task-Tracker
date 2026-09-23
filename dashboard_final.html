@@ -394,6 +394,8 @@
   .pill.status-blocked .dot { background: var(--status-blocked); }
   .pill.status-waiting { background: var(--status-critical-bg); color: var(--status-critical); }
   .pill.status-waiting .dot { background: var(--status-critical); }
+  .pill.status-done-pending { background: var(--status-warn-bg); color: var(--status-warn); }
+  .pill.status-done-pending .dot { background: var(--status-warn); }
   .pill.status-done { background: var(--status-good-bg); color: var(--status-good); }
   .pill.status-done .dot { background: var(--status-good); }
   /* Same five status colors as the pills above, as solid fills for the segmented
@@ -402,6 +404,7 @@
   .battery-seg.status-in-progress, .battery-legend .dot.status-in-progress { background: var(--brand); }
   .battery-seg.status-blocked, .battery-legend .dot.status-blocked { background: var(--status-blocked); }
   .battery-seg.status-waiting, .battery-legend .dot.status-waiting { background: var(--status-critical); }
+  .battery-seg.status-done-pending, .battery-legend .dot.status-done-pending { background: var(--status-warn); }
   .battery-seg.status-done, .battery-legend .dot.status-done { background: var(--status-good); }
   .progress-battery-wrap { margin: -6px 0 16px; }
   .status-battery {
@@ -552,6 +555,21 @@
   .risk-note { color: #c9502e; font-weight: 700; }
   .review-flags { display: flex; flex-direction: column; gap: 6px; }
   .review-flag { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+  /* Delegate visibility (2026-09-23): owner-only chip, on = the delegate sees the task */
+  .vis-chip { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); cursor: pointer; font-size: 11px; padding: 2px 8px; border-radius: 999px; margin-left: 6px; }
+  .vis-chip.on { background: var(--status-good-bg); color: var(--status-good); border-color: transparent; }
+  .vis-chip.off { background: var(--status-warn-bg); color: var(--status-warn); border-color: transparent; }
+  .vis-chip.static { cursor: default; }
+  .vis-line { margin-top: 4px; }
+  .pending-approve { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }
+  .pending-approve .btn { padding: 2px 8px; font-size: 11px; }
+  .feedback-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; margin: 2px 0 4px; }
+  .feedback-badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--status-active-bg); color: var(--status-active); font-weight: 700; }
+  .feedback-badge.declined { background: var(--status-neutral-bg); color: var(--status-neutral); }
+  .feedback-badge.accepted { background: var(--status-warn-bg); color: var(--status-warn); }
+  .feedback-badge.implemented { background: var(--status-good-bg); color: var(--status-good); }
+  .activity-list .history-row { align-items: flex-start; }
+  .activity-change { font-size: 12px; color: var(--text-secondary); margin-top: 2px; white-space: pre-wrap; }
   .review-flag code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
   .remind-wrap { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 12px; }
   .remind-select { font-size: 11px; padding: 2px 4px; }
@@ -1589,7 +1607,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-22.4';
+  const UI_VERSION = '2026-09-23.1';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1735,7 +1753,9 @@
   let todayGranularity = 'day'; // 'day' | 'week' | 'month'
   let loadedCalendarRanges = [];
 
-  const STATUSES = ['Not Started','In Progress','Blocked','Waiting','Done'];
+  const STATUSES = ['Not Started','In Progress','Blocked','Waiting','Done - Pending','Done'];
+  // Delegates can only reach this status; the owner approves (-> Done) or sends it back (2026-09-23).
+  const PENDING_STATUS = 'Done - Pending';
   const PRIORITIES = ['Critical','High','Medium','Low'];
 
   function zoomBarHtml(current, setterName) {
@@ -1762,7 +1782,7 @@
     if (!t.timelineEnd || t.status === 'Done') return false;
     return t.timelineEnd < todayISO();
   }
-  function statusClass(s) { return 'status-' + s.toLowerCase().replace(/\s+/g, '-'); }
+  function statusClass(s) { return 'status-' + String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
   function priorityClass(p) { return 'priority-' + p.toLowerCase(); }
   // Default tag color buckets — not every tag needs a unique color; similar tags share one.
   // Unlisted tags fall back to the neutral gray .tag-chip look.
@@ -2470,6 +2490,7 @@
   function rollupStatus(t) {
     if (!t.subitems || !t.subitems.length) return t.status;
     if (t.subitems.every(s => s.done)) return 'Done';
+    if (t.subitems.every(s => s.done || s.status === PENDING_STATUS)) return PENDING_STATUS;
     if (t.subitems.some(s => s.status === 'Blocked')) return 'Blocked';
     if (t.subitems.some(s => s.status === 'Waiting') && !t.subitems.some(s => s.status === 'In Progress')) return 'Waiting';
     if (t.subitems.some(s => s.done || s.status === 'In Progress')) return 'In Progress';
@@ -2677,6 +2698,35 @@
         ids: needsYou.map(function(t) { return t.id; })
       });
     }
+    // Delegates (2026-09-23): items they marked done wait for the owner's verification; every
+    // change they make is logged server-side (meta.delegateActivity) until marked seen; feedback
+    // they file waits for implement / decline.
+    const pending = pendingApprovalItems_();
+    if (pending.length) {
+      alerts.push({
+        level: 'critical',
+        text: pending.length + (pending.length === 1 ? ' delegate item is' : ' delegate items are') + ' marked done and awaiting your verification and approval.',
+        ids: Array.from(new Set(pending.map(function(p) { return p.id; })))
+      });
+    }
+    const unseen = unseenActivity_();
+    if (unseen.length) {
+      const by = {};
+      unseen.forEach(function(a) { by[a.person] = (by[a.person] || 0) + 1; });
+      alerts.push({
+        level: 'warn',
+        text: unseen.length + (unseen.length === 1 ? ' change' : ' changes') + ' by delegates since you last checked (' + Object.keys(by).map(function(n) { return n + ' ×' + by[n]; }).join(', ') + '). Click to review.',
+        ids: [], onOpen: openActivityPanel
+      });
+    }
+    const newFeedback = feedbackItems_().filter(function(f) { return !f.s.feedback.decision; });
+    if (newFeedback.length) {
+      alerts.push({
+        level: 'warn',
+        text: newFeedback.length + ' new feedback item' + (newFeedback.length === 1 ? '' : 's') + ' from delegates (bugs, requests, feedback) to implement or decline.',
+        ids: [], onOpen: openFeedbackPanel
+      });
+    }
     return alerts;
   }
   let LAST_ALERTS = [];
@@ -2693,6 +2743,7 @@
   function openAlertTasks(index) {
     const a = LAST_ALERTS[index];
     if (a && a.openSettings) { settingsTab = 'general'; openSettings().then(() => setSettingsTab('general')); return; }
+    if (a && a.onOpen) { a.onOpen(); return; }
     if (!a) return;
     openMultiTaskModal(a.text, a.ids);
   }
@@ -3366,7 +3417,7 @@
           ${avatarHtml(t.owner)}
           <span class="pill ${priorityClass(rollupPriority(t))}" style="pointer-events:none;">${escapeHtml(rollupPriority(t))}</span>
         </div>
-        ${delegateLine}
+        ${delegateLine}${visLineHtml_(t)}
         <div class="kc-meta">
           <span class="kc-due ${isOverdue(t) ? 'overdue' : ''}">${t.timelineEnd ? formatDate(t.timelineEnd) : 'No due date'}</span>
         </div>
@@ -3463,7 +3514,7 @@
       <div class="task-card" data-id="${t.id}" onclick="closeDayView(); onRowClick(event, ${t.id})">
         <div class="tc-title"><span>${pinBtnHtml_(t)}<span class="task-id" title="Task id ${t.id}">#${t.id}</span>${escapeHtml(t.title)}${subBadge}${commentBadgeHtml_(t.id)}</span>${docLinkHtml(t)}${savedPill}<button class="icon-btn danger tc-delete" title="Delete task" onclick="event.stopPropagation(); deleteTask(${t.id})">${TRASH_ICON_SVG}</button></div>
         <div class="tc-row">${avatarHtml(t.owner)}<span class="pill ${statusClass(rollupStatus(t))}" style="pointer-events:none;">${escapeHtml(rollupStatus(t))}</span><span class="pill ${priorityClass(rollupPriority(t))}" style="pointer-events:none;">${escapeHtml(rollupPriority(t))}</span>${typeHtml}</div>
-        ${delegateLine}
+        ${delegateLine}${visLineHtml_(t)}
         <div class="tc-row">${tagsHtml}${estHtml}${locHtml}<span class="tc-due ${isOverdue(t) ? 'overdue' : ''}">${t.timelineEnd ? formatDate(t.timelineEnd) : 'No due date'}</span></div>
         ${bonusCountdownHtml_(t)}
         <div class="progress-wrap"><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div><span class="pct">${pct}%</span></div>
@@ -4427,7 +4478,7 @@
     const today = dateISO || todayISO();
     const out = [];
     getWorkItems(TASKS).forEach(t => {
-      if (t.status === 'Done') return;
+      if (t.status === 'Done' || t.status === PENDING_STATUS) return;
       if ((t.delegate || 'Unassigned') !== CALENDAR_OWNER) return;
       if (isErrandTask_(t)) return; // shown inside the Errands block instead
       if (!t.isSubtask && TODAY_ADMIN_ELIGIBLE_TYPES.indexOf(t.taskType || 'Hands-on') !== -1) return;
@@ -5219,9 +5270,10 @@
             <button class="icon-btn danger" title="Delete subitem" onclick="deleteSubitem(${t.id}, ${i})">${TRASH_ICON_SVG}</button>
           </div>
           ${blockedNote}
+          ${feedbackRowHtml_(t, s, i)}
           <div class="sub-meta">
             <span class="sub-delegate" title="Delegate — who this subtask is delegated to">${avatarHtml(s.delegate)}${delegateSelect(t.id, i, s.delegate)}</span>
-            ${subPillSelect('status', s.status, t.id, i)}
+            ${subPillSelect('status', s.status, t.id, i)}${pendingApprovalHtml_(t.id, i)}
             ${subPillSelect('priority', s.priority, t.id, i)}
             <span class="sub-due ${overdueSub ? 'overdue' : ''}"><input type="date" class="due-input" value="${due}" onchange="onSubFieldChange(${t.id}, ${i}, 'timelineEnd', this.value)">${timeSelectHtml_(s.dueTime || '', `onDueTimeChange_(${t.id}, ${i}, v)`, 'sub-time')}${reminderControlHtml_(s, t.id, i)}</span>
             <span class="sub-hours"><input type="number" min="0.25" step="0.25" class="due-input sub-hours-input" value="${s.estHours != null ? s.estHours : ''}" placeholder="hrs" onchange="onSubFieldChange(${t.id}, ${i}, 'estHours', this.value ? Number(this.value) : null)"></span>
@@ -5323,6 +5375,214 @@
     logHistory(t, 'review', 'Triage', 'Cleared; released to the delegate views');
     renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
+  // ---- Delegate visibility (2026-09-23, per Durand: "each task with a delegate needs a clear
+  // indicator to me only of whether or not the delegate can see it (toggleable, default off,
+  // only I can turn it on, and if you make any meaningful change you turn it off)") ----
+  // t.delegateVisible is the switch. The server hides a task from every delegate page while it
+  // is off, only accepts true from the owner, and turns it off again when automation changes the
+  // task's meaningful content (title, notes, due, priority, delegate, steps, links, hours).
+  function isPersonName_(n) { const v = String(n || '').trim().toLowerCase(); return !!v && v !== 'durand' && v !== 'claude' && v !== 'unassigned'; }
+  function delegateAudience_(t) {
+    const names = [];
+    const add = function(n) { if (isPersonName_(n) && n !== t.owner && names.indexOf(n) === -1) names.push(n); };
+    add(taskDelegate(t));
+    (t.subitems || []).forEach(function(s) { if (s && !s.done) add(s.delegate); });
+    return names;
+  }
+  function visChipHtml_(t, compact) {
+    if (!t) return '';
+    if (isPersonName_(t.owner)) return `<span class="vis-chip on static" title="${escapeHtml(t.owner)} owns this task, so it is always on their page">&#128065; ${escapeHtml(t.owner)}'s own</span>`;
+    const who = delegateAudience_(t);
+    if (!who.length) return '';
+    const on = t.delegateVisible === true;
+    const label = on ? '&#128065; Visible to ' + escapeHtml(who.join(', ')) : '&#128683; Hidden from ' + escapeHtml(who.join(', '));
+    const tip = on ? 'On their page. Click to hide it again. Automation (a Claude answer or a session patch) that changes the task hides it by itself.' : 'Not on their page yet. Click when the task is ready for them to see. Only you can turn this on.';
+    return `<button type="button" class="vis-chip ${on ? 'on' : 'off'}${compact ? ' compact' : ''}" onclick="event.stopPropagation(); toggleDelegateVisible(${t.id})" title="${tip}">${label}</button>`;
+  }
+  function visLineHtml_(t) { const c = visChipHtml_(t, true); return c ? `<div class="vis-line">${c}</div>` : ''; }
+  function toggleDelegateVisible(id) {
+    const t = findTask(id); if (!t) return;
+    const before = t.delegateVisible === true;
+    t.delegateVisible = !before;
+    logHistory(t, 'delegateVisible', String(before), String(!before));
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+
+  // ---- Pending approval (2026-09-23, per Durand: "they can only set to done - pending, and
+  // going to fully done requires my approval and verification of the workproduct") ----
+  function pendingApprovalItems_() {
+    const out = [];
+    TASKS.forEach(function(t) {
+      if (!t || t.status === 'Done' || t.status === 'Cancelled') return;
+      if (t.status === PENDING_STATUS && !(t.subitems || []).length) out.push({ id: t.id, idx: null, title: t.title, who: taskDelegate(t) });
+      (t.subitems || []).forEach(function(s, i) { if (s && !s.done && s.status === PENDING_STATUS) out.push({ id: t.id, idx: i, title: s.title, who: s.delegate || taskDelegate(t) }); });
+    });
+    return out;
+  }
+  function pendingApprovalHtml_(id, idx) {
+    const t = findTask(id); if (!t) return '';
+    const item = idx == null ? t : ((t.subitems || [])[idx] || null); if (!item || item.status !== PENDING_STATUS || item.done) return '';
+    const who = (idx == null ? taskDelegate(t) : item.delegate) || 'the delegate';
+    return `<span class="pending-approve" onclick="event.stopPropagation()"><button type="button" class="btn small primary" onclick="approvePending(${id}, ${idx == null ? 'null' : idx})" title="${escapeHtml(who)} marked this done. Verify the work product, then approve: it becomes Done.">Approve &#10003;</button><button type="button" class="btn small" onclick="sendBackPending(${id}, ${idx == null ? 'null' : idx})" title="Not done yet: send it back to ${escapeHtml(who)} with a note; it returns to In Progress">Send back</button></span>`;
+  }
+  function approvePending(id, idx) {
+    const t = findTask(id); if (!t) return;
+    const item = idx == null ? t : ((t.subitems || [])[idx] || null); if (!item || item.status !== PENDING_STATUS) return;
+    const who = (idx == null ? taskDelegate(t) : item.delegate) || 'the delegate';
+    item.status = 'Done'; item.progress = 100;
+    if (idx != null) item.done = true;
+    logHistory(t, idx == null ? 'status' : 'subitem-status', idx == null ? PENDING_STATUS : item.title + ': ' + PENDING_STATUS, 'Done');
+    logHistory(t, idx == null ? 'approval' : 'subitem-approval', idx == null ? null : item.title, 'Verified and approved by Durand (' + who + "'s work)");
+    if (idx != null) rollupSubitemEstimate(t);
+    captureActualOnDone_(t, idx == null ? undefined : idx);
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+  function sendBackPending(id, idx) {
+    const t = findTask(id); if (!t) return;
+    const item = idx == null ? t : ((t.subitems || [])[idx] || null); if (!item || item.status !== PENDING_STATUS) return;
+    const reason = prompt('What still needs doing? (the delegate sees this at the top of the notes)', '');
+    if (reason === null) return;
+    item.status = 'In Progress'; item.done = false;
+    item.notes = 'RETURNED ' + todayISO() + ' by Durand: ' + (reason.trim() || 'not done yet') + '\n\n' + String(item.notes || '');
+    logHistory(t, idx == null ? 'status' : 'subitem-status', idx == null ? PENDING_STATUS : item.title + ': ' + PENDING_STATUS, 'In Progress');
+    logHistory(t, idx == null ? 'returned' : 'subitem-returned', idx == null ? null : item.title, reason.trim() || 'not done yet');
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+
+  // ---- Delegate activity (2026-09-23, per Durand: "I'll need to be alerted to delegates
+  // changing their tasks or adding new ones") ----
+  // meta.delegateActivity is written by the server on every delegate write (field edits, pending
+  // marks, tasks added, feedback filed). Unseen = newer than meta.delegateActivitySeen.
+  function delegateActivity_() { return ((RAW_META && RAW_META.delegateActivity) || []).filter(function(a) { return a && a.ts; }); }
+  function unseenActivity_() { const seen = String((RAW_META && RAW_META.delegateActivitySeen) || ''); return delegateActivity_().filter(function(a) { return String(a.ts) > seen; }); }
+  function activityVerb_(a) {
+    if (a.kind === 'add') return 'added a task';
+    if (a.kind === 'feedback') return 'filed ' + String(a.field || 'feedback').toLowerCase();
+    if (a.kind === 'pending') return 'marked done (awaiting your approval)';
+    return 'changed ' + (a.field || 'a field');
+  }
+  function openActivityPanel() {
+    const seen = String((RAW_META && RAW_META.delegateActivitySeen) || '');
+    const list = delegateActivity_().slice().sort(function(a, b) { return String(b.ts).localeCompare(String(a.ts)); }).slice(0, 100);
+    document.getElementById('dayViewTitle').textContent = 'Delegate activity';
+    setDayViewAdd_(null);
+    const unseenCount = list.filter(function(a) { return String(a.ts) > seen; }).length;
+    const bar = `<div class="cp-actions" style="margin-bottom:10px;">${unseenCount ? `<button type="button" class="btn small primary" onclick="markActivitySeen()">Mark all ${unseenCount} as seen</button>` : '<span class="hist-time">Nothing new since you last checked.</span>'}</div>`;
+    document.getElementById('dayViewBody').innerHTML = bar + (list.length ? '<div class="activity-list">' + list.map(function(a) {
+      const t = findTask(a.taskId);
+      const fresh = String(a.ts) > seen;
+      const change = a.field && a.kind !== 'add' && a.kind !== 'feedback' ? `<div class="activity-change">${escapeHtml(a.field)}: ${escapeHtml(String(a.from == null ? '—' : a.from))} → ${escapeHtml(String(a.to == null ? '—' : a.to))}</div>` : (a.kind === 'feedback' && a.to ? `<div class="activity-change">${escapeHtml(a.to)}</div>` : '');
+      const approve = a.kind === 'pending' && t ? pendingApprovalHtml_(a.taskId, a.subIdx == null ? null : a.subIdx) : '';
+      return `<div class="history-row ${fresh ? 'fresh' : ''}"><span class="hist-time">${escapeHtml(formatDateTime(a.ts))}</span> ${fresh ? '<b>NEW</b> ' : ''}<b>${escapeHtml(a.person || '')}</b> ${escapeHtml(activityVerb_(a))} <span class="comment-anchor" onclick="closeDayView(); openTaskCard(${a.taskId})">#${a.taskId} ${escapeHtml(t ? t.title : (a.title || ''))}${a.subIdx != null ? ' → ' + escapeHtml(a.title || 'step ' + a.subIdx) : ''}</span>${approve}${change}</div>`;
+    }).join('') + '</div>' : '<div class="history-empty">No delegate activity recorded yet.</div>');
+    document.getElementById('dayViewModal').classList.add('open');
+  }
+  async function markActivitySeen() {
+    const newest = delegateActivity_().map(function(a) { return String(a.ts); }).sort().pop();
+    if (!newest) return;
+    RAW_META.delegateActivitySeen = newest;
+    renderAll(); openActivityPanel();
+    await postCommentOp_({ op: 'set_meta', fields: { delegateActivitySeen: newest }, source: 'Durand' });
+  }
+  // On load: one toast per new entry (up to five, then a count) and, when the browser allows it,
+  // one native notification; the newest ts seen is remembered per browser like inbox errors.
+  function checkDelegateActivityToasts_() {
+    const acts = delegateActivity_();
+    if (!acts.length) return 0;
+    let seen = ''; try { seen = localStorage.getItem('tsgSeenDelegateActivityTs') || ''; } catch (e) {}
+    const fresh = acts.filter(function(a) { return String(a.ts) > seen; });
+    fresh.slice(0, 5).forEach(function(a) {
+      const t = findTask(a.taskId);
+      toast_(a.person + ' ' + activityVerb_(a), '#' + a.taskId + ' ' + (t ? t.title : (a.title || '')) + (a.subIdx != null ? ' → ' + (a.title || '') : ''), openActivityPanel);
+    });
+    if (fresh.length > 5) toast_('Delegate activity', (fresh.length - 5) + ' more change' + (fresh.length - 5 === 1 ? '' : 's') + ' by delegates', openActivityPanel);
+    if (fresh.length && notifyPermission_() === 'granted') {
+      try { const n = new Notification('Tracker: ' + fresh.length + ' delegate change' + (fresh.length === 1 ? '' : 's'), { body: fresh.slice(0, 3).map(function(a) { return a.person + ' ' + activityVerb_(a); }).join(' · '), tag: 'tsg-delegate-activity' }); n.onclick = function() { try { window.focus(); } catch (e) {} openActivityPanel(); try { n.close(); } catch (e) {} }; } catch (e) { /* toast already shown */ }
+    }
+    const newest = acts.map(function(a) { return String(a.ts); }).sort().pop();
+    try { localStorage.setItem('tsgSeenDelegateActivityTs', newest); } catch (e) {}
+    return fresh.length;
+  }
+  async function setDelegateEmails(val) {
+    RAW_META.delegateEmails = val === 'on' ? 'on' : 'off';
+    await postCommentOp_({ op: 'set_meta', fields: { delegateEmails: RAW_META.delegateEmails }, source: 'Durand' });
+    setSyncStatus('saved', 'Delegate activity emails ' + RAW_META.delegateEmails);
+  }
+
+  // ---- Feedback (2026-09-23, per Durand: "a pinned task for each delegate that is used to
+  // collect their bug reports, feature requests, general feedback" and "a way to review and
+  // implement or decline their feedback") ----
+  // Each delegate has one pinned task with feedbackFor = their name; their page files items as
+  // steps carrying s.feedback {kind, by, ts}. Implement copies it to the tracker feature task as a
+  // Claude step (feedbackRef points back) and the server closes the feedback item when that step
+  // is Done; Decline cancels it with the reason at the top of its notes. Both show on their page.
+  function feedbackItems_() {
+    const out = [];
+    TASKS.forEach(function(t) {
+      if (!t || !t.feedbackFor) return;
+      (t.subitems || []).forEach(function(s, i) { if (s && s.feedback && typeof s.feedback === 'object') out.push({ t: t, s: s, i: i }); });
+    });
+    return out;
+  }
+  function featureTask_() {
+    const byId = RAW_META && RAW_META.featureTaskId != null ? findTask(RAW_META.featureTaskId) : null;
+    if (byId) return byId;
+    return TASKS.find(function(t) { return t && t.pinned && t.status !== 'Done' && String(taskDelegate(t)).toLowerCase() === 'claude' && /task tracker/i.test(t.title || '') && /feature|bug|request/i.test(t.title || ''); }) || null;
+  }
+  function feedbackDecisionLabel_(s) {
+    const f = s.feedback || {};
+    if (f.implementedAt || s.done) return 'implemented';
+    if (f.decision === 'accepted') return 'accepted';
+    if (f.decision === 'declined') return 'declined';
+    return 'new';
+  }
+  function feedbackRowHtml_(t, s, i) {
+    if (!s || !s.feedback || typeof s.feedback !== 'object') return '';
+    const state = feedbackDecisionLabel_(s);
+    const f = s.feedback;
+    const buttons = state === 'new' ? `<button type="button" class="btn small primary" onclick="event.stopPropagation(); implementFeedback(${t.id}, ${i})" title="Accept it: a Claude step lands on the tracker feature task and this item closes when that step is done">Implement</button><button type="button" class="btn small" onclick="event.stopPropagation(); declineFeedback(${t.id}, ${i})" title="Decline with a reason ${escapeHtml(f.by || 'they')} will see">Decline</button>` : '';
+    return `<div class="feedback-line"><span class="feedback-badge ${state}">${escapeHtml(f.kind || 'Feedback')} · ${state}</span><span class="hist-time">from ${escapeHtml(f.by || t.feedbackFor || '')} ${escapeHtml(String(f.ts || '').slice(0, 10))}${f.decidedAt ? ' · decided ' + escapeHtml(String(f.decidedAt).slice(0, 10)) : ''}${f.implTaskId ? ' · on #' + f.implTaskId : ''}</span>${buttons}</div>`;
+  }
+  function implementFeedback(id, idx) {
+    const t = findTask(id); if (!t) return;
+    const s = (t.subitems || [])[idx]; if (!s || !s.feedback || s.feedback.decision) return;
+    const ft = featureTask_();
+    if (!ft) { alert('No pinned Claude task for tracker features/bugs was found to queue this on.'); return; }
+    const now = new Date().toISOString();
+    const step = { title: String(s.title || '').replace(/^\[[^\]]+\]\s*/, ''), notes: 'Feedback from ' + (s.feedback.by || t.feedbackFor || 'a delegate') + ' (' + (s.feedback.kind || 'Feedback') + ', ' + String(s.feedback.ts || now).slice(0, 10) + '): ' + String(s.notes || '').trim() + '\n\nSource: #' + t.id + ' step ' + idx + '.',
+      delegate: 'Claude', status: 'Not Started', done: false, progress: 0, priority: 'Medium', taskType: 'Claude', tags: [], docs: [], estHours: null,
+      feedbackRef: { taskId: t.id, index: idx, title: s.title }, history: [{ ts: now, field: 'created', from: null, to: null, source: 'Durand' }] };
+    ft.subitems = ft.subitems || [];
+    ft.subitems.push(step);
+    logHistory(ft, 'subitem', null, 'added from feedback #' + t.id + ' step ' + idx + ': ' + step.title);
+    s.feedback.decision = 'accepted'; s.feedback.decidedAt = now; s.feedback.implTaskId = ft.id;
+    s.status = 'In Progress';
+    s.notes = 'ACCEPTED ' + todayISO() + ': queued for Claude on #' + ft.id + '. This item closes by itself when that step is done.\n\n' + String(s.notes || '');
+    logHistory(t, 'subitem-feedback', s.title, 'accepted; queued on #' + ft.id);
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+  function declineFeedback(id, idx) {
+    const t = findTask(id); if (!t) return;
+    const s = (t.subitems || [])[idx]; if (!s || !s.feedback || s.feedback.decision) return;
+    const reason = prompt('Why not? (' + (s.feedback.by || t.feedbackFor || 'the delegate') + ' sees this at the top of the item)', '');
+    if (reason === null) return;
+    const now = new Date().toISOString();
+    s.feedback.decision = 'declined'; s.feedback.decidedAt = now;
+    s.status = 'Cancelled'; s.done = false;
+    s.notes = 'DECLINED ' + todayISO() + ' by Durand: ' + (reason.trim() || 'not now') + '\n\n' + String(s.notes || '');
+    logHistory(t, 'subitem-feedback', s.title, 'declined: ' + (reason.trim() || 'not now'));
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
+  }
+  function openFeedbackPanel() {
+    const items = feedbackItems_().sort(function(a, b) { return String((b.s.feedback || {}).ts || '').localeCompare(String((a.s.feedback || {}).ts || '')); });
+    document.getElementById('dayViewTitle').textContent = 'Delegate feedback';
+    setDayViewAdd_(null);
+    document.getElementById('dayViewBody').innerHTML = items.length ? '<div class="comment-list">' + items.map(function(x) {
+      return `<div class="comment-item ${feedbackDecisionLabel_(x.s) === 'new' ? '' : 'resolved'}"><div class="comment-head"><b>${escapeHtml(x.s.feedback.by || x.t.feedbackFor || '')}</b> · ${escapeHtml(formatDateTime(x.s.feedback.ts || ''))} · <span class="comment-anchor" onclick="closeDayView(); openTaskCard(${x.t.id})">#${x.t.id} step ${x.i}</span></div><div class="comment-text"><b>${escapeHtml(x.s.title || '')}</b>\n${escapeHtml(String(x.s.notes || ''))}</div>${feedbackRowHtml_(x.t, x.s, x.i)}</div>`;
+    }).join('') + '</div>' : '<div class="history-empty">No feedback filed yet. Each delegate files bugs, requests and feedback from their own page onto their pinned feedback task.</div>';
+    document.getElementById('dayViewModal').classList.add('open');
+  }
+
   // Delegate views (2026-09-15, per Durand: "filtered views in pop ups instead"): the
   // person's whole slice, as a scoped list pop-up on this board. Shift-click opens the
   // page they actually see, from this tab's session.
@@ -5330,6 +5590,7 @@
     const held = function(x) { return (x && x.tags || []).indexOf('Triage') !== -1; };
     return TASKS.filter(function(t) {
       if (held(t)) return false;   // hidden from their page until released
+      if (t.owner !== name && t.delegateVisible !== true) return false;   // visibility switch off (2026-09-23)
       if (t.owner === name || taskDelegate(t) === name) return true;
       return (t.subitems || []).some(function(s) { return s.delegate === name && !held(s); });
     }).map(function(t) { return t.id; });
@@ -5351,10 +5612,10 @@
         <td class="cell-group">
           <div class="cell-group-stack">
             <div class="cell-group-row owner-cell" title="Owner — accountable for this task">${avatarHtml(t.owner)}${ownerSelect(t.id, t.owner)}</div>
-            <div class="cell-group-row owner-cell delegate-cell" title="Delegate — who is doing this task; it appears on their page"><span class="mini-lbl">Delegate</span>${avatarHtml(taskDelegate(t))}${taskDelegateSelect(t.id, taskDelegate(t))}</div>
+            <div class="cell-group-row owner-cell delegate-cell" title="Delegate — who is doing this task; it appears on their page"><span class="mini-lbl">Delegate</span>${avatarHtml(taskDelegate(t))}${taskDelegateSelect(t.id, taskDelegate(t))}${visChipHtml_(t)}</div>
             <div class="cell-group-row">${hasSubs
               ? `<span class="pill ${statusClass(rollupStatus(t))}" style="pointer-events:none;" title="Rolled up from subtasks — edit status on the subtasks below.">${escapeHtml(rollupStatus(t))}</span><span class="pill ${priorityClass(rollupPriority(t))}" style="pointer-events:none;" title="Rolled up from subtasks — edit priority on the subtasks below.">${escapeHtml(rollupPriority(t))}</span>`
-              : `${pillSelect('status', t.status, t.id)}${pillSelect('priority', t.priority, t.id)}`
+              : `${pillSelect('status', t.status, t.id)}${pillSelect('priority', t.priority, t.id)}${pendingApprovalHtml_(t.id, null)}`
             }</div>
           </div>
         </td>
@@ -6819,8 +7080,8 @@
       `<div class="modal-row"><b>Merge</b><span class="modal-tags"><select class="due-input modal-merge-select" id="mergeTarget"><option value="">Merge this task into…</option>${mergeOptionsHtml_(t)}</select><button type="button" class="btn small" onclick="mergeTaskInto(${id})">Merge</button></span></div>`,
       `<div class="modal-row"><b>Depends on</b><span class="modal-tags">${dependsChipsHtml_(t)}${t.dependsNone && !dependsList(t).length ? `<span class="hist-time">none, cleared by you (Claude won't infer one) <button type="button" class="icon-btn" onclick="allowDependsInfer(${id})" title="Let Claude infer a dependency again">&#8635;</button></span>` : ''}<select class="due-input modal-depends-select" onchange="modalAddDepends(${id}, this)"><option value="">+ add a task this waits on…</option>${dependsOptionsHtml_(t)}</select></span></div>`,
       `<div class="modal-row"><b>Owner</b><span class="modal-owner-wrap" title="Accountable for this task — confirming delegated subtasks are actually done is the owner's job">${avatarHtml(t.owner, 'lg')}${ownerSelect(id, t.owner)}</span></div>`,
-      `<div class="modal-row"><b>Delegate</b><span class="modal-owner-wrap" title="Who is doing this task. It appears on their own page (subtasks can also be delegated one by one below).">${avatarHtml(taskDelegate(t), 'lg')}${taskDelegateSelect(id, taskDelegate(t))}${approvalToggleHtml_(id, null)}</span></div>`,
-      `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}</div>`,
+      `<div class="modal-row"><b>Delegate</b><span class="modal-owner-wrap" title="Who is doing this task. It appears on their own page (subtasks can also be delegated one by one below).">${avatarHtml(taskDelegate(t), 'lg')}${taskDelegateSelect(id, taskDelegate(t))}${approvalToggleHtml_(id, null)}${visChipHtml_(t)}</span></div>`,
+      `<div class="modal-row"><b>Status</b>${modalPillSelect('status', t.status, id)}${pendingApprovalHtml_(id, null)}</div>`,
       `<div class="modal-row"><b>Priority</b>${modalPillSelect('priority', t.priority, id)}</div>`,
       `<div class="modal-row"><b>Type</b><select class="pill type-badge ${typeBadgeClass(t.taskType || 'Hands-on')}" onchange="modalPillChange(${id}, 'taskType', this.value)">${TASK_TYPES.map(function(o) { return '<option value="' + o + '"' + (o === (t.taskType || 'Hands-on') ? ' selected' : '') + '>' + o + '</option>'; }).join('')}</select></div>`,
       `<div class="modal-row"><b>Due</b><span class="modal-est-wrap"><input type="date" class="due-input modal-due" value="${t.timelineEnd || ''}" onchange="modalDueChange(${id}, this.value)">${timeSelectHtml_(t.dueTime || '', `modalDueTimeChange(${id}, v)`)}${reminderControlHtml_(t, id, null)}${atRiskDueNoteHtml_(t)}</span></div>`,
@@ -7413,7 +7674,7 @@
   // per save, then the old reload-and-tell path.
   let BASELINE_DOC = null;
   let conflictReplays = 0;
-  const SERVER_OWNED_META = ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion', 'historyArchive', 'last_updated', 'version', 'created', 'featureTaskId', 'noteVersions'];
+  const SERVER_OWNED_META = ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion', 'historyArchive', 'last_updated', 'version', 'created', 'featureTaskId', 'noteVersions', 'delegateActivity'];
   function cloneJson_(v) { return JSON.parse(JSON.stringify(v === undefined ? null : v)); }
   function sameJson_(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); }
   function localDocForDiff_() { return cloneJson_({ tasks: TASKS, meta: Object.assign({}, RAW_META, { teamRoster: TEAM_ROSTER }) }); }
@@ -7661,6 +7922,7 @@
     CLAUDE_SESSION = (doc.meta && doc.meta.claudeSession) || '';
     setTimeout(checkReminderNotifications_, 0);
     setTimeout(checkInboxErrorToasts_, 0);
+    setTimeout(checkDelegateActivityToasts_, 0);
     STANDING_ITEMS = (doc.meta && doc.meta.standingItems) || [];
     dataLoaded = true;
     snapshotBaseline_();
@@ -7974,6 +8236,11 @@
         <div class="ruleset-block-head"><h3>Claude Code repo</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">Optional owner/repo the "Code" and "Code (cloud)" buttons on a Claude task open on (e.g. tsg-homes/TSG-Task-Tracker). Cowork sessions never need one.</div>
         <input type="text" class="text-input" id="claudeRepoInput" placeholder="owner/repo" value="${escapeHtml(CLAUDE_REPO)}" onblur="setClaudeRepo(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+      </div>
+      <div class="modal-section">
+        <div class="ruleset-block-head"><h3>Delegate activity</h3></div>
+        <div class="history-empty" style="margin-bottom:6px;">Every change a delegate makes on their page (fields, done-pending marks, tasks added, feedback filed) is logged by the tracker and shown as an alert row and toasts until you mark it seen. ${unseenActivity_().length} unseen of ${delegateActivity_().length} recorded. <button type="button" class="btn small" onclick="closeSettings(); openActivityPanel()">Open activity</button> <button type="button" class="btn small" onclick="closeSettings(); openFeedbackPanel()">Open feedback</button></div>
+        <label class="hist-time">Also email me each change <select class="pill-select" id="delegateEmailsSelect" onchange="setDelegateEmails(this.value)"><option value="off" ${(RAW_META.delegateEmails || 'off') !== 'on' ? 'selected' : ''}>Off (alert and toasts only)</option><option value="on" ${(RAW_META.delegateEmails || 'off') === 'on' ? 'selected' : ''}>On</option></select></label>
       </div>
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Inbox errors</h3></div>

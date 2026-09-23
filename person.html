@@ -166,6 +166,19 @@
   .card-notes-edit[contenteditable="true"]:focus { border-color: var(--brand); }
   .card-notes-edit:empty:before { content: 'Add notes — progress is read from them'; color: var(--text-muted); opacity: 0.6; }
   .card .sub-list { padding: 0; }
+  .pill.status-done-pending { background: var(--status-warn-bg); color: var(--status-warn); }
+  .battery-seg.status-done-pending { background: var(--status-warn); }
+  .pin-mark { font-size: 12px; margin-right: 4px; }
+  .doc-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--status-active-bg); color: var(--status-active); text-decoration: none; }
+  .doc-chip:hover { text-decoration: underline; }
+  .fb-badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--status-active-bg); color: var(--status-active); font-weight: 700; }
+  .fb-badge.declined { background: var(--status-neutral-bg); color: var(--status-neutral); }
+  .fb-badge.accepted { background: var(--status-warn-bg); color: var(--status-warn); }
+  .fb-badge.implemented { background: var(--status-good-bg); color: var(--status-good); }
+  .fb-form { display: grid; gap: 8px; }
+  .fb-form textarea { min-height: 120px; }
+  .fb-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .pending-note { font-size: 11px; color: var(--status-warn); }
   footer.tsg-footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--gridline); font-size: 11.5px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
   @media (max-width: 720px) {
     .wrap { width: auto; padding: 16px 16px 48px; }
@@ -181,6 +194,7 @@
     <div class="masthead-right">
       <span id="previewBadge" class="preview" hidden>Preview as __TSG_AS__</span>
       <span id="sync">Loading…</span>
+      <button class="btn small" id="btnFeedback" type="button" hidden title="Report a bug, ask for a feature or leave feedback; it goes to Durand on your feedback task">&#128172; Feedback</button>
       <button class="theme-toggle" id="themeToggle" title="Toggle light / dark" aria-label="Toggle theme"></button>
     </div>
   </header>
@@ -213,22 +227,32 @@
   <div class="modal-back" id="cardBack" hidden>
     <div class="card" id="card" role="dialog" aria-modal="true" aria-label="Task"></div>
   </div>
+  <div class="modal-back" id="feedbackBack" hidden>
+    <div class="card" role="dialog" aria-modal="true" aria-label="Feedback">
+      <div class="card-head"><h2 class="card-title">Feedback for Durand</h2><button type="button" class="icon-btn" id="feedbackClose" aria-label="Close">&#10005;</button></div>
+      <form class="fb-form" id="feedbackForm" autocomplete="off">
+        <select id="fbKind" aria-label="Kind"></select>
+        <textarea id="fbText" placeholder="What happened, what you expected, or what would help. The first line becomes the title." aria-label="Feedback text" required></textarea>
+        <div class="fb-actions"><button type="button" class="btn small" id="fbCancel">Cancel</button><button type="submit" class="btn small primary" id="fbSend">Send</button></div>
+      </form>
+    </div>
+  </div>
 
   <footer class="tsg-footer">
-    <span>Changes save as you make them and reach Durand's board within a minute. Progress is read from your notes.</span>
+    <span>Changes save as you make them and reach Durand's board within a minute. Progress is read from your notes. Marking something done sends it to Durand as "Done - Pending"; he verifies the work and closes it.</span>
     <span id="versionStamp"></span>
   </footer>
 </div>
 <script>
-  const PERSON_UI_VERSION = '2026-09-15.3';
+  const PERSON_UI_VERSION = '2026-09-23.1';
   const PERSON = '__TSG_PERSON__';
   const AS = '__TSG_AS__';
   const CODE_VERSION = '__TSG_CODE_VERSION__';
   const POLL_MS = 45000;
-  const STATUS_ORDER = { 'Not Started': 0, 'In Progress': 1, 'Blocked': 2, 'Waiting': 3, 'Done': 9 };
+  const STATUS_ORDER = { 'Not Started': 0, 'In Progress': 1, 'Blocked': 2, 'Waiting': 3, 'Done - Pending': 8, 'Done': 9 };
   const TAG_COLORS = { 'Triage': 'tag-warn', 'Meeting': 'tag-active', 'Marketing': 'tag-good', 'Commissions': 'tag-good', 'Self-created': 'tag-active' };
   const AVATAR_PALETTE = ['#15464A', '#1d5c61', '#0f3437', '#2c6e63', '#3a4a44', '#004225', '#26413d', '#4a5a52'];
-  let STATE = { rows: [], statuses: [], priorities: [], docVersion: null };
+  let STATE = { rows: [], statuses: [], priorities: [], docVersion: null, feedbackTaskId: null, feedbackKinds: ['Bug', 'Feature request', 'Feedback'], pendingStatus: 'Done - Pending' };
   let lastRenderedVersion = null;
   const collapsedSubs = new Set();   // subtasks show open by default; this holds the parents closed by hand
   const collapsedGroups = new Set();
@@ -255,7 +279,7 @@
   function fmtDate(iso) { if (!iso) return ''; const d = new Date(String(iso).slice(0, 10) + 'T00:00:00'); return isNaN(d) ? iso : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
   function todayIso() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
   function editing() { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.getAttribute('contenteditable') === 'true'); }
-  function statusClass(s) { return 'status-' + String(s || 'Not Started').toLowerCase().replace(/\s+/g, '-'); }
+  function statusClass(s) { return 'status-' + String(s || 'Not Started').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
   function priorityClass(p) { return 'priority-' + String(p || '').toLowerCase(); }
   function hashStr(s) { let h = 0; for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; } return Math.abs(h); }
   function initialsFor(name) { if (!name || !name.trim()) return '?'; const parts = name.trim().split(/\s+/); return parts.length === 1 ? parts[0].slice(0, 2).toUpperCase() : (parts[0][0] + parts[parts.length - 1][0]).toUpperCase(); }
@@ -272,6 +296,8 @@
   }
   function progressHtml(pct) { return '<div class="progress-wrap" title="Worked out from your notes, or from the subtasks when there are any"><div class="progress-track"><div class="progress-fill" style="width:' + pct + '%"></div></div><span class="pct">' + pct + '%</span></div>'; }
   function tagChipHtml(tag) { return '<span class="tag-chip ' + (TAG_COLORS[tag] || '') + '">' + esc(tag) + '</span>'; }
+  function docChipsHtml(docs) { return (docs || []).filter(function(d) { return d && /^https?:\/\//i.test(d.url); }).map(function(d) { return '<a class="doc-chip" href="' + esc(d.url) + '" target="_blank" rel="noopener" title="' + esc(d.label) + '">&#128279; ' + esc(d.label.length > 40 ? d.label.slice(0, 39) + '…' : d.label) + '</a>'; }).join(''); }
+  function feedbackState(s) { const f = s.feedback || {}; if (f.implementedAt || s.done) return 'implemented'; if (f.decision === 'accepted') return 'accepted'; if (f.decision === 'declined') return 'declined'; return 'new'; }
 
   function subsOf(r) { return r.kind === 'task' ? STATE.rows.filter(function(x) { return x.kind === 'sub' && x.id === r.id; }) : []; }
   function taskRowHtml(r) {
@@ -282,16 +308,16 @@
     const key = keyOf(r);
     const pct = r.status === 'Done' ? 100 : r.progress;
     const overdue = r.due && r.due < todayIso() && r.status !== 'Done';
-    const title = can('title')
+    const title = (r.pinned ? '<span class="pin-mark" title="Pinned">&#128204;</span>' : '') + (can('title')
       ? '<span class="ttl-edit" contenteditable="true" data-field="title">' + esc(r.title) + '</span>'
-      : '<span class="ttl-edit">' + esc(r.title) + '</span>';
+      : '<span class="ttl-edit">' + esc(r.title) + '</span>');
     const badge = hasSubs ? '<span class="sub-count-badge" title="' + r.subDone + ' of ' + r.subTotal + ' steps done">' + r.subDone + '/' + r.subTotal + '</span>' : '';
     const ctx = r.context ? '<span class="parent ctx-note">' + esc(r.owner || 'Durand') + "'s task; your steps are below</span>" : '';
     const due = can('timelineEnd')
       ? '<span class="due-cell ' + (overdue ? 'overdue' : '') + '"><input type="date" class="due-input" data-field="due" value="' + esc(r.due) + '" aria-label="Due"></span>'
       : '<span class="due-cell ' + (overdue ? 'overdue' : '') + '">' + (r.due ? 'Due ' + esc(fmtDate(r.due)) : '<span class="est">No due date</span>') + '</span>';
-    const tags = (r.taskType ? '<span class="type-badge">' + esc(r.taskType) + '</span>' : '') + (r.tags || []).map(tagChipHtml).join('');
-    const est = (r.estHours != null) ? '<span class="est">' + r.estHours + 'h est.</span>' : '';
+    const tags = (r.taskType ? '<span class="type-badge">' + esc(r.taskType) + '</span>' : '') + (r.tags || []).map(tagChipHtml).join('') + docChipsHtml(r.docs);
+    const est = (r.estHours != null) ? '<span class="est">' + r.estHours + 'h est.</span>' : (r.status === STATE.pendingStatus ? '<span class="pending-note">Waiting for Durand to verify and close</span>' : '');
     const notes = r.context
       ? '<span class="ro est">—</span>'
       : '<span contenteditable="' + (can('notes') ? 'true' : 'false') + '" data-field="notes">' + esc(r.notes) + '</span>';
@@ -315,14 +341,27 @@
   }
   function subItemHtml(s) {
     const overdue = s.due && s.due < todayIso() && !s.done;
+    const canStatus = (s.editable || []).indexOf('status') !== -1;
+    const canNotes = (s.editable || []).indexOf('notes') !== -1;
+    const pending = s.status === STATE.pendingStatus;
+    if (s.feedback) {
+      const st = feedbackState(s);
+      const label = { 'new': 'sent to Durand', accepted: 'accepted, being built', declined: 'declined', implemented: 'implemented' }[st];
+      return '<div class="sub-item ' + (s.done ? 'done' : '') + '" data-key="' + esc(keyOf(s)) + '" data-kind="sub" data-id="' + s.id + '" data-index="' + s.index + '">' +
+        '<div class="sub-item-body">' +
+          '<div class="sub-title">' + esc(s.title) + '</div>' +
+          '<div class="sub-meta"><span class="fb-badge ' + st + '">' + esc(s.feedback.kind || 'Feedback') + ' · ' + label + '</span>' + (s.feedback.decidedAt ? '<span class="est">decided ' + esc(fmtDate(s.feedback.decidedAt)) + '</span>' : '') + '</div>' +
+          '<div class="sub-item-notes" contenteditable="' + (canNotes ? 'true' : 'false') + '" data-field="notes">' + esc(s.notes) + '</div>' +
+        '</div></div>';
+    }
     return '<div class="sub-item ' + (s.done ? 'done' : '') + '" data-key="' + esc(keyOf(s)) + '" data-kind="sub" data-id="' + s.id + '" data-index="' + s.index + '">' +
-      '<input type="checkbox" data-field="done"' + (s.done ? ' checked' : '') + ' aria-label="Done">' +
+      (canStatus ? '<input type="checkbox" data-field="done"' + ((s.done || pending) ? ' checked' : '') + (s.done ? ' disabled' : '') + ' aria-label="Done" title="' + (pending ? 'Marked done; waiting for Durand to verify and close' : 'Mark done: Durand verifies the work and closes it') + '">' : '') +
       '<div class="sub-item-body">' +
         '<div class="sub-title">' + esc(s.title) + '</div>' +
-        '<div class="sub-meta">' + pillHtml('status', s.status, true, STATE.statuses) + pillHtml('priority', s.priority, false) +
+        '<div class="sub-meta">' + pillHtml('status', s.status, canStatus && !s.done, STATE.statuses) + pillHtml('priority', s.priority, false) +
           (s.due ? '<span class="due-cell ' + (overdue ? 'overdue' : '') + '">Due ' + esc(fmtDate(s.due)) + '</span>' : '') +
-          progressHtml(s.done ? 100 : s.progress) + '</div>' +
-        '<div class="sub-item-notes" contenteditable="true" data-field="notes">' + esc(s.notes) + '</div>' +
+          progressHtml(s.done ? 100 : s.progress) + (pending ? '<span class="pending-note">Waiting for Durand to verify</span>' : '') + '</div>' +
+        '<div class="sub-item-notes" contenteditable="' + (canNotes ? 'true' : 'false') + '" data-field="notes">' + esc(s.notes) + '</div>' +
       '</div></div>';
   }
   function tableHtml(rows, emptyText) {
@@ -332,7 +371,7 @@
   function batteryHtml(rows) {
     if (!rows.length) return '';
     const counts = {}; rows.forEach(function(r) { counts[r.status] = (counts[r.status] || 0) + 1; });
-    const segs = ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done'].map(function(s) {
+    const segs = ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done - Pending', 'Done'].map(function(s) {
       return counts[s] ? '<div class="battery-seg ' + statusClass(s) + '" style="width:' + (counts[s] / rows.length * 100) + '%" title="' + esc(s) + ': ' + counts[s] + '"></div>' : '';
     }).join('');
     const pct = Math.round(((counts['Done'] || 0) / rows.length) * 100);
@@ -385,7 +424,9 @@
         '<b>Priority</b><span>' + pillHtml('priority', r.priority, can('priority'), STATE.priorities) + '</span>' +
         '<b>Due</b><span>' + (can('timelineEnd') ? '<input type="date" class="due-input" data-field="due" value="' + esc(r.due) + '" aria-label="Due">' : (r.due ? esc(fmtDate(r.due)) : '<span class="est">No due date</span>')) + '</span>' +
         '<b>Progress</b><span>' + progressHtml(pct) + '</span>' +
-        ((r.taskType || (r.tags || []).length || r.estHours != null) ? '<b>Details</b><span>' + (r.taskType ? '<span class="type-badge">' + esc(r.taskType) + '</span>' : '') + (r.tags || []).map(tagChipHtml).join('') + (r.estHours != null ? '<span class="est">' + r.estHours + 'h est.</span>' : '') + '</span>' : '') +
+        ((r.taskType || (r.tags || []).length || r.estHours != null || (r.docs || []).length) ? '<b>Details</b><span>' + (r.taskType ? '<span class="type-badge">' + esc(r.taskType) + '</span>' : '') + (r.tags || []).map(tagChipHtml).join('') + (r.estHours != null ? '<span class="est">' + r.estHours + 'h est.</span>' : '') + docChipsHtml(r.docs) + '</span>' : '') +
+        (r.status === STATE.pendingStatus ? '<b></b><span class="pending-note">Marked done; Durand verifies the work and closes it.</span>' : '') +
+        (r.feedbackFor ? '<b></b><span class="est">Your bug reports, feature requests and feedback collect here. Use the Feedback button at the top to add one; Durand implements or declines each and you see the decision on the item.</span>' : '') +
       '</div>' +
       (r.context ? '' : '<div class="card-notes"><b>Notes</b><div class="card-notes-edit" contenteditable="' + (can('notes') ? 'true' : 'false') + '" data-field="notes">' + esc(r.notes) + '</div></div>') +
       (subs.length ? '<div class="card-subs"><b>Your steps</b><div class="sub-list">' + subs.map(subItemHtml).join('') + '</div></div>' : '');
@@ -403,7 +444,8 @@
     try {
       const r = await rpc('load');
       if (!r.ok) throw new Error(r.error || 'load failed');
-      STATE = { rows: r.rows, statuses: r.statuses, priorities: r.priorities, docVersion: r.docVersion };
+      STATE = { rows: r.rows, statuses: r.statuses, priorities: r.priorities, docVersion: r.docVersion, feedbackTaskId: r.feedbackTaskId || null, feedbackKinds: r.feedbackKinds || STATE.feedbackKinds, pendingStatus: r.pendingStatus || STATE.pendingStatus };
+      document.getElementById('btnFeedback').hidden = !STATE.feedbackTaskId;
       if (!editing()) render();
       setSync('Up to date');
       document.getElementById('versionStamp').textContent = 'API ' + (r.codeVersion || CODE_VERSION) + ' · UI ' + PERSON_UI_VERSION;
@@ -434,7 +476,7 @@
 
   document.body.addEventListener('change', function(e) {
     const el = e.target; const holder = holderOf(el); if (!holder || !el.dataset.field) return;
-    if (el.dataset.field === 'done') { save(holder, 'status', el.checked ? 'Done' : 'Not Started'); return; }
+    if (el.dataset.field === 'done') { save(holder, 'status', el.checked ? STATE.pendingStatus : 'In Progress'); return; }
     if (el.dataset.field === 'status' || el.dataset.field === 'priority') { el.className = 'pill ' + (el.dataset.field === 'status' ? statusClass(el.value) : priorityClass(el.value)); }
     save(holder, el.dataset.field, el.value);
   });
@@ -490,6 +532,38 @@
       setSync('Not added: ' + (err.message || err), true);
     } finally { setBusy(false); }
   });
+
+  // ---- Feedback (2026-09-23): bug / feature request / feedback filed onto this person's own
+  // pinned feedback task, where Durand implements or declines it ----
+  function openFeedback() {
+    const sel = document.getElementById('fbKind');
+    if (!sel.options.length) STATE.feedbackKinds.forEach(function(k) { const o = document.createElement('option'); o.value = k; o.textContent = k; sel.appendChild(o); });
+    document.getElementById('feedbackBack').hidden = false;
+    document.getElementById('fbText').focus();
+  }
+  function closeFeedback() { document.getElementById('feedbackBack').hidden = true; }
+  document.getElementById('btnFeedback').addEventListener('click', openFeedback);
+  document.getElementById('fbCancel').addEventListener('click', closeFeedback);
+  document.getElementById('feedbackClose').addEventListener('click', closeFeedback);
+  document.getElementById('feedbackBack').addEventListener('click', function(e) { if (e.target === e.currentTarget) closeFeedback(); });
+  document.getElementById('feedbackForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const text = document.getElementById('fbText').value.trim();
+    if (!text) return;
+    const btn = document.getElementById('fbSend'); btn.disabled = true;
+    setSync('Sending feedback…', false, true);
+    try {
+      const r = await rpc('feedback', { kind: document.getElementById('fbKind').value, text: text });
+      if (!r.ok) throw new Error(r.error || 'not sent');
+      document.getElementById('fbText').value = '';
+      closeFeedback();
+      setSync(r.busy ? 'Queued' : 'Sent to Durand');
+      await load(true);
+    } catch (err) {
+      setSync('Not sent: ' + (err.message || err), true);
+    } finally { btn.disabled = false; }
+  });
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && !document.getElementById('feedbackBack').hidden) closeFeedback(); });
 
   async function poll() {
     if (document.hidden || editing()) return;

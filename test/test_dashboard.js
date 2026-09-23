@@ -223,6 +223,7 @@ setTimeout(async () => {
   });
   w.alert = function() {};
   w.findTask(2).delegate = 'Ryan'; w.findTask(3).delegate = 'Ryan';   // two, so the list pop-up opens rather than a single card
+  w.findTask(2).delegateVisible = true; w.findTask(3).delegateVisible = true;   // the visibility switch (2026-09-23) is off by default
   doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true, shiftKey: true }));
   tryCall("shift-clicking a team view button opens that person's filtered pop-up on this board (2026-09-22: swapped)", () => {
     const modal = doc.getElementById('dayViewModal');
@@ -242,6 +243,12 @@ setTimeout(async () => {
     const after = w.personTaskIds_('Ryan');
     if (before.indexOf(2) === -1 || after.indexOf(2) !== -1) throw new Error('held task still listed: ' + JSON.stringify({ before, after }));
     w.findTask(2).tags = w.findTask(2).tags.filter(x => x !== 'Triage');
+  });
+  tryCall("the pop-up applies the visibility switch: a task with delegateVisible off is not listed for the person (2026-09-23)", () => {
+    w.findTask(2).delegateVisible = false;
+    const ids = w.personTaskIds_('Ryan');
+    if (ids.indexOf(2) !== -1 || ids.indexOf(3) === -1) throw new Error('ids: ' + JSON.stringify(ids));
+    w.findTask(2).delegateVisible = true;
   });
   w.findTask(2).delegate = undefined; w.findTask(3).delegate = undefined;
 
@@ -613,7 +620,7 @@ setTimeout(async () => {
     w.closeNewTaskModal(); w.closeDayView();
   });
   tryCall("a person's view pop-up pre-fills the delegate; the modal's fields include delegate and tags", () => {
-    w.findTask(2).delegate = 'Ryan'; w.findTask(3).delegate = 'Ryan';
+    w.findTask(2).delegate = 'Ryan'; w.findTask(3).delegate = 'Ryan'; w.findTask(2).delegateVisible = true; w.findTask(3).delegateVisible = true;
     w.openPersonView('Ryan');
     doc.querySelector('#dayViewActions .dv-add').click();
     if (doc.getElementById('ntDelegate').value !== 'Ryan') throw new Error('delegate not prefilled: ' + doc.getElementById('ntDelegate').value);
@@ -1638,6 +1645,88 @@ setTimeout(async () => {
     if (!active || active.dataset.tab !== 'general' || !doc.getElementById('inboxErrorsList')) throw new Error('did not land on General: ' + (active && active.dataset.tab));
     if (!/toasts and email/.test(w.notifyStateText_('denied'))) throw new Error('state text');
     w.closeSettings(); w.eval('RAW_META.inboxErrors = []');
+  });
+  // ---- Delegate visibility, pending approval, activity, feedback (2026-09-23) ----
+  tryCall('visibility chip: a task with a person delegate shows Hidden by default, the click turns it on with a Durand history line, and a task the person owns is always on', () => {
+    w.eval('TASKS').push({ id: 930, title: 'For Marj to see', owner: 'Durand', delegate: 'Marj', status: 'In Progress', priority: 'Medium', group: 'Ops', tags: [], taskType: 'Hands-on', timelineEnd: '', progress: 0, depends: '', docs: [], notes: '', estHours: 1, history: [], subitems: [] });
+    w.eval('TASKS').push({ id: 931, title: "Marj's own", owner: 'Marj', delegate: 'Marj', status: 'In Progress', priority: 'Medium', group: 'Ops', tags: [], taskType: 'Hands-on', timelineEnd: '', progress: 0, depends: '', docs: [], notes: '', estHours: 1, history: [], subitems: [] });
+    w.eval('TASKS').push({ id: 932, title: 'Nobody delegated', owner: 'Durand', status: 'In Progress', priority: 'Medium', group: 'Ops', tags: [], taskType: 'Hands-on', timelineEnd: '', progress: 0, depends: '', docs: [], notes: '', estHours: 1, history: [], subitems: [] });
+    w.setView('board');
+    const chip = doc.querySelector('tr.task-row[data-id="930"] .vis-chip');
+    if (!chip || !chip.classList.contains('off') || !/Hidden from Marj/.test(chip.textContent)) throw new Error('no off chip: ' + (chip && chip.textContent));
+    if (doc.querySelector('tr.task-row[data-id="932"] .vis-chip')) throw new Error('chip on a task with no delegate');
+    const own = doc.querySelector('tr.task-row[data-id="931"] .vis-chip');
+    if (!own || !own.classList.contains('static') || !/Marj's own/.test(own.textContent)) throw new Error('own-task chip wrong: ' + (own && own.textContent));
+    chip.click();
+    const t = w.findTask(930);
+    if (t.delegateVisible !== true || !t.history.some(h => h.field === 'delegateVisible' && h.to === 'true' && h.source === 'Durand')) throw new Error('toggle did not land: ' + JSON.stringify([t.delegateVisible, t.history]));
+    const on = doc.querySelector('tr.task-row[data-id="930"] .vis-chip');
+    if (!on.classList.contains('on') || !/Visible to Marj/.test(on.textContent)) throw new Error('chip not on');
+    w.openTaskCard(930);
+    if (!doc.querySelector('#modalMeta .vis-chip.on')) throw new Error('no chip in the modal Delegate row');
+    w.closeTaskCard();
+  });
+  tryCall('pending approval: a Done - Pending item shows Approve / Send back, raises a critical alert, approve closes it with an approval line, send back returns it with the note on top', () => {
+    const t = w.findTask(930); t.status = 'Done - Pending'; t.progress = 100;
+    w.eval('TASKS').push({ id: 933, title: 'Parent with a pending step', owner: 'Durand', status: 'In Progress', priority: 'Medium', group: 'Ops', tags: [], taskType: 'Hands-on', timelineEnd: '', progress: 0, depends: '', docs: [], notes: '', estHours: 1, history: [], subitems: [{ title: 'Marj did this', delegate: 'Marj', done: false, status: 'Done - Pending', progress: 100, notes: 'finished', tags: [], history: [] }] });
+    w.setView('board');
+    if (w.rollupStatus(w.findTask(933)) !== 'Done - Pending') throw new Error('rollup: ' + w.rollupStatus(w.findTask(933)));
+    const a = w.computeAlerts().find(x => /awaiting your verification/.test(x.text));
+    if (!a || a.level !== 'critical' || a.ids.indexOf(930) === -1 || a.ids.indexOf(933) === -1) throw new Error('alert: ' + JSON.stringify(a));
+    const row = doc.querySelector('tr.task-row[data-id="930"]');
+    if (!row.querySelector('.pending-approve') || !row.querySelector('select.pill.status-done-pending')) throw new Error('no approve buttons / pending pill on the row');
+    w.approvePending(930, null);
+    if (t.status !== 'Done' || t.progress !== 100 || !t.history.some(h => h.field === 'approval' && /Verified and approved/.test(h.to))) throw new Error('approve: ' + JSON.stringify([t.status, t.history.slice(-2)]));
+    const p = w.findTask(933);
+    w.prompt = () => 'the footer still shows the old date';
+    w.sendBackPending(933, 0);
+    w.prompt = () => null;
+    if (p.subitems[0].status !== 'In Progress' || !/^RETURNED \d{4}-\d{2}-\d{2} by Durand: the footer still shows the old date\n\nfinished$/.test(p.subitems[0].notes) || !p.history.some(h => h.field === 'subitem-returned')) throw new Error('send back: ' + JSON.stringify(p.subitems[0]));
+    if (w.computeAlerts().some(x => /awaiting your verification/.test(x.text))) throw new Error('alert still up');
+  });
+  tryCall('delegate activity: unseen entries raise a warn alert that opens the activity panel; Mark seen posts set_meta and clears it; the General tab has the email switch', () => {
+    w.eval("RAW_META.delegateActivity = [{ ts: '2026-09-23T14:00:00.000Z', person: 'Marj', taskId: 930, subIdx: null, title: 'For Marj to see', kind: 'update', field: 'notes', from: 'a', to: 'b' }, { ts: '2026-09-23T14:05:00.000Z', person: 'Ryan', taskId: 933, subIdx: 0, title: 'Marj did this', kind: 'pending', field: 'status', from: 'In Progress', to: 'Done - Pending' }]; RAW_META.delegateActivitySeen = '2026-09-23T14:00:00.000Z'");
+    const a = w.computeAlerts().find(x => /by delegates since you last checked/.test(x.text));
+    if (!a || !/1 change/.test(a.text) || !/Ryan ×1/.test(a.text) || typeof a.onOpen !== 'function') throw new Error('alert: ' + JSON.stringify(a && a.text));
+    w.eval('LAST_ALERTS = computeAlerts()');
+    w.openAlertTasks(w.eval('LAST_ALERTS').findIndex(x => /by delegates since you last checked/.test(x.text)));
+    const modal = doc.getElementById('dayViewModal');
+    if (!modal.classList.contains('open') || doc.getElementById('dayViewTitle').textContent !== 'Delegate activity') throw new Error('panel not open');
+    const rows = doc.querySelectorAll('#dayViewBody .activity-list .history-row');
+    if (rows.length !== 2 || !/NEW/.test(rows[0].textContent) || /NEW/.test(rows[1].textContent) || !/marked done/.test(rows[0].textContent)) throw new Error('rows: ' + Array.from(rows).map(r => r.textContent.slice(0, 80)).join(' | '));
+    w.__posts = [];
+    w.markActivitySeen();
+    if (w.eval('RAW_META.delegateActivitySeen') !== '2026-09-23T14:05:00.000Z' || w.computeAlerts().some(x => /by delegates since/.test(x.text))) throw new Error('not marked seen');
+    w.closeDayView();
+    const general = w.renderGeneralTab();
+    if (!/id="delegateEmailsSelect"/.test(general) || !/value="off" selected/.test(general) || !/openActivityPanel\(\)/.test(general)) throw new Error('no email switch / activity buttons on General');
+    w.eval('RAW_META.delegateActivity = []; delete RAW_META.delegateActivitySeen');
+  });
+  tryCall('feedback: a new item on a feedbackFor task shows Implement / Decline and raises an alert; Implement queues a Claude step on the feature task with feedbackRef; Decline cancels with the reason', () => {
+    w.eval('TASKS').push({ id: 934, title: '@Claude - Track all Task Tracker Feature/Bug Requests/Reports Here', owner: 'Durand', delegate: 'Claude', pinned: true, status: 'In Progress', priority: 'High', group: 'Ops', tags: [], taskType: 'Claude', timelineEnd: '', progress: 0, depends: '', docs: [], notes: '', estHours: null, history: [], subitems: [] });
+    w.eval('TASKS').push({ id: 935, title: '@Marj — Bug reports, feature requests and feedback', owner: 'Durand', delegate: 'Marj', delegateVisible: true, feedbackFor: 'Marj', pinned: true, status: 'In Progress', priority: 'Medium', group: 'Team Feedback', tags: ['Feedback'], taskType: 'Hands-on', timelineEnd: '', progress: 0, depends: '', docs: [], notes: '', estHours: null, history: [], subitems: [
+      { title: '[Bug] Date picker jumps', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, notes: 'Opens on the wrong month', tags: [], history: [], feedback: { kind: 'Bug', by: 'Marj', ts: '2026-09-23T13:00:00.000Z' } },
+      { title: '[Feature request] Dark card', delegate: 'Marj', done: false, status: 'Not Started', progress: 0, notes: 'please', tags: [], history: [], feedback: { kind: 'Feature request', by: 'Marj', ts: '2026-09-23T13:10:00.000Z' } } ] });
+    const a = w.computeAlerts().find(x => /new feedback item/.test(x.text));
+    if (!a || !/2 new feedback items/.test(a.text)) throw new Error('alert: ' + JSON.stringify(a && a.text));
+    w.openTaskCard(935);
+    const lines = doc.querySelectorAll('#modalSubitemsWrap .feedback-line');
+    if (lines.length !== 2 || !/Bug · new/.test(lines[0].textContent) || !lines[0].querySelector('button')) throw new Error('feedback lines: ' + lines.length);
+    w.implementFeedback(935, 0);
+    const ft = w.findTask(934), fb = w.findTask(935).subitems[0];
+    if (ft.subitems.length !== 1 || ft.subitems[0].delegate !== 'Claude' || ft.subitems[0].title !== 'Date picker jumps' || !/Feedback from Marj \(Bug, 2026-09-23\): Opens on the wrong month/.test(ft.subitems[0].notes) || ft.subitems[0].feedbackRef.taskId !== 935 || ft.subitems[0].feedbackRef.index !== 0) throw new Error('impl step: ' + JSON.stringify(ft.subitems[0]));
+    if (fb.feedback.decision !== 'accepted' || fb.feedback.implTaskId !== 934 || fb.status !== 'In Progress' || !/^ACCEPTED \d{4}-\d{2}-\d{2}: queued for Claude on #934/.test(fb.notes)) throw new Error('feedback item: ' + JSON.stringify(fb));
+    w.prompt = () => 'already on the roadmap for October';
+    w.declineFeedback(935, 1);
+    w.prompt = () => null;
+    const d = w.findTask(935).subitems[1];
+    if (d.feedback.decision !== 'declined' || d.status !== 'Cancelled' || !/^DECLINED \d{4}-\d{2}-\d{2} by Durand: already on the roadmap for October\n\nplease$/.test(d.notes)) throw new Error('decline: ' + JSON.stringify(d));
+    if (w.computeAlerts().some(x => /new feedback item/.test(x.text))) throw new Error('alert still up');
+    w.closeTaskCard();
+    w.openFeedbackPanel();
+    if (doc.getElementById('dayViewTitle').textContent !== 'Delegate feedback' || doc.querySelectorAll('#dayViewBody .comment-item').length !== 2) throw new Error('panel');
+    w.closeDayView();
+    const T = w.eval('TASKS'); for (let i = T.length - 1; i >= 0; i--) if (T[i].id >= 930 && T[i].id <= 935) T.splice(i, 1);
   });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
