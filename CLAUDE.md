@@ -1388,3 +1388,33 @@ is the explicit instruction that allowed `person.html` and the person RPC surfac
   feedback (2026-09-23)" (the backend summary line moved to the END of test_codegs.js: sections added
   after it since 2026-09-18 could fail without failing `npm test`); dashboard four tryCalls; person test
   extended (feedback fixture rows, pending checkbox).
+
+## Thread ids (2026-09-23, backend 2026-09-23.2, dashboard UI 2026-09-23.2)
+
+Per Durand's task prompt (2026-09-23): "threads identify themselves by an ID generated on creation
+that never changes, so there are no title-change errors". `threads` stays keyed by name; each object
+carries an immutable `id` (`tsgThreadIdFor_`: 'T' + 3+ digit zero-padded number) from the
+server-owned counter `meta.next_thread_id` (never derived from the count, never reused, never below
+the highest id in use). `tsgEnsureThreadIds_(doc)` (idempotent; missing, malformed or duplicate ids
+get the next number in first-history-ts order, then name) runs at the top of `applyRulesetPatch_`,
+inside `add_thread`, after `replace_all` lands `incoming.threads` (a same-name thread gets the
+server's id back, a client-changed id is ignored and logged, a new thread's client id is dropped),
+inside `tsgMirrorInstructions_`, and in `processInbox_` before the mirror (the backfill). Thread ops
+resolve `id` or `name` through `tsgResolveThread_` (id wins; disagreement, unknown id, or neither
+are refused by name). New op `rename_thread {id|name, newName}` (validated by
+`tsgAssertSafeThreadName_`, duplicate refused, same name a no-op) moves the object and appends
+`{action: 'rename', summary: 'Renamed from <old> to <new>.'}`. Mirror: sets keyed `thread:<id>`,
+titled `Systems — Instructions — Thread — <id> — <name>`, body header `SYSTEMS — INSTRUCTIONS —
+THREAD <id>: <name>`; `tsgMirrorInstructions_` first moves any `thread:<name>` record to
+`thread:<id>` so the same Doc is reused and retitled. Dashboard: `.thread-id` badge in Settings >
+Threads ("id pending" for a UI-added thread until the save returns; `saveRulesets` reloads when any
+thread lacks an id), `mirrorDocLink_('thread:' + id)`, Rename button -> `renameThread` ->
+`postRulesetsOp_({op: 'rename_thread', id, newName})` (single op to `target=rulesets`, then a
+reload; never a renamed key through replace_all). BACKUP before deploy: the Rulesets file (docVersion
+137, 29 threads, 31 mirror records) is in the session scratchpad as
+`rulesets_backup_2026-09-23.json`. Offline replay of the backfill against it assigns T001 Weekly
+Check-in (Ryan) Prep ... T029 FUB Build Monitor (`TSG Task Tracker` = T018) and migrates all 29
+mirror records to id keys reusing the same Doc ids. Tests: backend "Thread ids: generated on
+creation, never changed, never reused (2026-09-23)" (the 2026-09-22 mirror section now expects id
+keys); dashboard "Threads tab shows each thread id ...". README "Instruction layers and mirror Docs"
+THREAD IDS paragraph; both skills say ops carry `id`.

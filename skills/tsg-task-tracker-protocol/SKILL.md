@@ -40,7 +40,7 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 - `replace_all` is the dashboard's own save; never send it from a session.
 
 ### Ruleset ops (`target: "rulesets"`)
-`append_category`, `replace_category_text` (exact-substring find/replace; throws if `find` is not present verbatim — byte-check against a fresh read first), `set_category` (full overwrite; avoid), `add_thread`, `update_thread_instructions`, `add_thread_memory`. All three thread ops key the thread by `patch.name` (not `thread`); a wrong key fails silently.
+`append_category`, `replace_category_text` (exact-substring find/replace; throws if `find` is not present verbatim — byte-check against a fresh read first), `set_category` (full overwrite; avoid), `add_thread`, `update_thread_instructions`, `add_thread_memory`, `remove_thread_memory`, `remove_thread`, `set_thread_code`, `rename_thread`, `mirror_instructions`. THREAD IDS (2026-09-23): every thread has an immutable server-assigned `id` (T001, T002 ...; read it from the thread's mirror Doc title "Systems — Instructions — Thread — <id> — <name>"). Address every thread op with `id` (preferred; `name` still works; both must agree). Never send an id on `add_thread` (the server assigns it), never expect an id to change, and never rename by re-adding: `rename_thread {id, newName}` keeps the id, memories, code, history and the same Doc.
 
 ### Instruction layers (2026-09-22)
 

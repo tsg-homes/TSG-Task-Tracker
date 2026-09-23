@@ -323,6 +323,26 @@ changelog lines per category and per thread and moves the rest to
 Rulesets ops added: `set_category` now creates a missing category, `remove_category {category}`,
 `set_thread_code {name, code}`, `mirror_instructions {}`.
 
+THREAD IDS (2026-09-23, per Durand: "threads identify themselves by an ID generated on creation
+that never changes, so there are no title-change errors"). `threads` stays keyed by name, but every
+thread object carries an immutable `id` ('T' + zero-padded number: T001, T002 ...) allocated from
+the server-owned counter `meta.next_thread_id`. Never derived from the count, never reused (a removed
+thread's number is gone), never set by a patch or a Settings save: `add_thread` ignores a supplied
+id, `replace_all` restores the server's id for a thread of the same name and drops any other, and a
+client copy cannot touch the counter (`tsgEnsureThreadIds_`, idempotent, also the one-time backfill
+that ran on the first rulesets write after deploy in first-history-ts order, then by name). Every
+thread op (`update_thread_instructions`, `add_thread_memory`, `remove_thread_memory`, `remove_thread`,
+`set_thread_code`) takes `id` or `name` (`tsgResolveThread_`: id wins, a disagreeing pair is refused
+by name). New op `rename_thread {id, newName}` moves the object to the new key keeping id,
+instructions, memories, code and history and logs "Renamed from <old> to <new>." (Settings > Threads
+has a Rename button that uses it; a renamed key is never saved through replace_all). Mirror Docs are
+keyed `thread:<id>` in `meta.mirrorDocs` and titled `Systems — Instructions — Thread — <id> — <name>`
+with the id in the body header, so a rename retitles the SAME Doc; the name-keyed records were
+migrated in place (same Doc ids, no new Docs). Settings > Threads shows the id ("id pending" on a
+thread added there until the save lands). Sessions: read your id from the Doc title and send it on
+every op; a thread with no Doc yet does not exist (`add_thread`, then the id is in the title a minute
+later).
+
 WHAT A SESSION DOES: read its layer's Doc (the thread Doc when it has a thread, else the Code
 Doc in a code session, else General) at start; push its own durable rules and memories to ITS
 thread only (`update_thread_instructions`, `add_thread_memory`); never edit General or Code from

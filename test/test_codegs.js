@@ -2371,22 +2371,22 @@ section('Instruction layers and the mirror Docs (2026-09-22)');
   check('mirror_instructions changes nothing but counts as a write (version bump)', rs.meta.docVersion === v0 + 1 && rs.current.General.content === 'G1 rule');
   const n1 = sandbox.tsgMirrorInstructions_(rs);
   const md = rs.meta.mirrorDocs;
-  check('first mirror writes General, Code and one Doc per thread', n1 === 4 && Object.keys(md).sort().join('|') === 'Code|General|thread:Alpha Code|thread:Beta');
+  check('first mirror writes General, Code and one Doc per thread, keyed by thread id (2026-09-23)', n1 === 4 && Object.keys(md).sort().join('|') === 'Code|General|thread:T001|thread:T002' && rs.threads['Alpha Code'].id === 'T001' && rs.threads.Beta.id === 'T002');
   check('General reuses the legacy Cowork mirror Doc and renames it', md.General.id === LEGACY && mirrorDocStore[LEGACY].name === 'Systems — Instructions — General' && /=== GENERAL/.test(mirrorDocStore[LEGACY].text) && !/UNPOPULATED/.test(mirrorDocStore[LEGACY].text));
   check('the Code Doc is composed General + Code', /G1 rule[\s\S]*=== CODE[\s\S]*C1 code rule/.test(mirrorDocStore[md.Code.id].text));
-  const alpha = mirrorDocStore[md['thread:Alpha Code'].id].text, beta = mirrorDocStore[md['thread:Beta'].id].text;
+  const alpha = mirrorDocStore[md['thread:T001'].id].text, beta = mirrorDocStore[md['thread:T002'].id].text;
   check('a code thread Doc carries General + Code + the thread with its memories; a plain thread skips Code', /=== CODE/.test(alpha) && /alpha rules/.test(alpha) && /- m1\n- m2/.test(alpha) && !/=== CODE/.test(beta) && /beta rules/.test(beta) && /Critical memories \(0\): none/.test(beta));
-  check('new Docs land in the Instructions folder with the set title', createdFolders.indexOf('Instructions') !== -1 && mirrorDocStore[md['thread:Beta'].id].name === 'Systems — Instructions — Thread — Beta' && /docs\.google\.com\/document\/d\//.test(md.General.url));
+  check('new Docs land in the Instructions folder with the set title carrying the id, and the body header names the id', createdFolders.indexOf('Instructions') !== -1 && mirrorDocStore[md['thread:T002'].id].name === 'Systems — Instructions — Thread — T002 — Beta' && /^SYSTEMS — INSTRUCTIONS — THREAD T002: Beta/.test(beta) && /docs\.google\.com\/document\/d\//.test(md.General.url));
   const n2 = sandbox.tsgMirrorInstructions_(rs);
   check('an unchanged set is not rewritten', n2 === 0);
   sandbox.applyRulesetPatch_(rs, { op: 'update_thread_instructions', name: 'Beta', instructions: 'beta rules v2' });
   const n3 = sandbox.tsgMirrorInstructions_(rs);
-  check('a thread change rewrites only that thread Doc', n3 === 1 && /beta rules v2/.test(mirrorDocStore[md['thread:Beta'].id].text));
+  check('a thread change rewrites only that thread Doc', n3 === 1 && /beta rules v2/.test(mirrorDocStore[md['thread:T002'].id].text));
   sandbox.applyRulesetPatch_(rs, { op: 'set_category', category: 'General', text: 'G2 rule' });
-  check('a General change rewrites every Doc', sandbox.tsgMirrorInstructions_(rs) === 4 && /G2 rule/.test(beta ? mirrorDocStore[md['thread:Beta'].id].text : ''));
+  check('a General change rewrites every Doc', sandbox.tsgMirrorInstructions_(rs) === 4 && /G2 rule/.test(beta ? mirrorDocStore[md['thread:T002'].id].text : ''));
   sandbox.applyRulesetPatch_(rs, { op: 'remove_thread', name: 'Beta' });
   sandbox.tsgMirrorInstructions_(rs);
-  check('a removed thread drops its mirror record', !rs.meta.mirrorDocs['thread:Beta']);
+  check('a removed thread drops its mirror record', !rs.meta.mirrorDocs['thread:T002']);
   sandbox.applyRulesetPatch_(rs, { op: 'remove_category', category: 'Code' });
   check('remove_category deletes the block', !rs.current.Code);
   let badCat = false; try { sandbox.applyRulesetPatch_(rs, { op: 'remove_category', category: 'Nope' }); } catch (e) { badCat = true; }
@@ -2525,6 +2525,91 @@ section('Delegate visibility, pending approval, activity log, feedback (2026-09-
   check('Feedback is a reserved tag the model cannot hand out', vm.runInContext('TSG_RESERVED_TAGS', sandbox).includes('Feedback'));
   sandbox.Session = origSession; sandbox.DriveApp.getFileById = origGetFileById; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.LockService.getScriptLock = origLock;
   claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+}
+
+section('Thread ids: generated on creation, never changed, never reused (2026-09-23)');
+{
+  const mk = () => ({ meta: { docVersion: 3 }, history: [], current: { General: { content: 'G', pushed: '' } }, threads: {} });
+  let rs = mk();
+  sandbox.applyRulesetPatch_(rs, { op: 'add_thread', name: 'First', ts: '2026-09-23T10:00:00.000Z' });
+  sandbox.applyRulesetPatch_(rs, { op: 'add_thread', name: 'Second', id: 'T999', ts: '2026-09-23T10:01:00.000Z' });
+  check('add_thread assigns T001, T002 in order and ignores a supplied id; the counter is highest + 1', rs.threads.First.id === 'T001' && rs.threads.Second.id === 'T002' && rs.meta.next_thread_id === 3);
+  sandbox.applyRulesetPatch_(rs, { op: 'remove_thread', name: 'Second' });
+  sandbox.applyRulesetPatch_(rs, { op: 'add_thread', name: 'Third' });
+  check('a removed thread\'s number is never reused: the next thread is T003 and the counter only rises', !rs.threads.Second && rs.threads.Third.id === 'T003' && rs.meta.next_thread_id === 4);
+  // backfill: stable order = first history ts (any ISO format), then name; idempotent
+  rs = mk();
+  rs.threads = {
+    'Zulu': { instructions: '', memories: [], history: [{ ts: '2026-08-24T19:40:00Z', action: 'baseline', summary: 'x' }] },
+    'Mike': { instructions: '', memories: [], history: [{ ts: '2026-09-18T02:27:04+00:00', action: 'baseline', summary: 'x' }] },
+    'Alpha': { instructions: '', memories: [], history: [{ ts: '2026-09-18T02:27:04+00:00', action: 'baseline', summary: 'x' }] },
+    'Undated': { instructions: '', memories: [], history: [] },
+    'Micro': { instructions: '', memories: [], history: [{ ts: '2026-09-23T12:52:03.714349Z', action: 'baseline', summary: 'x' }] }
+  };
+  const n1 = sandbox.tsgEnsureThreadIds_(rs);
+  check('the backfill orders by first history ts, then name, undated last', n1 === 5 && rs.threads.Zulu.id === 'T001' && rs.threads.Alpha.id === 'T002' && rs.threads.Mike.id === 'T003' && rs.threads.Micro.id === 'T004' && rs.threads.Undated.id === 'T005' && rs.meta.next_thread_id === 6);
+  const before = JSON.stringify(rs);
+  check('the backfill is idempotent', sandbox.tsgEnsureThreadIds_(rs) === 0 && JSON.stringify(rs) === before);
+  rs.threads.Mike.id = 'T001';   // a duplicate of Zulu's (a broken copy)
+  sandbox.tsgEnsureThreadIds_(rs);
+  check('a duplicate id is replaced with a fresh one; the earlier holder keeps it', rs.threads.Zulu.id === 'T001' && rs.threads.Mike.id === 'T006' && rs.meta.next_thread_id === 7);
+  // addressing by id, by name, by both
+  rs = mk();
+  sandbox.applyRulesetPatch_(rs, { op: 'add_thread', name: 'Alpha' });
+  sandbox.applyRulesetPatch_(rs, { op: 'add_thread', name: 'Beta' });
+  sandbox.applyRulesetPatch_(rs, { op: 'update_thread_instructions', id: 'T001', instructions: 'by id' });
+  sandbox.applyRulesetPatch_(rs, { op: 'add_thread_memory', name: 'Alpha', memory: 'by name' });
+  sandbox.applyRulesetPatch_(rs, { op: 'add_thread_memory', id: 'T001', name: 'Alpha', memory: 'by both' });
+  sandbox.applyRulesetPatch_(rs, { op: 'set_thread_code', id: 'T001', code: true });
+  check('update / add memory / set code work by id, by name and by both', rs.threads.Alpha.instructions === 'by id' && rs.threads.Alpha.memories.join('|') === 'by name|by both' && rs.threads.Alpha.code === true);
+  sandbox.applyRulesetPatch_(rs, { op: 'remove_thread_memory', id: 'T001', index: 0 });
+  check('remove memory by id', rs.threads.Alpha.memories.join('|') === 'by both');
+  let disagree = null; try { sandbox.applyRulesetPatch_(rs, { op: 'add_thread_memory', id: 'T001', name: 'Beta', memory: 'x' }); } catch (e) { disagree = e.message; }
+  check('id and name that disagree are refused, naming both', /T001 is "Alpha", not "Beta"/.test(disagree || '') && rs.threads.Beta.memories.length === 0);
+  let unknown = null; try { sandbox.applyRulesetPatch_(rs, { op: 'update_thread_instructions', id: 'T042', instructions: 'x' }); } catch (e) { unknown = e.message; }
+  check('an unknown id is refused by name', /thread id not found: T042/.test(unknown || ''));
+  let neither = null; try { sandbox.applyRulesetPatch_(rs, { op: 'update_thread_instructions', instructions: 'x' }); } catch (e) { neither = e.message; }
+  check('an op with neither id nor name is refused', /thread id or name is required/.test(neither || ''));
+  // rename
+  const histLen = rs.threads.Alpha.history.length;
+  sandbox.applyRulesetPatch_(rs, { op: 'rename_thread', id: 'T001', newName: 'Alpha Prime', ts: '2026-09-23T11:00:00.000Z' });
+  check('rename_thread moves the object to the new key keeping id, instructions, memories, code and history, and logs the rename', !rs.threads.Alpha && rs.threads['Alpha Prime'] && rs.threads['Alpha Prime'].id === 'T001' && rs.threads['Alpha Prime'].instructions === 'by id' && rs.threads['Alpha Prime'].memories.join('|') === 'by both' && rs.threads['Alpha Prime'].code === true && rs.threads['Alpha Prime'].history.length === histLen + 1 && rs.threads['Alpha Prime'].history[histLen].summary === 'Renamed from Alpha to Alpha Prime.' && rs.threads['Alpha Prime'].history[histLen].action === 'rename');
+  let dup = null; try { sandbox.applyRulesetPatch_(rs, { op: 'rename_thread', id: 'T001', newName: 'Beta' }); } catch (e) { dup = e.message; }
+  check('rename_thread refuses a name that already exists', /already exists/.test(dup || '') && rs.threads['Alpha Prime'].id === 'T001');
+  let reserved = null; try { sandbox.applyRulesetPatch_(rs, { op: 'rename_thread', id: 'T001', newName: '__proto__' }); } catch (e) { reserved = e.message; }
+  check('rename_thread validates the new name like add_thread', /reserved/.test(reserved || ''));
+  sandbox.applyRulesetPatch_(rs, { op: 'update_thread_instructions', id: 'T001', instructions: 'after rename' });
+  check('after a rename the id still addresses the thread', rs.threads['Alpha Prime'].instructions === 'after rename');
+  // replace_all: ids are server-owned
+  const v = rs.meta.docVersion;
+  const clientCopy = JSON.parse(JSON.stringify({ current: rs.current, threads: rs.threads, history: rs.history, meta: { docVersion: v } }));
+  delete clientCopy.threads['Alpha Prime'].id;        // stripped
+  clientCopy.threads.Beta.id = 'T777';                  // changed
+  clientCopy.threads['UI added'] = { instructions: '', memories: [], history: [{ ts: '2026-09-23T12:00:00.000Z', action: 'baseline', summary: 'Thread added from Task Tracker Settings.' }], id: 'T555' };
+  clientCopy.meta.next_thread_id = 1;                   // a client cannot reset the counter
+  sandbox.applyRulesetPatch_(rs, { op: 'replace_all', baseVersion: v, doc: clientCopy });
+  check('replace_all restores a stripped id, ignores a changed id, gives a UI-added thread the next id and never lets the client touch the counter', rs.threads['Alpha Prime'].id === 'T001' && rs.threads.Beta.id === 'T002' && rs.threads['UI added'].id === 'T003' && rs.meta.next_thread_id === 4);
+  // mirror: name-keyed records migrate to the id key reusing the same Doc; a rename retitles that Doc
+  mirrorDocStore = {}; mirrorDocSeq = 0; attachFolder = null;
+  const LEGACY2 = sandbox.TSG_LEGACY_COWORK_MIRROR_DOC_ID;
+  mirrorDocStore[LEGACY2] = { name: 'Systems — Instructions — General', text: 'old' };
+  mirrorDocStore['DOC-BETA'] = { name: 'Systems — Instructions — Thread — Beta', text: 'old beta' };
+  rs.meta.mirrorDocs = { General: { id: LEGACY2, url: 'u', title: 'Systems — Instructions — General', hash: 'x' }, 'thread:Beta': { id: 'DOC-BETA', url: 'u', title: 'Systems — Instructions — Thread — Beta', hash: 'x' } };
+  sandbox.tsgMirrorInstructions_(rs);
+  const md2 = rs.meta.mirrorDocs;
+  check('a name-keyed mirror record moves to thread:<id> and the SAME Doc is rewritten and retitled with the id', !md2['thread:Beta'] && md2['thread:T002'] && md2['thread:T002'].id === 'DOC-BETA' && mirrorDocStore['DOC-BETA'].name === 'Systems — Instructions — Thread — T002 — Beta' && /^SYSTEMS — INSTRUCTIONS — THREAD T002: Beta/.test(mirrorDocStore['DOC-BETA'].text) && Object.keys(mirrorDocStore).length === 5);   // General (legacy), Beta (reused), Code + T001 + T003 (new)
+  sandbox.applyRulesetPatch_(rs, { op: 'rename_thread', id: 'T002', newName: 'Beta Renamed' });
+  sandbox.tsgMirrorInstructions_(rs);
+  check('a rename retitles the same Doc under the same id key', rs.meta.mirrorDocs['thread:T002'].id === 'DOC-BETA' && mirrorDocStore['DOC-BETA'].name === 'Systems — Instructions — Thread — T002 — Beta Renamed' && /THREAD T002: Beta Renamed/.test(mirrorDocStore['DOC-BETA'].text) && Object.keys(mirrorDocStore).length === 5);
+  // history archiving after a rename
+  const rsArch = [];
+  const savedFolder = sandbox.DriveApp.getFolderById;
+  sandbox.DriveApp.getFolderById = () => ({ getFoldersByName: () => ({ hasNext: () => true, next: () => ({ createFile: (name, content) => { rsArch.push({ name, content }); return { getName: () => name }; } }) }), createFolder: () => { throw new Error('not expected'); } });
+  for (let i = 0; i < 5; i++) sandbox.applyRulesetPatch_(rs, { op: 'add_thread_memory', id: 'T002', memory: 'm' + i, ts: '2026-09-23T13:0' + i + ':00.000Z' });
+  const pruned = sandbox.tsgArchiveRulesetsHistory_(rs, '2026-09-23T14:00:00.000Z');
+  check('history archiving keeps working on the renamed key', pruned > 0 && rs.threads['Beta Renamed'].history.length === 3 && rsArch.length === 1 && Object.keys(JSON.parse(rsArch[0].content).threads).indexOf('Beta Renamed') !== -1 && !Object.keys(JSON.parse(rsArch[0].content).threads).some(n => n === 'Beta'));
+  sandbox.DriveApp.getFolderById = savedFolder;
+  mirrorDocStore = {}; attachFolder = null;
 }
 
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));

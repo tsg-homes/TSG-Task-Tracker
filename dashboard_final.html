@@ -561,6 +561,8 @@
   .vis-chip.off { background: var(--status-warn-bg); color: var(--status-warn); border-color: transparent; }
   .vis-chip.static { cursor: default; }
   .vis-line { margin-top: 4px; }
+  .thread-id { margin-right: 6px; }
+  .thread-id.pending { opacity: 0.6; font-style: italic; }
   .pending-approve { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }
   .pending-approve .btn { padding: 2px 8px; font-size: 11px; }
   .feedback-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; margin: 2px 0 4px; }
@@ -1607,7 +1609,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-23.1';
+  const UI_VERSION = '2026-09-23.2';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -8492,9 +8494,13 @@
         const th = threads[name];
         const changelog = (th.history || []).slice().reverse();
         const memories = th.memories || [];
+        // Thread ids (2026-09-23): server-assigned on creation, never changed; sessions address the
+        // thread by id. A thread added here shows "id pending" until the save comes back.
+        const idBadge = th.id ? '<span class="task-id thread-id" title="Thread id: sessions address this thread by it; it never changes">' + escapeHtml(th.id) + '</span>' : '<span class="task-id thread-id pending" title="The tracker assigns the id when this save lands">id pending</span>';
         return '<div class="thread-block">' +
-          '<div class="ruleset-block-head"><h3>' + escapeHtml(name) + '</h3>' + mirrorDocLink_('thread:' + name) +
+          '<div class="ruleset-block-head"><h3>' + idBadge + escapeHtml(name) + '</h3>' + mirrorDocLink_('thread:' + (th.id || name)) +
           ' <label class="thread-code-toggle" title="A code thread\'s Doc carries General + Code + this thread"><input type="checkbox" ' + (th.code ? 'checked' : '') + ' onchange="threadCodeToggle(\'' + jsAttr(name) + '\', this.checked)"> Code thread</label>' +
+          (th.id ? '<button class="btn small" onclick="renameThread(\'' + jsAttr(name) + '\')" title="Rename the thread; its id and Doc stay the same">Rename</button>' : '') +
           '<button class="icon-btn danger" onclick="removeThread(\'' + jsAttr(name) + '\')" title="Remove thread">&#10005;</button></div>' +
           '<div class="thread-label">Instructions (on top of General' + (th.code ? ' + Code' : '') + ')</div>' +
           '<div class="ruleset-content" contenteditable="true" onblur="threadFieldEdit(\'' + jsAttr(name) + '\', this)">' + escapeHtml(th.instructions || '') + '</div>' +
@@ -8520,10 +8526,39 @@
     const name = prompt('Thread name:');
     if (!name || !name.trim()) return;
     if (RULESETS.threads[name]) { alert('That thread already exists.'); return; }
+    // No id here: the server assigns it on this save (never the client), shown as "id pending".
     RULESETS.threads[name] = { instructions: '', memories: [], history: [] };
     touchThreadHistory(name, 'baseline', 'Thread added from Task Tracker Settings.');
     scheduleRulesetsSave();
     renderSettings();
+  }
+  // One rulesets op straight to the server (2026-09-23), then a reload so the panel shows the
+  // server's copy. Used for rename_thread: a renamed key is never saved through replace_all.
+  async function postRulesetsOp_(op) {
+    const res = await apiFetch('target=rulesets', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(op) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    let resp = null;
+    try { resp = await res.json(); } catch (e) { throw new Error('Unrecognized response from the Task Tracker API.'); }
+    if (resp && resp.ok === false) throw new Error(resp.error === 'busy' ? 'The tracker is busy; try again in a minute.' : (resp.error || 'Rejected'));
+    rulesetsLoaded = false;
+    await loadRulesets();
+    renderSettings();
+    return resp;
+  }
+  async function renameThread(name) {
+    const th = RULESETS.threads[name];
+    if (!th || !th.id) { alert('This thread has no id yet; wait for the save to land, then rename.'); return; }
+    const newName = prompt('New name for ' + th.id + ' "' + name + '":', name);
+    if (newName == null) return;
+    const clean = newName.trim();
+    if (!clean || clean === name) return;
+    if (RULESETS.threads[clean]) { alert('A thread named "' + clean + '" already exists.'); return; }
+    try {
+      await postRulesetsOp_({ op: 'rename_thread', id: th.id, newName: clean });
+      setSyncStatus('saved', 'Thread ' + th.id + ' renamed to "' + clean + '"');
+    } catch (err) {
+      alert('Could not rename: ' + (err.message || err));
+    }
   }
   function removeThread(name) {
     if (!confirm('Remove thread "' + name + '"? This deletes its instructions, memories, and changelog.')) return;
@@ -8632,6 +8667,12 @@
       if (resp && typeof resp.docVersion === 'number') {
         RULESETS_DOC_VERSION = resp.docVersion;
         RULESETS.meta.docVersion = resp.docVersion;
+      }
+      // A thread added here has no id until the server assigns one: reload so it shows (2026-09-23).
+      if (Object.keys(RULESETS.threads || {}).some(function(n) { return RULESETS.threads[n] && !RULESETS.threads[n].id; })) {
+        rulesetsLoaded = false;
+        await loadRulesets();
+        renderSettings();
       }
     } catch (err) {
       alert('Could not save to Drive: ' + (err.message || err));

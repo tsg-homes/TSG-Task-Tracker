@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-23.1';
+const TSG_CODE_VERSION = '2026-09-23.2';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -160,6 +160,8 @@ function processInbox_() {
     if (rulesetsDoc && applied.some(function(p) { return p.patch.target === 'rulesets'; })) {
       // INSTRUCTION LAYERS (2026-09-22): every instruction set is mirrored to its Google Doc
       // before the rulesets write so meta.mirrorDocs lands in the same save. Never fails the write.
+      try { tsgEnsureThreadIds_(rulesetsDoc); }   // thread ids (2026-09-23): the backfill rides the first write after deploy
+      catch (idErr) { Logger.log('[threads] id backfill skipped: ' + idErr); }
       try { tsgMirrorInstructions_(rulesetsDoc); }
       catch (mirrorErr) { Logger.log('[mirror] instruction mirror skipped: ' + mirrorErr); }
       // Only the latest instructions stay in the hot file; older changelog lines move to History/.
@@ -245,6 +247,69 @@ function tsgHasThread_(doc, name) {
 }
 
 /**
+ * THREAD IDS (2026-09-23, per Durand: "threads identify themselves by an ID generated on
+ * creation that never changes, so there are no title-change errors").
+ * `threads` stays keyed by name (the dashboard and the history code depend on it); every
+ * thread object carries an immutable `id` = 'T' + zero-padded number, allocated from the
+ * server-owned counter meta.next_thread_id. Never derived from the thread count, never reused
+ * (a removed thread's number is gone for good). No patch or client save can set or change an
+ * id: add_thread ignores one, replace_all restores the server's id for a thread of the same
+ * name and drops any other, and every thread op resolves `id` or `name` through
+ * tsgResolveThread_ (id wins; a disagreeing pair is an error). Mirror Docs are keyed
+ * 'thread:<id>' so a rename (rename_thread) retitles the same Doc.
+ */
+var TSG_THREAD_ID_RE = /^T(\d{3,})$/;
+function tsgThreadIdFor_(n) { var d = String(n); while (d.length < 3) d = '0' + d; return 'T' + d; }
+function tsgThreadIdNumber_(id) { var m = TSG_THREAD_ID_RE.exec(String(id || '')); return m ? Number(m[1]) : null; }
+function tsgThreadFirstTs_(th) {
+  var h = th && Array.isArray(th.history) ? th.history : [];
+  for (var i = 0; i < h.length; i++) { if (h[i] && h[i].ts) { var ms = Date.parse(h[i].ts); if (!isNaN(ms)) return ms; } }
+  return Number.MAX_SAFE_INTEGER;   // no dated history: after every dated thread, then by name
+}
+/** Gives every thread without a valid, unique id the next one, oldest first (first history ts, then name). Idempotent. */
+function tsgEnsureThreadIds_(doc) {
+  if (!doc) return 0;
+  if (!doc.meta) doc.meta = {};
+  if (!doc.threads) doc.threads = {};
+  var names = Object.keys(doc.threads).filter(function(n) { return doc.threads[n] && typeof doc.threads[n] === 'object'; });
+  var maxNum = 0, seen = {}, missing = [];
+  var ordered = names.slice().sort(function(a, b) { return (tsgThreadFirstTs_(doc.threads[a]) - tsgThreadFirstTs_(doc.threads[b])) || a.localeCompare(b); });
+  ordered.forEach(function(n) {
+    var id = doc.threads[n].id, num = tsgThreadIdNumber_(id);
+    if (num == null || seen[id]) { missing.push(n); return; }   // no id, malformed, or a duplicate of an earlier thread's
+    seen[id] = true;
+    if (num > maxNum) maxNum = num;
+  });
+  // The counter only ever rises: never below the highest id in use, never reset by a client copy.
+  if (typeof doc.meta.next_thread_id !== 'number' || doc.meta.next_thread_id <= maxNum) doc.meta.next_thread_id = maxNum + 1;
+  missing.forEach(function(n) {
+    var was = doc.threads[n].id;
+    doc.threads[n].id = tsgThreadIdFor_(doc.meta.next_thread_id);
+    doc.meta.next_thread_id += 1;
+    if (was) Logger.log('[threads] "' + n + '": ignored id ' + JSON.stringify(was) + ' (not the server\'s); assigned ' + doc.threads[n].id);
+  });
+  return missing.length;
+}
+function tsgThreadNameById_(doc, id) {
+  var want = String(id || '');
+  if (!want) return null;
+  var names = Object.keys((doc && doc.threads) || {});
+  for (var i = 0; i < names.length; i++) { var th = doc.threads[names[i]]; if (th && th.id === want) return names[i]; }
+  return null;
+}
+/** The name key a thread op addresses: `id` wins, `name` still works, both must agree. */
+function tsgResolveThread_(doc, patch, op) {
+  var byId = patch.id != null && patch.id !== '' ? tsgThreadNameById_(doc, patch.id) : null;
+  if (patch.id != null && patch.id !== '' && !byId) throw new Error(op + ': thread id not found: ' + patch.id);
+  var name = patch.name != null && patch.name !== '' ? String(patch.name) : null;
+  if (byId && name && byId !== name) throw new Error(op + ': id ' + patch.id + ' is "' + byId + '", not "' + name + '" (id and name disagree)');
+  if (byId) return byId;
+  if (!name) throw new Error(op + ': thread id or name is required');
+  if (!tsgHasThread_(doc, name)) throw new Error(op + ': thread not found: ' + name);
+  return name;
+}
+
+/**
  * RULESETS VERSIONING (2026-09-02) — meta.docVersion.
  *
  * The Rulesets document had no version check whatsoever: target=rulesets was a blind
@@ -262,6 +327,7 @@ function applyRulesetPatch_(doc, patch) {
   if (!doc.meta) doc.meta = {};
   if (typeof doc.meta.docVersion !== 'number') doc.meta.docVersion = 1;
   if (!doc.threads) doc.threads = {};
+  tsgEnsureThreadIds_(doc);   // the backfill: every thread has its id before any op resolves one
 
   if (patch.op === 'replace_all') {
     // Whole-document save from the dashboard's Settings UI, submitted as a patch like
@@ -281,7 +347,25 @@ function applyRulesetPatch_(doc, patch) {
     }
     const incoming = patch.doc || {};
     if (incoming.current) doc.current = incoming.current;
-    if (incoming.threads) doc.threads = incoming.threads;
+    if (incoming.threads) {
+      // Ids are server-owned: a thread of the same name keeps the id the server holds (a copy
+      // that stripped it gets it back, a copy that changed it is ignored and logged); a thread
+      // new to the server gets a fresh id from the counter, never one the client made up.
+      var prevThreads = doc.threads || {};
+      doc.threads = incoming.threads;
+      Object.keys(doc.threads).forEach(function(n) {
+        var th = doc.threads[n]; if (!th || typeof th !== 'object') return;
+        var prev = Object.prototype.hasOwnProperty.call(prevThreads, n) ? prevThreads[n] : null;
+        if (prev && prev.id) {
+          if (th.id && th.id !== prev.id) Logger.log('[threads] replace_all: "' + n + '" sent id ' + JSON.stringify(th.id) + ', kept ' + prev.id);
+          th.id = prev.id;
+        } else if (th.id) {
+          Logger.log('[threads] replace_all: new thread "' + n + '" sent id ' + JSON.stringify(th.id) + ', ignored');
+          delete th.id;
+        }
+      });
+      tsgEnsureThreadIds_(doc);
+    }
     if (Array.isArray(incoming.history)) doc.history = incoming.history;
     // meta stays server-owned apart from the descriptive fields — in particular
     // docVersion is never taken from the client, and meta.version (the static schema
@@ -322,9 +406,22 @@ function applyRulesetPatchOp_(doc, patch) {
     delete doc.current[patch.category];
   } else if (patch.op === 'set_thread_code') {
     // A code thread's mirror Doc carries the Code layer under General (INSTRUCTION LAYERS, 2026-09-22).
-    if (!tsgHasThread_(doc, patch.name)) throw new Error('set_thread_code: thread not found: ' + patch.name);
-    doc.threads[patch.name].code = !!patch.code;
-    doc.threads[patch.name].history.push({ ts: now, action: 'update', summary: (patch.code ? 'Marked as a code thread (Code layer applies).' : 'No longer a code thread.') });
+    var codeName = tsgResolveThread_(doc, patch, 'set_thread_code');
+    doc.threads[codeName].code = !!patch.code;
+    doc.threads[codeName].history.push({ ts: now, action: 'update', summary: (patch.code ? 'Marked as a code thread (Code layer applies).' : 'No longer a code thread.') });
+    doc.meta.last_updated = now.slice(0, 10);
+    return;
+  } else if (patch.op === 'rename_thread') {
+    // The id stays; the name key moves with instructions, memories, code and history (2026-09-23).
+    var oldName = tsgResolveThread_(doc, patch, 'rename_thread');
+    var newName = tsgAssertSafeThreadName_('rename_thread', patch.newName);
+    if (newName === oldName) return;
+    if (tsgHasThread_(doc, newName)) throw new Error('rename_thread: a thread named "' + newName + '" already exists');
+    var moved = doc.threads[oldName];
+    delete doc.threads[oldName];
+    doc.threads[newName] = moved;
+    if (!Array.isArray(moved.history)) moved.history = [];
+    moved.history.push({ ts: now, action: 'rename', summary: 'Renamed from ' + oldName + ' to ' + newName + '.' });
     doc.meta.last_updated = now.slice(0, 10);
     return;
   } else if (patch.op === 'mirror_instructions') {
@@ -340,12 +437,14 @@ function applyRulesetPatchOp_(doc, patch) {
       memories: patch.memories || [],
       history: [{ ts: now, action: 'baseline', summary: (patch.historyEntry && patch.historyEntry.summary) || 'Thread added.' }]
     };
+    if (patch.id) Logger.log('[threads] add_thread "' + addName + '": ignored supplied id ' + JSON.stringify(patch.id));
+    tsgEnsureThreadIds_(doc);   // the new thread takes the next id; a patch never picks one
     doc.meta.last_updated = now.slice(0, 10);
     return;
   } else if (patch.op === 'update_thread_instructions') {
-    if (!tsgHasThread_(doc, patch.name)) throw new Error('update_thread_instructions: thread not found: ' + patch.name);
-    doc.threads[patch.name].instructions = patch.instructions || '';
-    doc.threads[patch.name].history.push({
+    var uName = tsgResolveThread_(doc, patch, 'update_thread_instructions');
+    doc.threads[uName].instructions = patch.instructions || '';
+    doc.threads[uName].history.push({
       ts: now,
       action: (patch.historyEntry && patch.historyEntry.action) || 'update',
       summary: (patch.historyEntry && patch.historyEntry.summary) || 'Instructions updated.'
@@ -353,9 +452,9 @@ function applyRulesetPatchOp_(doc, patch) {
     doc.meta.last_updated = now.slice(0, 10);
     return;
   } else if (patch.op === 'add_thread_memory') {
-    if (!tsgHasThread_(doc, patch.name)) throw new Error('add_thread_memory: thread not found: ' + patch.name);
-    doc.threads[patch.name].memories.push(patch.memory);
-    doc.threads[patch.name].history.push({
+    var amName = tsgResolveThread_(doc, patch, 'add_thread_memory');
+    doc.threads[amName].memories.push(patch.memory);
+    doc.threads[amName].history.push({
       ts: now,
       action: (patch.historyEntry && patch.historyEntry.action) || 'update',
       summary: (patch.historyEntry && patch.historyEntry.summary) || ('Memory added: "' + patch.memory + '"')
@@ -363,10 +462,10 @@ function applyRulesetPatchOp_(doc, patch) {
     doc.meta.last_updated = now.slice(0, 10);
     return;
   } else if (patch.op === 'remove_thread_memory') {
-    if (!tsgHasThread_(doc, patch.name)) throw new Error('remove_thread_memory: thread not found: ' + patch.name);
+    var rmName = tsgResolveThread_(doc, patch, 'remove_thread_memory');
     if (typeof patch.index !== 'number' || patch.index < 0) throw new Error('remove_thread_memory: index must be a non-negative number');
-    doc.threads[patch.name].memories.splice(patch.index, 1);
-    doc.threads[patch.name].history.push({
+    doc.threads[rmName].memories.splice(patch.index, 1);
+    doc.threads[rmName].history.push({
       ts: now,
       action: (patch.historyEntry && patch.historyEntry.action) || 'update',
       summary: (patch.historyEntry && patch.historyEntry.summary) || 'Memory removed.'
@@ -374,7 +473,8 @@ function applyRulesetPatchOp_(doc, patch) {
     doc.meta.last_updated = now.slice(0, 10);
     return;
   } else if (patch.op === 'remove_thread') {
-    delete doc.threads[patch.name];
+    var delName = tsgResolveThread_(doc, patch, 'remove_thread');
+    delete doc.threads[delName];   // its number is never reused: the counter only rises
     doc.meta.last_updated = now.slice(0, 10);
     return;
   } else {
@@ -697,12 +797,13 @@ function tsgInstructionSets_(rs) {
   sets.push({ key: 'Code', title: TSG_MIRROR_DOC_PREFIX + 'Code', text: 'SYSTEMS — INSTRUCTIONS — CODE (General + Code)\n' + stamp + '\n' + howTo + section('GENERAL', general) + section('CODE', code) });
   Object.keys(threads).sort().forEach(function(name) {
     var th = threads[name] || {};
-    var text = 'SYSTEMS — INSTRUCTIONS — THREAD: ' + name + (th.code ? ' (General + Code + thread)' : ' (General + thread)') + '\n' + stamp + '\n' + howTo + section('GENERAL', general);
+    var id = th.id || name;   // every thread has an id after tsgEnsureThreadIds_; the name is the last-resort key
+    var text = 'SYSTEMS — INSTRUCTIONS — THREAD ' + id + ': ' + name + (th.code ? ' (General + Code + thread)' : ' (General + thread)') + '\n' + stamp + '\n' + howTo + section('GENERAL', general);
     if (th.code) text += section('CODE', code);
-    text += section('THREAD: ' + name, { content: th.instructions || '' });
+    text += section('THREAD ' + id + ': ' + name, { content: th.instructions || '' });
     var mems = Array.isArray(th.memories) ? th.memories : [];
     text += '\n\nCritical memories (' + mems.length + '):' + (mems.length ? '\n- ' + mems.join('\n- ') : ' none');
-    sets.push({ key: 'thread:' + name, title: TSG_MIRROR_DOC_PREFIX + 'Thread — ' + name, text: text });
+    sets.push({ key: 'thread:' + id, title: TSG_MIRROR_DOC_PREFIX + 'Thread — ' + id + ' — ' + name, text: text });
   });
   return sets;
 }
@@ -732,6 +833,17 @@ function tsgMirrorInstructions_(rs) {
   if (!rs) return 0;
   rs.meta = rs.meta || {};
   if (!rs.meta.mirrorDocs || typeof rs.meta.mirrorDocs !== 'object') rs.meta.mirrorDocs = {};
+  tsgEnsureThreadIds_(rs);
+  // Records keyed by name (before 2026-09-23) move to the id key so the SAME Doc is reused and
+  // retitled; nothing is created for a thread that already has a Doc.
+  Object.keys(rs.threads || {}).forEach(function(name) {
+    var th = rs.threads[name]; if (!th || !th.id) return;
+    var oldKey = 'thread:' + name, newKey = 'thread:' + th.id;
+    if (oldKey !== newKey && rs.meta.mirrorDocs[oldKey] && !rs.meta.mirrorDocs[newKey]) {
+      rs.meta.mirrorDocs[newKey] = rs.meta.mirrorDocs[oldKey];
+      delete rs.meta.mirrorDocs[oldKey];
+    }
+  });
   var sets = tsgInstructionSets_(rs), written = 0, live = {};
   sets.forEach(function(set) {
     live[set.key] = true;
