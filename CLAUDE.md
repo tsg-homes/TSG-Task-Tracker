@@ -1534,3 +1534,9 @@ now put a red border on fub fields (also locked) / let build it". Built read-onl
   pop-up (`openMultiTaskModal` for a person) is gone. Durand's FUB web address is
   https://homes571.followupboss.com (the `appBase` for contact links; set it in the FUB panel or by
   `set_meta {fubSync}` after deploy). clasp logged in again 2026-09-24 11:51 EDT (fifo method).
+- Same day, backend 2026-09-24.3 / UI 2026-09-24.3 / person UI 2026-09-24.3 (not deployed at writing):
+  the owner is a FUB sync agent like anyone (Durand stored his own key); owner-only comment mode on a
+  person's page (`tsgPersonRpc('comment')`, anchors carry `view: 'person:<Name>'`, the person never sees
+  comments or the controls); key property mapping `meta.fubSync.keyProps` because Durand saved keys as
+  FUB_KEY_ADMIN and FUB_KEY_OWNER (which person each belongs to is read from FUB by "Find keys", not
+  assumed). Tests: `test/test_person_comments.js` (new, in `npm test`).

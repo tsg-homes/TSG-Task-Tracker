@@ -589,6 +589,24 @@ tracker fields are locked, for now put a red border on fub fields (also locked)"
   (`handlePersonFrameMessage_`, checks the message came from that frame); person.html's `rpc` uses
   the postMessage bridge when it has no `google.script.run` and sits in a frame. Edits there are
   recorded as Durand. Shift-click still opens the page in its own window; closing reloads the board.
+- **Owner comments on a person's page** (2026-09-24, per Durand "ill still need to be able to comment
+  on their view, but not them for now"): in the owner preview (pop-up or `?person=`) person.html shows
+  Comment / Comments buttons; comment mode works like the dashboard's (click anything, Esc closes the
+  box then ends the mode). `tsgPersonRpc('comment', {text, anchor})` is refused unless the caller is
+  the owner with `as=`; it queues an `add_comment` with author Durand and an anchor stamped
+  `view: 'person:<Name>'` and a label starting "<Name>'s page: " (`tsgPersonCommentAnchor_`). A task or
+  step anchor behaves like a dashboard comment on that item; an element anchor becomes a Claude step on
+  the tracker feature task. `load` returns `canComment` and `comments` (`tsgPersonViewComments_`, with
+  replies) only to the owner preview; the person's own session gets `false` / `[]`.
+- **Key property names** (2026-09-24, per Durand: "the keys are saved as FUB_KEY_ADMIN and
+  FUB_KEY_OWNER"): `meta.fubSync.keyProps {Name: 'FUB_KEY_X'}` maps an agent to another property;
+  unmapped agents read `FUB_KEY_<NAME>`. Only `FUB_KEY_[A-Z0-9_]` names for roster members, one agent
+  per property (`TSG_FUB_KEY_PROP_RE`, checked again at read time so a tampered config can never point
+  at SCRIPT_TOKEN); a settings save without `keyProps` keeps the map. Settings > General > FUB task sync:
+  a key-name select per agent, and "Find keys" (`api=fubKeys` -> `tsgFubKeyScan_`, owner-only) calls
+  FUB `/me` for every `FUB_KEY_*` property and shows whose key it is plus the roster member it looks
+  like; "Use these matches" applies them. Key values are never returned. A key an agent saves from
+  their own page goes to the property their mapping names.
 
 ## Actual time (2026-09-17): one log, three ways in
 

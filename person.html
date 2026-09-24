@@ -185,6 +185,17 @@
   tr.task-row.fub .ttl-edit, tr.task-row.fub .pill.status-pill-ro, tr.task-row.fub .due-cell, tr.task-row.fub .type-badge, tr.task-row.fub .owner-cell { outline: 2px solid var(--status-critical); outline-offset: 1px; border-radius: 6px; }
   .fub-note { font-size: 11px; color: var(--text-muted); }
   #fubSyncInfo { font-size: 11.5px; color: var(--text-muted); }
+  /* Owner comments on this page (2026-09-24): only in Durand's preview; the person never sees them. */
+  body.comment-mode .wrap, body.comment-mode .modal-back .card { cursor: crosshair; }
+  body.comment-mode .comment-hover { outline: 2px dashed var(--status-warn); outline-offset: 2px; }
+  #btnCommentMode.on { background: var(--status-warn-bg); color: var(--status-warn); border-color: var(--status-warn); }
+  #commentPop { position: fixed; z-index: 80; width: 320px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,0.3); padding: 10px 12px; display: grid; gap: 8px; font-size: 12.5px; }
+  #commentPop textarea { min-height: 70px; }
+  .cmt-badge { font-size: 11px; margin-left: 6px; color: var(--status-warn); font-weight: 700; cursor: pointer; }
+  .cmt-item { border-top: 1px solid var(--gridline); padding: 8px 0; font-size: 12.5px; }
+  .cmt-item.resolved { opacity: 0.55; }
+  .cmt-head { font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+  .cmt-reply { margin: 6px 0 0 14px; padding-left: 8px; border-left: 2px solid var(--gridline); }
   footer.tsg-footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--gridline); font-size: 11.5px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
   @media (max-width: 720px) {
     .wrap { width: auto; padding: 16px 16px 48px; }
@@ -204,6 +215,8 @@
       <button class="btn small" id="btnFubSync" type="button" hidden title="Pull your latest Follow Up Boss tasks now (it also runs on its own on a schedule)">&#8635; Sync FUB</button>
       <button class="btn small" id="btnSettings" type="button" title="Your settings: connect Follow Up Boss">&#9881; Settings</button>
       <button class="btn small" id="btnFeedback" type="button" hidden title="Report a bug, ask for a feature or leave feedback; it goes to Durand on your feedback task">&#128172; Feedback</button>
+      <button class="btn small" id="btnCommentMode" type="button" hidden title="Comment mode: click anything on this page to leave a comment (only you see these; Esc ends it)">&#9998; Comment</button>
+      <button class="btn small" id="btnComments" type="button" hidden title="Your comments on this page">&#128172; <span id="commentCount"></span></button>
       <button class="theme-toggle" id="themeToggle" title="Toggle light / dark" aria-label="Toggle theme"></button>
     </div>
   </header>
@@ -249,6 +262,12 @@
       </div>
     </div>
   </div>
+  <div class="modal-back" id="commentsBack" hidden>
+    <div class="card" role="dialog" aria-modal="true" aria-label="Comments on this page">
+      <div class="card-head"><h2 class="card-title">Your comments on this page</h2><button type="button" class="icon-btn" id="commentsClose" aria-label="Close">&#10005;</button></div>
+      <div id="commentsList"></div>
+    </div>
+  </div>
   <div class="modal-back" id="feedbackBack" hidden>
     <div class="card" role="dialog" aria-modal="true" aria-label="Feedback">
       <div class="card-head"><h2 class="card-title">Feedback for Durand</h2><button type="button" class="icon-btn" id="feedbackClose" aria-label="Close">&#10005;</button></div>
@@ -266,7 +285,7 @@
   </footer>
 </div>
 <script>
-  const PERSON_UI_VERSION = '2026-09-24.2';
+  const PERSON_UI_VERSION = '2026-09-24.3';
   const PERSON = '__TSG_PERSON__';
   const AS = '__TSG_AS__';
   const CODE_VERSION = '__TSG_CODE_VERSION__';
@@ -452,6 +471,7 @@
     if (!sel.options.length) STATE.priorities.forEach(function(p) { const o = document.createElement('option'); o.value = p; o.textContent = p; if (p === 'Medium') o.selected = true; sel.appendChild(o); });
     lastRenderedVersion = STATE.docVersion;
     if (openCardKey) renderCard();
+    decorateComments_();
   }
 
   // ---- Card / edit view (2026-09-15, per Durand: "clicking on her tasks should open a card") ----
@@ -497,6 +517,8 @@
       renderFubKeyStatus();
       STATE = { rows: r.rows, statuses: r.statuses, priorities: r.priorities, docVersion: r.docVersion, feedbackTaskId: r.feedbackTaskId || null, feedbackKinds: r.feedbackKinds || STATE.feedbackKinds, pendingStatus: r.pendingStatus || STATE.pendingStatus };
       document.getElementById('btnFeedback').hidden = !STATE.feedbackTaskId;
+      CAN_COMMENT = !!r.canComment; COMMENTS = Array.isArray(r.comments) ? r.comments : [];
+      renderCommentControls_();
       const fs = r.fubSync || { enabled: false };
       document.getElementById('btnFubSync').hidden = !fs.enabled;
       const info = document.getElementById('fubSyncInfo');
@@ -681,6 +703,134 @@
       setSync('FUB sync: ' + (err.message || err), true);
     } finally { btn.disabled = false; }
   });
+
+  // ---- Owner comments (2026-09-24, per Durand: "ill still need to be able to comment on their
+  // view, but not them for now"). The server only answers canComment / comments to an owner
+  // preview and refuses the comment action otherwise, so none of this ever shows for the person. ----
+  let CAN_COMMENT = false, COMMENTS = [], COMMENT_MODE = false, COMMENT_HOVER = null;
+  const COMMENT_PASSTHROUGH = '#commentPop, #btnCommentMode, #btnComments, #commentsBack';
+  function openCommentsFor_(id) { return COMMENTS.filter(function(c) { return !c.resolved && c.anchor && c.anchor.id === id; }); }
+  function renderCommentControls_() {
+    document.getElementById('btnCommentMode').hidden = !CAN_COMMENT;
+    const n = COMMENTS.filter(function(c) { return !c.resolved; }).length;
+    document.getElementById('btnComments').hidden = !CAN_COMMENT || !COMMENTS.length;
+    document.getElementById('commentCount').textContent = n ? String(n) : '0';
+    if (!CAN_COMMENT && COMMENT_MODE) setCommentMode_(false);
+  }
+  function decorateComments_() {
+    if (!CAN_COMMENT) return;
+    Array.prototype.forEach.call(document.querySelectorAll('tr.task-row[data-id]'), function(tr) {
+      const n = openCommentsFor_(Number(tr.dataset.id)).length;
+      const cell = tr.querySelector('td.title-cell'); if (!cell || !n || cell.querySelector('.cmt-badge')) return;
+      const b = document.createElement('span'); b.className = 'cmt-badge'; b.dataset.cmtFor = tr.dataset.id;
+      b.title = n + ' open comment' + (n === 1 ? '' : 's'); b.textContent = '💬 ' + n; cell.appendChild(b);
+    });
+  }
+  function setCommentMode_(on) {
+    COMMENT_MODE = !!on && CAN_COMMENT;
+    document.body.classList.toggle('comment-mode', COMMENT_MODE);
+    document.getElementById('btnCommentMode').classList.toggle('on', COMMENT_MODE);
+    if (!COMMENT_MODE) { setCommentHover_(null); closeCommentPop_(); }
+  }
+  function commentTarget_(el) { return el.closest('.sub-item[data-kind="sub"], tr.task-row[data-id], .group-head, .card') || el; }
+  function setCommentHover_(el) {
+    if (COMMENT_HOVER === el) return;
+    if (COMMENT_HOVER) COMMENT_HOVER.classList.remove('comment-hover');
+    COMMENT_HOVER = el || null;
+    if (COMMENT_HOVER) COMMENT_HOVER.classList.add('comment-hover');
+  }
+  function commentAnchor_(el) {
+    const sub = el.closest('.sub-item[data-kind="sub"]');
+    if (sub && sub.dataset.index !== '') return { kind: 'sub', id: Number(sub.dataset.id), idx: Number(sub.dataset.index) };
+    const row = el.closest('tr.task-row[data-id]');
+    if (row) return { kind: 'task', id: Number(row.dataset.id) };
+    const card = el.closest('#card');
+    if (card && openCardKey) { const r = rowByKey(openCardKey); if (r) return { kind: 'task', id: r.id }; }
+    const head = el.closest('.group-section[data-group]');
+    const text = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    const path = []; let cur = el;
+    for (let i = 0; i < 4 && cur && cur !== document.body; i++) { path.unshift(cur.tagName.toLowerCase() + (cur.id ? '#' + cur.id : '') + (cur.classList.length ? '.' + Array.from(cur.classList).filter(function(c) { return c !== 'comment-hover'; }).slice(0, 2).join('.') : '')); cur = cur.parentElement; }
+    return { kind: 'element', label: head && !text ? head.dataset.group : (text || el.tagName.toLowerCase()), path: path.join(' > ') };
+  }
+  function commentSwallow_(e) {
+    if (!COMMENT_MODE) return false;
+    const el = e.target;
+    if (!el || !el.closest || el.closest(COMMENT_PASSTHROUGH)) return false;
+    if (!el.closest('.wrap')) return false;
+    e.preventDefault(); e.stopPropagation();
+    return true;
+  }
+  ['mousedown', 'pointerdown', 'dblclick', 'contextmenu'].forEach(function(type) {
+    document.addEventListener(type, function(e) { commentSwallow_(e); }, true);
+  });
+  document.addEventListener('click', function(e) {
+    const badge = !COMMENT_MODE && e.target.closest && e.target.closest('.cmt-badge');
+    if (badge) { e.preventDefault(); e.stopPropagation(); openCommentsPane_(Number(badge.dataset.cmtFor)); return; }
+    if (!commentSwallow_(e)) return;
+    openCommentPop_(commentAnchor_(e.target), e.clientX, e.clientY);
+  }, true);
+  document.addEventListener('mouseover', function(e) { if (COMMENT_MODE) setCommentHover_(commentTarget_(e.target)); }, true);
+  function anchorLabel_(a) {
+    if (!a) return 'this page';
+    if (a.view && a.label) return a.label.replace(/^[^:]*'s page: /, '');
+    const r = a.id != null ? STATE.rows.filter(function(x) { return x.kind === 'task' && x.id === a.id; })[0] : null;
+    if (a.kind === 'sub') { const s = STATE.rows.filter(function(x) { return x.kind === 'sub' && x.id === a.id && x.index === a.idx; })[0]; return (r ? r.title : '#' + a.id) + ' → ' + (s ? s.title : 'step ' + a.idx); }
+    if (a.kind === 'task') return r ? '#' + a.id + ' ' + r.title : '#' + a.id;
+    return a.label || 'this page';
+  }
+  function openCommentPop_(anchor, x, y) {
+    closeCommentPop_();
+    const pop = document.createElement('div');
+    pop.id = 'commentPop';
+    pop.innerHTML = '<div>On: <b>' + esc(anchorLabel_(anchor)) + '</b></div>' +
+      '<textarea class="text-input" id="commentText" rows="3" placeholder="Comment on ' + esc(PERSON) + '\'s page (only you see it)"></textarea>' +
+      '<div class="fb-actions"><button type="button" class="btn small" id="commentCancel">Cancel</button><button type="button" class="btn small primary" id="commentSave">Save comment</button></div>';
+    pop.dataset.anchor = JSON.stringify(anchor);
+    pop.style.left = Math.max(8, Math.min(x, (window.innerWidth || 1200) - 340)) + 'px';
+    pop.style.top = Math.max(8, Math.min(y, (window.innerHeight || 800) - 200)) + 'px';
+    document.body.appendChild(pop);
+    document.getElementById('commentCancel').addEventListener('click', closeCommentPop_);
+    document.getElementById('commentSave').addEventListener('click', saveComment_);
+    document.getElementById('commentText').focus();
+  }
+  function closeCommentPop_() { const p = document.getElementById('commentPop'); if (p) p.remove(); }
+  async function saveComment_() {
+    const pop = document.getElementById('commentPop'); if (!pop) return;
+    const text = document.getElementById('commentText').value.trim(); if (!text) return;
+    const anchor = JSON.parse(pop.dataset.anchor || '{}');
+    const btn = document.getElementById('commentSave'); btn.disabled = true;
+    setSync('Saving comment…', false, true);
+    try {
+      const r = await rpc('comment', { text: text, anchor: anchor });
+      if (!r.ok) throw new Error(r.error || 'not saved');
+      closeCommentPop_();
+      if (r.comment) { COMMENTS.unshift(Object.assign({ replies: [] }, r.comment)); renderCommentControls_(); decorateComments_(); }
+      setSync(r.busy ? 'Comment queued' : 'Comment saved');
+    } catch (err) {
+      btn.disabled = false;
+      setSync('Comment not saved: ' + (err.message || err), true);
+    }
+  }
+  function openCommentsPane_(onlyId) {
+    const list = onlyId ? COMMENTS.filter(function(c) { return c.anchor && c.anchor.id === onlyId; }) : COMMENTS;
+    document.getElementById('commentsList').innerHTML = list.length ? list.map(function(c) {
+      return '<div class="cmt-item' + (c.resolved ? ' resolved' : '') + '"><div class="cmt-head">' + esc(c.author || '') + ' · ' + esc(new Date(c.ts).toLocaleString()) + ' · ' + esc(anchorLabel_(c.anchor)) + (c.resolved ? ' · resolved' : '') + '</div>' +
+        '<div>' + esc(c.text) + '</div>' +
+        (c.replies || []).map(function(r) { return '<div class="cmt-reply"><div class="cmt-head">' + esc(r.author || '') + ' · ' + esc(new Date(r.ts).toLocaleString()) + '</div>' + esc(r.text) + '</div>'; }).join('') + '</div>';
+    }).join('') : '<div class="fub-note">No comments on this page yet. Turn on Comment and click anything.</div>';
+    document.getElementById('commentsBack').hidden = false;
+  }
+  function closeCommentsPane_() { document.getElementById('commentsBack').hidden = true; }
+  document.getElementById('btnCommentMode').addEventListener('click', function() { setCommentMode_(!COMMENT_MODE); });
+  document.getElementById('btnComments').addEventListener('click', function() { openCommentsPane_(null); });
+  document.getElementById('commentsClose').addEventListener('click', closeCommentsPane_);
+  document.getElementById('commentsBack').addEventListener('click', function(e) { if (e.target === e.currentTarget) closeCommentsPane_(); });
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    if (document.getElementById('commentPop')) { closeCommentPop_(); e.stopImmediatePropagation(); return; }
+    if (COMMENT_MODE) { setCommentMode_(false); e.stopImmediatePropagation(); return; }
+    if (!document.getElementById('commentsBack').hidden) closeCommentsPane_();
+  }, true);
 
   async function poll() {
     if (document.hidden || editing()) return;

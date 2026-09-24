@@ -73,6 +73,7 @@ setTimeout(async () => {
   check('load was requested on boot', calls.some(c => c.action === 'load'));
   check('masthead shows the person and the theme is set like the dashboard', doc.querySelector('h1').textContent.includes('Marj') && /^(light|dark)$/.test(doc.documentElement.getAttribute('data-theme')) && !!doc.getElementById('themeToggle'));
   check('preview badge hidden when not previewing', doc.getElementById('previewBadge').hidden === true);
+  check('no comment controls on the person\'s own page (owner-only)', doc.getElementById('btnCommentMode').hidden === true && doc.getElementById('btnComments').hidden === true);
   check('board-style groups: Delegated to you, Your tasks, Completed', doc.querySelectorAll('.group-section .group-head .gname').length === 3 && doc.getElementById('completed').hidden === false);
   const delegatedRows = doc.querySelectorAll('#delegated tr[data-key]');
   const ownRows = doc.querySelectorAll('#own tr[data-key]');

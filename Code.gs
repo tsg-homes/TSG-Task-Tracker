@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-24.2';
+const TSG_CODE_VERSION = '2026-09-24.3';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -1691,7 +1691,12 @@ function applyDataPatch_(doc, patch) {
     // comments is server-owned too (2026-09-16): use add_comment / update_comment so two
     // writers (the dashboard, a Claude session) never overwrite each other's threads.
     ['next_id', 'docVersion', 'rejectedSaves', 'addResults', 'lastLiveHeartbeat', 'comments', 'judgments', 'judgmentSeq', 'tidyProposals', 'inboxErrors', 'backendVersion', 'historyArchive', 'noteVersions', 'featureTaskId', 'last_updated', 'version', 'created', 'delegateActivity'].forEach(function(k) { delete metaFields[k]; });  // server-owned
+    var prevFubSync = doc.meta.fubSync;
     Object.assign(doc.meta, metaFields);
+    if (Object.prototype.hasOwnProperty.call(metaFields, 'fubSync') && metaFields.fubSync && typeof metaFields.fubSync === 'object' &&
+        !Object.prototype.hasOwnProperty.call(metaFields.fubSync, 'keyProps') && prevFubSync && prevFubSync.keyProps) {
+      doc.meta.fubSync = Object.assign({}, metaFields.fubSync, { keyProps: prevFubSync.keyProps });   // a save without the map keeps it
+    }
     if (Object.prototype.hasOwnProperty.call(metaFields, 'homeBase')) {
       try { PropertiesService.getScriptProperties().setProperty('TSG_HOME_BASE', String(metaFields.homeBase || '')); } catch (err) {}
     }
@@ -2460,6 +2465,27 @@ function tsgQueueDataPatch_(patchObj) {
   return { ok: true, docVersion: (v != null && !isNaN(Number(v))) ? Number(v) : null };
 }
 
+/** The anchor of an owner comment on a person's page: task / step / element, stamped with the view. */
+function tsgPersonCommentAnchor_(doc, name, raw) {
+  raw = raw || {};
+  var view = 'person:' + name, prefix = name + "'s page: ";
+  var id = Number(raw.id), task = isNaN(id) ? null : (doc.tasks || []).filter(function(t) { return t && t.id === id; })[0];
+  if (task && raw.kind === 'sub' && raw.idx != null && task.subitems && task.subitems[Number(raw.idx)]) {
+    return { kind: 'sub', id: id, idx: Number(raw.idx), label: prefix + task.title + ' → ' + task.subitems[Number(raw.idx)].title, view: view };
+  }
+  if (task && (raw.kind === 'task' || raw.kind === 'sub')) return { kind: 'task', id: id, label: prefix + '#' + id + ' ' + task.title, view: view };
+  return { kind: 'element', label: prefix + String(raw.label || 'page').replace(/\s+/g, ' ').slice(0, 80), path: String(raw.path || '').slice(0, 200), view: view };
+}
+/** Owner comments left on this person's page, newest first, with their replies (owner preview only). */
+function tsgPersonViewComments_(doc, name) {
+  var all = (doc.meta && Array.isArray(doc.meta.comments)) ? doc.meta.comments : [];
+  var view = 'person:' + name;
+  var mine = all.filter(function(c) { return c && !c.replyTo && c.anchor && c.anchor.view === view; });
+  return mine.map(function(c) {
+    return { id: c.id, ts: c.ts, author: c.author, text: c.text, anchor: c.anchor, resolved: !!c.resolved,
+      replies: all.filter(function(r) { return r && r.replyTo === c.id; }).map(function(r) { return { author: r.author, ts: r.ts, text: r.text }; }) };
+  }).sort(function(a, b) { return String(b.ts).localeCompare(String(a.ts)); });
+}
 function tsgPersonRpc(action, payloadJson) {
   var payload = {};
   try { payload = JSON.parse(payloadJson || '{}') || {}; } catch (err) { return JSON.stringify({ ok: false, error: 'bad payload' }); }
@@ -2476,6 +2502,10 @@ function tsgPersonRpc(action, payloadJson) {
   var whoRpc = tsgSignedInEmail_();
   var actor = (payload.as && tsgIsOwnerEmail_(whoRpc))
     ? (tsgRosterNameForEmail_((doc.meta && doc.meta.teamRoster) || [], whoRpc) || 'Durand') : name;
+  // Comments on a person's page are the owner's only (2026-09-24, per Durand: "ill still need to
+  // be able to comment on their view, but not them for now"): only an owner preview may add them
+  // or receive them; the person's own session never sees they exist.
+  var ownerPreview = !!(payload.as && tsgIsOwnerEmail_(whoRpc));
 
   if (action === 'load') {
     return JSON.stringify({
@@ -2492,8 +2522,18 @@ function tsgPersonRpc(action, payloadJson) {
         var st = (tsgFubState_().agents || {})[name] || {};
         return { enabled: true, readOnly: tsgFubReadOnly_(doc), lastRunAt: st.lastRunAt || '', ok: st.ok !== false, error: st.ok === false ? String(st.error || '').slice(0, 160) : '', cadenceMin: cfg.cadenceMin };
       })(),
-      rows: tsgPersonSlice_(doc, name)
+      rows: tsgPersonSlice_(doc, name),
+      canComment: ownerPreview,
+      comments: ownerPreview ? tsgPersonViewComments_(doc, name) : []
     });
+  }
+  if (action === 'comment') {
+    if (!ownerPreview) return JSON.stringify({ ok: false, error: 'owner only' });
+    var ctext = String(payload.text || '').trim();
+    if (!ctext) return JSON.stringify({ ok: false, error: 'text required' });
+    var comment = { id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), ts: new Date().toISOString(), author: actor, text: ctext.slice(0, 4000), anchor: tsgPersonCommentAnchor_(doc, name, payload.anchor), resolved: false };
+    var qc = tsgQueueDataPatch_({ op: 'add_comment', comment: comment, source: actor });
+    return JSON.stringify({ ok: qc.ok !== false || !!qc.busy, busy: !!qc.busy, comment: comment });
   }
   if (action === 'update') {
     var rows = tsgPersonSlice_(doc, name);
@@ -2710,6 +2750,12 @@ function doGet(e) {
     var fubStatus;
     try { fubStatus = tsgFubStatus_(); } catch (fsErr) { fubStatus = { ok: false, error: String(fsErr.message || fsErr) }; }
     return ContentService.createTextOutput(JSON.stringify(fubStatus)).setMimeType(ContentService.MimeType.JSON);
+  }
+  if (e.parameter.api === 'fubKeys') {
+    if (!tsgCheckToken_(e)) return tsgUnauthorized_();
+    var scan;
+    try { scan = tsgFubKeyScan_(); } catch (ksErr) { scan = { ok: false, error: String(ksErr.message || ksErr) }; }
+    return ContentService.createTextOutput(JSON.stringify(scan)).setMimeType(ContentService.MimeType.JSON);
   }
   if (e.parameter.api === 'fubProbe') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
@@ -3929,7 +3975,37 @@ function tsgFubReadOnly_(doc) {
   var cfg = (doc && doc.meta && doc.meta.fubSync) || {};
   return cfg.readOnly !== false;
 }
-function tsgFubKeyProp_(name) { return 'FUB_KEY_' + String(name || '').toUpperCase().replace(/[^A-Z0-9]/g, '_'); }
+/**
+ * The Script Property holding an agent's key: FUB_KEY_<NAME> unless Settings maps the agent to
+ * another FUB_KEY_* name (2026-09-24, per Durand: "the keys are saved as FUB_KEY_ADMIN and
+ * FUB_KEY_OWNER"). Only FUB_KEY_* names are ever accepted, so a mapping can never point the sync
+ * at SCRIPT_TOKEN or any other secret.
+ */
+var TSG_FUB_KEY_PROP_RE = /^FUB_KEY_[A-Z0-9_]{1,40}$/;
+function tsgFubDefaultKeyProp_(name) { return 'FUB_KEY_' + String(name || '').toUpperCase().replace(/[^A-Z0-9]/g, '_'); }
+function tsgFubKeyProp_(name) {
+  var cfg = tsgFubConfigFromProp_() || {};
+  var mapped = cfg.keyProps && cfg.keyProps[name];
+  return (mapped && TSG_FUB_KEY_PROP_RE.test(mapped)) ? mapped : tsgFubDefaultKeyProp_(name);
+}
+/** Owner-only: every FUB_KEY_* property, who each key is in FUB, and the roster member it looks like. Never the key. */
+function tsgFubKeyScan_() {
+  var doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
+  var roster = (doc.meta && doc.meta.teamRoster) || [];
+  var names = tsgRosterNames_(doc.meta || {});
+  var props = PropertiesService.getScriptProperties();
+  var keys = props.getKeys().filter(function(k) { return TSG_FUB_KEY_PROP_RE.test(k); }).sort().slice(0, 12);
+  return { ok: true, keys: keys.map(function(k) {
+    try {
+      var me = tsgFubGet_(props.getProperty(k), '/me') || {};
+      var meName = me.name || ((me.firstName || '') + ' ' + (me.lastName || '')).trim();
+      var guess = tsgRosterNameForEmail_(roster, me.email) || names.filter(function(n) { return String(me.firstName || meName.split(' ')[0] || '').toLowerCase() === n.toLowerCase(); })[0] || '';
+      return { property: k, ok: true, fubUser: meName, email: me.email || '', id: me.id != null ? me.id : null, suggested: guess };
+    } catch (err) {
+      return { property: k, ok: false, error: err && err.code === 401 ? 'FUB rejected this key' : String((err && err.message) || err).slice(0, 160) };
+    }
+  }) };
+}
 function tsgFubKeyFor_(name) {
   try { return PropertiesService.getScriptProperties().getProperty(tsgFubKeyProp_(name)) || ''; } catch (e) { return ''; }
 }
@@ -3977,7 +4053,14 @@ function tsgFubConfig_(meta) {
   });
   var cadence = TSG_FUB_CADENCES.indexOf(Number(raw.cadenceMin)) !== -1 ? Number(raw.cadenceMin) : TSG_FUB_DEFAULT_CADENCE;
   var appBase = /^https:\/\/[a-z0-9-]+\.followupboss\.com$/i.test(String(raw.appBase || '').replace(/\/+$/, '')) ? String(raw.appBase).replace(/\/+$/, '') : '';
-  return { agents: agents, cadenceMin: cadence, appBase: appBase, readOnly: TSG_FUB_PUSH_BUILT ? raw.readOnly !== false : true };
+  var keyProps = {}, used = {};
+  Object.keys((raw.keyProps && typeof raw.keyProps === 'object') ? raw.keyProps : {}).forEach(function(n) {
+    var prop = String(raw.keyProps[n] || '').trim().toUpperCase();
+    if (!TSG_FUB_KEY_PROP_RE.test(prop) || (roster.length && roster.indexOf(n) === -1) || used[prop]) return;
+    if (prop === tsgFubDefaultKeyProp_(n)) return;   // the default needs no mapping
+    used[prop] = true; keyProps[n] = prop;
+  });
+  return { agents: agents, cadenceMin: cadence, appBase: appBase, keyProps: keyProps, readOnly: TSG_FUB_PUSH_BUILT ? raw.readOnly !== false : true };
 }
 function tsgFubConfigFromProp_() {
   try { var raw = PropertiesService.getScriptProperties().getProperty(TSG_FUB_CONFIG_PROP); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }

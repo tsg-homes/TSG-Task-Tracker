@@ -1644,7 +1644,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-24.2';
+  const UI_VERSION = '2026-09-24.3';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -5483,7 +5483,7 @@
     const cfg = st.config || {};
     const rows = (st.agents || []).map(a => `<tr>
         <td><label><input type="checkbox" class="fub-agent-toggle" data-agent="${escapeHtml(a.name)}" ${a.enabled ? 'checked' : ''} onchange="saveFubConfig_()"> ${escapeHtml(a.name)}</label></td>
-        <td>${a.keyPresent ? '<span class="fub-good">key set</span>' : '<span class="fub-bad">no key</span>'}<div class="hist-time">${escapeHtml(a.keyProperty)}${a.keyPresent && a.keySetAt ? ' · set by ' + escapeHtml(a.keySetBy || a.name) + ' ' + escapeHtml(formatDateTime(a.keySetAt)) : ''}</div></td>
+        <td>${a.keyPresent ? '<span class="fub-good">key set</span>' : '<span class="fub-bad">no key</span>'}<div class="hist-time">${fubKeyPropSelectHtml_(a.name, a.keyProperty)}${a.keyPresent && a.keySetAt ? ' · set by ' + escapeHtml(a.keySetBy || a.name) + ' ' + escapeHtml(formatDateTime(a.keySetAt)) : ''}</div></td>
         <td>${a.enabled ? fubStatusText_(a.state) : '<span class="hist-time">not in the pilot</span>'}</td>
         <td>${a.keyPresent ? `<button type="button" class="btn small" onclick="probeFubKey_('${jsAttr(a.name)}', this)">Check key</button>` : ''}${a.enabled && a.keyPresent ? ` <button type="button" class="btn small" onclick="fubSyncNow_('${jsAttr(a.name)}', this)">Sync now</button>` : ''}</td>
       </tr>`).join('');
@@ -5493,15 +5493,54 @@
       <label class="hist-time" style="margin-left:12px;">FUB account address <input type="text" class="text-input" id="fubAppBaseInput" style="width:260px;" placeholder="https://yourteam.followupboss.com" value="${escapeHtml(cfg.appBase || '')}" onblur="saveFubConfig_()"></label>
       <div class="hist-time" style="margin:6px 0;">Last run: ${st.lastRunAt ? escapeHtml(formatDateTime(st.lastRunAt)) : 'never'} · push to FUB: ${st.pushBuilt ? 'available' : 'not built (read-only)'}</div>
       <table><thead><tr><th>Agent</th><th>Key</th><th>Last sync</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-      <div style="margin-top:8px;"><button type="button" class="btn small primary" onclick="fubSyncNow_(null, this)">Sync all now</button></div>
+      <div style="margin-top:8px;"><button type="button" class="btn small primary" onclick="fubSyncNow_(null, this)">Sync all now</button> <button type="button" class="btn small" onclick="scanFubKeys_(this)" title="Look up every FUB_KEY_* Script Property in FUB and show whose key it is (the keys themselves are never shown)">Find keys</button></div>
+      <div id="fubKeyScanOut">${fubKeyScanHtml_()}</div>
       <div id="fubProbeOut"></div>`;
+  }
+  // Key names (2026-09-24, per Durand: "the keys are saved as FUB_KEY_ADMIN and FUB_KEY_OWNER"):
+  // each agent reads FUB_KEY_<NAME> unless mapped here to another FUB_KEY_* property.
+  let FUB_KEY_SCAN = null;
+  function fubDefaultKeyProp_(name) { return 'FUB_KEY_' + String(name || '').toUpperCase().replace(/[^A-Z0-9]/g, '_'); }
+  function fubKeyPropSelectHtml_(name, current) {
+    const opts = [fubDefaultKeyProp_(name)];
+    ((FUB_KEY_SCAN && FUB_KEY_SCAN.keys) || []).forEach(k => { if (opts.indexOf(k.property) === -1) opts.push(k.property); });
+    if (current && opts.indexOf(current) === -1) opts.push(current);
+    return `<select class="pill-select fub-keyprop-select" data-agent="${escapeHtml(name)}" onchange="saveFubConfig_()" title="Script Property that holds ${escapeHtml(name)}'s FUB key">${opts.map(o => `<option value="${escapeHtml(o)}" ${o === (current || opts[0]) ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select>`;
+  }
+  function fubKeyScanHtml_() {
+    const sc = FUB_KEY_SCAN;
+    if (!sc) return '';
+    if (sc.ok === false) return `<div class="inbox-err">${escapeHtml(sc.error || 'Could not look up the keys')}</div>`;
+    if (!(sc.keys || []).length) return '<div class="history-empty">No FUB_KEY_* Script Properties found.</div>';
+    const withGuess = sc.keys.filter(k => k.ok && k.suggested);
+    return `<table style="margin-top:8px;"><thead><tr><th>Script Property</th><th>FUB user</th><th>Looks like</th></tr></thead><tbody>${sc.keys.map(k => `<tr><td>${escapeHtml(k.property)}</td><td>${k.ok ? escapeHtml(k.fubUser || '') + '<div class="hist-time">' + escapeHtml(k.email || '') + '</div>' : '<span class="fub-bad">' + escapeHtml(k.error || 'failed') + '</span>'}</td><td>${escapeHtml(k.suggested || '—')}</td></tr>`).join('')}</tbody></table>` +
+      (withGuess.length ? `<div style="margin-top:6px;"><button type="button" class="btn small" onclick="applyFubKeySuggestions_()">Use these matches</button></div>` : '');
+  }
+  async function scanFubKeys_(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Looking up…'; }
+    try { const res = await apiFetch('api=fubKeys'); FUB_KEY_SCAN = await res.json(); }
+    catch (e) { FUB_KEY_SCAN = { ok: false, error: String(e.message || e) }; }
+    renderFubPanel_();
+  }
+  async function applyFubKeySuggestions_() {
+    ((FUB_KEY_SCAN && FUB_KEY_SCAN.keys) || []).filter(k => k.ok && k.suggested).forEach(k => {
+      const sel = Array.from(document.querySelectorAll('.fub-keyprop-select')).find(x => x.dataset.agent === k.suggested);
+      if (sel) sel.value = k.property;
+    });
+    await saveFubConfig_();
+  }
+  function fubKeyPropsFromPanel_() {
+    const map = {};
+    document.querySelectorAll('.fub-keyprop-select').forEach(sel => { if (sel.value && sel.value !== fubDefaultKeyProp_(sel.dataset.agent)) map[sel.dataset.agent] = sel.value; });
+    return map;
   }
   async function saveFubConfig_() {
     const agents = Array.from(document.querySelectorAll('.fub-agent-toggle')).filter(x => x.checked).map(x => x.dataset.agent);
     const cadence = Number((document.getElementById('fubCadenceSelect') || {}).value) || 240;
     const appBase = String((document.getElementById('fubAppBaseInput') || {}).value || '').trim().replace(/\/+$/, '');
-    RAW_META.fubSync = Object.assign({}, RAW_META.fubSync || {}, { agents: agents, cadenceMin: cadence, appBase: appBase });
-    await postCommentOp_({ op: 'set_meta', fields: { fubSync: { agents: agents, cadenceMin: cadence, appBase: appBase } }, source: 'Durand' });
+    const keyProps = document.querySelector('.fub-keyprop-select') ? fubKeyPropsFromPanel_() : ((RAW_META.fubSync || {}).keyProps || {});
+    RAW_META.fubSync = Object.assign({}, RAW_META.fubSync || {}, { agents: agents, cadenceMin: cadence, appBase: appBase, keyProps: keyProps });
+    await postCommentOp_({ op: 'set_meta', fields: { fubSync: { agents: agents, cadenceMin: cadence, appBase: appBase, keyProps: keyProps } }, source: 'Durand' });
     setSyncStatus('saved', 'FUB sync settings saved');
     await loadFubStatus_(true); renderFubPanel_();
   }

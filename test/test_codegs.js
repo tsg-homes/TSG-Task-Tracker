@@ -1258,6 +1258,28 @@ section('Per-person view: slice, write rules, RPC, notes-driven progress, enrich
   r = JSON.parse(sandbox.tsgPersonRpc('load', JSON.stringify({ as: 'Marj' })));
   check('load: a non-owner cannot use as= to see someone else', r.ok === true && r.person === 'Perly');
 
+  // owner comments on a person's page (2026-09-24): owner preview only; the person never sees them
+  sandbox.Session = origSession;
+  r = JSON.parse(sandbox.tsgPersonRpc('comment', JSON.stringify({ as: 'Marj', text: 'Row spacing is too tight here', anchor: { kind: 'task', id: 2 } })));
+  d = JSON.parse(disk);
+  const pvc = (d.meta.comments || []).find(c => c.text === 'Row spacing is too tight here');
+  check("comment: the owner's comment on Marj's page lands as Durand, on the task, stamped with the view", r.ok === true && !!pvc && pvc.author === 'Durand' && pvc.anchor.kind === 'task' && pvc.anchor.id === 2 && pvc.anchor.view === 'person:Marj' && /^Marj's page: #2 /.test(pvc.anchor.label));
+  r = JSON.parse(sandbox.tsgPersonRpc('comment', JSON.stringify({ as: 'Marj', text: 'Header is cramped', anchor: { kind: 'element', label: 'Delegated to you', path: 'div#delegated > div.group-head' } })));
+  d = JSON.parse(disk);
+  const pve = (d.meta.comments || []).find(c => c.text === 'Header is cramped');
+  check('comment: an element comment keeps its label and path, stamped with the view', !!pve && pve.anchor.kind === 'element' && pve.anchor.view === 'person:Marj' && pve.anchor.label === "Marj's page: Delegated to you" && /group-head/.test(pve.anchor.path));
+  r = JSON.parse(sandbox.tsgPersonRpc('load', JSON.stringify({ as: 'Marj' })));
+  check('comment: the owner preview loads canComment and the comments on that page', r.canComment === true && r.comments.length === 2 && r.comments.some(c => c.text === 'Header is cramped'));
+  r = JSON.parse(sandbox.tsgPersonRpc('comment', JSON.stringify({ as: 'Marj', text: '   ' })));
+  check('comment: empty text is refused', r.ok === false && /text required/.test(r.error));
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'marj@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  r = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
+  check('comment: Marj herself gets no comment switch and no comments', r.ok === true && r.canComment === false && Array.isArray(r.comments) && r.comments.length === 0 && !JSON.stringify(r).includes('Header is cramped'));
+  const before = (JSON.parse(disk).meta.comments || []).length;
+  r = JSON.parse(sandbox.tsgPersonRpc('comment', JSON.stringify({ text: 'mine', anchor: { kind: 'task', id: 2 } })));
+  const r2 = JSON.parse(sandbox.tsgPersonRpc('comment', JSON.stringify({ as: 'Marj', text: 'mine', anchor: { kind: 'task', id: 2 } })));
+  check('comment: Marj cannot comment, with or without as=, and nothing is written', r.ok === false && r.error === 'owner only' && r2.ok === false && (JSON.parse(disk).meta.comments || []).length === before);
+
   // doGet serves the person page to a roster member, and the owner's ?person= preview
   sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'marj@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
   let page = sandbox.doGet({ parameter: {} });
@@ -2914,6 +2936,21 @@ section('FUB task sync: per-agent keys, read-only pilot, batched, cadence (2026-
   check('key pane: load reports the key present, the FUB user and the cadence, never the key', kl.fubKey.present === true && kl.fubKey.fubUserName === 'Jason Agent' && kl.fubKey.cadenceMin === 60 && !JSON.stringify(kl).includes(goodKey));
   kr = JSON.parse(sandbox.tsgPersonRpc('fubKeyRemove', '{}'));
   check('key pane: Remove deletes the property and records when', kr.ok === true && !scriptProps.FUB_KEY_JASON && !!JSON.parse(scriptProps.TSG_FUB_SYNC_STATE).agents.Jason.keyRemovedAt && JSON.parse(sandbox.tsgPersonRpc('load', '{}')).fubKey.present === false);
+  // key property names (2026-09-24): an agent can read a FUB_KEY_* property other than FUB_KEY_<NAME>
+  const md = JSON.parse(disk); md.meta.teamRoster = roster;
+  sandbox.applyDataPatch_(md, { op: 'set_meta', fields: { fubSync: { agents: ['Jason'], keyProps: { Durand: 'fub_key_admin', Jason: 'SCRIPT_TOKEN', Marj: 'FUB_KEY_ADMIN', Nobody: 'FUB_KEY_OWNER' } } }, source: 'Durand' });
+  check('key map: only FUB_KEY_* names for roster members, one agent per property, upper-cased; SCRIPT_TOKEN is never accepted', JSON.stringify(md.meta.fubSync.keyProps) === JSON.stringify({ Durand: 'FUB_KEY_ADMIN' }) && JSON.parse(scriptProps.TSG_FUB_SYNC_CONFIG).keyProps.Durand === 'FUB_KEY_ADMIN');
+  check('key map: a mapped agent reads the mapped property, others keep FUB_KEY_<NAME>', sandbox.tsgFubKeyProp_('Durand') === 'FUB_KEY_ADMIN' && sandbox.tsgFubKeyProp_('Jason') === 'FUB_KEY_JASON');
+  sandbox.applyDataPatch_(md, { op: 'set_meta', fields: { fubSync: { agents: ['Jason', 'Durand'], cadenceMin: 240 } }, source: 'Durand' });
+  check('key map: a settings save without the map keeps it', md.meta.fubSync.keyProps.Durand === 'FUB_KEY_ADMIN' && md.meta.fubSync.agents.join() === 'Jason,Durand');
+  scriptProps.TSG_FUB_SYNC_CONFIG = JSON.stringify({ agents: ['Durand'], keyProps: { Durand: 'SCRIPT_TOKEN' } });
+  check('key map: a tampered property mapping to a non-FUB_KEY name falls back to the default', sandbox.tsgFubKeyProp_('Durand') === 'FUB_KEY_DURAND');
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (scriptProps[k] == null ? null : scriptProps[k]), setProperty: (k, v) => { scriptProps[k] = v; }, deleteProperty: (k) => { delete scriptProps[k]; }, getKeys: () => Object.keys(scriptProps) });
+  scriptProps.FUB_KEY_ADMIN = goodKey; scriptProps.FUB_KEY_OWNER = 'ka_rejectedKEY12345678'; scriptProps.SCRIPT_TOKEN = 'tok-secret';
+  const scan = sandbox.tsgFubKeyScan_();
+  const sAdmin = scan.keys.find(k => k.property === 'FUB_KEY_ADMIN'), sOwner = scan.keys.find(k => k.property === 'FUB_KEY_OWNER');
+  check('key scan: lists only FUB_KEY_* properties with their FUB user and a roster guess, never a key value', scan.ok && !scan.keys.some(k => k.property === 'SCRIPT_TOKEN') && sAdmin.ok && sAdmin.fubUser === 'Jason Agent' && sAdmin.suggested === 'Jason' && sOwner.ok === false && /rejected/.test(sOwner.error) && !JSON.stringify(scan).includes(goodKey) && !JSON.stringify(scan).includes('tok-secret') && !JSON.stringify(scan).includes('rejectedKEY'));
+  delete scriptProps.FUB_KEY_ADMIN; delete scriptProps.FUB_KEY_OWNER; delete scriptProps.SCRIPT_TOKEN;
   // owner-only page endpoint for the Views pop-up
   sandbox.Session = origSession;
   scriptProps.SCRIPT_TOKEN = 'tok-pp';

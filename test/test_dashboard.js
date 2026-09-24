@@ -1847,6 +1847,20 @@ setTimeout(async () => {
     const T = w.eval('TASKS'); for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 940) T.splice(i, 1);
     delete w.findTask(2).fub;
   });
+  tryCall('FUB key names: Find keys lists each FUB_KEY_* property with its FUB user; Use these matches maps the agent and the save carries keyProps (2026-09-24)', () => {
+    w.eval("FUB_STATUS = { ok: true, readOnly: true, pushBuilt: false, lastRunAt: '', config: { agents: ['Durand'], cadenceMin: 240, appBase: '', keyProps: {} }, agents: [ { name: 'Durand', enabled: true, keyProperty: 'FUB_KEY_DURAND', keyPresent: false, state: null }, { name: 'Ryan', enabled: false, keyProperty: 'FUB_KEY_RYAN', keyPresent: false, state: null } ] }");
+    w.eval("FUB_KEY_SCAN = { ok: true, keys: [ { property: 'FUB_KEY_ADMIN', ok: true, fubUser: 'Durand M', email: 'durand@tsg.homes', suggested: 'Durand' }, { property: 'FUB_KEY_OWNER', ok: true, fubUser: 'Ryan S', email: 'ryan@tsg.homes', suggested: 'Ryan' } ] }");
+    const host = doc.createElement('div'); host.id = 'fubSyncBody'; doc.body.appendChild(host);
+    w.renderFubPanel_();
+    const sel = Array.from(host.querySelectorAll('.fub-keyprop-select')).find(x => x.dataset.agent === 'Durand');
+    if (!sel || !Array.from(sel.options).some(o => o.value === 'FUB_KEY_ADMIN') || sel.value !== 'FUB_KEY_DURAND') throw new Error('select wrong');
+    if (!/Durand M/.test(host.textContent) || !/Use these matches/.test(host.textContent)) throw new Error('scan table missing');
+    Array.from(host.querySelectorAll('.fub-keyprop-select')).forEach(x => { x.value = x.dataset.agent === 'Durand' ? 'FUB_KEY_ADMIN' : x.dataset.agent === 'Ryan' ? 'FUB_KEY_OWNER' : x.value; });
+    const map = w.fubKeyPropsFromPanel_();
+    if (JSON.stringify(map) !== JSON.stringify({ Durand: 'FUB_KEY_ADMIN', Ryan: 'FUB_KEY_OWNER' })) throw new Error('map ' + JSON.stringify(map));
+    host.remove();
+    w.eval('FUB_STATUS = null; FUB_KEY_SCAN = null');
+  });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));
