@@ -3968,12 +3968,12 @@ function tsgFubKeyInfo_(doc, name) {
 function tsgRosterNames_(meta) {
   return ((meta && meta.teamRoster) || []).map(function(p) { return typeof p === 'string' ? p : (p && p.name); }).filter(Boolean);
 }
-/** Sanitised sync settings: agents on the roster (never the owner), a known cadence, an https FUB address. */
+/** Sanitised sync settings: agents on the roster (the owner included), a known cadence, an https FUB address. */
 function tsgFubConfig_(meta) {
   var raw = (meta && meta.fubSync) || {};
   var roster = tsgRosterNames_(meta);
   var agents = (Array.isArray(raw.agents) ? raw.agents : []).filter(function(n, i, a) {
-    return n && a.indexOf(n) === i && String(n).toLowerCase() !== TSG_OWNER_NAME.toLowerCase() && (!roster.length || roster.indexOf(n) !== -1);
+    return n && a.indexOf(n) === i && (!roster.length || roster.indexOf(n) !== -1);
   });
   var cadence = TSG_FUB_CADENCES.indexOf(Number(raw.cadenceMin)) !== -1 ? Number(raw.cadenceMin) : TSG_FUB_DEFAULT_CADENCE;
   var appBase = /^https:\/\/[a-z0-9-]+\.followupboss\.com$/i.test(String(raw.appBase || '').replace(/\/+$/, '')) ? String(raw.appBase).replace(/\/+$/, '') : '';
@@ -4183,7 +4183,7 @@ function tsgFubStatus_() {
   var doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
   var cfg = tsgFubConfig_(doc.meta || {});
   var state = tsgFubState_();
-  var roster = tsgRosterNames_(doc.meta || {}).filter(function(n) { return n.toLowerCase() !== TSG_OWNER_NAME.toLowerCase(); });
+  var roster = tsgRosterNames_(doc.meta || {});
   return {
     ok: true, config: cfg, readOnly: tsgFubReadOnly_(doc), pushBuilt: TSG_FUB_PUSH_BUILT, lastRunAt: state.lastRunAt || '',
     agents: roster.map(function(n) {

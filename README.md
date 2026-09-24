@@ -542,7 +542,7 @@ tracker fields are locked, for now put a red border on fub fields (also locked)"
   `FUB_KEY_JASON`), entered by Durand in the Apps Script editor. Never in the tracker, a Doc, chat,
   a commit or a patch. The sync learns which FUB user a key belongs to from `/v1/me`.
 - **Settings**: `meta.fubSync {agents, cadenceMin, appBase}` via `set_meta` (sanitised by
-  `tsgFubConfig_`: roster agents only, never the owner, cadence 60/120/240 min, `appBase` must be
+  `tsgFubConfig_`: roster agents only (the owner included), cadence 60/120/240 min, `appBase` must be
   `https://<team>.followupboss.com` and only builds contact links). Mirrored to script property
   `TSG_FUB_SYNC_CONFIG` so the minute tick reads it without Drive. Settings > General "FUB task sync"
   lists each agent's key status (present or not, never the value), last run, Check key (the probe:

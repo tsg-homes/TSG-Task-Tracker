@@ -2813,7 +2813,7 @@ section('FUB task sync: per-agent keys, read-only pilot, batched, cadence (2026-
   // set_meta config
   d.meta.teamRoster = roster;
   sandbox.applyDataPatch_(d, { op: 'set_meta', fields: { fubSync: { agents: ['Jason', 'Durand', 'Nobody', 'Jason'], cadenceMin: 5, appBase: 'https://evil.example.com', readOnly: false } }, source: 'Durand' });
-  check('set_meta fubSync is sanitised (roster agents only, never the owner, known cadence, FUB address only, read-only forced) and mirrored to the script property', d.meta.fubSync.agents.join() === 'Jason' && d.meta.fubSync.cadenceMin === 240 && d.meta.fubSync.appBase === '' && d.meta.fubSync.readOnly === true && JSON.parse(scriptProps.TSG_FUB_SYNC_CONFIG).agents.join() === 'Jason');
+  check('set_meta fubSync is sanitised (roster agents only, the owner included, known cadence, FUB address only, read-only forced) and mirrored to the script property', d.meta.fubSync.agents.join() === 'Jason,Durand' && d.meta.fubSync.cadenceMin === 240 && d.meta.fubSync.appBase === '' && d.meta.fubSync.readOnly === true && JSON.parse(scriptProps.TSG_FUB_SYNC_CONFIG).agents.join() === 'Jason,Durand');
   // the run: one bulk file, per-agent key, /me mapping, state
   const origFetch = sandbox.UrlFetchApp.fetch, origGetFileById = sandbox.DriveApp.getFileById, origGetFolderById = sandbox.DriveApp.getFolderById, origLock = sandbox.LockService.getScriptLock;
   const FILE_IDS6 = vm.runInContext('FILE_IDS', sandbox);
@@ -2864,7 +2864,7 @@ section('FUB task sync: per-agent keys, read-only pilot, batched, cadence (2026-
   check('tick: no enabled agents means nothing runs', sandbox.tsgFubSyncTickIfDue_() === false);
   // status and probe
   const status = sandbox.tsgFubStatus_();
-  check('status: per agent key presence by property name, never the key', status.ok && status.readOnly === true && status.pushBuilt === false && status.agents.find(a => a.name === 'Jason').keyPresent === true && status.agents.find(a => a.name === 'Jason').keyProperty === 'FUB_KEY_JASON' && !JSON.stringify(status).includes('jason-secret-key') && !status.agents.some(a => a.name === 'Durand'));
+  check('status: per agent key presence by property name, never the key', status.ok && status.readOnly === true && status.pushBuilt === false && status.agents.find(a => a.name === 'Jason').keyPresent === true && status.agents.find(a => a.name === 'Jason').keyProperty === 'FUB_KEY_JASON' && !JSON.stringify(status).includes('jason-secret-key') && status.agents.find(a => a.name === 'Durand').keyProperty === 'FUB_KEY_DURAND');
   const probe = sandbox.tsgFubProbe_('Jason');
   check('probe: reports who the key is, counts and the field names FUB sends', probe.ok && probe.me.id === 12 && probe.fetched === 2 && probe.fieldNames.indexOf('dueDateTime') !== -1 && probe.types.Call === 1);
   sandbox.UrlFetchApp.fetch = (url, opts) => ({ getResponseCode: () => 401, getContentText: () => 'Unauthorized' });
