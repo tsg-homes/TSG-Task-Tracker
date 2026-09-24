@@ -179,6 +179,12 @@
   .fb-form textarea { min-height: 120px; }
   .fb-actions { display: flex; gap: 8px; justify-content: flex-end; }
   .pending-note { font-size: 11px; color: var(--status-warn); }
+  /* FUB tasks (2026-09-24): read-only in the pilot; the fields that come from FUB are outlined in red. */
+  .fub-chip { border: 2px solid var(--status-critical); color: var(--status-critical); background: var(--status-critical-bg); font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 700; white-space: nowrap; }
+  .fub-chip a { color: inherit; }
+  tr.task-row.fub .ttl-edit, tr.task-row.fub .pill.status-pill-ro, tr.task-row.fub .due-cell, tr.task-row.fub .type-badge, tr.task-row.fub .owner-cell { outline: 2px solid var(--status-critical); outline-offset: 1px; border-radius: 6px; }
+  .fub-note { font-size: 11px; color: var(--text-muted); }
+  #fubSyncInfo { font-size: 11.5px; color: var(--text-muted); }
   footer.tsg-footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--gridline); font-size: 11.5px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
   @media (max-width: 720px) {
     .wrap { width: auto; padding: 16px 16px 48px; }
@@ -194,6 +200,8 @@
     <div class="masthead-right">
       <span id="previewBadge" class="preview" hidden>Preview as __TSG_AS__</span>
       <span id="sync">Loading…</span>
+      <span id="fubSyncInfo" hidden></span>
+      <button class="btn small" id="btnFubSync" type="button" hidden title="Pull your latest Follow Up Boss tasks now (it also runs on its own on a schedule)">&#8635; Sync FUB</button>
       <button class="btn small" id="btnFeedback" type="button" hidden title="Report a bug, ask for a feature or leave feedback; it goes to Durand on your feedback task">&#128172; Feedback</button>
       <button class="theme-toggle" id="themeToggle" title="Toggle light / dark" aria-label="Toggle theme"></button>
     </div>
@@ -244,7 +252,7 @@
   </footer>
 </div>
 <script>
-  const PERSON_UI_VERSION = '2026-09-23.1';
+  const PERSON_UI_VERSION = '2026-09-24.1';
   const PERSON = '__TSG_PERSON__';
   const AS = '__TSG_AS__';
   const CODE_VERSION = '__TSG_CODE_VERSION__';
@@ -289,13 +297,21 @@
 
   function pillHtml(kind, current, enabled, options) {
     const cls = kind === 'status' ? statusClass(current) : priorityClass(current);
-    if (!enabled) return current ? '<span class="pill ' + cls + '">' + esc(current) + '</span>' : '';
+    if (!enabled) return current ? '<span class="pill ' + cls + (kind === 'status' ? ' status-pill-ro' : '') + '">' + esc(current) + '</span>' : '';
     return '<select class="pill ' + cls + '" data-field="' + kind + '" aria-label="' + kind + '">' + options.map(function(o) {
       return '<option value="' + esc(o) + '"' + (o === current ? ' selected' : '') + '>' + esc(o) + '</option>';
     }).join('') + '</select>';
   }
   function progressHtml(pct) { return '<div class="progress-wrap" title="Worked out from your notes, or from the subtasks when there are any"><div class="progress-track"><div class="progress-fill" style="width:' + pct + '%"></div></div><span class="pct">' + pct + '%</span></div>'; }
   function tagChipHtml(tag) { return '<span class="tag-chip ' + (TAG_COLORS[tag] || '') + '">' + esc(tag) + '</span>'; }
+  function fubChipHtml(r) {
+    if (!r || !r.fub) return '';
+    const label = '&#128274; FUB' + (r.fub.type ? ' · ' + esc(r.fub.type) : '') + (r.fub.personName ? ' · ' + esc(r.fub.personName) : '');
+    const tip = 'From Follow Up Boss. Read-only here for now: change it in FUB and it syncs back.';
+    return r.fub.personUrl && /^https:\/\//.test(r.fub.personUrl)
+      ? '<span class="fub-chip" title="' + tip + '"><a href="' + esc(r.fub.personUrl) + '" target="_blank" rel="noopener">' + label + '</a></span>'
+      : '<span class="fub-chip" title="' + tip + '">' + label + '</span>';
+  }
   function docChipsHtml(docs) { return (docs || []).filter(function(d) { return d && /^https?:\/\//i.test(d.url); }).map(function(d) { return '<a class="doc-chip" href="' + esc(d.url) + '" target="_blank" rel="noopener" title="' + esc(d.label) + '">&#128279; ' + esc(d.label.length > 40 ? d.label.slice(0, 39) + '…' : d.label) + '</a>'; }).join(''); }
   function feedbackState(s) { const f = s.feedback || {}; if (f.implementedAt || s.done) return 'implemented'; if (f.decision === 'accepted') return 'accepted'; if (f.decision === 'declined') return 'declined'; return 'new'; }
 
@@ -316,12 +332,12 @@
     const due = can('timelineEnd')
       ? '<span class="due-cell ' + (overdue ? 'overdue' : '') + '"><input type="date" class="due-input" data-field="due" value="' + esc(r.due) + '" aria-label="Due"></span>'
       : '<span class="due-cell ' + (overdue ? 'overdue' : '') + '">' + (r.due ? 'Due ' + esc(fmtDate(r.due)) : '<span class="est">No due date</span>') + '</span>';
-    const tags = (r.taskType ? '<span class="type-badge">' + esc(r.taskType) + '</span>' : '') + (r.tags || []).map(tagChipHtml).join('') + docChipsHtml(r.docs);
+    const tags = fubChipHtml(r) + (r.taskType ? '<span class="type-badge">' + esc(r.taskType) + '</span>' : '') + (r.tags || []).filter(function(t) { return t !== 'FUB'; }).map(tagChipHtml).join('') + docChipsHtml(r.docs);
     const est = (r.estHours != null) ? '<span class="est">' + r.estHours + 'h est.</span>' : (r.status === STATE.pendingStatus ? '<span class="pending-note">Waiting for Durand to verify and close</span>' : '');
     const notes = r.context
       ? '<span class="ro est">—</span>'
       : '<span contenteditable="' + (can('notes') ? 'true' : 'false') + '" data-field="notes">' + esc(r.notes) + '</span>';
-    let html = '<tr class="task-row' + (r.context ? ' context' : '') + '" data-key="' + esc(key) + '" data-kind="' + esc(r.kind) + '" data-id="' + r.id + '" data-index="' + (r.index == null ? '' : r.index) + '">' +
+    let html = '<tr class="task-row' + (r.context ? ' context' : '') + (r.fub ? ' fub' : '') + '" data-key="' + esc(key) + '" data-kind="' + esc(r.kind) + '" data-id="' + r.id + '" data-index="' + (r.index == null ? '' : r.index) + '">' +
       '<td style="width:26px;">' + (hasSubs ? '<button type="button" class="icon-btn" data-expand="' + r.id + '" aria-label="Show steps">' + (isOpen ? '▾' : '▸') + '</button>' : '') + '</td>' +
       '<td class="title-cell">' + title + badge + ctx + '</td>' +
       '<td class="cell-group"><div class="cell-group-stack">' +
@@ -426,6 +442,7 @@
         '<b>Progress</b><span>' + progressHtml(pct) + '</span>' +
         ((r.taskType || (r.tags || []).length || r.estHours != null || (r.docs || []).length) ? '<b>Details</b><span>' + (r.taskType ? '<span class="type-badge">' + esc(r.taskType) + '</span>' : '') + (r.tags || []).map(tagChipHtml).join('') + (r.estHours != null ? '<span class="est">' + r.estHours + 'h est.</span>' : '') + docChipsHtml(r.docs) + '</span>' : '') +
         (r.status === STATE.pendingStatus ? '<b></b><span class="pending-note">Marked done; Durand verifies the work and closes it.</span>' : '') +
+        (r.fub ? '<b>FUB</b><span>' + fubChipHtml(r) + ' <span class="fub-note">Read-only here for now: change it in Follow Up Boss; the red-outlined fields come from FUB.</span></span>' : '') +
         (r.feedbackFor ? '<b></b><span class="est">Your bug reports, feature requests and feedback collect here. Use the Feedback button at the top to add one; Durand implements or declines each and you see the decision on the item.</span>' : '') +
       '</div>' +
       (r.context ? '' : '<div class="card-notes"><b>Notes</b><div class="card-notes-edit" contenteditable="' + (can('notes') ? 'true' : 'false') + '" data-field="notes">' + esc(r.notes) + '</div></div>') +
@@ -446,6 +463,11 @@
       if (!r.ok) throw new Error(r.error || 'load failed');
       STATE = { rows: r.rows, statuses: r.statuses, priorities: r.priorities, docVersion: r.docVersion, feedbackTaskId: r.feedbackTaskId || null, feedbackKinds: r.feedbackKinds || STATE.feedbackKinds, pendingStatus: r.pendingStatus || STATE.pendingStatus };
       document.getElementById('btnFeedback').hidden = !STATE.feedbackTaskId;
+      const fs = r.fubSync || { enabled: false };
+      document.getElementById('btnFubSync').hidden = !fs.enabled;
+      const info = document.getElementById('fubSyncInfo');
+      info.hidden = !fs.enabled;
+      if (fs.enabled) info.textContent = fs.ok === false ? 'FUB sync failed: ' + (fs.error || '') : (fs.lastRunAt ? 'FUB synced ' + new Date(fs.lastRunAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'FUB not synced yet');
       if (!editing()) render();
       setSync('Up to date');
       document.getElementById('versionStamp').textContent = 'API ' + (r.codeVersion || CODE_VERSION) + ' · UI ' + PERSON_UI_VERSION;
@@ -564,6 +586,22 @@
     } finally { btn.disabled = false; }
   });
   document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && !document.getElementById('feedbackBack').hidden) closeFeedback(); });
+
+  // FUB "Sync now" (2026-09-24): the person's own FUB tasks, one batched write, 2-minute cooldown.
+  document.getElementById('btnFubSync').addEventListener('click', async function() {
+    const btn = this; btn.disabled = true;
+    setSync('Syncing your FUB tasks…', false, true);
+    try {
+      const r = await rpc('fubSync', {});
+      if (!r.ok) throw new Error(r.error || 'sync failed');
+      const res = r.result || {};
+      if (res.ok === false) throw new Error(res.error || 'sync failed');
+      setSync(r.wrote ? 'FUB synced: ' + (res.added || 0) + ' new, ' + ((res.updated || 0) + (res.completed || 0) + (res.cancelled || 0)) + ' changed' : 'FUB synced: nothing new');
+      await load(true);
+    } catch (err) {
+      setSync('FUB sync: ' + (err.message || err), true);
+    } finally { btn.disabled = false; }
+  });
 
   async function poll() {
     if (document.hidden || editing()) return;

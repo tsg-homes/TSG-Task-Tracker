@@ -532,6 +532,51 @@ pinned task per person.
   `Done` on a delegate's item on their behalf unless Durand asked; `delegateActivity` is
   server-owned.
 
+## FUB task sync: per-agent keys, read-only pilot (2026-09-24)
+
+Per Durand: "i want per agent, and lets start with just jason as a pilot"; "reduce the sync cadence,
+agent can use sync now if necessary, implement batch updates, not one offs, while read only all
+tracker fields are locked, for now put a red border on fub fields (also locked)".
+
+- **Keys**: one Follow Up Boss API key per agent, in Script Properties as `FUB_KEY_<NAME>` (e.g.
+  `FUB_KEY_JASON`), entered by Durand in the Apps Script editor. Never in the tracker, a Doc, chat,
+  a commit or a patch. The sync learns which FUB user a key belongs to from `/v1/me`.
+- **Settings**: `meta.fubSync {agents, cadenceMin, appBase}` via `set_meta` (sanitised by
+  `tsgFubConfig_`: roster agents only, never the owner, cadence 60/120/240 min, `appBase` must be
+  `https://<team>.followupboss.com` and only builds contact links). Mirrored to script property
+  `TSG_FUB_SYNC_CONFIG` so the minute tick reads it without Drive. Settings > General "FUB task sync"
+  lists each agent's key status (present or not, never the value), last run, Check key (the probe:
+  who the key is, counts, the field names FUB sends) and Sync now.
+- **Cadence**: `tsgFubSyncTickIfDue_` on the existing 1-minute inbox tick; a property read each
+  minute, a run only when `cadenceMin` has passed (default 60). "Sync now": the dashboard (all
+  enabled agents, or one) and the agent's own page (their tasks only, 2-minute cooldown).
+- **Batching**: one run = ONE `bulk` inbox patch (source `FUB`) holding every add / update / cancel
+  for every agent in the run; nothing is written when nothing changed. Run state (per agent: ok,
+  error, FUB user, counts) lives in script property `TSG_FUB_SYNC_STATE`, not the data file.
+- **What is imported** (`tsgFubPlanForAgent_`): the agent's open FUB tasks (assigned to their FUB
+  user) as tracker tasks owned by the agent (owner = delegate = group = agent, tag `FUB`, reserved),
+  title verbatim, `taskType` mapped (Call, Email, Text/Chat, Appointment/Showing/Open House/Closing
+  -> Meeting, else Hands-on), due date and time in Eastern with `dueOverride`, and `task.fub
+  {taskId, personId, personName, personUrl, type, assignedUserId, createdById, created, updated,
+  completed, agent, syncedAt, missingAt}`. A linked task gets only changed fields; completed in FUB
+  = Done (no Done - Pending gate: the agent's own work); reopened = Not Started; gone from a
+  complete listing (deleted, or reassigned to someone else) = Cancelled. A completed task never
+  linked is not imported. After the agent's first successful import, FUB-side changes are logged
+  in `meta.delegateActivity` as "<agent> (in FUB)".
+- **Read-only pilot** (`TSG_FUB_PUSH_BUILT = false`; nothing is written to FUB): every op that
+  changes a FUB task (`TSG_FUB_LOCKED_OPS`) from any source but `FUB` is refused by name; a
+  dashboard `replace_all` cannot edit, delete or forge one (server copy restored); a `fub` block
+  from any other source is stripped; the person page gets `editable: []`; FUB tasks are never
+  enriched, never held for Triage, never flagged for approval, aging, staleness or the review
+  blocks. Dashboard: `.fub-locked` rows and card lock every control, the FUB-sourced fields
+  (title, status, due date and time, owner, delegate, type) carry a red outline, a FUB row on the
+  card, and `revertLockedFubEdits_` undoes a local edit before any save with a toast.
+- **Unverified until the first probe**: FUB's field names and the `assignedUserId`, `limit`,
+  `offset` and `_metadata.total` parameters are from FUB's documentation, not a live response.
+  Run Check key on Jason's row before enabling him; a listing that looks truncated never cancels.
+- **Sessions**: never patch a FUB task (it is refused), never write a `fub` block, never put a key
+  anywhere but Script Properties.
+
 ## Actual time (2026-09-17): one log, three ways in
 
 Nothing measured actual time before this. Now every item (task or step) carries `timeLog[]`

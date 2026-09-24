@@ -132,6 +132,10 @@ There is now a real hand-back signal. On every write the server tags an open ite
 
 A task reaches a delegate's page only while `delegateVisible: true`, and only Durand can set that (the server strips `true` from every other source, so never send it). Any meaningful change a session makes to a visible task (title, notes, due, priority, type, hours, delegate, location, links, or any step's title/notes/delegate/hours/due) hides it again until Durand re-checks it; a status or tag change does not. When you change a delegated task on purpose, say in the note that Durand should turn visibility back on. Delegates can only reach `Done - Pending`; Durand approves to `Done`. Do not close a delegate's item for them unless Durand asked. `meta.delegateActivity` and `meta.status_values` are the server's; feedback items are steps with a `feedback` object on a task with `feedbackFor` and must not be enriched, retitled or closed by a session (Durand implements or declines them on the dashboard; an accepted one closes itself when the linked Claude step on the tracker feature task, `feedbackRef`, is Done).
 
+## FUB tasks are read-only (added 2026-09-24)
+
+Tasks carrying a `fub` block (tag `FUB`) are copies of an agent's Follow Up Boss tasks, owned by that agent and written only by the tracker's FUB sync. While the pilot is read-only, every op on them from a session is refused by name (update_task, update_subitem, add_subitem, delete_task, reorder_subitems, log_time, request_tidy, request_steps), so do not patch them and never write a `fub` block. Changes belong in FUB; the next sync brings them in. FUB API keys live only in Script Properties (`FUB_KEY_<NAME>`): never ask for one in chat, never write one anywhere.
+
 ## Session effort report (added 2026-09-17)
 
 At every write-back for a tracker task the session worked on (progress, notes, Done), also push:

@@ -1486,3 +1486,41 @@ the names below are current.
   earlier on 2026-09-23 (not in the 15); the tracker leaves them for Durand to trash. General's own text
   still says "'Systems — Instructions — Thread — <id> — <name>' until the tracker's thread-to-workstream
   rename ships": that wording is Durand's to change.
+
+## FUB task sync, per-agent keys, read-only pilot (2026-09-24, backend 2026-09-24.1, dashboard UI 2026-09-24.1, person UI 2026-09-24.1)
+
+Per Durand (2026-09-24): design asked for "a two way sync for fub tasks that gives the assigned agent
+ownership instead of me, any fub fields missing should be added to the tracker"; then "i want per
+agent, and lets start with just jason as a pilot"; then "reduce the sync cadence, agent can use sync now
+if necessary, implement batch updates, not one offs, while read only all tracker fields are locked, for
+now put a red border on fub fields (also locked) / let build it". Built read-only (FUB -> tracker only;
+`TSG_FUB_PUSH_BUILT = false`). Full rules: README "FUB task sync: per-agent keys, read-only pilot".
+- Code: `tsgFubConfig_`, `tsgFubKeyProp_` (`FUB_KEY_<NAME>`), `tsgFubGet_` (Basic auth with the agent's
+  key, one 429 retry), `tsgFubFetchAgent_` (`/me`, then `/tasks?limit=100&offset=N&assignedUserId=<me>`,
+  10 pages max), `tsgFubPlanForAgent_` (pure: adds / changed-field updates / Done / reopen / Cancelled
+  when a complete listing lacks a linked task), `tsgFubRunSync_` (one data read, one bulk patch source
+  `FUB`, state in script property `TSG_FUB_SYNC_STATE`), `tsgFubSyncTickIfDue_` (in `tsgInboxTick`,
+  config from `TSG_FUB_SYNC_CONFIG`), `tsgFubStatus_` (`api=fubStatus`), `tsgFubProbe_`
+  (`api=fubProbe&agent=`), POST `target=fubSync {agent?}`, person RPC `fubSync` (2-minute cooldown,
+  cache `fubSyncCool:<name>`) and `load.fubSync`. Locks: guard at the top of `applyDataPatch_`
+  (`TSG_FUB_LOCKED_OPS`), `replace_all` restores FUB tasks, `fub` stripped from non-FUB add/update,
+  add_task drops a duplicate FUB import (`duplicate-fub`) and keeps the FUB title verbatim
+  (`tsgCleanTitle_` skipped), `tsgEnrichItem_` / `tsgApplyDelegateApproval_` / `tsgFlagAgingTasks_` skip
+  FUB tasks, person slice `editable: []` + `fub` info. Reserved tag `FUB`; index rows carry `fub`.
+- Dashboard: `isFubTask_`, `fubChipHtml_`, `.fub-locked` rows / sub-rows / `#taskModal`, red outline CSS
+  on title, status pill, due date and time, owner/delegate selects, type (modal: `.fub-field-row` on
+  Status, Due, Owner, Delegate, Type), `fubModalRowHtml_`, `revertLockedFubEdits_` in `scheduleSave`,
+  `FUB_STATUS` + `loadFubStatus_` (on load when agents are enabled) + a warn alert per failing agent,
+  Settings > General "FUB task sync" (`renderFubPanel_`, `saveFubConfig_`, `probeFubKey_`,
+  `fubSyncNow_`), FUB tasks excluded from the stale alerts and `delegatedReviewItems`.
+- Person page: `fubChipHtml`, `tr.task-row.fub` red outline, `status-pill-ro`, FUB row on the card,
+  `#btnFubSync` + `#fubSyncInfo`.
+- Tests: backend "FUB task sync: per-agent keys, read-only pilot, batched, cadence (2026-09-24)" (38
+  checks; installs its own script-property stub because an earlier section leaves a write-nothing
+  one); dashboard three tryCalls; person test FUB row + Sync FUB.
+- NOT VERIFIED LIVE: FUB field and parameter names. Before enabling Jason: Durand stores
+  `FUB_KEY_JASON`, runs Check key in Settings > General, and the field list is compared with the
+  mapping. `appBase` (the team's FUB web address) is blank until Durand sets it, so no contact links
+  until then. Merged main (workstream rename, @99) into the branch first; the Today-label fixture
+  now computes a Friday two weeks out (it was pinned to 2026-09-25).
+

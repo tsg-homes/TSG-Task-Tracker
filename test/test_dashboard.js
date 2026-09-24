@@ -1771,6 +1771,66 @@ setTimeout(async () => {
     w.closeDayView();
     const T = w.eval('TASKS'); for (let i = T.length - 1; i >= 0; i--) if (T[i].id >= 930 && T[i].id <= 935) T.splice(i, 1);
   });
+  // ---- FUB task sync, read-only pilot (2026-09-24) ----
+  tryCall('FUB task: the board row is locked, carries the FUB chip and outlines only the FUB fields; the card adds a FUB row and locks every control', () => {
+    const fubTask = { id: 940, title: 'Call Ann Lee back', owner: 'Jason', delegate: 'Jason', group: 'Jason', status: 'Not Started', priority: 'Medium', taskType: 'Call', tags: ['FUB'], timelineEnd: '2026-10-01', dueTime: '14:30', progress: 0, depends: '', docs: [], notes: '', estHours: null, history: [], subitems: [],
+      fub: { taskId: 9001, personId: 77, personName: 'Ann Lee', personUrl: 'https://tsg.followupboss.com/2/people/view/77', type: 'Call', agent: 'Jason', created: '2026-09-20T10:00:00Z', updated: '2026-09-23T15:00:00Z', syncedAt: '2026-09-24T12:00:00Z' } };
+    w.eval('TASKS').push(fubTask);
+    w.snapshotBaseline_();
+    w.setView('board');
+    const row = doc.querySelector('tr.task-row[data-id="940"]');
+    if (!row || !row.classList.contains('fub-locked')) throw new Error('row not locked');
+    const chip = row.querySelector('.fub-chip');
+    if (!chip || !/FUB · Call · Ann Lee/.test(chip.textContent) || chip.querySelector('a').getAttribute('href') !== 'https://tsg.followupboss.com/2/people/view/77') throw new Error('chip wrong: ' + (chip && chip.outerHTML));
+    const css = doc.querySelector('style').textContent;
+    if (!/\.fub-locked select, \.fub-locked input, \.fub-locked textarea, \.fub-locked \[contenteditable\][^{]*\{ pointer-events: none; \}/.test(css)) throw new Error('lock CSS missing');
+    if (!/\.fub-locked select\.pill\[data-kind="status"\][^{]*\{ outline: 2px solid var\(--status-critical\)/.test(css)) throw new Error('red outline CSS missing for FUB fields');
+    if (/\.fub-locked select\.pill\[data-kind="priority"\]/.test(css)) throw new Error('priority is a tracker field and must not be outlined');
+    w.openTaskCard(940);
+    const modal = doc.getElementById('taskModal');
+    if (!modal.classList.contains('fub-locked')) throw new Error('modal not locked');
+    const first = doc.querySelector('#modalMeta .modal-row');
+    if (!first || first.querySelector('b').textContent !== 'FUB' || !/Read-only pilot/.test(first.textContent) || !/FUB task 9001/.test(first.textContent)) throw new Error('FUB row missing: ' + (first && first.textContent));
+    const outlined = Array.from(doc.querySelectorAll('#modalMeta .modal-row.fub-field-row')).map(r => r.querySelector('b').textContent).sort().join();
+    if (outlined !== 'Delegate,Due,Owner,Status,Type') throw new Error('outlined rows: ' + outlined);
+    w.closeTaskCard();
+    const plain = w.findTask(2); w.openTaskCard(2);
+    if (modal.classList.contains('fub-locked')) throw new Error('a plain task opened locked');
+    w.closeTaskCard();
+  });
+  tryCall('FUB task: an edit or a delete made on the dashboard is undone before the save, with a toast', () => {
+    const t = w.findTask(940);
+    t.title = 'Edited here'; t.status = 'Done';
+    w.eval("TASKS.splice(TASKS.findIndex(x => x.id === 2), 0)");
+    w.scheduleSave();
+    if (w.findTask(940).title !== 'Call Ann Lee back' || w.findTask(940).status !== 'Not Started') throw new Error('edit not reverted');
+    w.eval("TASKS.splice(TASKS.findIndex(x => x.id === 940), 1)");
+    w.scheduleSave();
+    if (!w.findTask(940)) throw new Error('delete not reverted');
+    if (!Array.from(doc.querySelectorAll('.tsg-toast')).some(e => /FUB tasks are read-only/.test(e.textContent))) throw new Error('no toast');
+    w.findTask(2).fub = { taskId: 1 };
+    w.scheduleSave();
+    if (w.findTask(2).fub) throw new Error('a forged FUB link on a plain task survived');
+    w.eval('clearTimeout(saveTimer)');
+  });
+  tryCall('FUB settings panel lists agents with key status, cadence and Sync now; a failing agent raises an alert; FUB tasks never enter the review blocks', () => {
+    w.eval("FUB_STATUS = { ok: true, readOnly: true, pushBuilt: false, lastRunAt: '2026-09-24T12:00:00Z', config: { agents: ['Jason'], cadenceMin: 60, appBase: '' }, agents: [ { name: 'Jason', enabled: true, keyProperty: 'FUB_KEY_JASON', keyPresent: true, state: { ok: false, error: 'FUB /me returned 401 (key rejected)', lastRunAt: '2026-09-24T12:00:00Z' } }, { name: 'Marj', enabled: false, keyProperty: 'FUB_KEY_MARJ', keyPresent: false, state: null } ] }");
+    const general = w.renderGeneralTab();
+    if (!/FUB task sync \(read-only pilot\)/.test(general) || !/id="fubSyncBody"/.test(general)) throw new Error('no FUB section on General');
+    const host = doc.createElement('div'); host.id = 'fubSyncBody'; doc.body.appendChild(host);
+    w.renderFubPanel_();
+    if (!/FUB_KEY_JASON/.test(host.textContent) || !/no key/.test(host.textContent) || !host.querySelector('input.fub-agent-toggle[data-agent="Jason"]').checked || host.querySelector('input.fub-agent-toggle[data-agent="Marj"]').checked) throw new Error('agent rows wrong');
+    if (!host.querySelector('#fubCadenceSelect') || host.querySelector('#fubCadenceSelect').value !== '60' || !/Sync all now/.test(host.textContent) || !/fubSyncNow_\('Jason'/.test(host.innerHTML) || !/probeFubKey_\('Jason'/.test(host.innerHTML)) throw new Error('controls missing');
+    if (/jason-secret/.test(host.innerHTML)) throw new Error('a key value leaked');
+    host.remove();
+    const a = w.computeAlerts().find(x => /^FUB sync:/.test(x.text));
+    if (!a || !/Jason failed \(FUB \/me returned 401/.test(a.text) || !a.openSettings) throw new Error('alert: ' + JSON.stringify(a));
+    w.findTask(940).timelineEnd = w.todayISO();
+    if (w.delegatedReviewItems(w.todayISO(), 'on').some(x => x.taskId === 940)) throw new Error('a FUB task entered the review block');
+    w.eval('FUB_STATUS = null');
+    const T = w.eval('TASKS'); for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 940) T.splice(i, 1);
+    delete w.findTask(2).fub;
+  });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));
   tryCall('setView(today)', () => w.setView('today'));

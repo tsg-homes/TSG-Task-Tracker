@@ -14,6 +14,7 @@ const slice = {
   ok: true, person: 'Marj', docVersion: 100, codeVersion: '2026-09-15.5',
   statuses: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done - Pending'], pendingStatus: 'Done - Pending', priorities: ['Critical', 'High', 'Medium', 'Low'],
   feedbackTaskId: 7, feedbackKinds: ['Bug', 'Feature request', 'Feedback'],
+  fubSync: { enabled: true, readOnly: true, lastRunAt: '2026-09-24T12:00:00Z', ok: true, error: '', cadenceMin: 60 },
   rows: [
     { kind: 'task', id: 1, own: false, context: true, title: 'Durand task with Marj sub', status: 'Not Started', priority: 'High', progress: 0, due: '2026-09-20', notes: '', owner: 'Durand', tags: [], taskType: '', estHours: null, subTotal: 1, subDone: 0, editable: [] },
     { kind: 'sub', id: 1, index: 0, own: false, parentOwn: false, parentTitle: 'Durand task with Marj sub', title: 'Marj part', status: 'Not Started', priority: 'High', progress: 0, done: false, due: '2026-09-18', notes: '', owner: 'Durand', subTotal: 0, editable: ['status', 'notes'] },
@@ -25,6 +26,8 @@ const slice = {
     { kind: 'task', id: 6, own: true, title: 'Finished thing', status: 'Done', priority: 'Low', progress: 100, due: '2026-09-10', notes: '', owner: 'Marj', tags: [], taskType: '', estHours: 0.5, subTotal: 0, subDone: 0, editable: ['title', 'status', 'priority', 'timelineEnd', 'notes'] },
     { kind: 'task', id: 7, own: false, pinned: true, feedbackFor: 'Marj', title: '@Marj — Bug reports, feature requests and feedback', status: 'In Progress', priority: 'Medium', progress: 0, due: '', notes: 'File anything here.', owner: 'Durand', tags: ['Feedback'], taskType: '', estHours: null, subTotal: 1, subDone: 0, editable: ['status', 'notes'], docs: [{ url: 'https://docs.google.com/document/d/GUIDE/edit', label: 'How-to: Task Tracker for Delegates', type: 'link' }] },
     { kind: 'sub', id: 7, index: 0, own: false, parentOwn: false, parentTitle: '@Marj — Bug reports, feature requests and feedback', title: '[Bug] Date picker jumps', status: 'Not Started', priority: 'Medium', progress: 0, done: false, due: '', notes: 'Opens on the wrong month', owner: 'Durand', subTotal: 0, editable: ['notes'], feedback: { kind: 'Bug', decision: '', decidedAt: '', implementedAt: '' } },
+    { kind: 'task', id: 9, own: false, title: 'Call Ann Lee back', status: 'Not Started', priority: 'Medium', progress: 0, due: '2026-10-01', notes: '', owner: 'Durand', tags: ['FUB'], taskType: 'Call', estHours: null, subTotal: 0, subDone: 0, editable: [], docs: [],
+      fub: { type: 'Call', personName: 'Ann Lee', personUrl: 'https://tsg.followupboss.com/2/people/view/77', updated: '2026-09-23T15:00:00Z', readOnly: true, fields: ['title', 'taskType', 'timelineEnd', 'dueTime', 'status', 'owner', 'delegate'] } },
     { kind: 'task', id: 8, own: false, title: 'Pending one', status: 'Done - Pending', priority: 'Medium', progress: 100, due: '2026-09-26', notes: 'all done', owner: 'Durand', tags: [], taskType: 'Hands-on', estHours: null, subTotal: 0, subDone: 0, editable: ['status', 'notes'] }
   ]
 };
@@ -46,6 +49,7 @@ const dom = new JSDOM(html, {
         else if (action === 'update') reply = payload.fields.priority !== undefined && payload.kind === 'task' && payload.id === 2 ? { ok: false, error: 'field not editable: priority' } : { ok: true, docVersion: 101 };
         else if (action === 'add') reply = { ok: true, docVersion: 102 };
         else if (action === 'feedback') reply = { ok: true, docVersion: 103 };
+        else if (action === 'fubSync') reply = { ok: true, wrote: true, result: { ok: true, added: 2, updated: 1, completed: 0, cancelled: 0 } };
         else reply = { ok: false, error: 'unknown' };
         setTimeout(() => chain._ok(JSON.stringify(reply)), 0);
       };
@@ -70,7 +74,14 @@ setTimeout(async () => {
   check('board-style groups: Delegated to you, Your tasks, Completed', doc.querySelectorAll('.group-section .group-head .gname').length === 3 && doc.getElementById('completed').hidden === false);
   const delegatedRows = doc.querySelectorAll('#delegated tr[data-key]');
   const ownRows = doc.querySelectorAll('#own tr[data-key]');
-  check("delegated group has Durand's parent as a context row, the assigned task, the pinned feedback task and the pending one", delegatedRows.length === 4 && doc.getElementById('delegatedCount').textContent === '4');
+  check("delegated group has Durand's parent as a context row, the assigned task, the pinned feedback task, the pending one and the FUB task", delegatedRows.length === 5 && doc.getElementById('delegatedCount').textContent === '5');
+  const fubRow = doc.querySelector('#delegated tr[data-id="9"]');
+  check('a FUB task is read-only (no selects, inputs or editable text), carries the FUB chip with the contact link, and the row is marked for the red outline', !!fubRow && fubRow.classList.contains('fub') && !fubRow.querySelector('select, input') && !fubRow.querySelector('[contenteditable="true"]') && /FUB · Call · Ann Lee/.test(fubRow.querySelector('.fub-chip').textContent) && fubRow.querySelector('.fub-chip a').getAttribute('href') === 'https://tsg.followupboss.com/2/people/view/77' && !!fubRow.querySelector('.pill.status-pill-ro') && !fubRow.querySelector('.tag-chip'));
+  check('the red outline rule covers the FUB fields on a FUB row', /tr\.task-row\.fub \.ttl-edit[^{]*\{ outline: 2px solid var\(--status-critical\)/.test(doc.querySelector('style').textContent));
+  check('the Sync FUB button and the last-sync line show when the sync is set up for her', doc.getElementById('btnFubSync').hidden === false && /FUB synced/.test(doc.getElementById('fubSyncInfo').textContent));
+  doc.getElementById('btnFubSync').click();
+  await wait(30);
+  check('Sync FUB calls rpc fubSync and reports the batch', calls.some(c => c.action === 'fubSync') && /FUB synced|Up to date/.test(doc.getElementById('sync').textContent));
   const ctxRow = doc.querySelector('#delegated tr.task-row.context[data-id="1"]');
   check('context row: read-only (no selects, no inputs, no editable title/notes), names the owner', !!ctxRow && !ctxRow.querySelector('select, input') && !ctxRow.querySelector('[contenteditable="true"]') && /Durand/.test(ctxRow.querySelector('.ctx-note').textContent) && ctxRow.querySelector('.sub-count-badge').textContent === '0/1');
   check('her step is nested under the context row and open by default', doc.querySelectorAll('tr.sub-row[data-subrow="1"] .sub-item').length === 1 && doc.querySelector('tr.sub-row[data-subrow="1"]').style.display !== 'none');

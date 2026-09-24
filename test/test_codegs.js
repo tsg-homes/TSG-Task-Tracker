@@ -2730,5 +2730,170 @@ section('Thread -> workstream rename, alias ops, sessions and links (2026-09-23)
   mirrorDocStore = {}; attachFolder = null;
 }
 
+section('FUB task sync: per-agent keys, read-only pilot, batched, cadence (2026-09-24)');
+{
+  const roster = [{ name: 'Durand' }, { name: 'Jason' }, { name: 'Marj' }];
+  const now = '2026-09-24T12:00:00.000Z';
+  const fubOrigProps = sandbox.PropertiesService.getScriptProperties;   // an earlier section leaves a write-nothing stub
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (scriptProps[k] == null ? null : scriptProps[k]), setProperty: (k, v) => { scriptProps[k] = v; } });
+  const cfg = { agents: ['Jason'], cadenceMin: 60, appBase: 'https://tsg.followupboss.com', readOnly: true };
+  // helpers
+  check('FUB types map onto tracker types; the unknown ones are Hands-on', sandbox.tsgFubMapType_('Call') === 'Call' && sandbox.tsgFubMapType_('Text') === 'Text/Chat' && sandbox.tsgFubMapType_('Showing') === 'Meeting' && sandbox.tsgFubMapType_('Follow Up') === 'Hands-on' && sandbox.tsgFubMapType_('') === 'Hands-on');
+  const d1 = sandbox.tsgFubDue_({ dueDateTime: '2026-10-01T18:30:00Z' }), d2 = sandbox.tsgFubDue_({ dueDate: '2026-10-02' });
+  check('dueDateTime lands as the Eastern date and time; a bare dueDate has no time', d1.date === '2026-10-01' && d1.time === '14:30' && d2.date === '2026-10-02' && d2.time === '');
+  // plan
+  function fdoc() {
+    return { meta: { docVersion: 10, next_id: 500, teamRoster: roster, fubSync: cfg }, tasks: [
+      { id: 401, title: 'Call Ann Lee', owner: 'Jason', delegate: 'Jason', group: 'Jason', status: 'Not Started', priority: 'Medium', taskType: 'Call', tags: ['FUB'], timelineEnd: '2026-09-30', dueTime: '', history: [], subitems: [],
+        fub: { taskId: 9001, personId: 77, personName: 'Ann Lee', personUrl: 'https://tsg.followupboss.com/2/people/view/77', type: 'Call', assignedUserId: 12, createdById: 3, created: '2026-09-20T10:00:00Z', updated: '2026-09-20T10:00:00Z', completed: false, agent: 'Jason' } },
+      { id: 402, title: 'Email Bob', owner: 'Jason', delegate: 'Jason', group: 'Jason', status: 'Not Started', priority: 'Medium', taskType: 'Email', tags: ['FUB'], timelineEnd: '', dueTime: '', history: [], subitems: [],
+        fub: { taskId: 9002, personId: 78, personName: 'Bob', personUrl: 'https://tsg.followupboss.com/2/people/view/78', type: 'Email', assignedUserId: 12, createdById: 3, created: '', updated: '', completed: false, agent: 'Jason' } },
+      { id: 403, title: 'Durand own task', owner: 'Durand', status: 'In Progress', priority: 'High', history: [], subitems: [], tags: [] }
+    ] };
+  }
+  const fetched = [
+    { id: 9001, name: 'Call Ann Lee back', type: 'Call', personId: 77, personName: 'Ann Lee', assignedUserId: 12, createdById: 3, created: '2026-09-20T10:00:00Z', updated: '2026-09-23T15:00:00Z', dueDateTime: '2026-10-01T18:30:00Z', isCompleted: false },
+    { id: 9003, name: 'send CMA', type: 'Follow Up', personId: 79, personName: 'Cy Doe', assignedUserId: 12, dueDate: '2026-10-03', isCompleted: false },
+    { id: 9004, name: 'old completed', type: 'Call', personId: 80, assignedUserId: 12, isCompleted: true },
+    { id: 9005, name: 'someone else', type: 'Call', personId: 81, assignedUserId: 99, isCompleted: false }
+  ];
+  let plan = sandbox.tsgFubPlanForAgent_(fdoc(), 'Jason', fetched, 12, true, now, cfg);
+  const add = plan.ops.find(o => o.op === 'add_task');
+  const upd = plan.ops.find(o => o.op === 'update_task' && o.id === 401);
+  const cancel = plan.ops.find(o => o.op === 'update_task' && o.id === 402);
+  check('plan: a new open FUB task is added owned by the agent (owner = delegate = group = Jason, tag FUB, FUB fields, contact link, due locked)', !!add && add.task.owner === 'Jason' && add.task.delegate === 'Jason' && add.task.group === 'Jason' && add.task.tags.join() === 'FUB' && add.task.title === 'send CMA' && add.task.taskType === 'Hands-on' && add.task.timelineEnd === '2026-10-03' && add.task.dueOverride === true && add.task.fub.taskId === 9003 && add.task.fub.personUrl === 'https://tsg.followupboss.com/2/people/view/79' && add.task.docs[0].label === 'FUB: Cy Doe' && add.skipEnrich && add.skipDedup && add.fubImport);
+  check('plan: a linked task gets only the changed FUB fields (title, due, time) plus its fub block', !!upd && upd.fields.title === 'Call Ann Lee back' && upd.fields.timelineEnd === '2026-10-01' && upd.fields.dueTime === '14:30' && upd.fields.dueOverride === true && upd.fields.fub.updated === '2026-09-23T15:00:00Z' && upd.fields.owner === undefined && upd.fields.status === undefined);
+  check('plan: a completed task never linked is skipped; another user\'s task is skipped', !plan.ops.some(o => o.task && (o.task.fub.taskId === 9004 || o.task.fub.taskId === 9005)) && plan.stats.skipped === 2);
+  check('plan: a linked open task FUB no longer returns (deleted or reassigned) is cancelled when the listing is complete', !!cancel && cancel.fields.status === 'Cancelled' && cancel.fields.fub.missingAt === now && plan.stats.cancelled === 1);
+  plan = sandbox.tsgFubPlanForAgent_(fdoc(), 'Jason', fetched, 12, false, now, cfg);
+  check('plan: a truncated listing cancels nothing', !plan.ops.some(o => o.fields && o.fields.status === 'Cancelled'));
+  const doneFetch = [Object.assign({}, fetched[0], { isCompleted: true, name: 'Call Ann Lee' , dueDateTime: null, dueDate: '2026-09-30', updated: '2026-09-20T10:00:00Z' })];
+  plan = sandbox.tsgFubPlanForAgent_(fdoc(), 'Jason', doneFetch, 12, false, now, cfg);
+  check('plan: completing in FUB marks the tracker copy Done (no pending gate: it is the agent\'s own work)', plan.ops.length === 1 && plan.ops[0].fields.status === 'Done' && plan.ops[0].fields.progress === 100);
+  const same = [{ id: 9001, name: 'Call Ann Lee', type: 'Call', personId: 77, personName: 'Ann Lee', assignedUserId: 12, createdById: 3, created: '2026-09-20T10:00:00Z', updated: '2026-09-20T10:00:00Z', dueDate: '2026-09-30', isCompleted: false },
+                { id: 9002, name: 'Email Bob', type: 'Email', personId: 78, personName: 'Bob', assignedUserId: 12, createdById: 3, created: '', updated: '', isCompleted: false }];
+  const plan2 = sandbox.tsgFubPlanForAgent_(fdoc(), 'Jason', same, 12, true, now, cfg);
+  check('plan: nothing changed in FUB means no ops at all (no one-off writes)', plan2.ops.length === 0);
+  // applying the plan: adds are not held, not enriched, titles kept verbatim, approval/aging untouched
+  driveFilesFixture = []; calendarEventsFixture = []; gmailThreadsFixture = [];
+  let claudeCalls = 0;
+  claudeResponder = () => { claudeCalls++; return { rationale: 'x' }; };
+  let d = fdoc();
+  sandbox.applyDataPatch_(d, { op: 'bulk', ops: sandbox.tsgFubPlanForAgent_(fdoc(), 'Jason', fetched, 12, true, now, cfg).ops, source: 'FUB', ts: now });
+  const added = d.tasks.find(t => t.fub && t.fub.taskId === 9003);
+  sandbox.tsgAutoScheduleDoc_(d);
+  check('apply: the new FUB task lands with its FUB title verbatim, no Triage, no enrichment call, no approval flag', !!added && added.title === 'send CMA' && !added.tags.includes('Triage') && claudeCalls === 0 && !(d.meta.judgments || []).length && added.needsApproval !== true);
+  check('apply: the linked task took the FUB changes and the missing one is Cancelled', d.tasks.find(t => t.id === 401).title === 'Call Ann Lee back' && d.tasks.find(t => t.id === 401).dueTime === '14:30' && d.tasks.find(t => t.id === 402).status === 'Cancelled');
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: JSON.parse(JSON.stringify(Object.assign({}, added, { id: undefined }))), source: 'FUB', skipEnrich: true, skipDedup: true, fubImport: true });
+  check('apply: a second import of the same FUB task (two runs racing) is dropped as a duplicate', d.tasks.filter(t => t.fub && t.fub.taskId === 9003).length === 1 && d.meta.addResults.slice(-1)[0].verdict === 'duplicate-fub');
+  // locks
+  let err = null;
+  try { sandbox.applyDataPatch_(d, { op: 'update_task', id: 401, fields: { notes: 'mine' }, source: 'Durand' }); } catch (e) { err = e.message; }
+  check('lock: an edit to a FUB task from the dashboard owner is refused by name', /read-only while the FUB sync is in its read-only pilot/.test(err || '') && !d.tasks.find(t => t.id === 401).notes);
+  ['update_subitem', 'add_subitem', 'delete_task', 'log_time', 'request_tidy'].forEach(op => {
+    let e2 = null; try { sandbox.applyDataPatch_(d, { op, id: 401, index: 0, subitem: { title: 's' }, minutes: 5, kind: 'manual', fields: {}, source: 'Claude session (x)' }); } catch (e) { e2 = e.message; }
+    check('lock: ' + op + ' on a FUB task from a session is refused', /read-only/.test(e2 || ''));
+  });
+  let e3 = null; try { sandbox.applyDataPatch_(d, { op: 'update_task', id: 401, fields: { notes: 'from Jason' }, source: 'Jason' }); } catch (e) { e3 = e.message; }
+  check('lock: the agent cannot edit it either (read-only pilot)', /read-only/.test(e3 || ''));
+  sandbox.applyDataPatch_(d, { op: 'update_task', id: 403, fields: { fub: { taskId: 1 } }, source: 'Claude session (x)' });
+  sandbox.applyDataPatch_(d, { op: 'add_task', task: { title: 'Forged FUB link', owner: 'Durand', priority: 'Low', group: 'Ops', notes: '', fub: { taskId: 2 } }, source: 'Claude', skipEnrich: true, skipDedup: true });
+  check('lock: only the sync can link a task to FUB (a forged fub block on update_task or add_task is dropped)', !d.tasks.find(t => t.id === 403).fub && !d.tasks.find(t => t.title === 'Forged FUB Link' || t.title === 'Forged FUB link').fub);
+  const v = d.meta.docVersion;
+  const client = JSON.parse(JSON.stringify(d));
+  client.tasks.find(t => t.id === 401).title = 'Edited on the dashboard';
+  client.tasks = client.tasks.filter(t => t.id !== 402);
+  client.tasks.find(t => t.id === 403).title = 'Durand edits his own task';
+  sandbox.applyDataPatch_(d, { op: 'replace_all', baseVersion: v, doc: client, ts: now });
+  check('lock: a dashboard save cannot edit or delete a FUB task (server copy restored) but still saves the rest', d.tasks.find(t => t.id === 401).title === 'Call Ann Lee back' && !!d.tasks.find(t => t.id === 402) && d.tasks.find(t => t.id === 403).title === 'Durand edits his own task');
+  // person slice
+  const rows = sandbox.tsgPersonSlice_(d, 'Jason');
+  const fr = rows.find(r => r.id === 401);
+  check('person slice: a FUB task is on the agent\'s page with no editable fields and its FUB info', !!fr && fr.editable.length === 0 && fr.fub && fr.fub.personName === 'Ann Lee' && fr.fub.readOnly === true && fr.fub.fields.indexOf('title') !== -1);
+  // set_meta config
+  d.meta.teamRoster = roster;
+  sandbox.applyDataPatch_(d, { op: 'set_meta', fields: { fubSync: { agents: ['Jason', 'Durand', 'Nobody', 'Jason'], cadenceMin: 5, appBase: 'https://evil.example.com', readOnly: false } }, source: 'Durand' });
+  check('set_meta fubSync is sanitised (roster agents only, never the owner, known cadence, FUB address only, read-only forced) and mirrored to the script property', d.meta.fubSync.agents.join() === 'Jason' && d.meta.fubSync.cadenceMin === 60 && d.meta.fubSync.appBase === '' && d.meta.fubSync.readOnly === true && JSON.parse(scriptProps.TSG_FUB_SYNC_CONFIG).agents.join() === 'Jason');
+  // the run: one bulk file, per-agent key, /me mapping, state
+  const origFetch = sandbox.UrlFetchApp.fetch, origGetFileById = sandbox.DriveApp.getFileById, origGetFolderById = sandbox.DriveApp.getFolderById, origLock = sandbox.LockService.getScriptLock;
+  const FILE_IDS6 = vm.runInContext('FILE_IDS', sandbox);
+  let disk = JSON.stringify(Object.assign(fdoc(), {}));
+  let queued = [], created = [];
+  sandbox.DriveApp.getFileById = (id) => ({ getBlob: () => ({ getDataAsString: () => (id === FILE_IDS6.data ? disk : '{}') }), setContent: (c) => { if (id === FILE_IDS6.data) disk = c; } });
+  sandbox.DriveApp.getFolderById = () => ({
+    createFile: (name, content) => { queued.push({ name, content }); created.push({ name, content }); },
+    getFiles: () => { const items = queued.splice(0).map(q => ({ isTrashed: () => false, getName: () => q.name, setName: () => {}, setTrashed: () => {}, getDateCreated: () => new Date(), getBlob: () => ({ getDataAsString: () => q.content }) })); let i = 0; return { hasNext: () => i < items.length, next: () => items[i++] }; },
+    getFilesByName: () => ({ hasNext: () => false })
+  });
+  sandbox.LockService.getScriptLock = () => ({ tryLock: () => true, waitLock: () => {}, releaseLock: () => {} });
+  const fubCalls = [];
+  let fubTasks = fetched.slice(0, 2);
+  sandbox.UrlFetchApp.fetch = (url, opts) => {
+    if (!/followupboss/.test(url)) return origFetch(url, opts);
+    fubCalls.push({ url, auth: opts.headers.Authorization });
+    const body = /\/me$/.test(url) ? { id: 12, name: 'Jason Agent', email: 'jason@tsg.homes' } : { tasks: fubTasks, _metadata: { total: fubTasks.length } };
+    return { getResponseCode: () => 200, getContentText: () => JSON.stringify(body) };
+  };
+  delete scriptProps.TSG_FUB_STATE; delete scriptProps.FUB_KEY_JASON;
+  let r = sandbox.tsgFubRunSync_({ reason: 'test' });
+  check('run: no key in Script Properties means no FUB call and a clear per-agent error', fubCalls.length === 0 && r.agents.Jason.ok === false && /No FUB_KEY_JASON in Script Properties/.test(r.agents.Jason.error) && !r.wrote);
+  scriptProps.FUB_KEY_JASON = 'jason-secret-key';
+  r = sandbox.tsgFubRunSync_({ reason: 'test' });
+  const files = created.filter(f => /^person-/.test(f.name));
+  const bulk = JSON.parse(files[files.length - 1].content);
+  check('run: the agent\'s own key is used for /me and the task list (Basic auth), filtered to his FUB user id', fubCalls.length === 2 && fubCalls.every(c => c.auth === 'Basic ' + Buffer.from('jason-secret-key:').toString('base64')) && /\/tasks\?limit=100&offset=0&assignedUserId=12/.test(fubCalls[1].url));
+  check('run: every change goes out as ONE bulk patch (source FUB), applied to the data file', files.length === 1 && bulk.op === 'bulk' && bulk.source === 'FUB' && bulk.ops.length === 3 && JSON.parse(disk).tasks.some(t => t.fub && t.fub.taskId === 9003));
+  const st = JSON.parse(scriptProps.TSG_FUB_SYNC_STATE);
+  check('run: state records the run per agent (ok, FUB user, counts) outside the data file', st.agents.Jason.ok === true && st.agents.Jason.meId === 12 && st.agents.Jason.meName === 'Jason Agent' && st.agents.Jason.added === 1 && !!st.lastRunAt);
+  check('run: the key never reaches the data file, the state or the patch', !/jason-secret-key/.test(disk) && !/jason-secret-key/.test(scriptProps.TSG_FUB_SYNC_STATE) && !/jason-secret-key/.test(files[0].content));
+  const before = created.length;
+  r = sandbox.tsgFubRunSync_({ reason: 'test' });
+  check('run: a second run with nothing new in FUB writes nothing', created.length === before && r.wrote === false);
+  // FUB-side change after the first import counts as the agent's activity
+  fubTasks = [Object.assign({}, fetched[0], { name: 'Call Ann Lee, new time', updated: '2026-09-24T09:00:00Z' }), fetched[1]];
+  r = sandbox.tsgFubRunSync_({ reason: 'test' });
+  const acts = JSON.parse(disk).meta.delegateActivity || [];
+  check('run: after the first import a change made in FUB is logged as the agent\'s activity', r.wrote && acts.some(a => a.person === 'Jason (in FUB)' && a.field === 'title' && a.to === 'Call Ann Lee, new time'));
+  // tick cadence
+  scriptProps.TSG_FUB_SYNC_CONFIG = JSON.stringify({ agents: ['Jason'], cadenceMin: 60 });
+  fubCalls.length = 0;
+  check('tick: not due within the cadence (no FUB call)', sandbox.tsgFubSyncTickIfDue_() === false && fubCalls.length === 0);
+  const st2 = JSON.parse(scriptProps.TSG_FUB_SYNC_STATE); st2.lastRunAt = new Date(Date.now() - 61 * 60000).toISOString(); scriptProps.TSG_FUB_SYNC_STATE = JSON.stringify(st2);
+  check('tick: due after the cadence, runs', sandbox.tsgFubSyncTickIfDue_() === true && fubCalls.length === 2);
+  scriptProps.TSG_FUB_SYNC_CONFIG = JSON.stringify({ agents: [] });
+  check('tick: no enabled agents means nothing runs', sandbox.tsgFubSyncTickIfDue_() === false);
+  // status and probe
+  const status = sandbox.tsgFubStatus_();
+  check('status: per agent key presence by property name, never the key', status.ok && status.readOnly === true && status.pushBuilt === false && status.agents.find(a => a.name === 'Jason').keyPresent === true && status.agents.find(a => a.name === 'Jason').keyProperty === 'FUB_KEY_JASON' && !JSON.stringify(status).includes('jason-secret-key') && !status.agents.some(a => a.name === 'Durand'));
+  const probe = sandbox.tsgFubProbe_('Jason');
+  check('probe: reports who the key is, counts and the field names FUB sends', probe.ok && probe.me.id === 12 && probe.fetched === 2 && probe.fieldNames.indexOf('dueDateTime') !== -1 && probe.types.Call === 1);
+  sandbox.UrlFetchApp.fetch = (url, opts) => ({ getResponseCode: () => 401, getContentText: () => 'Unauthorized' });
+  const bad = sandbox.tsgFubProbe_('Jason');
+  check('probe: a rejected key is reported as such', bad.ok === false && /401 \(key rejected/.test(bad.error));
+  sandbox.UrlFetchApp.fetch = (url, opts) => {
+    if (!/followupboss/.test(url)) return origFetch(url, opts);
+    return { getResponseCode: () => 200, getContentText: () => JSON.stringify(/\/me$/.test(url) ? { id: 12, name: 'Jason' } : { tasks: fubTasks, _metadata: { total: 2 } }) };
+  };
+  // person page: load flag and Sync now with cooldown
+  let dd = JSON.parse(disk); dd.meta.fubSync = { agents: ['Jason'], cadenceMin: 60, appBase: '', readOnly: true }; dd.meta.teamRoster = roster; disk = JSON.stringify(dd);
+  const origSession = sandbox.Session;
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'jason@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  cacheStore = {};
+  let pr = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
+  check('person load: Jason sees the Sync now switch on (enabled + key present)', pr.ok && pr.fubSync.enabled === true && pr.fubSync.readOnly === true);
+  pr = JSON.parse(sandbox.tsgPersonRpc('fubSync', '{}'));
+  const pr2 = JSON.parse(sandbox.tsgPersonRpc('fubSync', '{}'));
+  check('person Sync now: runs his own sync once, then the 2-minute cooldown refuses', pr.ok === true && pr.result && pr.result.ok === true && pr2.ok === false && /last 2 minutes/.test(pr2.error));
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'marj@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  pr = JSON.parse(sandbox.tsgPersonRpc('fubSync', '{}'));
+  const pl = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
+  check('person Sync now: an agent not in the pilot is refused and sees no button', pr.ok === false && /not set up for Marj/.test(pr.error) && pl.fubSync.enabled === false);
+  sandbox.Session = origSession;
+  sandbox.UrlFetchApp.fetch = origFetch; sandbox.DriveApp.getFileById = origGetFileById; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.LockService.getScriptLock = origLock;
+  delete scriptProps.FUB_KEY_JASON; delete scriptProps.TSG_FUB_SYNC_STATE; delete scriptProps.TSG_FUB_SYNC_CONFIG;
+  sandbox.PropertiesService.getScriptProperties = fubOrigProps;
+  claudeResponder = () => { throw new Error('claudeResponder not set for this test'); };
+}
+
 console.log('\nDone.' + (FAILS ? ' ' + FAILS + ' FAILED' : ''));
 if (FAILS) process.exitCode = 1;

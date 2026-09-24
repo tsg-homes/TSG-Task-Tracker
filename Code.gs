@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-23.3';
+const TSG_CODE_VERSION = '2026-09-24.1';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -873,6 +873,7 @@ function tsgIndexDoc_(doc) {
       progress: typeof t.progress === 'number' ? t.progress : 0, estHours: typeof t.estHours === 'number' ? t.estHours : null,
       taskType: t.taskType || '', tags: (t.tags || []).slice(), pinned: !!t.pinned, needsApproval: !!t.needsApproval,
       delegateVisible: t.delegateVisible === true, feedbackFor: t.feedbackFor || '',
+      fub: tsgIsFubTask_(t) ? { taskId: t.fub.taskId, type: t.fub.type || '', personName: t.fub.personName || '', agent: t.fub.agent || '', readOnly: true } : undefined,
       docs: (t.docs || []).length,
       steps: (t.subitems || []).map(function(s, i) {
         var row = { i: i, title: (s && s.title) || '', status: s && (s.done ? 'Done' : (s.status || '')), delegate: (s && s.delegate) || '', due: (s && s.timelineEnd) || '', estHours: (s && typeof s.estHours === 'number') ? s.estHours : null };
@@ -1143,6 +1144,11 @@ function applyDataPatch_(doc, patch) {
   // An envelope with `ops` but no `op` can only mean a bulk (2026-09-18); accepting it costs
   // nothing and one less way for a routine-written file to be filed FAILED-.
   if (!patch.op && Array.isArray(patch.ops)) patch.op = 'bulk';
+  // FUB pilot (2026-09-24): a FUB-linked task is read-only; only the sync itself ('FUB') writes it.
+  if (patch.op !== 'bulk' && patch.source !== 'FUB' && TSG_FUB_LOCKED_OPS.indexOf(patch.op) !== -1 && patch.id != null && tsgFubReadOnly_(doc)) {
+    var fubLocked = (doc.tasks || []).filter(function(x) { return x && x.id === patch.id; })[0];
+    if (tsgIsFubTask_(fubLocked)) throw new Error(patch.op + ': #' + patch.id + ' is a Follow Up Boss task and read-only while the FUB sync is in its read-only pilot; change it in FUB');
+  }
   // Delegate visibility (2026-09-23): an automation write (not the owner, not a person on
   // their page) that changes the meaningful content of a visible task hides it again. Bulk
   // sub-ops are checked one by one through the recursive call; replace_all is the owner's.
@@ -1216,12 +1222,23 @@ function applyDataPatch_(doc, patch) {
     if (!Array.isArray(task.subitems)) task.subitems = [];
     if (!Array.isArray(task.tags)) task.tags = [];
     tsgStripVisibilityFromFields_(task, patch.source);   // only the owner turns a task on for its delegate
+    if (task.fub && patch.source !== 'FUB') delete task.fub;   // only the sync links a task to FUB
+    if (tsgIsFubTask_(task)) {
+      var fubDup = (doc.tasks || []).filter(function(x) { return tsgIsFubTask_(x) && String(x.fub.taskId) === String(task.fub.taskId); })[0];
+      if (fubDup) {   // two runs raced: the task is already on the board
+        doc.meta.addResults = doc.meta.addResults || [];
+        doc.meta.addResults.push({ ts: now, nonce: patch.nonce || null, verdict: 'duplicate-fub', taskId: fubDup.id, title: fubDup.title });
+        if (doc.meta.addResults.length > 30) doc.meta.addResults = doc.meta.addResults.slice(-30);
+        doc.meta.last_updated = now; doc.meta.docVersion = (doc.meta.docVersion || 0) + 1;
+        return;
+      }
+    }
     // 2026-09-09 per Durand: standardize title formatting on the way in, before dedup
     // matching even runs (tsgClassifyIncoming_ already normalizes case for matching, so
     // this doesn't change match behavior either way). originalTitleForCleanup is only
     // used below, if this turns out to be a genuinely new task, to log what changed.
     var originalTitleForCleanup = task.title;
-    if (task.title) task.title = tsgCleanTitle_(task.title);
+    if (task.title && !(patch.fubImport && patch.source === 'FUB')) task.title = tsgCleanTitle_(task.title);   // FUB's wording is kept verbatim, or every sync would see a change
     // Every new task is run past the same classifier tsgSweepDuplicates
     // already use (tsgClassifyIncoming_), before it's allowed onto the board — added
     // 2026-08-26 so a duplicate is caught at the door instead of needing a sweep to
@@ -1486,13 +1503,16 @@ function applyDataPatch_(doc, patch) {
       // ownerCreated: the dashboard's own add (owner-only RPC); a delegate chosen there is
       // deliberate, so no hold. personCreated: the person's own page. Everything else
       // pointing at a person is automation and waits for review.
-      if (!patch.personCreated && !patch.ownerCreated && tsgTaskNeedsDelegateReview_(task)) {
+      if (!patch.personCreated && !patch.ownerCreated && !(patch.fubImport && tsgIsFubTask_(task)) && tsgTaskNeedsDelegateReview_(task)) {
         tsgHoldForReview_(task, task.history, now, 'Held off the delegate views until Durand clears the Triage tag');
       }
       doc.tasks.push(task);
       addResult = { verdict: 'added', taskId: task.id, title: task.title };
       if (patch.personCreated && tsgIsDelegateSource_(patch.source)) {
         tsgRecordDelegateActivity_(doc, { ts: now, person: patch.source, taskId: task.id, subIdx: null, title: task.title || '', kind: 'add', field: null, from: null, to: null });
+      }
+      if (patch.source === 'FUB' && patch.fubActor) {
+        tsgRecordDelegateActivity_(doc, { ts: now, person: patch.fubActor, taskId: task.id, subIdx: null, title: task.title || '', kind: 'add', field: 'in FUB', from: null, to: null });
       }
     }
     // Audit trail a caller can read back by nonce (see doPost's target=data handler) to
@@ -1518,6 +1538,7 @@ function applyDataPatch_(doc, patch) {
       : [];
     if (patch.fields) { ['id', 'history'].forEach(function(k) { delete patch.fields[k]; }); }  // server-owned
     tsgStripVisibilityFromFields_(patch.fields, patch.source);
+    if (patch.fields && patch.source !== 'FUB') delete patch.fields.fub;   // only the sync links a task to FUB
     if (patch.fields && Object.prototype.hasOwnProperty.call(patch.fields, 'assignee')) {   // legacy name for delegate
       if (!Object.prototype.hasOwnProperty.call(patch.fields, 'delegate')) patch.fields.delegate = patch.fields.assignee;
       delete patch.fields.assignee;
@@ -1529,6 +1550,7 @@ function applyDataPatch_(doc, patch) {
     t.history = t.history || [];
     tsgLogFieldChanges_(t.history, prevTaskSnapshot, t, TSG_TASK_DIFF_FIELDS, now, patch.source);
     if (tsgIsDelegateSource_(patch.source)) tsgLogDelegateFieldActivity_(doc, patch.source, t, null, t.title, prevTaskSnapshot, t, Object.keys(patch.fields || {}), now);
+    if (patch.source === 'FUB' && patch.fubActor) tsgLogDelegateFieldActivity_(doc, patch.fubActor + ' (in FUB)', t, null, t.title, prevTaskSnapshot, t, Object.keys(patch.fields || {}).filter(function(k) { return k !== 'fub' && k !== 'dueOverride' && k !== 'group' && k !== 'progress'; }), now);
     // Free-flow notes (2026-09-16): a notes change re-judges the whole task (title/notes
     // polish, fields left blank or set by automation, progress). Runs AFTER the field log so
     // the enrichment's own history lines carry their own source, not this patch's.
@@ -1673,6 +1695,11 @@ function applyDataPatch_(doc, patch) {
     if (Object.prototype.hasOwnProperty.call(metaFields, 'homeBase')) {
       try { PropertiesService.getScriptProperties().setProperty('TSG_HOME_BASE', String(metaFields.homeBase || '')); } catch (err) {}
     }
+    if (Object.prototype.hasOwnProperty.call(metaFields, 'fubSync')) {
+      // Sanitised, then mirrored to a script property so the minute tick reads it without Drive.
+      doc.meta.fubSync = tsgFubConfig_(doc.meta);
+      try { PropertiesService.getScriptProperties().setProperty(TSG_FUB_CONFIG_PROP, JSON.stringify(doc.meta.fubSync)); } catch (err) {}
+    }
   } else if (patch.op === 'judgment') {
     tsgApplyJudgmentOp_(doc, patch, now);
   } else if (patch.op === 'request_steps') {
@@ -1749,7 +1776,20 @@ function applyDataPatch_(doc, patch) {
       return; // no mutation, no version bump — this save did not happen
     }
     const incoming = patch.doc || {};
-    const nextTasks = incoming.tasks || doc.tasks;
+    let nextTasks = incoming.tasks || doc.tasks;
+    // FUB pilot (2026-09-24): a whole-document save can neither edit, delete nor forge a FUB task;
+    // the server copy stands (the dashboard also reverts locally before saving).
+    if (tsgFubReadOnly_(doc)) {
+      var fubPrev = {};
+      (doc.tasks || []).forEach(function(x) { if (tsgIsFubTask_(x)) fubPrev[x.id] = x; });
+      var fubKept = {};
+      nextTasks = (nextTasks || []).map(function(x) {
+        if (x && fubPrev[x.id]) { fubKept[x.id] = true; return JSON.parse(JSON.stringify(fubPrev[x.id])); }
+        if (x && x.fub) { var c = Object.assign({}, x); delete c.fub; return c; }
+        return x;
+      });
+      Object.keys(fubPrev).forEach(function(k) { if (!fubKept[k]) nextTasks.push(JSON.parse(JSON.stringify(fubPrev[k]))); });
+    }
     tsgCaptureExplicitEditsFromSave_(doc.tasks, nextTasks);
     tsgApplyProgressFromNotesOnSave_(doc.tasks, nextTasks, doc, now);
     tsgStampStatusChanges_(doc.tasks, nextTasks, now, 'Durand');
@@ -1944,6 +1984,8 @@ function tsgInboxTick() {
   // Reminders ride on this minute tick (2026-09-17): a script property holds the earliest
   // pending remindAt, so nothing is read from Drive until one is actually due.
   try { tsgReminderTick_(); } catch (remErr) { Logger.log('[reminders] tick failed: ' + remErr.message); }
+  // FUB task sync (2026-09-24): a property read each minute; a run only when the cadence is due.
+  try { tsgFubSyncTickIfDue_(); } catch (fubErr) { Logger.log('[fub] sync tick failed: ' + fubErr.message); }
   // processInbox_ sets a short-lived "inbox was empty" flag; while it holds, skip the Drive
   // listing entirely (the dashboard's own saves clear the flag and process immediately).
   if (tsgCacheGet_('inboxEmptyUntil')) return;
@@ -2240,12 +2282,13 @@ function tsgPersonSlice_(doc, name) {
       priority: t.priority || '',
       progress: context ? Math.round((mineDone / mineSubs.length) * 100) : tsgTaskProgress_(t),
       due: t.timelineEnd || '', notes: context ? '' : (t.notes || ''), group: t.group || '', owner: t.owner || '',
+      fub: tsgIsFubTask_(t) ? { type: t.fub.type || '', personName: t.fub.personName || '', personUrl: t.fub.personUrl || '', updated: t.fub.updated || '', readOnly: tsgFubReadOnly_(doc), fields: TSG_FUB_SOURCED_FIELDS.slice() } : null,
       pinned: !!t.pinned, feedbackFor: t.feedbackFor || '', docs: context ? [] : (t.docs || []).map(function(d) { return d ? { url: d.url || '', label: d.label || d.name || d.url || '', type: d.type || 'link' } : null; }).filter(Boolean),
       tags: context ? [] : (t.tags || []).slice(), taskType: context ? '' : (t.taskType || ''),
       estHours: (!context && typeof t.estHours === 'number') ? t.estHours : null,
       subTotal: context ? mineSubs.length : subs.length,
       subDone: context ? mineDone : subs.filter(function(s) { return s && s.done; }).length,
-      editable: isOwn ? TSG_PERSON_TASK_FIELDS_OWN.slice() : (isAssigned ? TSG_PERSON_TASK_FIELDS_DELEGATED.slice() : [])
+      editable: (tsgIsFubTask_(t) && tsgFubReadOnly_(doc)) ? [] : (isOwn ? TSG_PERSON_TASK_FIELDS_OWN.slice() : (isAssigned ? TSG_PERSON_TASK_FIELDS_DELEGATED.slice() : []))
     });
     mine.forEach(function(m) {
       var s = m.s;
@@ -2442,6 +2485,12 @@ function tsgPersonRpc(action, payloadJson) {
       priorities: (doc.meta && doc.meta.priority_values) || TSG_PRIORITY_VALUES,
       feedbackTaskId: (function() { var ft = tsgFeedbackTaskFor_(doc, name); return ft ? ft.id : null; })(),
       feedbackKinds: TSG_FEEDBACK_KINDS.slice(),
+      fubSync: (function() {
+        var cfg = tsgFubConfig_(doc.meta || {});
+        if (cfg.agents.indexOf(name) === -1 || !tsgFubKeyFor_(name)) return { enabled: false };
+        var st = (tsgFubState_().agents || {})[name] || {};
+        return { enabled: true, readOnly: tsgFubReadOnly_(doc), lastRunAt: st.lastRunAt || '', ok: st.ok !== false, error: st.ok === false ? String(st.error || '').slice(0, 160) : '', cadenceMin: cfg.cadenceMin };
+      })(),
       rows: tsgPersonSlice_(doc, name)
     });
   }
@@ -2517,6 +2566,16 @@ function tsgPersonRpc(action, payloadJson) {
     // would make it vanish from their page. personCreated: the notes set the bar and the
     // estimate is split across the minted steps so they schedule.
     return JSON.stringify(tsgQueueDataPatch_({ op: 'add_task', task: task, source: actor, skipDedup: true, personCreated: true }));
+  }
+  if (action === 'fubSync') {
+    // The agent's own "Sync now" (2026-09-24): their FUB tasks only, one run every 2 minutes.
+    var fcfg = tsgFubConfig_(doc.meta || {});
+    if (fcfg.agents.indexOf(name) === -1 || !tsgFubKeyFor_(name)) return JSON.stringify({ ok: false, error: 'FUB sync is not set up for ' + name });
+    var coolKey = 'fubSyncCool:' + name;
+    if (tsgCacheGet_(coolKey)) return JSON.stringify({ ok: false, error: 'synced in the last 2 minutes; try again shortly' });
+    tsgCachePut_(coolKey, '1', TSG_FUB_SYNC_NOW_COOLDOWN_SEC);
+    var run = tsgFubRunSync_({ agents: [name], reason: 'sync-now:' + actor });
+    return JSON.stringify({ ok: true, result: run.agents[name] || null, wrote: run.wrote, busy: !!run.busy });
   }
   return JSON.stringify({ ok: false, error: 'unknown action' });
 }
@@ -2614,6 +2673,16 @@ function doGet(e) {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
     return ContentService.createTextOutput(JSON.stringify(tsgLabelForUrl_(e.parameter.url)))
       .setMimeType(ContentService.MimeType.JSON);
+  }
+  if (e.parameter.api === 'fubStatus') {
+    if (!tsgCheckToken_(e)) return tsgUnauthorized_();
+    var fubStatus;
+    try { fubStatus = tsgFubStatus_(); } catch (fsErr) { fubStatus = { ok: false, error: String(fsErr.message || fsErr) }; }
+    return ContentService.createTextOutput(JSON.stringify(fubStatus)).setMimeType(ContentService.MimeType.JSON);
+  }
+  if (e.parameter.api === 'fubProbe') {
+    if (!tsgCheckToken_(e)) return tsgUnauthorized_();
+    return ContentService.createTextOutput(JSON.stringify(tsgFubProbe_(String(e.parameter.agent || '')))).setMimeType(ContentService.MimeType.JSON);
   }
   if (e.parameter.api === 'fubUsers') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
@@ -3268,6 +3337,7 @@ function tsgEnrichTask_(doc, task, now, source, opts) {
  */
 function tsgEnrichItem_(doc, parent, item, subIdx, now, source, opts) {
   opts = opts || {};
+  if (tsgIsFubTask_(parent)) return;   // FUB tasks are never enriched (2026-09-24)
   var sub = subIdx != null;
   // A step's title alone is enough to estimate it (2026-09-17); a task still needs notes or a
   // forced run, since add_task already judged its blanks from the title.
@@ -3717,7 +3787,7 @@ function tsgIsDelegatedAway_(name) {
 function tsgApplyDelegateApproval_(doc) {
   var now = new Date().toISOString(), changed = 0;
   (doc && doc.tasks || []).forEach(function(t) {
-    if (!t || t.status === 'Done' || t.status === 'Cancelled') return;
+    if (!t || t.status === 'Done' || t.status === 'Cancelled' || tsgIsFubTask_(t)) return;   // FUB tasks: the agent's own work
     if (tsgIsDelegatedAway_(tsgTaskDelegate_(t)) && t.needsApproval !== true) {
       var was = String(!!t.needsApproval);
       t.needsApproval = true; changed++;
@@ -3782,6 +3852,295 @@ function tsgSendDirections_(fields) {
 // name/email because the dashboard uses it as the stable key for detecting someone REMOVED
 // from FUB (a termination signal) — matching on id survives a name or email change, which
 // matching on name/email alone would not.
+/**
+ * ============================================================================
+ * FUB TASK SYNC — per-agent keys, READ-ONLY PILOT (2026-09-24, per Durand: "i want per agent,
+ * and lets start with just jason as a pilot"; "reduce the sync cadence, agent can use sync now
+ * if necessary, implement batch updates, not one offs, while read only all tracker fields are
+ * locked, for now put a red border on fub fields (also locked)").
+ *
+ * - One Follow Up Boss API key PER AGENT, stored by Durand in Script Properties as
+ *   FUB_KEY_<NAME> (tsgFubKeyProp_). Never in the tracker, a Doc, chat or the repo. The key's
+ *   own /v1/me call says which FUB user it is, so no manual id mapping.
+ * - Direction: FUB -> tracker only. TSG_FUB_PUSH_BUILT is false, so every FUB-linked task is
+ *   read-only everywhere: patches from any source but 'FUB' are refused by name, a dashboard
+ *   save that touched one is reverted to the server copy, the person page gets no controls.
+ * - Ownership: the assigned agent owns the tracker copy (owner = delegate = group = agent,
+ *   tag FUB). Never held for Triage, never enriched, never flagged for approval or aging.
+ * - Cadence: meta.fubSync.cadenceMin (60 / 120 / 240, default 60), checked on the existing
+ *   1-minute inbox tick against a script property (no Drive read until due, no new trigger).
+ *   "Sync now" on the dashboard (all enabled agents) and on the agent's page (self, 2-minute
+ *   cooldown).
+ * - Batching: one run = ONE bulk inbox patch holding every add / update / cancel for every
+ *   agent in the run (source 'FUB'); nothing is written when nothing changed.
+ * - Link key: task.fub.taskId. FUB-side fields live in task.fub (personId, personName,
+ *   personUrl, type, assignedUserId, createdById, created, updated, completed, agent).
+ * ---------------------------------------------------------------------------
+ */
+var TSG_FUB_API = 'https://api.followupboss.com/v1';
+var TSG_FUB_CONFIG_PROP = 'TSG_FUB_SYNC_CONFIG';
+var TSG_FUB_STATE_PROP = 'TSG_FUB_SYNC_STATE';
+var TSG_FUB_CADENCES = [60, 120, 240];
+var TSG_FUB_PAGE = 100;
+var TSG_FUB_MAX_PAGES = 10;
+var TSG_FUB_SYNC_NOW_COOLDOWN_SEC = 120;
+var TSG_FUB_PUSH_BUILT = false;   // tracker -> FUB is not built: the pilot is read-only
+// Tracker fields whose value comes from FUB (the dashboard and the person page outline them in red).
+var TSG_FUB_SOURCED_FIELDS = ['title', 'taskType', 'timelineEnd', 'dueTime', 'status', 'owner', 'delegate'];
+// Ops that change a task; refused on a FUB task from any source but 'FUB' while read-only.
+var TSG_FUB_LOCKED_OPS = ['update_task', 'update_subitem', 'add_subitem', 'delete_task', 'reorder_subitems', 'log_time', 'request_tidy', 'request_steps'];
+
+function tsgIsFubTask_(t) { return !!(t && t.fub && typeof t.fub === 'object' && t.fub.taskId != null && t.fub.taskId !== ''); }
+function tsgFubReadOnly_(doc) {
+  if (!TSG_FUB_PUSH_BUILT) return true;
+  var cfg = (doc && doc.meta && doc.meta.fubSync) || {};
+  return cfg.readOnly !== false;
+}
+function tsgFubKeyProp_(name) { return 'FUB_KEY_' + String(name || '').toUpperCase().replace(/[^A-Z0-9]/g, '_'); }
+function tsgFubKeyFor_(name) {
+  try { return PropertiesService.getScriptProperties().getProperty(tsgFubKeyProp_(name)) || ''; } catch (e) { return ''; }
+}
+function tsgRosterNames_(meta) {
+  return ((meta && meta.teamRoster) || []).map(function(p) { return typeof p === 'string' ? p : (p && p.name); }).filter(Boolean);
+}
+/** Sanitised sync settings: agents on the roster (never the owner), a known cadence, an https FUB address. */
+function tsgFubConfig_(meta) {
+  var raw = (meta && meta.fubSync) || {};
+  var roster = tsgRosterNames_(meta);
+  var agents = (Array.isArray(raw.agents) ? raw.agents : []).filter(function(n, i, a) {
+    return n && a.indexOf(n) === i && String(n).toLowerCase() !== TSG_OWNER_NAME.toLowerCase() && (!roster.length || roster.indexOf(n) !== -1);
+  });
+  var cadence = TSG_FUB_CADENCES.indexOf(Number(raw.cadenceMin)) !== -1 ? Number(raw.cadenceMin) : TSG_FUB_CADENCES[0];
+  var appBase = /^https:\/\/[a-z0-9-]+\.followupboss\.com$/i.test(String(raw.appBase || '').replace(/\/+$/, '')) ? String(raw.appBase).replace(/\/+$/, '') : '';
+  return { agents: agents, cadenceMin: cadence, appBase: appBase, readOnly: TSG_FUB_PUSH_BUILT ? raw.readOnly !== false : true };
+}
+function tsgFubConfigFromProp_() {
+  try { var raw = PropertiesService.getScriptProperties().getProperty(TSG_FUB_CONFIG_PROP); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function tsgFubState_() {
+  try { var raw = PropertiesService.getScriptProperties().getProperty(TSG_FUB_STATE_PROP); return raw ? JSON.parse(raw) : { agents: {} }; } catch (e) { return { agents: {} }; }
+}
+function tsgFubSaveState_(state) {
+  try { PropertiesService.getScriptProperties().setProperty(TSG_FUB_STATE_PROP, JSON.stringify(state)); } catch (e) { Logger.log('[fub] state not saved: ' + e); }
+}
+/** GET one FUB endpoint with an agent's key. One retry on 429. Throws with the status on failure. */
+function tsgFubGet_(key, path) {
+  var opts = { method: 'get', muteHttpExceptions: true, headers: { 'Authorization': 'Basic ' + Utilities.base64Encode(key + ':'), 'Accept': 'application/json' } };
+  var resp = UrlFetchApp.fetch(TSG_FUB_API + path, opts);
+  if (resp.getResponseCode() === 429) { Utilities.sleep(2000); resp = UrlFetchApp.fetch(TSG_FUB_API + path, opts); }
+  var code = resp.getResponseCode();
+  if (code !== 200) {
+    var err = new Error('FUB ' + path.split('?')[0] + ' returned ' + code + (code === 401 ? ' (key rejected: revoked, regenerated or mistyped)' : '') + ': ' + String(resp.getContentText() || '').slice(0, 200));
+    err.code = code;
+    throw err;
+  }
+  return JSON.parse(resp.getContentText() || '{}');
+}
+/** FUB task type -> tracker taskType. The raw FUB value is kept in task.fub.type. */
+function tsgFubMapType_(type) {
+  var t = String(type || '').toLowerCase();
+  if (t === 'call' || t === 'phone call') return 'Call';
+  if (t === 'email') return 'Email';
+  if (t === 'text' || t === 'text message' || t === 'sms') return 'Text/Chat';
+  if (t === 'appointment' || t === 'showing' || t === 'open house' || t === 'closing' || t === 'meeting') return 'Meeting';
+  return 'Hands-on';
+}
+/** Due date and time in the script's time zone. dueDateTime wins; a bare dueDate has no time. */
+function tsgFubDue_(ft) {
+  var tz = Session.getScriptTimeZone();
+  var dt = ft && (ft.dueDateTime || ft.dueDatetime);
+  if (dt && /T\d{2}:\d{2}/.test(String(dt))) {
+    var d = new Date(dt);
+    if (!isNaN(d.getTime())) return { date: Utilities.formatDate(d, tz, 'yyyy-MM-dd'), time: Utilities.formatDate(d, tz, 'HH:mm') };
+  }
+  var dd = ft && (ft.dueDate || dt);
+  if (dd && /^\d{4}-\d{2}-\d{2}/.test(String(dd))) return { date: String(dd).slice(0, 10), time: '' };
+  return { date: '', time: '' };
+}
+function tsgFubCompleted_(ft) { return !!(ft && (ft.isCompleted === true || ft.isCompleted === 1 || ft.completed === true || String(ft.status || '').toLowerCase() === 'completed')); }
+function tsgFubPersonName_(ft) {
+  if (!ft) return '';
+  if (ft.personName) return String(ft.personName);
+  if (ft.person && typeof ft.person === 'object') return String(ft.person.name || ((ft.person.firstName || '') + ' ' + (ft.person.lastName || '')).trim());
+  return '';
+}
+/** The task.fub block for a FUB task as synced for `agent`. */
+function tsgFubBlock_(ft, agent, cfg) {
+  var personId = ft.personId != null ? ft.personId : (ft.person && ft.person.id != null ? ft.person.id : null);
+  return {
+    taskId: ft.id, personId: personId, personName: tsgFubPersonName_(ft),
+    personUrl: (cfg.appBase && personId != null) ? cfg.appBase + '/2/people/view/' + personId : '',
+    type: ft.type || '', assignedUserId: ft.assignedUserId != null ? ft.assignedUserId : null,
+    createdById: ft.createdById != null ? ft.createdById : null, created: ft.created || '', updated: ft.updated || '',
+    completed: tsgFubCompleted_(ft), agent: agent
+  };
+}
+/** The FUB-sourced tracker fields for a FUB task. */
+function tsgFubTrackerFields_(ft, agent, cfg) {
+  var due = tsgFubDue_(ft), fub = tsgFubBlock_(ft, agent, cfg);
+  var title = String(ft.name || '').trim() || ((ft.type || 'Task') + (fub.personName ? ' — ' + fub.personName : ''));
+  return { title: title, taskType: tsgFubMapType_(ft.type), timelineEnd: due.date, dueTime: due.time, owner: agent, delegate: agent, fub: fub };
+}
+function tsgFubSameBlock_(a, b) {
+  var strip = function(x) { var c = Object.assign({}, x || {}); delete c.syncedAt; delete c.missingAt; return JSON.stringify(c); };
+  return strip(a) === strip(b);
+}
+/**
+ * The ops one agent's fetch implies, against the current document. Pure (no I/O) so it is
+ * tested directly. `complete` = the listing was not truncated; only then is a linked open task
+ * that FUB no longer returns (deleted, or reassigned to someone else) cancelled.
+ */
+function tsgFubPlanForAgent_(doc, agent, fubTasks, meId, complete, now, cfg, opts) {
+  opts = opts || {};
+  var ops = [], stats = { fetched: (fubTasks || []).length, added: 0, updated: 0, completed: 0, cancelled: 0, skipped: 0 };
+  var linked = {};
+  (doc.tasks || []).forEach(function(t) { if (tsgIsFubTask_(t)) linked[String(t.fub.taskId)] = t; });
+  var seen = {};
+  (fubTasks || []).forEach(function(ft) {
+    if (!ft || ft.id == null) return;
+    if (meId != null && ft.assignedUserId != null && String(ft.assignedUserId) !== String(meId)) { stats.skipped++; return; }
+    seen[String(ft.id)] = true;
+    var want = tsgFubTrackerFields_(ft, agent, cfg);
+    var done = want.fub.completed;
+    var t = linked[String(ft.id)];
+    if (!t) {
+      if (done) { stats.skipped++; return; }   // only open tasks are imported; completion closes linked ones
+      want.fub.syncedAt = now;
+      var task = {
+        title: want.title, owner: agent, delegate: agent, group: agent, status: 'Not Started', priority: 'Medium',
+        taskType: want.taskType, tags: ['FUB'], timelineStart: '', timelineEnd: want.timelineEnd, dueTime: want.dueTime,
+        dueOverride: !!want.timelineEnd, progress: 0, depends: '', dependsNone: true,
+        docs: want.fub.personUrl ? [{ url: want.fub.personUrl, label: 'FUB: ' + (want.fub.personName || 'contact'), type: 'link' }] : [],
+        notes: '', subitems: [], estHours: null, estDays: null, estSource: 'none', fub: want.fub,
+        history: [{ ts: now, field: 'created', from: null, to: 'FUB task ' + ft.id, source: 'FUB' }]
+      };
+      var add = { op: 'add_task', task: task, skipEnrich: true, skipDedup: true, fubImport: true };
+      if (opts.actor) add.fubActor = opts.actor;
+      ops.push(add); stats.added++;
+      return;
+    }
+    var fields = {};
+    ['title', 'taskType', 'timelineEnd', 'dueTime', 'owner', 'delegate'].forEach(function(k) {
+      if (String(t[k] == null ? '' : t[k]) !== String(want[k] == null ? '' : want[k])) fields[k] = want[k];
+    });
+    if (fields.timelineEnd !== undefined) fields.dueOverride = !!want.timelineEnd;
+    if (fields.owner !== undefined) fields.group = agent;
+    var st = t.status || 'Not Started';
+    if (done && st !== 'Done') { fields.status = 'Done'; fields.progress = 100; stats.completed++; }
+    else if (!done && (st === 'Done' || st === 'Cancelled')) { fields.status = 'Not Started'; }
+    if (!tsgFubSameBlock_(t.fub, want.fub)) fields.fub = want.fub;
+    if (Object.keys(fields).length) {
+      if (fields.fub === undefined) fields.fub = want.fub;
+      fields.fub = Object.assign({}, fields.fub, { syncedAt: now });
+      var up = { op: 'update_task', id: t.id, fields: fields };
+      if (opts.actor) up.fubActor = opts.actor;
+      ops.push(up);
+      if (!fields.status || fields.status !== 'Done') stats.updated++;
+    }
+  });
+  if (complete) {
+    Object.keys(linked).forEach(function(fid) {
+      var t = linked[fid];
+      if (seen[fid] || !t.fub || t.fub.agent !== agent) return;
+      if (t.status === 'Done' || t.status === 'Cancelled') return;
+      ops.push({ op: 'update_task', id: t.id, fields: { status: 'Cancelled', fub: Object.assign({}, t.fub, { missingAt: now, syncedAt: now }) } });
+      stats.cancelled++;
+    });
+  }
+  return { ops: ops, stats: stats };
+}
+/** Fetch one agent's tasks with their own key: /me first (who the key is), then the paged task list. */
+function tsgFubFetchAgent_(agent) {
+  var key = tsgFubKeyFor_(agent);
+  if (!key) { var e = new Error('No ' + tsgFubKeyProp_(agent) + ' in Script Properties'); e.code = 'nokey'; throw e; }
+  var me = tsgFubGet_(key, '/me');
+  var meId = me && me.id != null ? me.id : null;
+  var tasks = [], total = null, complete = false;
+  for (var page = 0; page < TSG_FUB_MAX_PAGES; page++) {
+    var q = '/tasks?limit=' + TSG_FUB_PAGE + '&offset=' + (page * TSG_FUB_PAGE) + (meId != null ? '&assignedUserId=' + encodeURIComponent(meId) : '');
+    var data = tsgFubGet_(key, q);
+    var batch = data.tasks || [];
+    tasks = tasks.concat(batch);
+    if (data._metadata && typeof data._metadata.total === 'number') total = data._metadata.total;
+    if (batch.length < TSG_FUB_PAGE || (total != null && tasks.length >= total)) { complete = true; break; }
+  }
+  return { me: { id: meId, name: me && (me.name || ((me.firstName || '') + ' ' + (me.lastName || '')).trim()), email: me && me.email }, tasks: tasks, total: total, complete: complete };
+}
+/**
+ * One sync run over `agents` (default: every enabled agent). Reads the data file once, fetches
+ * each agent, and writes ONE bulk inbox patch with every change (none when nothing changed).
+ */
+function tsgFubRunSync_(opts) {
+  opts = opts || {};
+  var now = new Date().toISOString();
+  var doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
+  var cfg = tsgFubConfig_(doc.meta || {});
+  var agents = (opts.agents || cfg.agents).filter(function(a) { return cfg.agents.indexOf(a) !== -1; });
+  var state = tsgFubState_(); state.agents = state.agents || {};
+  var allOps = [], report = {};
+  agents.forEach(function(agent) {
+    var prev = state.agents[agent] || {};
+    var rec = { lastRunAt: now, reason: opts.reason || 'schedule' };
+    try {
+      var got = tsgFubFetchAgent_(agent);
+      // After the first successful import, FUB-side changes count as the agent's own activity.
+      var plan = tsgFubPlanForAgent_(doc, agent, got.tasks, got.me.id, got.complete, now, cfg, { actor: prev.lastOkAt ? agent : null });
+      allOps = allOps.concat(plan.ops);
+      rec = Object.assign(rec, plan.stats, { ok: true, lastOkAt: now, error: '', meId: got.me.id, meName: got.me.name || '', total: got.total, complete: got.complete });
+    } catch (err) {
+      rec = Object.assign({}, prev, rec, { ok: false, error: String((err && err.message) || err), errorCode: err && err.code != null ? err.code : null });
+    }
+    state.agents[agent] = rec;
+    report[agent] = rec;
+  });
+  var result = { ok: true, agents: report, ops: allOps.length, wrote: false };
+  if (allOps.length) {
+    var q = tsgQueueDataPatch_({ op: 'bulk', ops: allOps, source: 'FUB' });
+    result.wrote = true; result.busy = !!(q && q.busy);
+  }
+  state.lastRunAt = now;
+  tsgFubSaveState_(state);
+  return result;
+}
+/** On the 1-minute tick: a property read, and a run only when the cadence says one is due. */
+function tsgFubSyncTickIfDue_() {
+  var cfg = tsgFubConfigFromProp_();
+  if (!cfg || !Array.isArray(cfg.agents) || !cfg.agents.length) return false;
+  var state = tsgFubState_();
+  var last = state.lastRunAt ? Date.parse(state.lastRunAt) : 0;
+  var cadenceMs = (TSG_FUB_CADENCES.indexOf(Number(cfg.cadenceMin)) !== -1 ? Number(cfg.cadenceMin) : TSG_FUB_CADENCES[0]) * 60000;
+  if (last && Date.now() - last < cadenceMs) return false;
+  tsgFubRunSync_({ reason: 'schedule' });
+  return true;
+}
+/** Owner status for Settings > General: config, per agent key presence and last run. */
+function tsgFubStatus_() {
+  var doc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
+  var cfg = tsgFubConfig_(doc.meta || {});
+  var state = tsgFubState_();
+  var roster = tsgRosterNames_(doc.meta || {}).filter(function(n) { return n.toLowerCase() !== TSG_OWNER_NAME.toLowerCase(); });
+  return {
+    ok: true, config: cfg, readOnly: tsgFubReadOnly_(doc), pushBuilt: TSG_FUB_PUSH_BUILT, lastRunAt: state.lastRunAt || '',
+    agents: roster.map(function(n) {
+      return { name: n, enabled: cfg.agents.indexOf(n) !== -1, keyProperty: tsgFubKeyProp_(n), keyPresent: !!tsgFubKeyFor_(n), state: (state.agents || {})[n] || null };
+    })
+  };
+}
+/** Owner-only key check: who the key is, how many tasks, and the field names FUB actually sends. */
+function tsgFubProbe_(agent) {
+  if (!agent) return { ok: false, error: 'agent required' };
+  try {
+    var got = tsgFubFetchAgent_(agent);
+    var fields = {}, types = {};
+    got.tasks.forEach(function(ft) { Object.keys(ft || {}).forEach(function(k) { fields[k] = true; }); if (ft && ft.type) types[ft.type] = (types[ft.type] || 0) + 1; });
+    var open = got.tasks.filter(function(ft) { return !tsgFubCompleted_(ft); }).length;
+    return { ok: true, agent: agent, keyProperty: tsgFubKeyProp_(agent), me: got.me, fetched: got.tasks.length, open: open, total: got.total, complete: got.complete,
+      fieldNames: Object.keys(fields).sort(), types: types, sample: got.tasks[0] || null };
+  } catch (err) {
+    return { ok: false, agent: agent, keyProperty: tsgFubKeyProp_(agent), error: String((err && err.message) || err) };
+  }
+}
+
 function tsgListFubUsers_() {
   var cache = CacheService.getScriptCache();
   var cached = cache.get('fubUsers');
@@ -4074,6 +4433,15 @@ function doPost(e) {
     try { upResult = tsgUploadAttachment_(upFields); }
     catch (upErr) { upResult = { ok: false, error: 'Upload failed: ' + upErr.message }; }
     return ContentService.createTextOutput(JSON.stringify(upResult)).setMimeType(ContentService.MimeType.JSON);
+  }
+  if (requested === 'fubSync') {
+    // Dashboard "Sync now" (2026-09-24): every enabled agent, or one ({agent}); one bulk patch.
+    var fubReq = {};
+    try { fubReq = JSON.parse(body || '{}') || {}; } catch (err) { fubReq = {}; }
+    var fubRun;
+    try { fubRun = tsgFubRunSync_({ agents: fubReq.agent ? [String(fubReq.agent)] : null, reason: 'sync-now:Durand' }); }
+    catch (fubErr) { fubRun = { ok: false, error: 'FUB sync failed: ' + fubErr.message }; }
+    return ContentService.createTextOutput(JSON.stringify(fubRun)).setMimeType(ContentService.MimeType.JSON);
   }
   if (requested === 'sendDirections') {
     var dirFields;
@@ -5236,7 +5604,7 @@ var TSG_ESTIMATE_SYSTEM =
 // Set by the system itself — never something the estimator should be allowed to hand back,
 // even if it ignores the instruction not to. Filtered out of parsed.tags defensively below.
 var TSG_REVIEW_TAG = 'Triage';
-var TSG_RESERVED_TAGS = ['Triage', 'Review', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude', 'At Risk', 'Needs Durand', 'Feedback'];
+var TSG_RESERVED_TAGS = ['Triage', 'Review', 'Aging', 'Scheduling Stuck', 'Dependency Issue', 'needs-estimate', 'Claude', 'At Risk', 'Needs Durand', 'Feedback', 'FUB'];
 
 /**
  * Review gate (2026-09-15, per Durand: "when new tasks are pushed, tag them for review
@@ -6588,6 +6956,7 @@ function tsgFlagAgingTasks_(doc, todayIso) {
   (doc.tasks || []).forEach(function(t) {
     if (t.status === 'Done' || t.status === 'Cancelled') return;
     if (t.feedbackFor) return;   // a standing collection task is never "aging" (2026-09-23)
+    if (tsgIsFubTask_(t)) return;   // FUB owns its own follow-up cadence (2026-09-24)
     if ((t.tags || []).indexOf('Aging') !== -1) return;
     var created = (t.history || []).filter(function(h) { return h && h.field === 'created' && h.ts; })[0];
     if (!created) return; // no reliable creation timestamp — don't guess

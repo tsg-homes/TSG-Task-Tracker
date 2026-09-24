@@ -562,6 +562,22 @@
   .vis-chip.static { cursor: default; }
   .vis-line { margin-top: 4px; }
   .workstream-id { margin-right: 6px; }
+  /* FUB task sync, read-only pilot (2026-09-24): every control on a FUB task is locked; the
+     fields FUB supplies carry a red border. */
+  .fub-locked select, .fub-locked input, .fub-locked textarea, .fub-locked [contenteditable], .fub-locked .icon-btn, .fub-locked .btn:not(.fub-allow), .fub-locked .sub-drag-handle { pointer-events: none; }
+  .fub-locked select, .fub-locked input, .fub-locked [contenteditable] { opacity: 0.85; }
+  .fub-locked .ttl-edit, .fub-locked select.pill[data-kind="status"], .fub-locked .due-input:not(.sub-hours-input), .fub-locked .due-time-chip, .fub-locked .person-select, .fub-locked .type-badge,
+  #taskModal.fub-locked #modalTitle .modal-edit, #taskModal.fub-locked .fub-field-row select, #taskModal.fub-locked .fub-field-row input, #taskModal.fub-locked .fub-field-row .time-btn { outline: 2px solid var(--status-critical); outline-offset: 1px; border-radius: 6px; }
+  #taskModal.fub-locked #modalMeta, #taskModal.fub-locked #modalSubitemsWrap, #taskModal.fub-locked #modalTitle { pointer-events: none; }
+  #taskModal.fub-locked #modalMeta .fub-allow, #taskModal.fub-locked #modalMeta a { pointer-events: auto; }
+  #taskModal.fub-locked #pinBtn, #taskModal.fub-locked #tidyBtn, #taskModal.fub-locked .modal-header-actions .danger { pointer-events: none; opacity: 0.4; }
+  .fub-chip { border: 2px solid var(--status-critical); color: var(--status-critical); background: var(--status-critical-bg); font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 700; white-space: nowrap; }
+  .fub-chip a { color: inherit; }
+  .fub-panel table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .fub-panel td, .fub-panel th { padding: 5px 6px; border-bottom: 1px solid var(--gridline); text-align: left; vertical-align: top; }
+  .fub-panel .fub-bad { color: var(--status-critical); font-weight: 700; }
+  .fub-panel .fub-good { color: var(--status-good); font-weight: 700; }
+  .fub-panel pre { white-space: pre-wrap; font-size: 11.5px; background: var(--surface-2); padding: 8px; border-radius: 6px; max-height: 260px; overflow: auto; }
   .workstream-id.pending { opacity: 0.6; font-style: italic; }
   .workstream-links { font-size: 12.5px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .workstream-session-id { font-size: 11px; color: var(--text-muted); margin-left: 4px; }
@@ -1611,7 +1627,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-23.3';
+  const UI_VERSION = '2026-09-24.1';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2607,6 +2623,7 @@
     const staleAll = TASKS.filter(function(t) {
       if (t.status === 'Done') return false;
       if (t.feedbackFor) return false;   // standing feedback collection tasks are never stale (2026-09-23)
+      if (isFubTask_(t)) return false;    // FUB tasks keep FUB's own cadence (2026-09-24)
       const hist = t.history || [];
       // Not every history entry is shaped {ts,field,from,to} — some come from other
       // tools (e.g. {event,by,note}) and carry no ts at all. Walk back from the end for
@@ -2723,6 +2740,12 @@
         text: unseen.length + (unseen.length === 1 ? ' change' : ' changes') + ' by delegates since you last checked (' + Object.keys(by).map(function(n) { return n + ' ×' + by[n]; }).join(', ') + '). Click to review.',
         ids: [], onOpen: openActivityPanel
       });
+    }
+    if (FUB_STATUS && FUB_STATUS.ok !== false) {
+      const failing = (FUB_STATUS.agents || []).filter(function(a) { return a.enabled && ((a.state && a.state.ok === false) || !a.keyPresent); });
+      if (failing.length) {
+        alerts.push({ level: 'warn', text: 'FUB sync: ' + failing.map(function(a) { return a.name + (a.keyPresent ? ' failed (' + String((a.state && a.state.error) || '').slice(0, 80) + ')' : ' has no key (' + a.keyProperty + ')'); }).join('; ') + '. Open Settings > General.', ids: [], openSettings: true });
+      }
     }
     const newFeedback = feedbackItems_().filter(function(f) { return !f.s.feedback.decision; });
     if (newFeedback.length) {
@@ -3422,7 +3445,7 @@
           ${avatarHtml(t.owner)}
           <span class="pill ${priorityClass(rollupPriority(t))}" style="pointer-events:none;">${escapeHtml(rollupPriority(t))}</span>
         </div>
-        ${delegateLine}${visLineHtml_(t)}
+        ${delegateLine}${visLineHtml_(t)}${fubLineHtml_(t)}
         <div class="kc-meta">
           <span class="kc-due ${isOverdue(t) ? 'overdue' : ''}">${t.timelineEnd ? formatDate(t.timelineEnd) : 'No due date'}</span>
         </div>
@@ -3519,7 +3542,7 @@
       <div class="task-card" data-id="${t.id}" onclick="closeDayView(); onRowClick(event, ${t.id})">
         <div class="tc-title"><span>${pinBtnHtml_(t)}<span class="task-id" title="Task id ${t.id}">#${t.id}</span>${escapeHtml(t.title)}${subBadge}${commentBadgeHtml_(t.id)}</span>${docLinkHtml(t)}${savedPill}<button class="icon-btn danger tc-delete" title="Delete task" onclick="event.stopPropagation(); deleteTask(${t.id})">${TRASH_ICON_SVG}</button></div>
         <div class="tc-row">${avatarHtml(t.owner)}<span class="pill ${statusClass(rollupStatus(t))}" style="pointer-events:none;">${escapeHtml(rollupStatus(t))}</span><span class="pill ${priorityClass(rollupPriority(t))}" style="pointer-events:none;">${escapeHtml(rollupPriority(t))}</span>${typeHtml}</div>
-        ${delegateLine}${visLineHtml_(t)}
+        ${delegateLine}${visLineHtml_(t)}${fubLineHtml_(t)}
         <div class="tc-row">${tagsHtml}${estHtml}${locHtml}<span class="tc-due ${isOverdue(t) ? 'overdue' : ''}">${t.timelineEnd ? formatDate(t.timelineEnd) : 'No due date'}</span></div>
         ${bonusCountdownHtml_(t)}
         <div class="progress-wrap"><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div><span class="pct">${pct}%</span></div>
@@ -5380,6 +5403,118 @@
     logHistory(t, 'review', 'Triage', 'Cleared; released to the delegate views');
     renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
+  // ---- FUB task sync, read-only pilot (2026-09-24, per Durand: "while read only all tracker
+  // fields are locked, for now put a red border on fub fields (also locked)") ----
+  // A task with t.fub.taskId came from Follow Up Boss through an agent's own key. The server
+  // refuses every edit to it from anyone but the sync; this page locks the controls, outlines
+  // the FUB-sourced fields in red, and reverts a local edit before any save goes out.
+  let FUB_STATUS = null;
+  function isFubTask_(t) { return !!(t && t.fub && t.fub.taskId != null && t.fub.taskId !== ''); }
+  function fubLocked_(t) { return isFubTask_(t); }   // the push direction is not built: always read-only
+  function fubChipHtml_(t) {
+    if (!isFubTask_(t)) return '';
+    const f = t.fub;
+    const label = '&#128274; FUB' + (f.type ? ' · ' + escapeHtml(f.type) : '') + (f.personName ? ' · ' + escapeHtml(f.personName) : '');
+    const tip = 'From Follow Up Boss (' + escapeHtml(f.agent || '') + '). Read-only in the pilot: change it in FUB; the next sync brings it here.';
+    return f.personUrl ? `<span class="fub-chip" title="${tip}"><a href="${escapeHtml(f.personUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${label}</a></span>` : `<span class="fub-chip" title="${tip}">${label}</span>`;
+  }
+  function fubLineHtml_(t) { return isFubTask_(t) ? `<div class="vis-line">${fubChipHtml_(t)}</div>` : ''; }
+  function fubModalRowHtml_(t) {
+    const f = t.fub || {};
+    const when = (v) => v ? escapeHtml(formatDateTime(v)) : '—';
+    return `<div class="modal-row"><b>FUB</b><span class="modal-source">${fubChipHtml_(t)} <span class="hist-time">agent ${escapeHtml(f.agent || '')} · FUB task ${escapeHtml(String(f.taskId))} · created ${when(f.created)} · updated in FUB ${when(f.updated)} · synced ${when(f.syncedAt)}${f.missingAt ? ' · gone from FUB ' + when(f.missingAt) : ''}</span><br><span class="hist-time">Read-only pilot: every field is locked here; the red-outlined ones come from FUB. Change the task in Follow Up Boss.</span></span></div>`;
+  }
+  // A local edit to a FUB task never reaches a save: restore it (and any deleted one) from the
+  // last loaded document. Returns how many were put back.
+  function revertLockedFubEdits_() {
+    if (!BASELINE_DOC || !Array.isArray(BASELINE_DOC.tasks)) return 0;
+    let n = 0;
+    const base = {};
+    BASELINE_DOC.tasks.forEach(bt => { if (isFubTask_(bt)) base[bt.id] = bt; });
+    Object.keys(base).forEach(k => {
+      const id = Number(k), i = TASKS.findIndex(x => x && x.id === id);
+      if (i === -1) { TASKS.push(cloneJson_(base[k])); n++; }
+      else if (!sameJson_(TASKS[i], base[k])) { TASKS[i] = cloneJson_(base[k]); n++; }
+    });
+    for (let i = TASKS.length - 1; i >= 0; i--) { const x = TASKS[i]; if (x && x.fub && !base[x.id]) { delete x.fub; n++; } }
+    return n;
+  }
+  async function loadFubStatus_(force) {
+    const cfg = (RAW_META && RAW_META.fubSync) || {};
+    if (!force && !(Array.isArray(cfg.agents) && cfg.agents.length)) { FUB_STATUS = null; return null; }
+    try {
+      const res = await apiFetch('api=fubStatus');
+      FUB_STATUS = await res.json();
+    } catch (e) { FUB_STATUS = { ok: false, error: String(e.message || e) }; }
+    try { renderAlertBanner(); } catch (e) {}
+    return FUB_STATUS;
+  }
+  function fubStatusText_(st) {
+    if (!st) return '<span class="hist-time">never run</span>';
+    const when = st.lastRunAt ? formatDateTime(st.lastRunAt) : '';
+    if (st.ok === false) return `<span class="fub-bad">failed</span> ${escapeHtml(when)}<div class="inbox-err">${escapeHtml(st.error || '')}</div>`;
+    return `<span class="fub-good">ok</span> ${escapeHtml(when)} · ${escapeHtml(st.meName || '')} · fetched ${st.fetched || 0}, added ${st.added || 0}, updated ${st.updated || 0}, completed ${st.completed || 0}, cancelled ${st.cancelled || 0}${st.complete === false ? ' · listing truncated' : ''}`;
+  }
+  function renderFubPanel_() {
+    const el = document.getElementById('fubSyncBody');
+    if (!el) return;
+    const st = FUB_STATUS;
+    if (!st) { el.innerHTML = '<div class="history-empty">Loading…</div>'; return; }
+    if (st.ok === false) { el.innerHTML = `<div class="inbox-err">${escapeHtml(st.error || 'Could not load the FUB sync status')}</div>`; return; }
+    const cfg = st.config || {};
+    const rows = (st.agents || []).map(a => `<tr>
+        <td><label><input type="checkbox" class="fub-agent-toggle" data-agent="${escapeHtml(a.name)}" ${a.enabled ? 'checked' : ''} onchange="saveFubConfig_()"> ${escapeHtml(a.name)}</label></td>
+        <td>${a.keyPresent ? '<span class="fub-good">key set</span>' : '<span class="fub-bad">no key</span>'}<div class="hist-time">${escapeHtml(a.keyProperty)}</div></td>
+        <td>${a.enabled ? fubStatusText_(a.state) : '<span class="hist-time">not in the pilot</span>'}</td>
+        <td>${a.keyPresent ? `<button type="button" class="btn small" onclick="probeFubKey_('${jsAttr(a.name)}', this)">Check key</button>` : ''}${a.enabled && a.keyPresent ? ` <button type="button" class="btn small" onclick="fubSyncNow_('${jsAttr(a.name)}', this)">Sync now</button>` : ''}</td>
+      </tr>`).join('');
+    el.innerHTML = `
+      <div class="history-empty" style="margin-bottom:6px;">Read-only pilot: FUB to tracker only. Each agent's own FUB API key goes in Apps Script &gt; Project Settings &gt; Script Properties under the name shown (never in chat, a Doc or the tracker). Their FUB tasks land on their page, owned by them, locked, with the FUB fields outlined in red. One batched write per run; nothing is written when nothing changed.</div>
+      <label class="hist-time">Sync every <select class="pill-select" id="fubCadenceSelect" onchange="saveFubConfig_()">${[60, 120, 240].map(m => `<option value="${m}" ${Number(cfg.cadenceMin) === m ? 'selected' : ''}>${m === 60 ? '1 hour' : (m / 60) + ' hours'}</option>`).join('')}</select></label>
+      <label class="hist-time" style="margin-left:12px;">FUB account address <input type="text" class="text-input" id="fubAppBaseInput" style="width:260px;" placeholder="https://yourteam.followupboss.com" value="${escapeHtml(cfg.appBase || '')}" onblur="saveFubConfig_()"></label>
+      <div class="hist-time" style="margin:6px 0;">Last run: ${st.lastRunAt ? escapeHtml(formatDateTime(st.lastRunAt)) : 'never'} · push to FUB: ${st.pushBuilt ? 'available' : 'not built (read-only)'}</div>
+      <table><thead><tr><th>Agent</th><th>Key</th><th>Last sync</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <div style="margin-top:8px;"><button type="button" class="btn small primary" onclick="fubSyncNow_(null, this)">Sync all now</button></div>
+      <div id="fubProbeOut"></div>`;
+  }
+  async function saveFubConfig_() {
+    const agents = Array.from(document.querySelectorAll('.fub-agent-toggle')).filter(x => x.checked).map(x => x.dataset.agent);
+    const cadence = Number((document.getElementById('fubCadenceSelect') || {}).value) || 60;
+    const appBase = String((document.getElementById('fubAppBaseInput') || {}).value || '').trim().replace(/\/+$/, '');
+    RAW_META.fubSync = Object.assign({}, RAW_META.fubSync || {}, { agents: agents, cadenceMin: cadence, appBase: appBase });
+    await postCommentOp_({ op: 'set_meta', fields: { fubSync: { agents: agents, cadenceMin: cadence, appBase: appBase } }, source: 'Durand' });
+    setSyncStatus('saved', 'FUB sync settings saved');
+    await loadFubStatus_(true); renderFubPanel_();
+  }
+  async function probeFubKey_(agent, btn) {
+    const out = document.getElementById('fubProbeOut');
+    if (btn) btn.disabled = true;
+    try {
+      const res = await apiFetch('api=fubProbe&agent=' + encodeURIComponent(agent));
+      const p = await res.json();
+      if (out) out.innerHTML = p.ok
+        ? `<h4>${escapeHtml(agent)}: key works</h4><pre>${escapeHtml('FUB user: ' + (p.me && p.me.name) + ' (id ' + (p.me && p.me.id) + ', ' + (p.me && p.me.email) + ')\nTasks fetched: ' + p.fetched + ' (open ' + p.open + ', total ' + p.total + (p.complete ? '' : ', listing truncated') + ')\nTypes: ' + JSON.stringify(p.types) + '\nFields FUB sends: ' + (p.fieldNames || []).join(', ') + '\nFirst task: ' + JSON.stringify(p.sample, null, 1))}</pre>`
+        : `<h4>${escapeHtml(agent)}: key failed</h4><div class="inbox-err">${escapeHtml(p.error || '')}</div>`;
+    } catch (e) { if (out) out.innerHTML = `<div class="inbox-err">${escapeHtml(String(e.message || e))}</div>`; }
+    finally { if (btn) btn.disabled = false; }
+  }
+  async function fubSyncNow_(agent, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+    try {
+      const res = await apiFetch('target=fubSync', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(agent ? { agent: agent } : {}) });
+      const r = await res.json();
+      if (r && r.ok === false) throw new Error(r.error || 'sync failed');
+      const bad = Object.keys((r && r.agents) || {}).filter(n => r.agents[n] && r.agents[n].ok === false);
+      toast_('FUB sync ' + (bad.length ? 'finished with errors' : 'done'), bad.length ? bad.map(n => n + ': ' + r.agents[n].error).join(' · ') : (r.wrote ? 'Changes written in one batch.' : 'Nothing changed in FUB.'));
+      if (r && r.wrote && typeof loadData === 'function') { try { await loadData(); } catch (e) {} }
+    } catch (e) {
+      toast_('FUB sync failed', String(e.message || e));
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = agent ? 'Sync now' : 'Sync all now'; }
+      await loadFubStatus_(true); renderFubPanel_();
+    }
+  }
+
   // ---- Delegate visibility (2026-09-23, per Durand: "each task with a delegate needs a clear
   // indicator to me only of whether or not the delegate can see it (toggleable, default off,
   // only I can turn it on, and if you make any meaningful change you turn it off)") ----
@@ -5611,7 +5746,7 @@
     const subOpen = hasSubs && expandedSubtasks.has(t.id);
     const tagsHtml = (t.tags || []).map(tag => tag === 'Triage' ? reviewChipHtml(t.id) : tag === 'Review' ? disagreeChipHtml(t.id) : tag === 'At Risk' ? atRiskChipHtml(t) : tag === 'Needs Durand' ? needsDurandChipHtml(t) : tagChipHtml(tag)).join('');
     let html = `
-      <tr class="task-row" data-id="${t.id}" onclick="onRowClick(event, ${t.id})">
+      <tr class="task-row${fubLocked_(t) ? ' fub-locked' : ''}" data-id="${t.id}" onclick="onRowClick(event, ${t.id})">
         <td>${hasSubs ? `<button class="icon-btn" onclick="toggleSub(${t.id})">${subOpen ? '▾' : '▸'}</button>` : ''}</td>
         <td class="title-cell">${pinBtnHtml_(t)}<span class="task-id" title="Task id ${t.id}">#${t.id}</span><span class="ttl-edit" contenteditable="true" onblur="onTitleEdit(${t.id}, this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(t.title)}</span>${commentBadgeHtml_(t.id)}${hasSubs ? `<span class="sub-count-badge" title="${t.subitems.filter(s=>s.done).length} of ${t.subitems.length} subtasks done">${t.subitems.filter(s=>s.done).length}/${t.subitems.length}</span>` : ''}${docLinkHtml(t)}</td>
         <td class="cell-group">
@@ -5626,7 +5761,7 @@
         </td>
         <td class="cell-group">
           <div class="cell-group-stack">
-            <div class="cell-group-row tags-cell">${typeBadgeHtml(t)}${tagsHtml}<button type="button" class="icon-btn" onclick="addTag(${t.id})" title="Add tag">+</button></div>
+            <div class="cell-group-row tags-cell">${fubChipHtml_(t)}${typeBadgeHtml(t)}${tagsHtml}<button type="button" class="icon-btn" onclick="addTag(${t.id})" title="Add tag">+</button></div>
             <div class="cell-group-row">
               <span class="due-cell ${isOverdue(t) ? 'overdue' : ''}"><input type="date" class="due-input" value="${t.timelineEnd || ''}" onchange="onDueChange(${t.id}, this)">${t.dueTime ? `<span class="hist-time due-time-chip" title="Due time">${escapeHtml(t.dueTime)}</span>` : ''}</span>
               <div class="progress-wrap"><div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div><span class="pct">${pct}%</span></div>
@@ -5641,7 +5776,7 @@
       </tr>`;
     if (hasSubs) {
       html += `
-      <tr class="sub-row" id="subrow-${t.id}" style="display:${subOpen ? '' : 'none'};">
+      <tr class="sub-row${fubLocked_(t) ? ' fub-locked' : ''}" id="subrow-${t.id}" style="display:${subOpen ? '' : 'none'};">
         <td colspan="6">
           <div class="sub-list">
             ${t.subitems.map((s, i) => subitemRowHtml(t, s, i)).join('')}
@@ -7071,6 +7206,7 @@
     const t = findTask(id);
     if (!t) return;
     currentModalTaskId = id;
+    document.getElementById('taskModal').classList.toggle('fub-locked', fubLocked_(t));
     const pinBtn = document.getElementById('pinBtn');
     if (pinBtn) { pinBtn.classList.toggle('toggle-active', isPinned_(t)); pinBtn.innerHTML = isPinned_(t) ? '&#128204; Pinned' : '&#128204; Pin'; pinBtn.title = isPinned_(t) ? 'Unpin (drops back into its group)' : 'Pin to the top of every list'; }
     setTimeout(function() { const ov = document.getElementById('taskModal'); if (ov && ov.classList.contains('open') && !ov.contains(document.activeElement)) ov.focus(); }, 0);
@@ -7132,6 +7268,15 @@
       // ?target=claude endpoint this calls, so every click just failed. Re-enable by
       // restoring the onclick (and dropping `disabled`) once that's set up.
     ].join('');
+    if (isFubTask_(t)) {
+      // The FUB row first; the rows whose value comes from FUB get the red outline.
+      const meta = document.getElementById('modalMeta');
+      meta.insertAdjacentHTML('afterbegin', fubModalRowHtml_(t));
+      Array.from(meta.querySelectorAll('.modal-row')).forEach(function(r) {
+        const label = r.querySelector('b') ? r.querySelector('b').textContent.trim() : '';
+        if (['Status', 'Due', 'Owner', 'Delegate', 'Type'].indexOf(label) !== -1) r.classList.add('fub-field-row');
+      });
+    }
     const subs = t.subitems || [];
     document.getElementById('modalSubitemsWrap').innerHTML =
       `<h3>Subtasks${subs.length ? ' (' + subs.filter(s => s.done).length + '/' + subs.length + ')' : ''}</h3>` +
@@ -7649,6 +7794,11 @@
   let justSavedTimer = null;
   let pendingSaveId = null;
   function scheduleSave() {
+    const fubReverted = revertLockedFubEdits_();
+    if (fubReverted) {
+      toast_('FUB tasks are read-only', 'That change was undone: FUB tasks are locked in the read-only pilot. Change them in Follow Up Boss.');
+      renderAll(); if (currentModalTaskId != null && findTask(currentModalTaskId)) openTaskCard(currentModalTaskId);
+    }
     setSyncStatus('saving');
     if (currentModalTaskId != null) pendingSaveId = currentModalTaskId;
     clearTimeout(saveTimer);
@@ -7928,6 +8078,7 @@
     setTimeout(checkReminderNotifications_, 0);
     setTimeout(checkInboxErrorToasts_, 0);
     setTimeout(checkDelegateActivityToasts_, 0);
+    setTimeout(function() { loadFubStatus_(false); }, 0);
     STANDING_ITEMS = (doc.meta && doc.meta.standingItems) || [];
     dataLoaded = true;
     snapshotBaseline_();
@@ -8171,7 +8322,7 @@
     const pick = end => when === 'on' ? end === dateISO : (!!end && end < dateISO);
     const line = (title, who, taskId) => ({ label: title, sub: who + ' · ' + reviewMinutesFor_(who) + ' min', taskId: taskId, kind: 'action', minutes: reviewMinutesFor_(who) });
     TASKS.forEach(t => {
-      if (!t || t.status === 'Done') return;
+      if (!t || t.status === 'Done' || isFubTask_(t)) return;   // an agent's FUB task is not delegated work to review
       if (t.subitems && t.subitems.length) {
         t.subitems.forEach(sub => { if (sub && !sub.done && sub.status !== 'Done' && isOther(sub.delegate) && pick(sub.timelineEnd)) out.push(line(sub.title, sub.delegate, t.id)); });
       } else if (isOther(taskDelegate(t)) && pick(t.timelineEnd)) {
@@ -8244,6 +8395,11 @@
         <div class="history-empty" style="margin-bottom:6px;">Optional owner/repo the "Code" and "Code (cloud)" buttons on a Claude task open on (e.g. tsg-homes/TSG-Task-Tracker). Cowork sessions never need one.</div>
         <input type="text" class="text-input" id="claudeRepoInput" placeholder="owner/repo" value="${escapeHtml(CLAUDE_REPO)}" onblur="setClaudeRepo(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
       </div>
+      <div class="modal-section fub-panel">
+        <div class="ruleset-block-head"><h3>FUB task sync (read-only pilot)</h3></div>
+        <div id="fubSyncBody"><div class="history-empty">Loading…</div></div>
+      </div>
+      ${(setTimeout(function() { loadFubStatus_(true).then(renderFubPanel_); }, 0), '')}
       <div class="modal-section">
         <div class="ruleset-block-head"><h3>Delegate activity</h3></div>
         <div class="history-empty" style="margin-bottom:6px;">Every change a delegate makes on their page (fields, done-pending marks, tasks added, feedback filed) is logged by the tracker and shown as an alert row and toasts until you mark it seen. ${unseenActivity_().length} unseen of ${delegateActivity_().length} recorded. <button type="button" class="btn small" onclick="closeSettings(); openActivityPanel()">Open activity</button> <button type="button" class="btn small" onclick="closeSettings(); openFeedbackPanel()">Open feedback</button></div>
