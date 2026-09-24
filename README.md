@@ -607,6 +607,35 @@ tracker fields are locked, for now put a red border on fub fields (also locked)"
   FUB `/me` for every `FUB_KEY_*` property and shows whose key it is plus the roster member it looks
   like; "Use these matches" applies them. Key values are never returned. A key an agent saves from
   their own page goes to the property their mapping names.
+- **Whose key does what** (2026-09-24, per Durand: "admin is mine, owner is ryans, each agent uses
+  their own key"; "ryan will always use the owner key"; "for me, if im acting on behalf of an agent use
+  their key, if im acting in my operational/administrative capacity, use mine"). `TSG_FUB_RESERVED_KEYS`:
+  `FUB_KEY_ADMIN` = Durand (level admin), `FUB_KEY_OWNER` = Ryan (level owner). `tsgFubKeyProp_` gives
+  each holder their own key always, never maps either to anyone else (config sanitize and read time),
+  and a person whose default name would hit one reads `FUB_KEY_<NAME>_AGENT` instead. Every agent's sync
+  and Sync now use that agent's key, also when Durand presses them for the agent (on-behalf); Durand's own
+  FUB tasks sync with the admin key. `tsgFubKeyLevel_` = agent | admin | owner. FUB roles as a search
+  summary of FUB's docs states them (the docs are blocked from the cloud container, so not verified at
+  the source): agent key = only what is assigned to that agent; admin (broker) = the whole account except
+  webhooks; owner = everything, webhooks included.
+- **FUB change requests** (same day, per Durand: "if the admin key is required for a task an agent wants
+  to perform it gets flagged, explain to them why they cant, and ask them to explain why they need the
+  change ... send the task and explanation to me for review, same if ... requires the owner key, make sure
+  to alert me to the difference"). `TSG_FUB_REQUEST_KINDS` (one table; change the levels there): complete /
+  reschedule / edit one of my tasks = agent; reassign, someone else's task or contact, account-wide
+  settings, something else = admin; webhooks / account API connections = owner. `tsgFubRequestKindsFor_`
+  marks each as covered by the person's own key or not, with the reason and the key it needs;
+  `load.fubRequestKinds` / `load.fubKeyLevel`. Person page: "Request a FUB change" on every FUB task
+  card and in Settings; a covered kind says to make the change in FUB (the tracker only reads); an
+  escalated one explains why they can't, names the key, and needs what + why (10+ chars).
+  `tsgPersonRpc('fubRequest', {kind, what, why, taskId?})` files it on their feedback task as
+  `[FUB · needs ADMIN|OWNER key] …` with `feedback.kind 'FUB access'` and `fubAccess {level, kind,
+  label, what, why, needs, trackerTaskId, fubTaskId, requestedBy}` (owner requests at High priority);
+  it lands in the delegate activity log. Dashboard: a CRITICAL alert "N FUB requests need the OWNER key
+  (Ryan's, not yours)" and a separate WARN alert "N FUB requests need the ADMIN key (yours)", both opening
+  the feedback panel, where the row carries a key badge (`fubAccessBadgeHtml_`) and Approve / Decline
+  (`approveFubAccess`: decision `approved`, note says which key and "take it to Ryan" for owner; mark the
+  step done once the change is made in FUB). Nothing is sent to FUB: the pilot stays read-only.
 
 ## Actual time (2026-09-17): one log, three ways in
 

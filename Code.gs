@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-24.3';
+const TSG_CODE_VERSION = '2026-09-24.4';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -2516,6 +2516,8 @@ function tsgPersonRpc(action, payloadJson) {
       feedbackTaskId: (function() { var ft = tsgFeedbackTaskFor_(doc, name); return ft ? ft.id : null; })(),
       feedbackKinds: TSG_FEEDBACK_KINDS.slice(),
       fubKey: tsgFubKeyInfo_(doc, name),
+      fubKeyLevel: tsgFubKeyLevel_(name),
+      fubRequestKinds: tsgFubRequestKindsFor_(name),
       fubSync: (function() {
         var cfg = tsgFubConfig_(doc.meta || {});
         if (cfg.agents.indexOf(name) === -1 || !tsgFubKeyFor_(name)) return { enabled: false };
@@ -2586,6 +2588,35 @@ function tsgPersonRpc(action, payloadJson) {
       taskType: 'Hands-on', tags: [], docs: [], estHours: null, feedback: { kind: kind, by: name, ts: fbNow },
       history: [{ ts: fbNow, field: 'created', from: null, to: null, source: actor }] };
     return JSON.stringify(tsgQueueDataPatch_({ op: 'add_subitem', id: ft.id, subitem: sub, source: actor, skipEnrich: true, feedback: true }));
+  }
+  if (action === 'fubRequest') {
+    // A FUB change the person's own key cannot make (2026-09-24): filed on their feedback task for
+    // Durand, marked with the key it needs. Durand acting on someone's behalf is judged by THEIR key.
+    var rk = tsgFubRequestKindsFor_(name).filter(function(k) { return k.kind === payload.kind; })[0];
+    if (!rk) return JSON.stringify({ ok: false, error: 'unknown request kind' });
+    if (rk.covered) return JSON.stringify({ ok: false, covered: true, error: rk.message });
+    var what = String(payload.what || '').replace(/\r/g, '').trim().slice(0, 2000);
+    var why = String(payload.why || '').replace(/\r/g, '').trim().slice(0, 2000);
+    if (!what) return JSON.stringify({ ok: false, error: 'Say exactly what you need changed.' });
+    if (why.length < 10) return JSON.stringify({ ok: false, error: 'Explain why you need this change; Durand reviews it before anything happens.' });
+    var rft = tsgFeedbackTaskFor_(doc, name);
+    if (!rft) return JSON.stringify({ ok: false, error: 'no feedback task for ' + name + ' yet; ask Durand' });
+    var onTask = null;
+    if (payload.taskId != null) onTask = tsgPersonSlice_(doc, name).filter(function(r) { return r.kind === 'task' && r.id === Number(payload.taskId); })[0] || null;
+    var keyTag = rk.level === 'owner' ? 'OWNER key' : 'ADMIN key';
+    var wFirst = what.split('\n')[0].trim();
+    var rTitle = '[FUB · needs ' + keyTag + '] ' + (wFirst.length > TSG_FEEDBACK_TITLE_CHARS ? wFirst.slice(0, TSG_FEEDBACK_TITLE_CHARS - 1) + '…' : wFirst);
+    var rNow = new Date().toISOString();
+    var rNotes = 'NEEDS ' + keyTag.toUpperCase() + ' (' + rk.needs + '). ' + name + '\'s own key cannot do this.\n\n' +
+      'Request: ' + rk.label + '\nWhat: ' + what + '\nWhy: ' + why +
+      (onTask ? '\nTask: #' + onTask.id + ' ' + onTask.title + (onTask.fub && onTask.fub.personName ? ' (FUB contact ' + onTask.fub.personName + ')' : '') : '');
+    var rsub = { title: rTitle, notes: rNotes, delegate: name, status: 'Not Started', done: false, progress: 0, priority: rk.level === 'owner' ? 'High' : (rft.priority || 'Medium'),
+      taskType: 'Hands-on', tags: [], docs: [], estHours: null, feedback: { kind: 'FUB access', by: name, ts: rNow },
+      fubAccess: { level: rk.level, kind: rk.kind, label: rk.label, what: what, why: why, needs: rk.needs, trackerTaskId: onTask ? onTask.id : null,
+        fubTaskId: (function() { var dt = onTask ? (doc.tasks || []).filter(function(x) { return x && x.id === onTask.id; })[0] : null; return dt && tsgIsFubTask_(dt) ? dt.fub.taskId : null; })(), requestedBy: actor },
+      history: [{ ts: rNow, field: 'created', from: null, to: null, source: actor }] };
+    var rq = tsgQueueDataPatch_({ op: 'add_subitem', id: rft.id, subitem: rsub, source: actor, skipEnrich: true, feedback: true });
+    return JSON.stringify(Object.assign({}, rq, { level: rk.level, needs: rk.needs }));
   }
   if (action === 'add') {
     var title = String(payload.title || '').trim();
@@ -3982,11 +4013,71 @@ function tsgFubReadOnly_(doc) {
  * at SCRIPT_TOKEN or any other secret.
  */
 var TSG_FUB_KEY_PROP_RE = /^FUB_KEY_[A-Z0-9_]{1,40}$/;
+/**
+ * The two elevated keys and who holds them (Durand 2026-09-24: "admin is mine, owner is ryans, each
+ * agent uses their own key"; "ryan will always use the owner key"). They belong to their holder
+ * only: no mapping can hand them to anyone else, and the holder always reads their own.
+ * FUB roles (per a search summary of FUB's docs; the docs themselves are blocked from the cloud
+ * container): an agent's key reaches only what is assigned to that agent; an admin (broker) key
+ * reaches the whole account except webhooks; only the owner's key can manage webhooks.
+ */
+var TSG_FUB_RESERVED_KEYS = {
+  FUB_KEY_ADMIN: { holder: TSG_OWNER_NAME, level: 'admin', label: "the admin key (Durand's)" },
+  FUB_KEY_OWNER: { holder: 'Ryan', level: 'owner', label: "the owner key (Ryan's)" }
+};
+var TSG_FUB_LEVEL_RANK = { agent: 0, admin: 1, owner: 2 };
 function tsgFubDefaultKeyProp_(name) { return 'FUB_KEY_' + String(name || '').toUpperCase().replace(/[^A-Z0-9]/g, '_'); }
+function tsgFubReservedFor_(name) {
+  var props = Object.keys(TSG_FUB_RESERVED_KEYS);
+  for (var i = 0; i < props.length; i++) if (TSG_FUB_RESERVED_KEYS[props[i]].holder.toLowerCase() === String(name || '').toLowerCase()) return props[i];
+  return '';
+}
 function tsgFubKeyProp_(name) {
+  var own = tsgFubReservedFor_(name);
+  if (own) return own;
   var cfg = tsgFubConfigFromProp_() || {};
   var mapped = cfg.keyProps && cfg.keyProps[name];
-  return (mapped && TSG_FUB_KEY_PROP_RE.test(mapped)) ? mapped : tsgFubDefaultKeyProp_(name);
+  if (mapped && TSG_FUB_KEY_PROP_RE.test(mapped) && !TSG_FUB_RESERVED_KEYS[mapped]) return mapped;
+  var def = tsgFubDefaultKeyProp_(name);
+  return TSG_FUB_RESERVED_KEYS[def] ? def + '_AGENT' : def;   // a person named "Admin" never reads the admin key
+}
+/** The FUB level a person's own key carries: owner / admin for the two holders, agent for everyone else. */
+function tsgFubKeyLevel_(name) {
+  var own = tsgFubReservedFor_(name);
+  return own ? TSG_FUB_RESERVED_KEYS[own].level : 'agent';
+}
+/**
+ * FUB changes an agent may ask for from their page, and the least key each needs (2026-09-24, per
+ * Durand: "if the admin key is required for a task an agent wants to perform it gets flagged, explain
+ * to them why they cant, and ask them to explain why they need the change ... send the task and
+ * explanation to me for review, same if ... requires the owner key, make sure to alert me to the
+ * difference"). The levels follow the role rule above; "Something else" is unknown, so Durand decides.
+ */
+var TSG_FUB_REQUEST_KINDS = [
+  { kind: 'complete', label: 'Mark one of my FUB tasks complete', level: 'agent' },
+  { kind: 'reschedule', label: 'Change the due date or time of one of my FUB tasks', level: 'agent' },
+  { kind: 'edit', label: 'Edit one of my FUB tasks (title, type, details)', level: 'agent' },
+  { kind: 'reassign', label: 'Reassign a task to someone else', level: 'admin',
+    reason: 'Your FUB key only reaches the tasks and contacts assigned to you. Moving a task to someone else changes whose it is, which needs admin (broker) access, and only Durand holds that key.' },
+  { kind: 'others', label: 'Change a task or contact assigned to someone else', level: 'admin',
+    reason: 'Your FUB key cannot see or change anything assigned to another agent. Only an admin key reaches the whole account, and only Durand holds it.' },
+  { kind: 'account', label: 'An account-wide change (users, teams, custom fields, action plans, lead routing)', level: 'admin',
+    reason: 'Account-wide settings are outside an agent key. They need admin (broker) access, which only Durand holds.' },
+  { kind: 'webhook', label: 'Webhooks or API connections for the whole account', level: 'owner',
+    reason: 'Only the account owner\'s key can create or change webhooks; even the admin key cannot. That key is Ryan\'s, so Durand reviews the request and takes it to Ryan.' },
+  { kind: 'other', label: 'Something else', level: 'admin',
+    reason: 'This is not a change your own key is known to cover, so Durand reviews it and decides which key it needs.' }
+];
+var TSG_FUB_OWN_KEY_MESSAGE = 'Your own FUB key covers this. The tracker only reads from FUB for now, so make the change in Follow Up Boss; it comes back here on the next sync (or press Sync FUB).';
+/** The request kinds as one person sees them: covered by their own key, or the key it needs and why. */
+function tsgFubRequestKindsFor_(name) {
+  var mine = TSG_FUB_LEVEL_RANK[tsgFubKeyLevel_(name)];
+  return TSG_FUB_REQUEST_KINDS.map(function(k) {
+    var covered = TSG_FUB_LEVEL_RANK[k.level] <= mine;
+    return { kind: k.kind, label: k.label, level: k.level, covered: covered,
+      message: covered ? TSG_FUB_OWN_KEY_MESSAGE : k.reason,
+      needs: covered ? '' : (k.level === 'owner' ? TSG_FUB_RESERVED_KEYS.FUB_KEY_OWNER.label : TSG_FUB_RESERVED_KEYS.FUB_KEY_ADMIN.label) };
+  });
 }
 /** Owner-only: every FUB_KEY_* property, who each key is in FUB, and the roster member it looks like. Never the key. */
 function tsgFubKeyScan_() {
@@ -4000,7 +4091,8 @@ function tsgFubKeyScan_() {
       var me = tsgFubGet_(props.getProperty(k), '/me') || {};
       var meName = me.name || ((me.firstName || '') + ' ' + (me.lastName || '')).trim();
       var guess = tsgRosterNameForEmail_(roster, me.email) || names.filter(function(n) { return String(me.firstName || meName.split(' ')[0] || '').toLowerCase() === n.toLowerCase(); })[0] || '';
-      return { property: k, ok: true, fubUser: meName, email: me.email || '', id: me.id != null ? me.id : null, suggested: guess };
+      var rsv = TSG_FUB_RESERVED_KEYS[k];
+      return { property: k, ok: true, fubUser: meName, email: me.email || '', id: me.id != null ? me.id : null, suggested: rsv ? rsv.holder : guess, reserved: rsv ? rsv.level : '' };
     } catch (err) {
       return { property: k, ok: false, error: err && err.code === 401 ? 'FUB rejected this key' : String((err && err.message) || err).slice(0, 160) };
     }
@@ -4057,6 +4149,7 @@ function tsgFubConfig_(meta) {
   Object.keys((raw.keyProps && typeof raw.keyProps === 'object') ? raw.keyProps : {}).forEach(function(n) {
     var prop = String(raw.keyProps[n] || '').trim().toUpperCase();
     if (!TSG_FUB_KEY_PROP_RE.test(prop) || (roster.length && roster.indexOf(n) === -1) || used[prop]) return;
+    if (TSG_FUB_RESERVED_KEYS[prop] || tsgFubReservedFor_(n)) return;   // the elevated keys belong to their holders only
     if (prop === tsgFubDefaultKeyProp_(n)) return;   // the default needs no mapping
     used[prop] = true; keyProps[n] = prop;
   });
@@ -4271,7 +4364,7 @@ function tsgFubStatus_() {
     ok: true, config: cfg, readOnly: tsgFubReadOnly_(doc), pushBuilt: TSG_FUB_PUSH_BUILT, lastRunAt: state.lastRunAt || '',
     agents: roster.map(function(n) {
       var ast = (state.agents || {})[n] || null;
-      return { name: n, enabled: cfg.agents.indexOf(n) !== -1, keyProperty: tsgFubKeyProp_(n), keyPresent: !!tsgFubKeyFor_(n), keySetAt: ast && ast.keySetAt || '', keySetBy: ast && ast.keySetBy || '', state: ast };
+      return { name: n, enabled: cfg.agents.indexOf(n) !== -1, keyProperty: tsgFubKeyProp_(n), keyLevel: tsgFubKeyLevel_(n), keyPresent: !!tsgFubKeyFor_(n), keySetAt: ast && ast.keySetAt || '', keySetBy: ast && ast.keySetBy || '', state: ast };
     })
   };
 }

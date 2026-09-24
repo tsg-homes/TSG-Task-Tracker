@@ -136,6 +136,8 @@ A task reaches a delegate's page only while `delegateVisible: true`, and only Du
 
 Tasks carrying a `fub` block (tag `FUB`) are copies of an agent's Follow Up Boss tasks, owned by that agent and written only by the tracker's FUB sync. While the pilot is read-only, every op on them from a session is refused by name (update_task, update_subitem, add_subitem, delete_task, reorder_subitems, log_time, request_tidy, request_steps), so do not patch them and never write a `fub` block. Changes belong in FUB; the next sync brings them in. FUB API keys live only in Script Properties (`FUB_KEY_<NAME>`): never ask for one in chat, never write one anywhere.
 
+Which key (Durand, 2026-09-24): each agent uses their own key. `FUB_KEY_ADMIN` is Durand's and `FUB_KEY_OWNER` is Ryan's; nobody else ever uses either, and Ryan always uses the owner key. When Durand acts on behalf of an agent, use that agent's key; when he acts in his operational/administrative capacity, use the admin key. A change an agent's own key cannot make (someone else's task or contact, reassigning, account-wide settings) needs the admin key; webhooks need the owner key. Such a change is never made for the agent: it goes to Durand as a FUB request (their page's "Request a FUB change", filed on their feedback task with `fubAccess.level` admin or owner and their reason), and the owner-key ones are Ryan's to act on.
+
 ## Session effort report (added 2026-09-17)
 
 At every write-back for a tracker task the session worked on (progress, notes, Done), also push:

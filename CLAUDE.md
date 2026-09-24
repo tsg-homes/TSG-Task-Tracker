@@ -1540,3 +1540,11 @@ now put a red border on fub fields (also locked) / let build it". Built read-onl
   comments or the controls); key property mapping `meta.fubSync.keyProps` because Durand saved keys as
   FUB_KEY_ADMIN and FUB_KEY_OWNER (which person each belongs to is read from FUB by "Find keys", not
   assumed). Tests: `test/test_person_comments.js` (new, in `npm test`).
+- Same day, backend 2026-09-24.4 / UI 2026-09-24.4 / person UI 2026-09-24.4 (not deployed at writing).
+  KEY HOLDERS (Durand): FUB_KEY_ADMIN is Durand's, FUB_KEY_OWNER is Ryan's; each agent uses their own
+  key; Ryan always the owner key; Durand on behalf of an agent = that agent's key, in his admin capacity
+  = the admin key (`TSG_FUB_RESERVED_KEYS`, never mappable to anyone else). FUB REQUESTS: an agent's
+  change their key cannot make is explained, needs a reason, and is filed for Durand's review marked
+  ADMIN key (warn alert, "yours") or OWNER key (critical alert, "Ryan's, not yours"); table
+  `TSG_FUB_REQUEST_KINDS`. FUB's role rules come from a search summary (its docs are egress-blocked);
+  README "Whose key does what" / "FUB change requests".

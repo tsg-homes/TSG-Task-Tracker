@@ -588,6 +588,9 @@
   .pending-approve { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }
   .pending-approve .btn { padding: 2px 8px; font-size: 11px; }
   .feedback-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; margin: 2px 0 4px; }
+  .fub-key-badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; font-weight: 700; margin-right: 6px; white-space: nowrap; }
+  .fub-key-badge.admin { background: var(--status-warn-bg); color: var(--status-warn); }
+  .fub-key-badge.owner { background: var(--status-critical-bg); color: var(--status-critical); border: 1px solid var(--status-critical); }
   .feedback-badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--status-active-bg); color: var(--status-active); font-weight: 700; }
   .feedback-badge.declined { background: var(--status-neutral-bg); color: var(--status-neutral); }
   .feedback-badge.accepted { background: var(--status-warn-bg); color: var(--status-warn); }
@@ -1644,7 +1647,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-24.3';
+  const UI_VERSION = '2026-09-24.4';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -2766,7 +2769,14 @@
         alerts.push({ level: 'warn', text: 'FUB sync: ' + failing.map(function(a) { return a.name + (a.keyPresent ? ' failed (' + String((a.state && a.state.error) || '').slice(0, 80) + ')' : ' has no key (' + a.keyProperty + ')'); }).join('; ') + '. Open Settings > General.', ids: [], openSettings: true });
       }
     }
-    const newFeedback = feedbackItems_().filter(function(f) { return !f.s.feedback.decision; });
+    const fubOwnerReq = fubAccessItems_('owner'), fubAdminReq = fubAccessItems_('admin');
+    if (fubOwnerReq.length) {
+      alerts.push({ level: 'critical', text: fubOwnerReq.length + ' FUB request' + (fubOwnerReq.length === 1 ? '' : 's') + ' need the OWNER key (Ryan\'s, not yours): ' + fubOwnerReq.map(function(f) { return f.s.feedback.by + ': ' + (f.s.fubAccess.label || ''); }).join('; ') + '.', ids: [], onOpen: openFeedbackPanel });
+    }
+    if (fubAdminReq.length) {
+      alerts.push({ level: 'warn', text: fubAdminReq.length + ' FUB request' + (fubAdminReq.length === 1 ? '' : 's') + ' need the ADMIN key (yours): ' + fubAdminReq.map(function(f) { return f.s.feedback.by + ': ' + (f.s.fubAccess.label || ''); }).join('; ') + '.', ids: [], onOpen: openFeedbackPanel });
+    }
+    const newFeedback = feedbackItems_().filter(function(f) { return !f.s.feedback.decision && !f.s.fubAccess; });
     if (newFeedback.length) {
       alerts.push({
         level: 'warn',
@@ -5483,7 +5493,7 @@
     const cfg = st.config || {};
     const rows = (st.agents || []).map(a => `<tr>
         <td><label><input type="checkbox" class="fub-agent-toggle" data-agent="${escapeHtml(a.name)}" ${a.enabled ? 'checked' : ''} onchange="saveFubConfig_()"> ${escapeHtml(a.name)}</label></td>
-        <td>${a.keyPresent ? '<span class="fub-good">key set</span>' : '<span class="fub-bad">no key</span>'}<div class="hist-time">${fubKeyPropSelectHtml_(a.name, a.keyProperty)}${a.keyPresent && a.keySetAt ? ' · set by ' + escapeHtml(a.keySetBy || a.name) + ' ' + escapeHtml(formatDateTime(a.keySetAt)) : ''}</div></td>
+        <td>${a.keyPresent ? '<span class="fub-good">key set</span>' : '<span class="fub-bad">no key</span>'}<div class="hist-time">${a.keyLevel === 'admin' || a.keyLevel === 'owner' ? `<b>${escapeHtml(a.keyProperty)}</b> · ${a.keyLevel} key, ${escapeHtml(a.name)}'s only` : fubKeyPropSelectHtml_(a.name, a.keyProperty)}${a.keyPresent && a.keySetAt ? ' · set by ' + escapeHtml(a.keySetBy || a.name) + ' ' + escapeHtml(formatDateTime(a.keySetAt)) : ''}</div></td>
         <td>${a.enabled ? fubStatusText_(a.state) : '<span class="hist-time">not in the pilot</span>'}</td>
         <td>${a.keyPresent ? `<button type="button" class="btn small" onclick="probeFubKey_('${jsAttr(a.name)}', this)">Check key</button>` : ''}${a.enabled && a.keyPresent ? ` <button type="button" class="btn small" onclick="fubSyncNow_('${jsAttr(a.name)}', this)">Sync now</button>` : ''}</td>
       </tr>`).join('');
@@ -5503,7 +5513,7 @@
   function fubDefaultKeyProp_(name) { return 'FUB_KEY_' + String(name || '').toUpperCase().replace(/[^A-Z0-9]/g, '_'); }
   function fubKeyPropSelectHtml_(name, current) {
     const opts = [fubDefaultKeyProp_(name)];
-    ((FUB_KEY_SCAN && FUB_KEY_SCAN.keys) || []).forEach(k => { if (opts.indexOf(k.property) === -1) opts.push(k.property); });
+    ((FUB_KEY_SCAN && FUB_KEY_SCAN.keys) || []).forEach(k => { if (!k.reserved && opts.indexOf(k.property) === -1) opts.push(k.property); });
     if (current && opts.indexOf(current) === -1) opts.push(current);
     return `<select class="pill-select fub-keyprop-select" data-agent="${escapeHtml(name)}" onchange="saveFubConfig_()" title="Script Property that holds ${escapeHtml(name)}'s FUB key">${opts.map(o => `<option value="${escapeHtml(o)}" ${o === (current || opts[0]) ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}</select>`;
   }
@@ -5512,8 +5522,8 @@
     if (!sc) return '';
     if (sc.ok === false) return `<div class="inbox-err">${escapeHtml(sc.error || 'Could not look up the keys')}</div>`;
     if (!(sc.keys || []).length) return '<div class="history-empty">No FUB_KEY_* Script Properties found.</div>';
-    const withGuess = sc.keys.filter(k => k.ok && k.suggested);
-    return `<table style="margin-top:8px;"><thead><tr><th>Script Property</th><th>FUB user</th><th>Looks like</th></tr></thead><tbody>${sc.keys.map(k => `<tr><td>${escapeHtml(k.property)}</td><td>${k.ok ? escapeHtml(k.fubUser || '') + '<div class="hist-time">' + escapeHtml(k.email || '') + '</div>' : '<span class="fub-bad">' + escapeHtml(k.error || 'failed') + '</span>'}</td><td>${escapeHtml(k.suggested || '—')}</td></tr>`).join('')}</tbody></table>` +
+    const withGuess = sc.keys.filter(k => k.ok && k.suggested && !k.reserved);
+    return `<table style="margin-top:8px;"><thead><tr><th>Script Property</th><th>FUB user</th><th>Looks like</th></tr></thead><tbody>${sc.keys.map(k => `<tr><td>${escapeHtml(k.property)}</td><td>${k.ok ? escapeHtml(k.fubUser || '') + '<div class="hist-time">' + escapeHtml(k.email || '') + '</div>' : '<span class="fub-bad">' + escapeHtml(k.error || 'failed') + '</span>'}</td><td>${k.reserved ? escapeHtml(k.suggested) + ' (' + escapeHtml(k.reserved) + ' key, fixed)' : escapeHtml(k.suggested || '—')}</td></tr>`).join('')}</tbody></table>` +
       (withGuess.length ? `<div style="margin-top:6px;"><button type="button" class="btn small" onclick="applyFubKeySuggestions_()">Use these matches</button></div>` : '');
   }
   async function scanFubKeys_(btn) {
@@ -5523,7 +5533,7 @@
     renderFubPanel_();
   }
   async function applyFubKeySuggestions_() {
-    ((FUB_KEY_SCAN && FUB_KEY_SCAN.keys) || []).filter(k => k.ok && k.suggested).forEach(k => {
+    ((FUB_KEY_SCAN && FUB_KEY_SCAN.keys) || []).filter(k => k.ok && k.suggested && !k.reserved).forEach(k => {
       const sel = Array.from(document.querySelectorAll('.fub-keyprop-select')).find(x => x.dataset.agent === k.suggested);
       if (sel) sel.value = k.property;
     });
@@ -5730,14 +5740,38 @@
   function feedbackDecisionLabel_(s) {
     const f = s.feedback || {};
     if (f.implementedAt || s.done) return 'implemented';
-    if (f.decision === 'accepted') return 'accepted';
+    if (f.decision === 'accepted' || f.decision === 'approved') return 'accepted';
     if (f.decision === 'declined') return 'declined';
     return 'new';
+  }
+  // FUB access requests (2026-09-24): a change the agent's own key cannot make, filed with the key it
+  // needs. ADMIN = Durand's key; OWNER = Ryan's key (webhooks and the like), which Durand does not hold.
+  function fubAccessBadgeHtml_(s) {
+    const a = s && s.fubAccess; if (!a) return '';
+    return a.level === 'owner'
+      ? '<span class="fub-key-badge owner" title="Needs the OWNER key, which is Ryan\'s, not yours">needs OWNER key · Ryan\'s</span>'
+      : '<span class="fub-key-badge admin" title="Needs the ADMIN key, which is yours">needs ADMIN key · yours</span>';
+  }
+  function fubAccessItems_(level) { return feedbackItems_().filter(function(f) { return f.s.fubAccess && !f.s.feedback.decision && (!level || f.s.fubAccess.level === level); }); }
+  function approveFubAccess(id, idx) {
+    const t = findTask(id); if (!t) return;
+    const s = (t.subitems || [])[idx]; if (!s || !s.fubAccess || s.feedback.decision) return;
+    const now = new Date().toISOString();
+    const who = s.fubAccess.level === 'owner' ? "the owner key (Ryan's): take it to Ryan" : 'your admin key';
+    s.feedback.decision = 'approved'; s.feedback.decidedAt = now;
+    s.status = 'In Progress';
+    s.notes = 'APPROVED ' + todayISO() + ' by Durand: to be done with ' + who + '. Mark this done once the change is made in FUB.\n\n' + String(s.notes || '');
+    logHistory(t, 'subitem-feedback', s.title, 'FUB request approved (' + s.fubAccess.level + ' key)');
+    renderAll(); if (currentModalTaskId === id) openTaskCard(id); scheduleSave();
   }
   function feedbackRowHtml_(t, s, i) {
     if (!s || !s.feedback || typeof s.feedback !== 'object') return '';
     const state = feedbackDecisionLabel_(s);
     const f = s.feedback;
+    if (s.fubAccess) {
+      const fbtn = state === 'new' ? `<button type="button" class="btn small primary" onclick="event.stopPropagation(); approveFubAccess(${t.id}, ${i})" title="Approve: you (or Ryan, for the owner key) make the change in FUB, then mark this done">Approve</button><button type="button" class="btn small" onclick="event.stopPropagation(); declineFeedback(${t.id}, ${i})" title="Decline with a reason ${escapeHtml(f.by || 'they')} will see">Decline</button>` : '';
+      return `<div class="feedback-line">${fubAccessBadgeHtml_(s)}<span class="feedback-badge ${state}">FUB request · ${f.decision === 'approved' ? 'approved' : state}</span><span class="hist-time">from ${escapeHtml(f.by || t.feedbackFor || '')} ${escapeHtml(String(f.ts || '').slice(0, 10))}${s.fubAccess.trackerTaskId ? ' · on #' + s.fubAccess.trackerTaskId : ''}</span>${fbtn}</div>`;
+    }
     const buttons = state === 'new' ? `<button type="button" class="btn small primary" onclick="event.stopPropagation(); implementFeedback(${t.id}, ${i})" title="Accept it: a Claude step lands on the tracker feature task and this item closes when that step is done">Implement</button><button type="button" class="btn small" onclick="event.stopPropagation(); declineFeedback(${t.id}, ${i})" title="Decline with a reason ${escapeHtml(f.by || 'they')} will see">Decline</button>` : '';
     return `<div class="feedback-line"><span class="feedback-badge ${state}">${escapeHtml(f.kind || 'Feedback')} · ${state}</span><span class="hist-time">from ${escapeHtml(f.by || t.feedbackFor || '')} ${escapeHtml(String(f.ts || '').slice(0, 10))}${f.decidedAt ? ' · decided ' + escapeHtml(String(f.decidedAt).slice(0, 10)) : ''}${f.implTaskId ? ' · on #' + f.implTaskId : ''}</span>${buttons}</div>`;
   }

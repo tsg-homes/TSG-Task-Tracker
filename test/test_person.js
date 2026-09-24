@@ -16,6 +16,11 @@ const slice = {
   feedbackTaskId: 7, feedbackKinds: ['Bug', 'Feature request', 'Feedback'],
   fubKey: { present: false, enabled: true, setAt: '', fubUserName: '', cadenceMin: 240 },
   fubSync: { enabled: true, readOnly: true, lastRunAt: '2026-09-24T12:00:00Z', ok: true, error: '', cadenceMin: 60 },
+  fubKeyLevel: 'agent',
+  fubRequestKinds: [
+    { kind: 'complete', label: 'Mark one of my FUB tasks complete', level: 'agent', covered: true, message: 'Your own FUB key covers this. The tracker only reads from FUB for now, so make the change in Follow Up Boss; it comes back here on the next sync (or press Sync FUB).', needs: '' },
+    { kind: 'reassign', label: 'Reassign a task to someone else', level: 'admin', covered: false, message: 'Your FUB key only reaches the tasks and contacts assigned to you.', needs: "the admin key (Durand's)" },
+    { kind: 'webhook', label: 'Webhooks or API connections for the whole account', level: 'owner', covered: false, message: "Only the account owner's key can create or change webhooks.", needs: "the owner key (Ryan's)" } ],
   rows: [
     { kind: 'task', id: 1, own: false, context: true, title: 'Durand task with Marj sub', status: 'Not Started', priority: 'High', progress: 0, due: '2026-09-20', notes: '', owner: 'Durand', tags: [], taskType: '', estHours: null, subTotal: 1, subDone: 0, editable: [] },
     { kind: 'sub', id: 1, index: 0, own: false, parentOwn: false, parentTitle: 'Durand task with Marj sub', title: 'Marj part', status: 'Not Started', priority: 'High', progress: 0, done: false, due: '2026-09-18', notes: '', owner: 'Durand', subTotal: 0, editable: ['status', 'notes'] },
@@ -51,6 +56,7 @@ const dom = new JSDOM(html, {
         else if (action === 'add') reply = { ok: true, docVersion: 102 };
         else if (action === 'feedback') reply = { ok: true, docVersion: 103 };
         else if (action === 'fubKeySet') reply = payload.key === 'ka_goodKEY1234567890abc' ? { ok: true, fubUser: { name: 'Marj M', email: 'marjorie@tsg.homes' } } : { ok: false, error: 'FUB rejected that key. Copy it again from FUB and paste the whole key.' };
+        else if (action === 'fubRequest') reply = { ok: true, level: payload.kind === 'webhook' ? 'owner' : 'admin' };
         else if (action === 'fubSync') reply = { ok: true, wrote: true, result: { ok: true, added: 2, updated: 1, completed: 0, cancelled: 0 } };
         else reply = { ok: false, error: 'unknown' };
         setTimeout(() => chain._ok(JSON.stringify(reply)), 0);
@@ -202,6 +208,31 @@ setTimeout(async () => {
   doc.querySelector('#delegated .group-head').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
   await wait(10);
   check('clicking a group head collapses it', doc.getElementById('delegated').classList.contains('collapsed'));
+
+  // FUB change request from a FUB task's card (2026-09-24)
+  doc.querySelector('#delegated tr[data-id="9"] td.cell-group').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await wait(10);
+  const reqBtn = doc.querySelector('#card [data-fub-request="9"]');
+  check('a FUB task card offers "Request a FUB change"', !!reqBtn);
+  reqBtn.click();
+  const kindSel = doc.getElementById('fubReqKind'), msg = doc.getElementById('fubReqMsg');
+  check('the request form opens about that task, starting on a change her own key covers: pointed back to FUB, no Send', doc.getElementById('fubReqBack').hidden === false && /Call Ann Lee back/.test(doc.getElementById('fubReqOn').textContent) && msg.classList.contains('covered') && /make the change in Follow Up Boss/.test(msg.textContent) && doc.getElementById('fubReqSend').hidden === true);
+  kindSel.value = 'reassign'; kindSel.dispatchEvent(new w.Event('change', { bubbles: true }));
+  check("picking a reassign explains she can't, names the admin key (Durand's) and asks why", msg.classList.contains('admin') && /can't do this with your own FUB key/.test(msg.textContent) && /admin key \(Durand's\)/.test(msg.textContent) && doc.getElementById('fubReqWhy').hidden === false && doc.getElementById('fubReqSend').hidden === false);
+  kindSel.value = 'webhook'; kindSel.dispatchEvent(new w.Event('change', { bubbles: true }));
+  check("picking a webhook names the owner key (Ryan's) instead", msg.classList.contains('owner') && /owner key \(Ryan's\)/.test(msg.textContent));
+  kindSel.value = 'reassign'; kindSel.dispatchEvent(new w.Event('change', { bubbles: true }));
+  doc.getElementById('fubReqWhat').value = 'Give Ann Lee to Perly';
+  doc.getElementById('fubReqWhy').value = 'short';
+  doc.getElementById('fubReqForm').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  await wait(20);
+  check('a reason under 10 characters is not sent', !calls.some(c => c.action === 'fubRequest'));
+  doc.getElementById('fubReqWhy').value = 'Ann is Perly\'s past client';
+  doc.getElementById('fubReqForm').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  await wait(40);
+  const fr = calls.filter(c => c.action === 'fubRequest').pop();
+  check('Send files the request with the kind, what, why and the task, and closes the form', !!fr && fr.payload.kind === 'reassign' && fr.payload.what === 'Give Ann Lee to Perly' && /Perly/.test(fr.payload.why) && fr.payload.taskId === 9 && doc.getElementById('fubReqBack').hidden === true);
+  doc.getElementById('cardClose').click();
 
   console.log('\n=== ERRORS ===');
   if (!errors.length) console.log('(none)');

@@ -1847,19 +1847,39 @@ setTimeout(async () => {
     const T = w.eval('TASKS'); for (let i = T.length - 1; i >= 0; i--) if (T[i].id === 940) T.splice(i, 1);
     delete w.findTask(2).fub;
   });
-  tryCall('FUB key names: Find keys lists each FUB_KEY_* property with its FUB user; Use these matches maps the agent and the save carries keyProps (2026-09-24)', () => {
-    w.eval("FUB_STATUS = { ok: true, readOnly: true, pushBuilt: false, lastRunAt: '', config: { agents: ['Durand'], cadenceMin: 240, appBase: '', keyProps: {} }, agents: [ { name: 'Durand', enabled: true, keyProperty: 'FUB_KEY_DURAND', keyPresent: false, state: null }, { name: 'Ryan', enabled: false, keyProperty: 'FUB_KEY_RYAN', keyPresent: false, state: null } ] }");
-    w.eval("FUB_KEY_SCAN = { ok: true, keys: [ { property: 'FUB_KEY_ADMIN', ok: true, fubUser: 'Durand M', email: 'durand@tsg.homes', suggested: 'Durand' }, { property: 'FUB_KEY_OWNER', ok: true, fubUser: 'Ryan S', email: 'ryan@tsg.homes', suggested: 'Ryan' } ] }");
+  tryCall('FUB key names: the admin and owner keys are fixed to Durand and Ryan; other agents pick a FUB_KEY_* property; Find keys marks the elevated keys fixed (2026-09-24)', () => {
+    w.eval("FUB_STATUS = { ok: true, readOnly: true, pushBuilt: false, lastRunAt: '', config: { agents: ['Durand'], cadenceMin: 240, appBase: '', keyProps: {} }, agents: [ { name: 'Durand', enabled: true, keyProperty: 'FUB_KEY_ADMIN', keyLevel: 'admin', keyPresent: true, state: null }, { name: 'Ryan', enabled: false, keyProperty: 'FUB_KEY_OWNER', keyLevel: 'owner', keyPresent: true, state: null }, { name: 'Marj', enabled: false, keyProperty: 'FUB_KEY_MARJ', keyLevel: 'agent', keyPresent: false, state: null } ] }");
+    w.eval("FUB_KEY_SCAN = { ok: true, keys: [ { property: 'FUB_KEY_ADMIN', ok: true, fubUser: 'Durand M', email: 'durand@tsg.homes', suggested: 'Durand', reserved: 'admin' }, { property: 'FUB_KEY_OWNER', ok: true, fubUser: 'Ryan S', email: 'ryan@tsg.homes', suggested: 'Ryan', reserved: 'owner' }, { property: 'FUB_KEY_MARJORIE', ok: true, fubUser: 'Marj M', email: 'marj@tsg.homes', suggested: 'Marj', reserved: '' } ] }");
     const host = doc.createElement('div'); host.id = 'fubSyncBody'; doc.body.appendChild(host);
     w.renderFubPanel_();
-    const sel = Array.from(host.querySelectorAll('.fub-keyprop-select')).find(x => x.dataset.agent === 'Durand');
-    if (!sel || !Array.from(sel.options).some(o => o.value === 'FUB_KEY_ADMIN') || sel.value !== 'FUB_KEY_DURAND') throw new Error('select wrong');
-    if (!/Durand M/.test(host.textContent) || !/Use these matches/.test(host.textContent)) throw new Error('scan table missing');
-    Array.from(host.querySelectorAll('.fub-keyprop-select')).forEach(x => { x.value = x.dataset.agent === 'Durand' ? 'FUB_KEY_ADMIN' : x.dataset.agent === 'Ryan' ? 'FUB_KEY_OWNER' : x.value; });
-    const map = w.fubKeyPropsFromPanel_();
-    if (JSON.stringify(map) !== JSON.stringify({ Durand: 'FUB_KEY_ADMIN', Ryan: 'FUB_KEY_OWNER' })) throw new Error('map ' + JSON.stringify(map));
+    const sels = Array.from(host.querySelectorAll('.fub-keyprop-select'));
+    if (sels.some(x => x.dataset.agent === 'Durand' || x.dataset.agent === 'Ryan')) throw new Error('an elevated key holder got a select');
+    if (!/FUB_KEY_ADMIN · admin key, Durand's only/.test(host.textContent) || !/FUB_KEY_OWNER · owner key, Ryan's only/.test(host.textContent)) throw new Error('fixed key text missing');
+    const m = sels.find(x => x.dataset.agent === 'Marj');
+    if (!m || Array.from(m.options).some(o => o.value === 'FUB_KEY_ADMIN' || o.value === 'FUB_KEY_OWNER') || !Array.from(m.options).some(o => o.value === 'FUB_KEY_MARJORIE')) throw new Error('Marj options wrong');
+    if (!/owner key, fixed/.test(host.textContent) || !/Use these matches/.test(host.textContent)) throw new Error('scan table wrong');
+    m.value = 'FUB_KEY_MARJORIE';
+    if (JSON.stringify(w.fubKeyPropsFromPanel_()) !== JSON.stringify({ Marj: 'FUB_KEY_MARJORIE' })) throw new Error('map ' + JSON.stringify(w.fubKeyPropsFromPanel_()));
     host.remove();
     w.eval('FUB_STATUS = null; FUB_KEY_SCAN = null');
+  });
+  tryCall('FUB requests: an OWNER-key request is a critical alert naming Ryan\'s key, an ADMIN-key one a separate warning; the row carries the key badge and Approve records which key (2026-09-24)', () => {
+    const t = { id: 971, title: '@Jason — feedback', feedbackFor: 'Jason', status: 'In Progress', priority: 'Medium', tags: ['Feedback'], owner: 'Durand', group: 'Team Feedback', notes: '', timelineStart: '', timelineEnd: '', progress: 0, depends: '', docs: [], taskType: '', subitems: [
+      { title: '[FUB · needs OWNER key] Webhook for showings', notes: 'n', delegate: 'Jason', status: 'Not Started', feedback: { kind: 'FUB access', by: 'Jason', ts: '2026-09-24T15:00:00Z' }, fubAccess: { level: 'owner', kind: 'webhook', label: 'Webhooks or API connections for the whole account' } },
+      { title: '[FUB · needs ADMIN key] Reassign Ann Lee', notes: 'n', delegate: 'Jason', status: 'Not Started', feedback: { kind: 'FUB access', by: 'Jason', ts: '2026-09-24T15:05:00Z' }, fubAccess: { level: 'admin', kind: 'reassign', label: 'Reassign a task to someone else' } } ], history: [] };
+    w.eval('TASKS').push(t);
+    const al = w.computeAlerts();
+    const own = al.find(a => /need the OWNER key \(Ryan's, not yours\)/.test(a.text)), adm = al.find(a => /need the ADMIN key \(yours\)/.test(a.text));
+    if (!own || own.level !== 'critical' || !adm || adm.level !== 'warn') throw new Error('alerts ' + JSON.stringify(al.map(a => a.text)));
+    if (al.some(a => /new feedback item/.test(a.text))) throw new Error('FUB requests double-counted as feedback');
+    const row = w.feedbackRowHtml_(t, t.subitems[0], 0);
+    if (!/needs OWNER key · Ryan's/.test(row) || !/approveFubAccess\(971, 0\)/.test(row)) throw new Error('row ' + row);
+    w.eval('clearTimeout(saveTimer)');
+    w.approveFubAccess(971, 0);
+    w.eval('clearTimeout(saveTimer)');
+    if (t.subitems[0].feedback.decision !== 'approved' || !/owner key \(Ryan's\): take it to Ryan/.test(t.subitems[0].notes)) throw new Error('approve ' + t.subitems[0].notes);
+    if (w.computeAlerts().some(a => /OWNER key/.test(a.text))) throw new Error('approved request still alerting');
+    const T = w.eval('TASKS'); T.splice(T.indexOf(t), 1);
   });
   tryCall('setView(table)', () => w.setView('table'));
   tryCall('setView(cards)', () => w.setView('cards'));

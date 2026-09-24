@@ -2886,7 +2886,7 @@ section('FUB task sync: per-agent keys, read-only pilot, batched, cadence (2026-
   check('tick: no enabled agents means nothing runs', sandbox.tsgFubSyncTickIfDue_() === false);
   // status and probe
   const status = sandbox.tsgFubStatus_();
-  check('status: per agent key presence by property name, never the key', status.ok && status.readOnly === true && status.pushBuilt === false && status.agents.find(a => a.name === 'Jason').keyPresent === true && status.agents.find(a => a.name === 'Jason').keyProperty === 'FUB_KEY_JASON' && !JSON.stringify(status).includes('jason-secret-key') && status.agents.find(a => a.name === 'Durand').keyProperty === 'FUB_KEY_DURAND');
+  check('status: per agent key presence by property name, never the key', status.ok && status.readOnly === true && status.pushBuilt === false && status.agents.find(a => a.name === 'Jason').keyPresent === true && status.agents.find(a => a.name === 'Jason').keyProperty === 'FUB_KEY_JASON' && !JSON.stringify(status).includes('jason-secret-key') && status.agents.find(a => a.name === 'Durand').keyProperty === 'FUB_KEY_ADMIN' && status.agents.find(a => a.name === 'Durand').keyLevel === 'admin' && status.agents.find(a => a.name === 'Jason').keyLevel === 'agent');
   const probe = sandbox.tsgFubProbe_('Jason');
   check('probe: reports who the key is, counts and the field names FUB sends', probe.ok && probe.me.id === 12 && probe.fetched === 2 && probe.fieldNames.indexOf('dueDateTime') !== -1 && probe.types.Call === 1);
   sandbox.UrlFetchApp.fetch = (url, opts) => ({ getResponseCode: () => 401, getContentText: () => 'Unauthorized' });
@@ -2936,21 +2936,52 @@ section('FUB task sync: per-agent keys, read-only pilot, batched, cadence (2026-
   check('key pane: load reports the key present, the FUB user and the cadence, never the key', kl.fubKey.present === true && kl.fubKey.fubUserName === 'Jason Agent' && kl.fubKey.cadenceMin === 60 && !JSON.stringify(kl).includes(goodKey));
   kr = JSON.parse(sandbox.tsgPersonRpc('fubKeyRemove', '{}'));
   check('key pane: Remove deletes the property and records when', kr.ok === true && !scriptProps.FUB_KEY_JASON && !!JSON.parse(scriptProps.TSG_FUB_SYNC_STATE).agents.Jason.keyRemovedAt && JSON.parse(sandbox.tsgPersonRpc('load', '{}')).fubKey.present === false);
-  // key property names (2026-09-24): an agent can read a FUB_KEY_* property other than FUB_KEY_<NAME>
-  const md = JSON.parse(disk); md.meta.teamRoster = roster;
-  sandbox.applyDataPatch_(md, { op: 'set_meta', fields: { fubSync: { agents: ['Jason'], keyProps: { Durand: 'fub_key_admin', Jason: 'SCRIPT_TOKEN', Marj: 'FUB_KEY_ADMIN', Nobody: 'FUB_KEY_OWNER' } } }, source: 'Durand' });
-  check('key map: only FUB_KEY_* names for roster members, one agent per property, upper-cased; SCRIPT_TOKEN is never accepted', JSON.stringify(md.meta.fubSync.keyProps) === JSON.stringify({ Durand: 'FUB_KEY_ADMIN' }) && JSON.parse(scriptProps.TSG_FUB_SYNC_CONFIG).keyProps.Durand === 'FUB_KEY_ADMIN');
-  check('key map: a mapped agent reads the mapped property, others keep FUB_KEY_<NAME>', sandbox.tsgFubKeyProp_('Durand') === 'FUB_KEY_ADMIN' && sandbox.tsgFubKeyProp_('Jason') === 'FUB_KEY_JASON');
+  // FUB change requests from an agent's page (2026-09-24)
+  { const dd = JSON.parse(disk); dd.meta.next_id = Math.max(dd.meta.next_id || 0, 900); dd.tasks.push({ id: 880, title: '@Jason — Bug reports, feature requests and feedback', feedbackFor: 'Jason', owner: 'Durand', status: 'In Progress', priority: 'Medium', pinned: true, tags: ['Feedback'], subitems: [], history: [], delegateVisible: true }); disk = JSON.stringify(dd); }
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'jason@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  let fq = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
+  check('fub request: load gives the agent level and the kinds with what each needs', fq.fubKeyLevel === 'agent' && fq.fubRequestKinds.find(k => k.kind === 'webhook').needs.includes("Ryan's") && fq.fubRequestKinds.find(k => k.kind === 'complete').covered === true);
+  fq = JSON.parse(sandbox.tsgPersonRpc('fubRequest', JSON.stringify({ kind: 'complete', what: 'close it', why: 'it is finished already' })));
+  check('fub request: a change his own key covers is pointed back to FUB and nothing is filed', fq.ok === false && fq.covered === true && /make the change in Follow Up Boss/.test(fq.error) && !JSON.parse(disk).tasks.find(t => t.id === 880).subitems.length);
+  fq = JSON.parse(sandbox.tsgPersonRpc('fubRequest', JSON.stringify({ kind: 'reassign', what: 'Give Ann Lee to Marj', why: '' })));
+  check('fub request: an escalated change without a reason is refused', fq.ok === false && /Explain why/.test(fq.error));
+  fq = JSON.parse(sandbox.tsgPersonRpc('fubRequest', JSON.stringify({ kind: 'reassign', what: 'Give Ann Lee to Marj', why: 'She is Marj\'s sphere contact, not mine', taskId: 401 })));
+  let fd = JSON.parse(disk), fs0 = fd.tasks.find(t => t.id === 880).subitems[0];
+  check('fub request: an ADMIN-key change is filed on his feedback task with the key, the what, the why and the FUB task', fq.ok === true && fq.level === 'admin' && !!fs0 && /^\[FUB · needs ADMIN key\] Give Ann Lee to Marj/.test(fs0.title) && fs0.fubAccess.level === 'admin' && fs0.fubAccess.why.includes('sphere') && fs0.fubAccess.trackerTaskId === 401 && fs0.fubAccess.fubTaskId != null && /NEEDS ADMIN KEY \(the admin key \(Durand's\)\)/.test(fs0.notes) && fs0.feedback.kind === 'FUB access' && fs0.delegate === 'Jason');
+  check('fub request: it shows in the delegate activity log for Durand', (fd.meta.delegateActivity || []).some(a => a.person === 'Jason' && a.kind === 'feedback' && a.field === 'FUB access'));
+  cacheStore = {};
+  fq = JSON.parse(sandbox.tsgPersonRpc('fubRequest', JSON.stringify({ kind: 'webhook', what: 'A webhook to push showings', why: 'Showing feedback is lost otherwise' })));
+  fd = JSON.parse(disk); const fs1 = fd.tasks.find(t => t.id === 880).subitems[1];
+  check('fub request: an OWNER-key change is filed marked OWNER key (Ryan\'s) at High priority', fq.ok === true && fq.level === 'owner' && /needs OWNER key/.test(fs1.title) && fs1.fubAccess.level === 'owner' && fs1.priority === 'High' && /owner key \(Ryan's\)/.test(fs1.notes));
+  fq = JSON.parse(sandbox.tsgPersonRpc('fubRequest', JSON.stringify({ kind: 'nope', what: 'x', why: 'xxxxxxxxxxxx' })));
+  check('fub request: an unknown kind is refused', fq.ok === false && /unknown request kind/.test(fq.error));
+  sandbox.Session = origSession;
+  // key property names (2026-09-24): an agent can read a FUB_KEY_* property other than FUB_KEY_<NAME>;
+  // FUB_KEY_ADMIN is Durand's and FUB_KEY_OWNER is Ryan's, and nobody else can ever read them
+  const md = JSON.parse(disk); md.meta.teamRoster = roster.concat([{ name: 'Ryan' }, { name: 'Admin' }]);
+  sandbox.applyDataPatch_(md, { op: 'set_meta', fields: { fubSync: { agents: ['Jason'], keyProps: { Jason: 'SCRIPT_TOKEN', Marj: 'fub_key_marj2', Durand: 'FUB_KEY_MARJ2', Admin: 'FUB_KEY_OWNER', Nobody: 'FUB_KEY_X' } } }, source: 'Durand' });
+  check('key map: only FUB_KEY_* names for roster members, one per property, upper-cased; SCRIPT_TOKEN, the elevated keys and the holders are never mapped', JSON.stringify(md.meta.fubSync.keyProps) === JSON.stringify({ Marj: 'FUB_KEY_MARJ2' }) && JSON.parse(scriptProps.TSG_FUB_SYNC_CONFIG).keyProps.Marj === 'FUB_KEY_MARJ2');
+  check('key roles: Durand always reads FUB_KEY_ADMIN, Ryan always FUB_KEY_OWNER, a mapped agent the mapped property, others FUB_KEY_<NAME>', sandbox.tsgFubKeyProp_('Durand') === 'FUB_KEY_ADMIN' && sandbox.tsgFubKeyProp_('Ryan') === 'FUB_KEY_OWNER' && sandbox.tsgFubKeyProp_('Marj') === 'FUB_KEY_MARJ2' && sandbox.tsgFubKeyProp_('Jason') === 'FUB_KEY_JASON');
+  check('key roles: a person whose name would default to an elevated key never reads it', sandbox.tsgFubKeyProp_('Admin') === 'FUB_KEY_ADMIN_AGENT' && sandbox.tsgFubKeyProp_('Owner') === 'FUB_KEY_OWNER_AGENT');
   sandbox.applyDataPatch_(md, { op: 'set_meta', fields: { fubSync: { agents: ['Jason', 'Durand'], cadenceMin: 240 } }, source: 'Durand' });
-  check('key map: a settings save without the map keeps it', md.meta.fubSync.keyProps.Durand === 'FUB_KEY_ADMIN' && md.meta.fubSync.agents.join() === 'Jason,Durand');
-  scriptProps.TSG_FUB_SYNC_CONFIG = JSON.stringify({ agents: ['Durand'], keyProps: { Durand: 'SCRIPT_TOKEN' } });
-  check('key map: a tampered property mapping to a non-FUB_KEY name falls back to the default', sandbox.tsgFubKeyProp_('Durand') === 'FUB_KEY_DURAND');
+  check('key map: a settings save without the map keeps it', md.meta.fubSync.keyProps.Marj === 'FUB_KEY_MARJ2' && md.meta.fubSync.agents.join() === 'Jason,Durand');
+  scriptProps.TSG_FUB_SYNC_CONFIG = JSON.stringify({ agents: ['Jason'], keyProps: { Jason: 'SCRIPT_TOKEN', Marj: 'FUB_KEY_ADMIN' } });
+  check('key map: a tampered property mapping to a non-FUB_KEY name or an elevated key falls back to the default', sandbox.tsgFubKeyProp_('Jason') === 'FUB_KEY_JASON' && sandbox.tsgFubKeyProp_('Marj') === 'FUB_KEY_MARJ');
+  check('key levels: Durand admin, Ryan owner, everyone else agent', sandbox.tsgFubKeyLevel_('Durand') === 'admin' && sandbox.tsgFubKeyLevel_('Ryan') === 'owner' && sandbox.tsgFubKeyLevel_('Jason') === 'agent');
+  const jk = sandbox.tsgFubRequestKindsFor_('Jason'), rk = sandbox.tsgFubRequestKindsFor_('Ryan'), dk = sandbox.tsgFubRequestKindsFor_('Durand');
+  const kOf = (list, k) => list.find(x => x.kind === k);
+  check('request kinds for an agent: own-task changes are covered, reassigning needs the admin key (Durand\'s), webhooks need the owner key (Ryan\'s), each with a reason', kOf(jk, 'complete').covered && kOf(jk, 'reschedule').covered && !kOf(jk, 'reassign').covered && /admin key \(Durand's\)/.test(kOf(jk, 'reassign').needs) && /only reaches the tasks and contacts assigned to you/.test(kOf(jk, 'reassign').message) && !kOf(jk, 'webhook').covered && /owner key \(Ryan's\)/.test(kOf(jk, 'webhook').needs) && kOf(jk, 'webhook').level === 'owner');
+  check('request kinds: Ryan\'s owner key covers everything; Durand\'s admin key covers all but webhooks', rk.every(k => k.covered) && dk.filter(k => !k.covered).map(k => k.kind).join() === 'webhook');
   sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (scriptProps[k] == null ? null : scriptProps[k]), setProperty: (k, v) => { scriptProps[k] = v; }, deleteProperty: (k) => { delete scriptProps[k]; }, getKeys: () => Object.keys(scriptProps) });
-  scriptProps.FUB_KEY_ADMIN = goodKey; scriptProps.FUB_KEY_OWNER = 'ka_rejectedKEY12345678'; scriptProps.SCRIPT_TOKEN = 'tok-secret';
+  scriptProps.FUB_KEY_MARJ2 = goodKey; scriptProps.FUB_KEY_OWNER = 'ka_rejectedKEY12345678'; scriptProps.SCRIPT_TOKEN = 'tok-secret';
   const scan = sandbox.tsgFubKeyScan_();
-  const sAdmin = scan.keys.find(k => k.property === 'FUB_KEY_ADMIN'), sOwner = scan.keys.find(k => k.property === 'FUB_KEY_OWNER');
-  check('key scan: lists only FUB_KEY_* properties with their FUB user and a roster guess, never a key value', scan.ok && !scan.keys.some(k => k.property === 'SCRIPT_TOKEN') && sAdmin.ok && sAdmin.fubUser === 'Jason Agent' && sAdmin.suggested === 'Jason' && sOwner.ok === false && /rejected/.test(sOwner.error) && !JSON.stringify(scan).includes(goodKey) && !JSON.stringify(scan).includes('tok-secret') && !JSON.stringify(scan).includes('rejectedKEY'));
-  delete scriptProps.FUB_KEY_ADMIN; delete scriptProps.FUB_KEY_OWNER; delete scriptProps.SCRIPT_TOKEN;
+  const sM = scan.keys.find(k => k.property === 'FUB_KEY_MARJ2'), sOwner = scan.keys.find(k => k.property === 'FUB_KEY_OWNER');
+  check('key scan: lists only FUB_KEY_* properties with their FUB user and a roster guess, never a key value', scan.ok && !scan.keys.some(k => k.property === 'SCRIPT_TOKEN') && sM.ok && sM.fubUser === 'Jason Agent' && sM.suggested === 'Jason' && sOwner.ok === false && /rejected/.test(sOwner.error) && !JSON.stringify(scan).includes(goodKey) && !JSON.stringify(scan).includes('tok-secret') && !JSON.stringify(scan).includes('rejectedKEY'));
+  scriptProps.FUB_KEY_OWNER = goodKey;
+  const scan2 = sandbox.tsgFubKeyScan_();
+  const sO2 = scan2.keys.find(k => k.property === 'FUB_KEY_OWNER');
+  check('key scan: an elevated key is shown as its holder\'s, fixed, whoever FUB says it is', sO2.ok && sO2.reserved === 'owner' && sO2.suggested === 'Ryan');
+  delete scriptProps.FUB_KEY_MARJ2; delete scriptProps.FUB_KEY_OWNER; delete scriptProps.SCRIPT_TOKEN; delete scriptProps.TSG_FUB_SYNC_CONFIG;
   // owner-only page endpoint for the Views pop-up
   sandbox.Session = origSession;
   scriptProps.SCRIPT_TOKEN = 'tok-pp';

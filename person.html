@@ -196,6 +196,10 @@
   .cmt-item.resolved { opacity: 0.55; }
   .cmt-head { font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
   .cmt-reply { margin: 6px 0 0 14px; padding-left: 8px; border-left: 2px solid var(--gridline); }
+  .fub-req-msg { font-size: 12.5px; line-height: 1.45; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); }
+  .fub-req-msg.admin { background: var(--status-warn-bg); color: var(--status-warn); }
+  .fub-req-msg.owner { background: var(--status-critical-bg); color: var(--status-critical); }
+  .fub-req-msg.covered { background: var(--status-good-bg); color: var(--status-good); }
   footer.tsg-footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--gridline); font-size: 11.5px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
   @media (max-width: 720px) {
     .wrap { width: auto; padding: 16px 16px 48px; }
@@ -259,7 +263,21 @@
           <input type="password" id="fubKeyInput" placeholder="Paste your FUB API key" aria-label="FUB API key" autocomplete="new-password" spellcheck="false">
           <div class="fb-actions"><button type="button" class="btn small" id="fubKeyRemove" hidden>Remove key</button><button type="submit" class="btn small primary" id="fubKeySave">Check and save</button></div>
         </form>
+        <div class="fub-note" style="margin-top:10px;">Need something in FUB your own key cannot do? <button type="button" class="btn small" id="btnFubRequestGeneral">Request a FUB change</button></div>
       </div>
+    </div>
+  </div>
+  <div class="modal-back" id="fubReqBack" hidden>
+    <div class="card" role="dialog" aria-modal="true" aria-label="Request a FUB change">
+      <div class="card-head"><h2 class="card-title">Request a FUB change</h2><button type="button" class="icon-btn" id="fubReqClose" aria-label="Close">&#10005;</button></div>
+      <form class="fb-form" id="fubReqForm" autocomplete="off">
+        <div class="fub-note" id="fubReqOn"></div>
+        <select id="fubReqKind" aria-label="What kind of change"></select>
+        <div class="fub-req-msg" id="fubReqMsg"></div>
+        <textarea id="fubReqWhat" placeholder="Exactly what you need changed" aria-label="What you need changed"></textarea>
+        <textarea id="fubReqWhy" placeholder="Why you need it (Durand reviews this before anything happens)" aria-label="Why you need it"></textarea>
+        <div class="fb-actions"><button type="button" class="btn small" id="fubReqCancel">Cancel</button><button type="submit" class="btn small primary" id="fubReqSend">Send to Durand</button></div>
+      </form>
     </div>
   </div>
   <div class="modal-back" id="commentsBack" hidden>
@@ -285,7 +303,7 @@
   </footer>
 </div>
 <script>
-  const PERSON_UI_VERSION = '2026-09-24.3';
+  const PERSON_UI_VERSION = '2026-09-24.4';
   const PERSON = '__TSG_PERSON__';
   const AS = '__TSG_AS__';
   const CODE_VERSION = '__TSG_CODE_VERSION__';
@@ -494,7 +512,7 @@
         '<b>Progress</b><span>' + progressHtml(pct) + '</span>' +
         ((r.taskType || (r.tags || []).length || r.estHours != null || (r.docs || []).length) ? '<b>Details</b><span>' + (r.taskType ? '<span class="type-badge">' + esc(r.taskType) + '</span>' : '') + (r.tags || []).map(tagChipHtml).join('') + (r.estHours != null ? '<span class="est">' + r.estHours + 'h est.</span>' : '') + docChipsHtml(r.docs) + '</span>' : '') +
         (r.status === STATE.pendingStatus ? '<b></b><span class="pending-note">Marked done; Durand verifies the work and closes it.</span>' : '') +
-        (r.fub ? '<b>FUB</b><span>' + fubChipHtml(r) + ' <span class="fub-note">Read-only here for now: change it in Follow Up Boss; the red-outlined fields come from FUB.</span></span>' : '') +
+        (r.fub ? '<b>FUB</b><span>' + fubChipHtml(r) + ' <span class="fub-note">Read-only here for now: change it in Follow Up Boss; the red-outlined fields come from FUB.</span> <button type="button" class="btn small" data-fub-request="' + r.id + '">Request a FUB change</button></span>' : '') +
         (r.feedbackFor ? '<b></b><span class="est">Your bug reports, feature requests and feedback collect here. Use the Feedback button at the top to add one; Durand implements or declines each and you see the decision on the item.</span>' : '') +
       '</div>' +
       (r.context ? '' : '<div class="card-notes"><b>Notes</b><div class="card-notes-edit" contenteditable="' + (can('notes') ? 'true' : 'false') + '" data-field="notes">' + esc(r.notes) + '</div></div>') +
@@ -517,6 +535,7 @@
       renderFubKeyStatus();
       STATE = { rows: r.rows, statuses: r.statuses, priorities: r.priorities, docVersion: r.docVersion, feedbackTaskId: r.feedbackTaskId || null, feedbackKinds: r.feedbackKinds || STATE.feedbackKinds, pendingStatus: r.pendingStatus || STATE.pendingStatus };
       document.getElementById('btnFeedback').hidden = !STATE.feedbackTaskId;
+      FUB_REQ_KINDS = Array.isArray(r.fubRequestKinds) ? r.fubRequestKinds : [];
       CAN_COMMENT = !!r.canComment; COMMENTS = Array.isArray(r.comments) ? r.comments : [];
       renderCommentControls_();
       const fs = r.fubSync || { enabled: false };
@@ -701,6 +720,62 @@
       await load(true);
     } catch (err) {
       setSync('FUB sync: ' + (err.message || err), true);
+    } finally { btn.disabled = false; }
+  });
+
+  // ---- FUB change requests (2026-09-24): a change the person's own key covers is pointed back to
+  // FUB; one that needs the admin key (Durand's) or the owner key (Ryan's) is explained, needs a
+  // reason, and goes to Durand for review marked with the key it needs. ----
+  let FUB_REQ_KINDS = [], FUB_REQ_TASK = null;
+  function openFubRequest(taskId) {
+    FUB_REQ_TASK = taskId == null ? null : Number(taskId);
+    const sel = document.getElementById('fubReqKind');
+    sel.innerHTML = FUB_REQ_KINDS.map(function(k) { return '<option value="' + esc(k.kind) + '">' + esc(k.label) + '</option>'; }).join('');
+    const r = FUB_REQ_TASK != null ? STATE.rows.filter(function(x) { return x.kind === 'task' && x.id === FUB_REQ_TASK; })[0] : null;
+    document.getElementById('fubReqOn').textContent = r ? 'About: ' + r.title + (r.fub && r.fub.personName ? ' (' + r.fub.personName + ')' : '') : 'Not tied to one task.';
+    document.getElementById('fubReqWhat').value = ''; document.getElementById('fubReqWhy').value = '';
+    renderFubRequestKind_();
+    document.getElementById('fubReqBack').hidden = false;
+    sel.focus();
+  }
+  function renderFubRequestKind_() {
+    const k = FUB_REQ_KINDS.filter(function(x) { return x.kind === document.getElementById('fubReqKind').value; })[0];
+    const msg = document.getElementById('fubReqMsg');
+    if (!k) { msg.textContent = ''; return; }
+    msg.className = 'fub-req-msg ' + (k.covered ? 'covered' : k.level);
+    msg.textContent = k.covered ? k.message : ("You can't do this with your own FUB key. " + k.message + ' It needs ' + k.needs + '. Tell Durand why you need it; he reviews it before anything changes.');
+    document.getElementById('fubReqWhat').hidden = !!k.covered;
+    document.getElementById('fubReqWhy').hidden = !!k.covered;
+    document.getElementById('fubReqSend').hidden = !!k.covered;
+  }
+  function closeFubRequest() { document.getElementById('fubReqBack').hidden = true; }
+  document.getElementById('fubReqKind').addEventListener('change', renderFubRequestKind_);
+  document.getElementById('fubReqCancel').addEventListener('click', closeFubRequest);
+  document.getElementById('fubReqClose').addEventListener('click', closeFubRequest);
+  document.getElementById('fubReqBack').addEventListener('click', function(e) { if (e.target === e.currentTarget) closeFubRequest(); });
+  document.getElementById('btnFubRequestGeneral').addEventListener('click', function() { closeSettingsPane(); openFubRequest(null); });
+  document.addEventListener('click', function(e) {
+    const b = e.target.closest && e.target.closest('[data-fub-request]');
+    if (!b || COMMENT_MODE) return;
+    e.preventDefault(); e.stopPropagation();
+    openFubRequest(b.dataset.fubRequest);
+  });
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && !document.getElementById('fubReqBack').hidden) closeFubRequest(); });
+  document.getElementById('fubReqForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const what = document.getElementById('fubReqWhat').value.trim(), why = document.getElementById('fubReqWhy').value.trim();
+    if (!what) { setSync('Say exactly what you need changed.', true); return; }
+    if (why.length < 10) { setSync('Explain why you need this change.', true); return; }
+    const btn = document.getElementById('fubReqSend'); btn.disabled = true;
+    setSync('Sending to Durand…', false, true);
+    try {
+      const r = await rpc('fubRequest', { kind: document.getElementById('fubReqKind').value, what: what, why: why, taskId: FUB_REQ_TASK });
+      if (!r.ok && !r.busy) throw new Error(r.error || 'not sent');
+      closeFubRequest();
+      setSync(r.busy ? 'Queued for Durand' : 'Sent to Durand for review');
+      await load(true);
+    } catch (err) {
+      setSync('Not sent: ' + (err.message || err), true);
     } finally { btn.disabled = false; }
   });
 
