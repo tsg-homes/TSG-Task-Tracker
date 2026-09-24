@@ -202,6 +202,7 @@
       <span id="sync">Loading…</span>
       <span id="fubSyncInfo" hidden></span>
       <button class="btn small" id="btnFubSync" type="button" hidden title="Pull your latest Follow Up Boss tasks now (it also runs on its own on a schedule)">&#8635; Sync FUB</button>
+      <button class="btn small" id="btnSettings" type="button" title="Your settings: connect Follow Up Boss">&#9881; Settings</button>
       <button class="btn small" id="btnFeedback" type="button" hidden title="Report a bug, ask for a feature or leave feedback; it goes to Durand on your feedback task">&#128172; Feedback</button>
       <button class="theme-toggle" id="themeToggle" title="Toggle light / dark" aria-label="Toggle theme"></button>
     </div>
@@ -235,6 +236,19 @@
   <div class="modal-back" id="cardBack" hidden>
     <div class="card" id="card" role="dialog" aria-modal="true" aria-label="Task"></div>
   </div>
+  <div class="modal-back" id="settingsBack" hidden>
+    <div class="card" role="dialog" aria-modal="true" aria-label="Your settings">
+      <div class="card-head"><h2 class="card-title">Your settings</h2><button type="button" class="icon-btn" id="settingsClose" aria-label="Close">&#10005;</button></div>
+      <div class="card-notes"><b>Follow Up Boss</b>
+        <div id="fubKeyStatus" class="fub-note"></div>
+        <form class="fb-form" id="fubKeyForm" autocomplete="off">
+          <div class="fub-note">Your FUB tasks come into the tracker with your own API key. In Follow Up Boss open Admin, then API, and create or copy your key (if you do not see API, ask Durand). Paste it below: it is checked with FUB first, stored securely, and never shown again. It is not a password; you can remove it here at any time.</div>
+          <input type="password" id="fubKeyInput" placeholder="Paste your FUB API key" aria-label="FUB API key" autocomplete="new-password" spellcheck="false">
+          <div class="fb-actions"><button type="button" class="btn small" id="fubKeyRemove" hidden>Remove key</button><button type="submit" class="btn small primary" id="fubKeySave">Check and save</button></div>
+        </form>
+      </div>
+    </div>
+  </div>
   <div class="modal-back" id="feedbackBack" hidden>
     <div class="card" role="dialog" aria-modal="true" aria-label="Feedback">
       <div class="card-head"><h2 class="card-title">Feedback for Durand</h2><button type="button" class="icon-btn" id="feedbackClose" aria-label="Close">&#10005;</button></div>
@@ -252,7 +266,7 @@
   </footer>
 </div>
 <script>
-  const PERSON_UI_VERSION = '2026-09-24.1';
+  const PERSON_UI_VERSION = '2026-09-24.2';
   const PERSON = '__TSG_PERSON__';
   const AS = '__TSG_AS__';
   const CODE_VERSION = '__TSG_CODE_VERSION__';
@@ -266,10 +280,28 @@
   const collapsedGroups = new Set();
   let openCardKey = null;
 
+  // Embedded in the owner's Views pop-up (2026-09-24): no google.script.run in a srcdoc frame, so
+  // calls go to the parent dashboard by postMessage and come back the same way.
+  const BRIDGE = { seq: 0, pending: {} };
+  window.addEventListener('message', function(e) {
+    const r = e.data && e.data.tsgPersonRpcReply;
+    if (!r || e.source !== window.parent || !BRIDGE.pending[r.id]) return;
+    const p = BRIDGE.pending[r.id]; delete BRIDGE.pending[r.id];
+    if (r.error) p.reject(new Error(r.error)); else { try { p.resolve(JSON.parse(r.text)); } catch (err) { p.reject(new Error('Bad response')); } }
+  });
+  function bridgeRpc(action, body) {
+    return new Promise(function(resolve, reject) {
+      const id = ++BRIDGE.seq;
+      BRIDGE.pending[id] = { resolve: resolve, reject: reject };
+      window.parent.postMessage({ tsgPersonRpc: { id: id, action: action, payload: JSON.stringify(body) } }, '*');
+      setTimeout(function() { if (BRIDGE.pending[id]) { delete BRIDGE.pending[id]; reject(new Error('No answer from the dashboard')); } }, 90000);
+    });
+  }
   function rpc(action, payload) {
     const body = Object.assign({}, payload || {});
     if (AS && AS.indexOf('__') !== 0) body.as = AS;
     const hasRpc = window.google && google.script && google.script.run;
+    if (!hasRpc && window.parent && window.parent !== window) return bridgeRpc(action, body);
     if (!hasRpc) return Promise.reject(new Error('This page must be opened from the tracker link.'));
     return new Promise(function(resolve, reject) {
       google.script.run
@@ -461,6 +493,8 @@
     try {
       const r = await rpc('load');
       if (!r.ok) throw new Error(r.error || 'load failed');
+      FUB_KEY = r.fubKey || { present: false };
+      renderFubKeyStatus();
       STATE = { rows: r.rows, statuses: r.statuses, priorities: r.priorities, docVersion: r.docVersion, feedbackTaskId: r.feedbackTaskId || null, feedbackKinds: r.feedbackKinds || STATE.feedbackKinds, pendingStatus: r.pendingStatus || STATE.pendingStatus };
       document.getElementById('btnFeedback').hidden = !STATE.feedbackTaskId;
       const fs = r.fubSync || { enabled: false };
@@ -588,6 +622,51 @@
   document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && !document.getElementById('feedbackBack').hidden) closeFeedback(); });
 
   // FUB "Sync now" (2026-09-24): the person's own FUB tasks, one batched write, 2-minute cooldown.
+  // ---- Your settings: the agent's own FUB key (2026-09-24). Never echoed back or kept in the page. ----
+  let FUB_KEY = { present: false };
+  function renderFubKeyStatus() {
+    const el = document.getElementById('fubKeyStatus');
+    if (!el) return;
+    const k = FUB_KEY || {};
+    el.innerHTML = k.present
+      ? '<b style="display:inline;text-transform:none;letter-spacing:0;font-size:12px;color:var(--status-good);">Connected</b>' + (k.fubUserName ? ' as ' + esc(k.fubUserName) + ' in FUB' : '') + (k.setAt ? ' · saved ' + esc(new Date(k.setAt).toLocaleDateString()) : '') + '. ' + (k.enabled ? 'Your FUB tasks sync every ' + (k.cadenceMin >= 60 ? (k.cadenceMin / 60) + ' hours' : k.cadenceMin + ' minutes') + ', and Sync FUB pulls them now.' : 'Durand turns the sync on for you; until then nothing is pulled.')
+      : 'Not connected yet.';
+    document.getElementById('fubKeyRemove').hidden = !k.present;
+    document.getElementById('fubKeySave').textContent = k.present ? 'Replace key' : 'Check and save';
+  }
+  function openSettingsPane() { renderFubKeyStatus(); document.getElementById('settingsBack').hidden = false; document.getElementById('fubKeyInput').focus(); }
+  function closeSettingsPane() { document.getElementById('fubKeyInput').value = ''; document.getElementById('settingsBack').hidden = true; }
+  document.getElementById('btnSettings').addEventListener('click', openSettingsPane);
+  document.getElementById('settingsClose').addEventListener('click', closeSettingsPane);
+  document.getElementById('settingsBack').addEventListener('click', function(e) { if (e.target === e.currentTarget) closeSettingsPane(); });
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && !document.getElementById('settingsBack').hidden) closeSettingsPane(); });
+  document.getElementById('fubKeyForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const input = document.getElementById('fubKeyInput');
+    const key = input.value.trim();
+    input.value = '';   // never left in the page
+    if (!key) return;
+    const btn = document.getElementById('fubKeySave'); btn.disabled = true;
+    setSync('Checking your key with FUB…', false, true);
+    try {
+      const r = await rpc('fubKeySet', { key: key });
+      if (!r.ok) throw new Error(r.error || 'not saved');
+      setSync('FUB connected' + (r.fubUser && r.fubUser.name ? ' as ' + r.fubUser.name : ''));
+      await load(true);
+    } catch (err) {
+      setSync('FUB key not saved: ' + (err.message || err), true);
+    } finally { btn.disabled = false; renderFubKeyStatus(); }
+  });
+  document.getElementById('fubKeyRemove').addEventListener('click', async function() {
+    if (!confirm('Remove your FUB key? Your FUB tasks stop syncing until you add one again.')) return;
+    try {
+      const r = await rpc('fubKeyRemove', {});
+      if (!r.ok) throw new Error(r.error || 'not removed');
+      setSync('FUB key removed');
+      await load(true);
+    } catch (err) { setSync('Could not remove the key: ' + (err.message || err), true); }
+  });
+
   document.getElementById('btnFubSync').addEventListener('click', async function() {
     const btn = this; btn.disabled = true;
     setSync('Syncing your FUB tasks…', false, true);

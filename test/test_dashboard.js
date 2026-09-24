@@ -69,6 +69,7 @@ const dom = new JSDOM(html, {
         return { ok: true, status: 200, json: async () => ({ ok: true, serverVersion: 1 }) };
       }
       if (u.includes('api=data')) return { ok: true, status: 200, json: async () => fakeData };
+      if (u.includes('api=personPage')) { window.__personPageUrls = (window.__personPageUrls || []).concat([u]); return { ok: true, status: 200, json: async () => ({ ok: true, person: 'Ryan', html: '<!doctype html><html><body><h1>Ryan</h1><span>PERSON PAGE Ryan</span></body></html>' }) }; }
       if (u.includes('api=calendar')) return { ok: true, status: 200, json: async () => [] };
       if (u.includes('api=meetings')) { window.__meetingsFetchUrls.push(u); return { ok: true, status: 200, json: async () => ({ events: window.__pickerEvents || [], bestGuessId: null }) }; }
       if (u.includes('api=geocode')) return { ok: true, status: 200, json: async () => ({ ok: true, places: [{ label: '45 Baltimore Pike, Media, PA 19063, USA', name: '' }] }) };
@@ -224,16 +225,34 @@ setTimeout(async () => {
   w.alert = function() {};
   w.findTask(2).delegate = 'Ryan'; w.findTask(3).delegate = 'Ryan';   // two, so the list pop-up opens rather than a single card
   w.findTask(2).delegateVisible = true; w.findTask(3).delegateVisible = true;   // the visibility switch (2026-09-23) is off by default
-  doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true, shiftKey: true }));
-  tryCall("shift-clicking a team view button opens that person's filtered pop-up on this board (2026-09-22: swapped)", () => {
-    const modal = doc.getElementById('dayViewModal');
-    if (!modal.classList.contains('open')) throw new Error('pop-up not open');
-    if (doc.getElementById('dayViewTitle').textContent !== "Ryan's view") throw new Error('title: ' + doc.getElementById('dayViewTitle').textContent);
-    if (opened.length) throw new Error('a window was opened on a shift-click');
-  });
-  doc.getElementById('dayViewModal').classList.remove('open');
   doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
-  tryCall("a plain click opens ?person=<Name> in its own window: the preview mirrors what they see", () => {
+  await new Promise(r => setTimeout(r, 30));
+  tryCall("a plain click shows the person's ACTUAL page in the pop-up (2026-09-24): rendered by the server as an owner preview, in a sandboxed frame", () => {
+    const modal = doc.getElementById('personPageModal'), frame = doc.getElementById('personPageFrame');
+    if (!modal.classList.contains('open')) throw new Error('pop-up not open');
+    if (doc.getElementById('personPageTitle').textContent !== "Ryan's page") throw new Error('title: ' + doc.getElementById('personPageTitle').textContent);
+    if (!(w.__personPageUrls || []).some(u => /api=personPage&person=Ryan/.test(u))) throw new Error('page not requested');
+    if (!/PERSON PAGE Ryan/.test(frame.srcdoc)) throw new Error('frame not filled: ' + frame.srcdoc.slice(0, 80));
+    if (!/allow-scripts/.test(frame.getAttribute('sandbox')) || /allow-same-origin/.test(frame.getAttribute('sandbox'))) throw new Error('sandbox wrong: ' + frame.getAttribute('sandbox'));
+    if (opened.length) throw new Error('a window was opened on a plain click');
+  });
+  tryCall("the frame's RPC calls are relayed through this page's google.script.run, and only from that frame", () => {
+    const frame = doc.getElementById('personPageFrame');
+    const sent = [], posted = [];
+    w.google = { script: { run: { withSuccessHandler(fn) { this._ok = fn; return this; }, withFailureHandler(fn) { this._fail = fn; return this; }, tsgPersonRpc(action, payload) { sent.push({ action, payload }); this._ok('{"ok":true,"rows":[]}'); } } } };
+    const fakeWin = { postMessage: (m) => posted.push(m) };
+    Object.defineProperty(frame, 'contentWindow', { configurable: true, get: () => fakeWin });
+    const other = w.handlePersonFrameMessage_({ source: {}, data: { tsgPersonRpc: { id: 1, action: 'load', payload: '{}' } } });
+    const ok = w.handlePersonFrameMessage_({ source: fakeWin, data: { tsgPersonRpc: { id: 7, action: 'load', payload: '{"as":"Ryan"}' } } });
+    if (other !== false || !ok) throw new Error('source check wrong');
+    if (sent.length !== 1 || sent[0].action !== 'load' || sent[0].payload !== '{"as":"Ryan"}') throw new Error('sent: ' + JSON.stringify(sent));
+    if (posted.length !== 1 || posted[0].tsgPersonRpcReply.id !== 7 || posted[0].tsgPersonRpcReply.text !== '{"ok":true,"rows":[]}') throw new Error('reply: ' + JSON.stringify(posted));
+    delete frame.contentWindow; delete w.google;
+  });
+  tryCall("Escape closes the person page pop-up; shift-click opens their page in its own window", () => {
+    w.closeTopmostModal_();
+    if (doc.getElementById('personPageModal').classList.contains('open')) throw new Error('still open');
+    doc.querySelector('#teamViews button[data-person-view="Ryan"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true, shiftKey: true }));
     if (opened.length !== 1 || !/\?person=Ryan$/.test(opened[0].url) || opened[0].name !== 'tsg-view-Ryan') throw new Error('opened: ' + JSON.stringify(opened));
     if (/__TSG_API_URL__/.test(opened[0].url)) throw new Error('placeholder leaked into the URL');
   });
@@ -659,18 +678,15 @@ setTimeout(async () => {
     if (!/Overdue/.test(doc.querySelector('.nt-context').textContent)) throw new Error('context line missing');
     w.closeNewTaskModal(); w.closeDayView();
   });
-  tryCall("a person's view pop-up pre-fills the delegate; the modal's fields include delegate and tags", () => {
-    w.findTask(2).delegate = 'Ryan'; w.findTask(3).delegate = 'Ryan'; w.findTask(2).delegateVisible = true; w.findTask(3).delegateVisible = true;
-    w.openPersonView('Ryan');
-    doc.querySelector('#dayViewActions .dv-add').click();
+  tryCall("the New Task modal's fields include delegate and tags", () => {
+    w.openNewTaskModal({ delegate: 'Ryan', context: "Ryan's page" });
     if (doc.getElementById('ntDelegate').value !== 'Ryan') throw new Error('delegate not prefilled: ' + doc.getElementById('ntDelegate').value);
     doc.getElementById('ntTitle').value = 'Chase the listing photos';
     doc.getElementById('ntGroup').value = 'Ops';
     doc.getElementById('ntTags').value = 'Listings, photos';
     const f = w.newTaskFieldsFromModal_();
     if (f.delegate !== 'Ryan' || f.tags.join() !== 'Listings,photos' || f.title !== 'Chase the listing photos' || f.group !== 'Ops') throw new Error('fields: ' + JSON.stringify(f));
-    w.closeNewTaskModal(); w.closeDayView();
-    w.findTask(2).delegate = undefined; w.findTask(3).delegate = undefined;
+    w.closeNewTaskModal();
   });
   tryCall('the Errands schedule block pre-fills group Errands and tag Errand; the full-schedule view has a button per block', () => {
     const today = w.todayISO();

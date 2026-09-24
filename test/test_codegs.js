@@ -2813,7 +2813,7 @@ section('FUB task sync: per-agent keys, read-only pilot, batched, cadence (2026-
   // set_meta config
   d.meta.teamRoster = roster;
   sandbox.applyDataPatch_(d, { op: 'set_meta', fields: { fubSync: { agents: ['Jason', 'Durand', 'Nobody', 'Jason'], cadenceMin: 5, appBase: 'https://evil.example.com', readOnly: false } }, source: 'Durand' });
-  check('set_meta fubSync is sanitised (roster agents only, never the owner, known cadence, FUB address only, read-only forced) and mirrored to the script property', d.meta.fubSync.agents.join() === 'Jason' && d.meta.fubSync.cadenceMin === 60 && d.meta.fubSync.appBase === '' && d.meta.fubSync.readOnly === true && JSON.parse(scriptProps.TSG_FUB_SYNC_CONFIG).agents.join() === 'Jason');
+  check('set_meta fubSync is sanitised (roster agents only, never the owner, known cadence, FUB address only, read-only forced) and mirrored to the script property', d.meta.fubSync.agents.join() === 'Jason' && d.meta.fubSync.cadenceMin === 240 && d.meta.fubSync.appBase === '' && d.meta.fubSync.readOnly === true && JSON.parse(scriptProps.TSG_FUB_SYNC_CONFIG).agents.join() === 'Jason');
   // the run: one bulk file, per-agent key, /me mapping, state
   const origFetch = sandbox.UrlFetchApp.fetch, origGetFileById = sandbox.DriveApp.getFileById, origGetFolderById = sandbox.DriveApp.getFolderById, origLock = sandbox.LockService.getScriptLock;
   const FILE_IDS6 = vm.runInContext('FILE_IDS', sandbox);
@@ -2888,6 +2888,44 @@ section('FUB task sync: per-agent keys, read-only pilot, batched, cadence (2026-
   pr = JSON.parse(sandbox.tsgPersonRpc('fubSync', '{}'));
   const pl = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
   check('person Sync now: an agent not in the pilot is refused and sees no button', pr.ok === false && /not set up for Marj/.test(pr.error) && pl.fubSync.enabled === false);
+  // agent self-service key (Settings pane on their page)
+  sandbox.PropertiesService.getScriptProperties = () => ({ getProperty: (k) => (scriptProps[k] == null ? null : scriptProps[k]), setProperty: (k, v) => { scriptProps[k] = v; }, deleteProperty: (k) => { delete scriptProps[k]; } });
+  const goodKey = 'ka_NEWjasonKEY1234567890';
+  sandbox.UrlFetchApp.fetch = (url, opts) => {
+    if (!/followupboss/.test(url)) return origFetch(url, opts);
+    const okAuth = opts.headers.Authorization === 'Basic ' + Buffer.from(goodKey + ':').toString('base64');
+    return okAuth ? { getResponseCode: () => 200, getContentText: () => JSON.stringify({ id: 12, name: 'Jason Agent', email: 'jason@tsg.homes' }) } : { getResponseCode: () => 401, getContentText: () => 'Unauthorized' };
+  };
+  delete scriptProps.FUB_KEY_JASON;
+  sandbox.Session = { getActiveUser: () => ({ getEmail: () => 'jason@tsg.homes' }), getEffectiveUser: () => ({ getEmail: () => '' }), getScriptTimeZone: () => 'America/New_York' };
+  cacheStore = {};
+  let kr = JSON.parse(sandbox.tsgPersonRpc('fubKeySet', JSON.stringify({ key: 'not a key' })));
+  check('key pane: a value that is not key-shaped is refused before any FUB call and nothing is stored', kr.ok === false && /does not look like a FUB API key/.test(kr.error) && !scriptProps.FUB_KEY_JASON);
+  cacheStore = {};
+  kr = JSON.parse(sandbox.tsgPersonRpc('fubKeySet', JSON.stringify({ key: 'ka_WRONGkey1234567890abc' })));
+  check('key pane: a key FUB rejects is not stored, and the error never echoes it', kr.ok === false && /FUB rejected that key/.test(kr.error) && !scriptProps.FUB_KEY_JASON && !/WRONGkey/.test(JSON.stringify(kr)));
+  kr = JSON.parse(sandbox.tsgPersonRpc('fubKeySet', JSON.stringify({ key: goodKey })));
+  check('key pane: a second try inside 30 seconds is refused', kr.ok === false && /Wait a few seconds/.test(kr.error));
+  cacheStore = {};
+  kr = JSON.parse(sandbox.tsgPersonRpc('fubKeySet', JSON.stringify({ key: '  ' + goodKey + '  ' })));
+  const kst = JSON.parse(scriptProps.TSG_FUB_SYNC_STATE).agents.Jason;
+  check('key pane: a key FUB accepts is stored under FUB_KEY_JASON only, with who set it and the FUB user; the reply names the user, not the key', kr.ok === true && kr.fubUser.name === 'Jason Agent' && scriptProps.FUB_KEY_JASON === goodKey && kst.keySetBy === 'Jason' && kst.meName === 'Jason Agent' && !!kst.keySetAt && !JSON.stringify(kr).includes(goodKey) && !scriptProps.TSG_FUB_SYNC_STATE.includes(goodKey) && !disk.includes(goodKey));
+  const kl = JSON.parse(sandbox.tsgPersonRpc('load', '{}'));
+  check('key pane: load reports the key present, the FUB user and the cadence, never the key', kl.fubKey.present === true && kl.fubKey.fubUserName === 'Jason Agent' && kl.fubKey.cadenceMin === 60 && !JSON.stringify(kl).includes(goodKey));
+  kr = JSON.parse(sandbox.tsgPersonRpc('fubKeyRemove', '{}'));
+  check('key pane: Remove deletes the property and records when', kr.ok === true && !scriptProps.FUB_KEY_JASON && !!JSON.parse(scriptProps.TSG_FUB_SYNC_STATE).agents.Jason.keyRemovedAt && JSON.parse(sandbox.tsgPersonRpc('load', '{}')).fubKey.present === false);
+  // owner-only page endpoint for the Views pop-up
+  sandbox.Session = origSession;
+  scriptProps.SCRIPT_TOKEN = 'tok-pp';
+  let pp = JSON.parse(sandbox.doGet({ parameter: { api: 'personPage', person: 'jason', token: 'tok-pp' } }).getContent ? sandbox.doGet({ parameter: { api: 'personPage', person: 'jason', token: 'tok-pp' } }).getContent() : sandbox.doGet({ parameter: { api: 'personPage', person: 'jason', token: 'tok-pp' } }).content);
+  check('api=personPage: the owner gets the person page stamped as an owner preview (person + as)', pp.ok === true && pp.person === 'Jason' && /PERSON PAGE for Jason \(as=Jason\)/.test(pp.html));
+  const ppOut = sandbox.doGet({ parameter: { api: 'personPage', person: 'Nobody', token: 'tok-pp' } });
+  pp = JSON.parse(ppOut.getContent ? ppOut.getContent() : ppOut.content);
+  check('api=personPage: a name not on the roster is refused', pp.ok === false && /not on the roster/.test(pp.error));
+  const ppBad = sandbox.doGet({ parameter: { api: 'personPage', person: 'Jason', token: 'wrong' } });
+  const ppBadText = ppBad.getContent ? ppBad.getContent() : ppBad.content;
+  check('api=personPage: without the token it is refused', !/PERSON PAGE/.test(ppBadText));
+  delete scriptProps.SCRIPT_TOKEN;
   sandbox.Session = origSession;
   sandbox.UrlFetchApp.fetch = origFetch; sandbox.DriveApp.getFileById = origGetFileById; sandbox.DriveApp.getFolderById = origGetFolderById; sandbox.LockService.getScriptLock = origLock;
   delete scriptProps.FUB_KEY_JASON; delete scriptProps.TSG_FUB_SYNC_STATE; delete scriptProps.TSG_FUB_SYNC_CONFIG;

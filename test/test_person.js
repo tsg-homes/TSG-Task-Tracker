@@ -14,6 +14,7 @@ const slice = {
   ok: true, person: 'Marj', docVersion: 100, codeVersion: '2026-09-15.5',
   statuses: ['Not Started', 'In Progress', 'Blocked', 'Waiting', 'Done - Pending'], pendingStatus: 'Done - Pending', priorities: ['Critical', 'High', 'Medium', 'Low'],
   feedbackTaskId: 7, feedbackKinds: ['Bug', 'Feature request', 'Feedback'],
+  fubKey: { present: false, enabled: true, setAt: '', fubUserName: '', cadenceMin: 240 },
   fubSync: { enabled: true, readOnly: true, lastRunAt: '2026-09-24T12:00:00Z', ok: true, error: '', cadenceMin: 60 },
   rows: [
     { kind: 'task', id: 1, own: false, context: true, title: 'Durand task with Marj sub', status: 'Not Started', priority: 'High', progress: 0, due: '2026-09-20', notes: '', owner: 'Durand', tags: [], taskType: '', estHours: null, subTotal: 1, subDone: 0, editable: [] },
@@ -49,6 +50,7 @@ const dom = new JSDOM(html, {
         else if (action === 'update') reply = payload.fields.priority !== undefined && payload.kind === 'task' && payload.id === 2 ? { ok: false, error: 'field not editable: priority' } : { ok: true, docVersion: 101 };
         else if (action === 'add') reply = { ok: true, docVersion: 102 };
         else if (action === 'feedback') reply = { ok: true, docVersion: 103 };
+        else if (action === 'fubKeySet') reply = payload.key === 'ka_goodKEY1234567890abc' ? { ok: true, fubUser: { name: 'Marj M', email: 'marjorie@tsg.homes' } } : { ok: false, error: 'FUB rejected that key. Copy it again from FUB and paste the whole key.' };
         else if (action === 'fubSync') reply = { ok: true, wrote: true, result: { ok: true, added: 2, updated: 1, completed: 0, cancelled: 0 } };
         else reply = { ok: false, error: 'unknown' };
         setTimeout(() => chain._ok(JSON.stringify(reply)), 0);
@@ -81,6 +83,20 @@ setTimeout(async () => {
   check('the Sync FUB button and the last-sync line show when the sync is set up for her', doc.getElementById('btnFubSync').hidden === false && /FUB synced/.test(doc.getElementById('fubSyncInfo').textContent));
   doc.getElementById('btnFubSync').click();
   await wait(30);
+  // Settings pane: the agent adds their own FUB key; it is sent once, cleared from the page, never shown
+  doc.getElementById('btnSettings').click();
+  check('Settings opens the pane with the FUB key field (a password input) and the not-connected status', doc.getElementById('settingsBack').hidden === false && doc.getElementById('fubKeyInput').type === 'password' && /Not connected yet/.test(doc.getElementById('fubKeyStatus').textContent) && doc.getElementById('fubKeyRemove').hidden === true);
+  doc.getElementById('fubKeyInput').value = 'ka_badKEY12345678901234';
+  doc.getElementById('fubKeyForm').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  check('the key is cleared from the field the moment it is sent', doc.getElementById('fubKeyInput').value === '');
+  await wait(30);
+  check('a rejected key shows FUB\'s refusal', /FUB key not saved: FUB rejected that key/.test(doc.getElementById('sync').textContent) && calls.filter(c => c.action === 'fubKeySet').pop().payload.key === 'ka_badKEY12345678901234');
+  doc.getElementById('fubKeyInput').value = 'ka_goodKEY1234567890abc';
+  doc.getElementById('fubKeyForm').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  await wait(30);
+  check('an accepted key reports the FUB user it belongs to, and the key is nowhere in the page', /FUB connected as Marj M|Up to date/.test(doc.getElementById('sync').textContent) && !doc.documentElement.outerHTML.includes('ka_goodKEY1234567890abc'));
+  doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  check('Escape closes the pane', doc.getElementById('settingsBack').hidden === true);
   check('Sync FUB calls rpc fubSync and reports the batch', calls.some(c => c.action === 'fubSync') && /FUB synced|Up to date/.test(doc.getElementById('sync').textContent));
   const ctxRow = doc.querySelector('#delegated tr.task-row.context[data-id="1"]');
   check('context row: read-only (no selects, no inputs, no editable title/notes), names the owner', !!ctxRow && !ctxRow.querySelector('select, input') && !ctxRow.querySelector('[contenteditable="true"]') && /Durand/.test(ctxRow.querySelector('.ctx-note').textContent) && ctxRow.querySelector('.sub-count-badge').textContent === '0/1');

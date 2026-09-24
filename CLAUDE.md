@@ -1523,4 +1523,14 @@ now put a red border on fub fields (also locked) / let build it". Built read-onl
   mapping. `appBase` (the team's FUB web address) is blank until Durand sets it, so no contact links
   until then. Merged main (workstream rename, @99) into the branch first; the Today-label fixture
   now computes a Friday two weeks out (it was pinned to 2026-09-25).
-
+- Same day, backend 2026-09-24.2 / UI 2026-09-24.2 / person UI 2026-09-24.2 (per Durand: "4 hours is
+  enough"; "agents need a settings pane to add their own key"; "actually just change the delegate pop
+  up i see to show their actual page"): default cadence 240 min; person-page Settings pane with
+  `fubKeySet` (shape check, FUB `/me` verification, then `FUB_KEY_<NAME>`, 30 s cooldown) and
+  `fubKeyRemove`; `load.fubKey` = {present, enabled, setAt, fubUserName, cadenceMin}; dashboard FUB
+  panel shows who set each key and when. Views button: plain click = the real person page in
+  `#personPageModal` (`api=personPage`, sandboxed srcdoc frame, RPC relayed by
+  `handlePersonFrameMessage_`, person.html `bridgeRpc`), shift-click = own window; the old board-list
+  pop-up (`openMultiTaskModal` for a person) is gone. Durand's FUB web address is
+  https://homes571.followupboss.com (the `appBase` for contact links; set it in the FUB panel or by
+  `set_meta {fubSync}` after deploy). clasp logged in again 2026-09-24 11:51 EDT (fifo method).

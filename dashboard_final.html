@@ -562,6 +562,10 @@
   .vis-chip.static { cursor: default; }
   .vis-line { margin-top: 4px; }
   .workstream-id { margin-right: 6px; }
+  /* Views pop-up = the delegate's actual page (2026-09-24) */
+  .person-page-card { width: min(1400px, 96vw); max-width: none; height: 90vh; display: flex; flex-direction: column; }
+  .person-page-card iframe { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--page-plane); }
+  .person-page-hint { font-size: 12px; color: var(--text-muted); margin: 0 0 8px; }
   /* FUB task sync, read-only pilot (2026-09-24): every control on a FUB task is locked; the
      fields FUB supplies carry a red border. */
   .fub-locked select, .fub-locked input, .fub-locked textarea, .fub-locked [contenteditable], .fub-locked .icon-btn, .fub-locked .btn:not(.fub-allow), .fub-locked .sub-drag-handle { pointer-events: none; }
@@ -1536,6 +1540,19 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="personPageModal" role="dialog" aria-modal="true" tabindex="-1" onclick="if(event.target===this) closePersonPage_()">
+  <div class="modal-card person-page-card">
+    <div class="modal-header">
+      <h2 id="personPageTitle"></h2>
+      <div class="modal-header-actions">
+        <button class="btn small" id="personPageWindow" onclick="openPersonWindow_()" title="Open this page in its own window instead">&#8599; Own window</button>
+        <button class="icon-btn" onclick="closePersonPage_()" title="Close">&#10005;</button>
+      </div>
+    </div>
+    <div class="person-page-hint">Their page exactly as they see it. Anything you change here is saved as you (Durand).</div>
+    <iframe id="personPageFrame" title="Delegate page" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals"></iframe>
+  </div>
+</div>
 <div class="modal-overlay" id="dayViewModal" role="dialog" aria-modal="true" tabindex="-1" onclick="if(event.target===this) closeDayView()">
   <div class="modal-card">
     <div class="modal-header">
@@ -1627,7 +1644,7 @@
   // every dashboard deploy. CODE_VERSION_STAMP is a placeholder that the backend's bare
   // doGet replaces with its TSG_CODE_VERSION when it serves this page; if it is still
   // the raw placeholder, the file was opened directly (local/jsdom), not via the API.
-  const UI_VERSION = '2026-09-24.1';
+  const UI_VERSION = '2026-09-24.2';
   const CODE_VERSION_STAMP = '__TSG_CODE_VERSION__';
   function renderVersionStamp() {
     const el = document.getElementById('versionStamp');
@@ -1873,7 +1890,7 @@
       .sort(function(a, b) { return a.localeCompare(b); });
     host.innerHTML = names.length
       ? '<span class="lbl">Views</span>' + names.map(function(n) {
-          return '<button type="button" class="btn small" data-person-view="' + escapeHtml(n) + '" title="Open ' + escapeHtml(n) + '\'s page as they see it (held Triage items hidden, their steps only). Shift-click lists their items as a pop-up here.">' + escapeHtml(n) + '</button>';
+          return '<button type="button" class="btn small" data-person-view="' + escapeHtml(n) + '" title="Show ' + escapeHtml(n) + '\'s actual page here, as they see it. Shift-click opens it in its own window.">' + escapeHtml(n) + '</button>';
         }).join('')
       : '';
   }
@@ -1888,8 +1905,10 @@
     // The preview must mirror what they see (2026-09-22, tracker task): the plain click opens
     // the person page itself (server-rendered by the same slice they get); the pop-up moved
     // to shift-click and now applies the same review gate (held Triage items hidden).
-    if (e.shiftKey) { openPersonView(name); return; }
-    window.open(personViewUrl_(name), 'tsg-view-' + name.replace(/\W+/g, '-'), 'width=1280,height=860,noopener');
+    // 2026-09-24 (per Durand: "change the delegate pop up i see to show their actual page"): the
+    // click opens their real page inside a pop-up here; shift-click still opens it in a window.
+    if (e.shiftKey) { window.open(personViewUrl_(name), 'tsg-view-' + name.replace(/\W+/g, '-'), 'width=1280,height=860,noopener'); return; }
+    openPersonView(name);
   });
   // ---- Merge one task into another (2026-09-16, #250: "link tasks to merge them") ----
   function mergeOptionsHtml_(t) {
@@ -5464,13 +5483,13 @@
     const cfg = st.config || {};
     const rows = (st.agents || []).map(a => `<tr>
         <td><label><input type="checkbox" class="fub-agent-toggle" data-agent="${escapeHtml(a.name)}" ${a.enabled ? 'checked' : ''} onchange="saveFubConfig_()"> ${escapeHtml(a.name)}</label></td>
-        <td>${a.keyPresent ? '<span class="fub-good">key set</span>' : '<span class="fub-bad">no key</span>'}<div class="hist-time">${escapeHtml(a.keyProperty)}</div></td>
+        <td>${a.keyPresent ? '<span class="fub-good">key set</span>' : '<span class="fub-bad">no key</span>'}<div class="hist-time">${escapeHtml(a.keyProperty)}${a.keyPresent && a.keySetAt ? ' · set by ' + escapeHtml(a.keySetBy || a.name) + ' ' + escapeHtml(formatDateTime(a.keySetAt)) : ''}</div></td>
         <td>${a.enabled ? fubStatusText_(a.state) : '<span class="hist-time">not in the pilot</span>'}</td>
         <td>${a.keyPresent ? `<button type="button" class="btn small" onclick="probeFubKey_('${jsAttr(a.name)}', this)">Check key</button>` : ''}${a.enabled && a.keyPresent ? ` <button type="button" class="btn small" onclick="fubSyncNow_('${jsAttr(a.name)}', this)">Sync now</button>` : ''}</td>
       </tr>`).join('');
     el.innerHTML = `
-      <div class="history-empty" style="margin-bottom:6px;">Read-only pilot: FUB to tracker only. Each agent's own FUB API key goes in Apps Script &gt; Project Settings &gt; Script Properties under the name shown (never in chat, a Doc or the tracker). Their FUB tasks land on their page, owned by them, locked, with the FUB fields outlined in red. One batched write per run; nothing is written when nothing changed.</div>
-      <label class="hist-time">Sync every <select class="pill-select" id="fubCadenceSelect" onchange="saveFubConfig_()">${[60, 120, 240].map(m => `<option value="${m}" ${Number(cfg.cadenceMin) === m ? 'selected' : ''}>${m === 60 ? '1 hour' : (m / 60) + ' hours'}</option>`).join('')}</select></label>
+      <div class="history-empty" style="margin-bottom:6px;">Read-only pilot: FUB to tracker only. Each agent adds their own FUB API key from the Settings button on their page (it is checked with FUB before it is stored in Script Properties under the name shown, and never shown again); you can also add it in Apps Script &gt; Project Settings &gt; Script Properties. Tick an agent here to start syncing them. Their FUB tasks land on their page, owned by them, locked, with the FUB fields outlined in red. One batched write per run; nothing is written when nothing changed.</div>
+      <label class="hist-time">Sync every <select class="pill-select" id="fubCadenceSelect" onchange="saveFubConfig_()">${[240, 120, 60].map(m => `<option value="${m}" ${Number(cfg.cadenceMin || 240) === m ? 'selected' : ''}>${m === 60 ? '1 hour' : (m / 60) + ' hours'}</option>`).join('')}</select></label>
       <label class="hist-time" style="margin-left:12px;">FUB account address <input type="text" class="text-input" id="fubAppBaseInput" style="width:260px;" placeholder="https://yourteam.followupboss.com" value="${escapeHtml(cfg.appBase || '')}" onblur="saveFubConfig_()"></label>
       <div class="hist-time" style="margin:6px 0;">Last run: ${st.lastRunAt ? escapeHtml(formatDateTime(st.lastRunAt)) : 'never'} · push to FUB: ${st.pushBuilt ? 'available' : 'not built (read-only)'}</div>
       <table><thead><tr><th>Agent</th><th>Key</th><th>Last sync</th><th></th></tr></thead><tbody>${rows}</tbody></table>
@@ -5479,7 +5498,7 @@
   }
   async function saveFubConfig_() {
     const agents = Array.from(document.querySelectorAll('.fub-agent-toggle')).filter(x => x.checked).map(x => x.dataset.agent);
-    const cadence = Number((document.getElementById('fubCadenceSelect') || {}).value) || 60;
+    const cadence = Number((document.getElementById('fubCadenceSelect') || {}).value) || 240;
     const appBase = String((document.getElementById('fubAppBaseInput') || {}).value || '').trim().replace(/\/+$/, '');
     RAW_META.fubSync = Object.assign({}, RAW_META.fubSync || {}, { agents: agents, cadenceMin: cadence, appBase: appBase });
     await postCommentOp_({ op: 'set_meta', fields: { fubSync: { agents: agents, cadenceMin: cadence, appBase: appBase } }, source: 'Durand' });
@@ -5735,11 +5754,45 @@
       return (t.subitems || []).some(function(s) { return s.delegate === name && !held(s); });
     }).map(function(t) { return t.id; });
   }
-  function openPersonView(name) {
-    const ids = personTaskIds_(name);
-    if (!ids.length) { alert('Nothing on the board is owned by, assigned to, or delegated to ' + name + ' yet.'); return; }
-    openMultiTaskModal(name + "'s view", ids, { delegate: name });
+  // The Views pop-up shows the person's actual page (2026-09-24): the server renders person.html as
+  // an owner preview (api=personPage), it runs in a sandboxed frame, and its RPC calls are relayed
+  // through this page's google.script.run (handlePersonFrameMessage_). Closing reloads the board.
+  let PERSON_PAGE_NAME = null;
+  async function openPersonView(name) {
+    const modal = document.getElementById('personPageModal'), frame = document.getElementById('personPageFrame');
+    PERSON_PAGE_NAME = name;
+    document.getElementById('personPageTitle').textContent = name + "'s page";
+    frame.srcdoc = '<p style="font-family:sans-serif;padding:24px;color:#6b6a65">Loading ' + escapeHtml(name) + '\'s page…</p>';
+    modal.classList.add('open');
+    try {
+      const res = await apiFetch('api=personPage&person=' + encodeURIComponent(name));
+      const r = await res.json();
+      if (!r || !r.ok) throw new Error((r && r.error) || 'could not load the page');
+      if (PERSON_PAGE_NAME === name) frame.srcdoc = r.html;
+    } catch (err) {
+      frame.srcdoc = '<p style="font-family:sans-serif;padding:24px;color:#b4453c">Could not load ' + escapeHtml(name) + '\'s page: ' + escapeHtml(String(err.message || err)) + '</p>';
+    }
   }
+  function openPersonWindow_() { if (PERSON_PAGE_NAME) window.open(personViewUrl_(PERSON_PAGE_NAME), 'tsg-view-' + PERSON_PAGE_NAME.replace(/\W+/g, '-'), 'width=1280,height=860,noopener'); }
+  function closePersonPage_() {
+    document.getElementById('personPageModal').classList.remove('open');
+    document.getElementById('personPageFrame').srcdoc = '';
+    const wasOpen = PERSON_PAGE_NAME; PERSON_PAGE_NAME = null;
+    if (wasOpen && typeof loadData === 'function') { try { loadData(); } catch (e) {} }
+  }
+  function handlePersonFrameMessage_(e) {
+    const frame = document.getElementById('personPageFrame');
+    const req = e && e.data && e.data.tsgPersonRpc;
+    if (!req || !frame || e.source !== frame.contentWindow) return false;
+    const reply = function(msg) { try { frame.contentWindow.postMessage({ tsgPersonRpcReply: Object.assign({ id: req.id }, msg) }, '*'); } catch (err) {} };
+    const run = window.google && google.script && google.script.run;
+    if (!run) { reply({ error: 'the dashboard is not running inside the tracker' }); return true; }
+    run.withSuccessHandler(function(text) { reply({ text: String(text) }); })
+       .withFailureHandler(function(err) { reply({ error: String((err && err.message) || err) }); })
+       .tsgPersonRpc(String(req.action || ''), String(req.payload || '{}'));
+    return true;
+  }
+  window.addEventListener('message', handlePersonFrameMessage_);
   function taskRowHtml(t) {
     const pct = taskProgress(t);
     const hasSubs = t.subitems && t.subitems.length > 0;
@@ -7179,7 +7232,7 @@
   }
 
   function closeTopmostModal_() {
-    const order = [['actualModal', closeActualModal], ['noteModal', closeNotePopup], ['locationModal', closeLocationPicker], ['meetingModal', closeMeetingPicker], ['dayViewModal', closeDayView], ['newTaskModal', closeNewTaskModal], ['settingsModal', closeSettings], ['taskModal', closeTaskCard]];
+    const order = [['personPageModal', closePersonPage_], ['actualModal', closeActualModal], ['noteModal', closeNotePopup], ['locationModal', closeLocationPicker], ['meetingModal', closeMeetingPicker], ['dayViewModal', closeDayView], ['newTaskModal', closeNewTaskModal], ['settingsModal', closeSettings], ['taskModal', closeTaskCard]];
     for (const [id, close] of order) {
       const el = document.getElementById(id);
       if (el && el.classList.contains('open')) {

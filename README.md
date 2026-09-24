@@ -576,6 +576,19 @@ tracker fields are locked, for now put a red border on fub fields (also locked)"
   Run Check key on Jason's row before enabling him; a listing that looks truncated never cancels.
 - **Sessions**: never patch a FUB task (it is refused), never write a `fub` block, never put a key
   anywhere but Script Properties.
+- **Agents add their own key** (2026-09-24): the person page's Settings button opens "Your settings"
+  with a password field. `tsgPersonRpc('fubKeySet', {key})` checks the shape, calls FUB `/me` with
+  it, and only on success stores it as `FUB_KEY_<NAME>`; the state records who set it, when, and the
+  FUB user. The key is cleared from the page on send and is never returned, logged or written to
+  the data file; `fubKeyRemove` deletes it. 30-second cooldown between attempts. Durand still ticks
+  the agent in Settings > General to start syncing. Default cadence is 4 hours (`TSG_FUB_DEFAULT_CADENCE`).
+- **Views pop-up = the agent's actual page** (2026-09-24, per Durand "change the delegate pop up i see
+  to show their actual page"): `api=personPage&person=<Name>` (owner-only) returns person.html
+  stamped as an owner preview; the dashboard shows it in `#personPageModal` in a sandboxed `srcdoc`
+  frame (no same-origin) and relays its RPC calls through its own `google.script.run`
+  (`handlePersonFrameMessage_`, checks the message came from that frame); person.html's `rpc` uses
+  the postMessage bridge when it has no `google.script.run` and sits in a frame. Edits there are
+  recorded as Durand. Shift-click still opens the page in its own window; closing reloads the board.
 
 ## Actual time (2026-09-17): one log, three ways in
 

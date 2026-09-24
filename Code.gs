@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-24.1';
+const TSG_CODE_VERSION = '2026-09-24.2';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -2485,6 +2485,7 @@ function tsgPersonRpc(action, payloadJson) {
       priorities: (doc.meta && doc.meta.priority_values) || TSG_PRIORITY_VALUES,
       feedbackTaskId: (function() { var ft = tsgFeedbackTaskFor_(doc, name); return ft ? ft.id : null; })(),
       feedbackKinds: TSG_FEEDBACK_KINDS.slice(),
+      fubKey: tsgFubKeyInfo_(doc, name),
       fubSync: (function() {
         var cfg = tsgFubConfig_(doc.meta || {});
         if (cfg.agents.indexOf(name) === -1 || !tsgFubKeyFor_(name)) return { enabled: false };
@@ -2566,6 +2567,14 @@ function tsgPersonRpc(action, payloadJson) {
     // would make it vanish from their page. personCreated: the notes set the bar and the
     // estimate is split across the minted steps so they schedule.
     return JSON.stringify(tsgQueueDataPatch_({ op: 'add_task', task: task, source: actor, skipDedup: true, personCreated: true }));
+  }
+  if (action === 'fubKeySet') {
+    if (tsgCacheGet_('fubKeyCool:' + name)) return JSON.stringify({ ok: false, error: 'Wait a few seconds before trying again.' });
+    tsgCachePut_('fubKeyCool:' + name, '1', TSG_FUB_KEY_SET_COOLDOWN_SEC);
+    return JSON.stringify(tsgFubSetKey_(name, payload.key, actor));
+  }
+  if (action === 'fubKeyRemove') {
+    return JSON.stringify(tsgFubRemoveKey_(name, actor));
   }
   if (action === 'fubSync') {
     // The agent's own "Sync now" (2026-09-24): their FUB tasks only, one run every 2 minutes.
@@ -2673,6 +2682,28 @@ function doGet(e) {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
     return ContentService.createTextOutput(JSON.stringify(tsgLabelForUrl_(e.parameter.url)))
       .setMimeType(ContentService.MimeType.JSON);
+  }
+  if (e.parameter.api === 'personPage') {
+    // The owner's Views pop-up (2026-09-24, per Durand: "change the delegate pop up i see to show
+    // their actual page"): the person page exactly as served to them, stamped as an owner preview
+    // (__TSG_AS__ set, so every RPC carries `as` and the server applies the owner-only preview
+    // rules; edits are recorded as Durand). The dashboard puts it in a sandboxed frame and relays
+    // its google.script.run calls.
+    if (!tsgCheckToken_(e)) return tsgUnauthorized_();
+    var ppOut;
+    try {
+      var ppDoc = JSON.parse(getTrackerFile_('data').getBlob().getDataAsString());
+      var ppWanted = String(e.parameter.person || '').toLowerCase();
+      var ppName = tsgRosterNames_(ppDoc.meta || {}).filter(function(n) { return n.toLowerCase() === ppWanted; })[0];
+      if (!ppName) ppOut = { ok: false, error: 'not on the roster: ' + (e.parameter.person || '') };
+      else {
+        var ppHtml = HtmlService.createHtmlOutputFromFile('person').getContent();
+        var ppStamps = { '__TSG_PERSON__': ppName, '__TSG_CODE_VERSION__': TSG_CODE_VERSION, '__TSG_AS__': ppName };
+        Object.keys(ppStamps).forEach(function(k) { ppHtml = ppHtml.split(k).join(tsgHtmlEscape_(ppStamps[k])); });
+        ppOut = { ok: true, person: ppName, html: ppHtml };
+      }
+    } catch (ppErr) { ppOut = { ok: false, error: 'person page failed: ' + String(ppErr.message || ppErr) }; }
+    return ContentService.createTextOutput(JSON.stringify(ppOut)).setMimeType(ContentService.MimeType.JSON);
   }
   if (e.parameter.api === 'fubStatus') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
@@ -3881,6 +3912,8 @@ var TSG_FUB_API = 'https://api.followupboss.com/v1';
 var TSG_FUB_CONFIG_PROP = 'TSG_FUB_SYNC_CONFIG';
 var TSG_FUB_STATE_PROP = 'TSG_FUB_SYNC_STATE';
 var TSG_FUB_CADENCES = [60, 120, 240];
+var TSG_FUB_DEFAULT_CADENCE = 240;   // Durand 2026-09-24: "4 hours is enough"; agents have Sync now
+var TSG_FUB_KEY_SET_COOLDOWN_SEC = 30;
 var TSG_FUB_PAGE = 100;
 var TSG_FUB_MAX_PAGES = 10;
 var TSG_FUB_SYNC_NOW_COOLDOWN_SEC = 120;
@@ -3900,6 +3933,38 @@ function tsgFubKeyProp_(name) { return 'FUB_KEY_' + String(name || '').toUpperCa
 function tsgFubKeyFor_(name) {
   try { return PropertiesService.getScriptProperties().getProperty(tsgFubKeyProp_(name)) || ''; } catch (e) { return ''; }
 }
+/**
+ * Self-service key (2026-09-24, per Durand: "agents need a settings pane to add their own key").
+ * The agent pastes their FUB API key on their own page; it is checked against FUB's /me BEFORE it
+ * is stored, lands only in Script Properties (FUB_KEY_<NAME>), and is never sent back, logged or
+ * written to the data file. The state keeps who set it and when, and the FUB user it belongs to.
+ */
+function tsgFubSetKey_(name, key, actor) {
+  key = String(key || '').trim();
+  if (!/^[A-Za-z0-9_\-]{16,200}$/.test(key)) return { ok: false, error: 'That does not look like a FUB API key (letters and numbers, no spaces).' };
+  var me;
+  try { me = tsgFubGet_(key, '/me'); }
+  catch (err) { return { ok: false, error: err && err.code === 401 ? 'FUB rejected that key. Copy it again from FUB and paste the whole key.' : 'Could not reach FUB to check the key: ' + String((err && err.message) || err).slice(0, 120) }; }
+  PropertiesService.getScriptProperties().setProperty(tsgFubKeyProp_(name), key);
+  var state = tsgFubState_(); state.agents = state.agents || {};
+  var meName = me && (me.name || ((me.firstName || '') + ' ' + (me.lastName || '')).trim()) || '';
+  state.agents[name] = Object.assign({}, state.agents[name] || {}, { keySetAt: new Date().toISOString(), keySetBy: actor || name, meId: me && me.id != null ? me.id : null, meName: meName, keyRemovedAt: '' });
+  tsgFubSaveState_(state);
+  return { ok: true, fubUser: { name: meName, email: (me && me.email) || '' } };
+}
+function tsgFubRemoveKey_(name, actor) {
+  try { PropertiesService.getScriptProperties().deleteProperty(tsgFubKeyProp_(name)); } catch (e) { return { ok: false, error: 'could not remove the key' }; }
+  var state = tsgFubState_(); state.agents = state.agents || {};
+  state.agents[name] = Object.assign({}, state.agents[name] || {}, { keyRemovedAt: new Date().toISOString(), keySetBy: actor || name });
+  tsgFubSaveState_(state);
+  return { ok: true };
+}
+function tsgFubKeyInfo_(doc, name) {
+  var cfg = tsgFubConfig_(doc.meta || {});
+  var st = (tsgFubState_().agents || {})[name] || {};
+  var present = !!tsgFubKeyFor_(name);
+  return { present: present, enabled: cfg.agents.indexOf(name) !== -1, setAt: present ? (st.keySetAt || '') : '', fubUserName: present ? (st.meName || '') : '', cadenceMin: cfg.cadenceMin };
+}
 function tsgRosterNames_(meta) {
   return ((meta && meta.teamRoster) || []).map(function(p) { return typeof p === 'string' ? p : (p && p.name); }).filter(Boolean);
 }
@@ -3910,7 +3975,7 @@ function tsgFubConfig_(meta) {
   var agents = (Array.isArray(raw.agents) ? raw.agents : []).filter(function(n, i, a) {
     return n && a.indexOf(n) === i && String(n).toLowerCase() !== TSG_OWNER_NAME.toLowerCase() && (!roster.length || roster.indexOf(n) !== -1);
   });
-  var cadence = TSG_FUB_CADENCES.indexOf(Number(raw.cadenceMin)) !== -1 ? Number(raw.cadenceMin) : TSG_FUB_CADENCES[0];
+  var cadence = TSG_FUB_CADENCES.indexOf(Number(raw.cadenceMin)) !== -1 ? Number(raw.cadenceMin) : TSG_FUB_DEFAULT_CADENCE;
   var appBase = /^https:\/\/[a-z0-9-]+\.followupboss\.com$/i.test(String(raw.appBase || '').replace(/\/+$/, '')) ? String(raw.appBase).replace(/\/+$/, '') : '';
   return { agents: agents, cadenceMin: cadence, appBase: appBase, readOnly: TSG_FUB_PUSH_BUILT ? raw.readOnly !== false : true };
 }
@@ -4108,7 +4173,7 @@ function tsgFubSyncTickIfDue_() {
   if (!cfg || !Array.isArray(cfg.agents) || !cfg.agents.length) return false;
   var state = tsgFubState_();
   var last = state.lastRunAt ? Date.parse(state.lastRunAt) : 0;
-  var cadenceMs = (TSG_FUB_CADENCES.indexOf(Number(cfg.cadenceMin)) !== -1 ? Number(cfg.cadenceMin) : TSG_FUB_CADENCES[0]) * 60000;
+  var cadenceMs = (TSG_FUB_CADENCES.indexOf(Number(cfg.cadenceMin)) !== -1 ? Number(cfg.cadenceMin) : TSG_FUB_DEFAULT_CADENCE) * 60000;
   if (last && Date.now() - last < cadenceMs) return false;
   tsgFubRunSync_({ reason: 'schedule' });
   return true;
@@ -4122,7 +4187,8 @@ function tsgFubStatus_() {
   return {
     ok: true, config: cfg, readOnly: tsgFubReadOnly_(doc), pushBuilt: TSG_FUB_PUSH_BUILT, lastRunAt: state.lastRunAt || '',
     agents: roster.map(function(n) {
-      return { name: n, enabled: cfg.agents.indexOf(n) !== -1, keyProperty: tsgFubKeyProp_(n), keyPresent: !!tsgFubKeyFor_(n), state: (state.agents || {})[n] || null };
+      var ast = (state.agents || {})[n] || null;
+      return { name: n, enabled: cfg.agents.indexOf(n) !== -1, keyProperty: tsgFubKeyProp_(n), keyPresent: !!tsgFubKeyFor_(n), keySetAt: ast && ast.keySetAt || '', keySetBy: ast && ast.keySetBy || '', state: ast };
     })
   };
 }
