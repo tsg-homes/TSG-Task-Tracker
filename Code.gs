@@ -16,7 +16,7 @@ const TSG_DOMAINS = ['thestawaszgroup.com', 'tsg.homes'];
 // number at runtime, so this is the only way to tell from the browser which Code.gs is
 // actually serving. BUMP IT ON EVERY DEPLOY (date + counter). It is returned by
 // ?api=version and stamped into the dashboard footer by the bare doGet below.
-const TSG_CODE_VERSION = '2026-09-23.2';
+const TSG_CODE_VERSION = '2026-09-23.3';
 
 const FILE_IDS = {
   // html: '1gvrLx4RcVh3mrnVOeiD5ExSbK9mKUnkv' — "Systems — Task Tracker Dashboard", RETIRED
@@ -54,7 +54,7 @@ function getTrackerFile_(key) {
  * 2026-09-02: target=rulesets now takes the same route. It had been left on the direct
  * setContent() path on the reasoning that "rulesets isn't edited from two uncoordinated
  * places the way task data was" — which stopped being true once Claude sessions began
- * pushing threads/current patches into _Inbox alongside the dashboard's own Settings
+ * pushing workstream/current patches into _Inbox alongside the dashboard's own Settings
  * save. Rulesets therefore has its own meta.docVersion counter (see applyRulesetPatch_)
  * with the same conflict semantics. Only 'html' still writes directly, and it still has
  * exactly one writer.
@@ -160,8 +160,8 @@ function processInbox_() {
     if (rulesetsDoc && applied.some(function(p) { return p.patch.target === 'rulesets'; })) {
       // INSTRUCTION LAYERS (2026-09-22): every instruction set is mirrored to its Google Doc
       // before the rulesets write so meta.mirrorDocs lands in the same save. Never fails the write.
-      try { tsgEnsureThreadIds_(rulesetsDoc); }   // thread ids (2026-09-23): the backfill rides the first write after deploy
-      catch (idErr) { Logger.log('[threads] id backfill skipped: ' + idErr); }
+      try { tsgEnsureWorkstreamIds_(rulesetsDoc); }   // thread -> workstream migration and the id backfill ride the first write after deploy
+      catch (idErr) { Logger.log('[workstreams] migration / id backfill skipped: ' + idErr); }
       try { tsgMirrorInstructions_(rulesetsDoc); }
       catch (mirrorErr) { Logger.log('[mirror] instruction mirror skipped: ' + mirrorErr); }
       // Only the latest instructions stay in the hot file; older changelog lines move to History/.
@@ -225,88 +225,168 @@ function tsgCachedJson_(key, ttlSec, fn) {
 function tsgCacheRemove_(k) { try { CacheService.getScriptCache().remove(k); } catch (err) {} }
 
 /**
- * Thread names are used as object keys, so a few JS-reserved ones can never be honest
- * own-properties: threads['__proto__'] = {...} assigns to the prototype and silently
- * creates nothing, and threads['constructor'] reads back truthy from Object.prototype
- * even when no such thread exists. Rather than special-case the storage, reject these
- * names outright with a clear error — a thread called "__proto__" is not a real use case,
- * and a loud refusal beats a silent no-op (2026-09-02).
+ * Workstream names are used as object keys, so a few JS-reserved ones can never be honest
+ * own-properties: workstreams['__proto__'] = {...} assigns to the prototype and silently
+ * creates nothing, and workstreams['constructor'] reads back truthy from Object.prototype
+ * even when no such workstream exists. Rather than special-case the storage, reject these
+ * names outright with a clear error (2026-09-02, when they were still called threads).
  */
-var TSG_RESERVED_THREAD_KEYS = { '__proto__': 1, 'constructor': 1, 'prototype': 1 };
-function tsgAssertSafeThreadName_(op, name) {
+var TSG_RESERVED_WORKSTREAM_KEYS = { '__proto__': 1, 'constructor': 1, 'prototype': 1 };
+function tsgAssertSafeWorkstreamName_(op, name) {
   var n = String(name == null ? '' : name);
-  if (!n) throw new Error(op + ': thread name is required');
-  if (TSG_RESERVED_THREAD_KEYS[n]) {
-    throw new Error(op + ': "' + n + '" is a reserved JavaScript object key and cannot be used as a thread name. Rename the thread.');
+  if (!n) throw new Error(op + ': workstream name is required');
+  if (TSG_RESERVED_WORKSTREAM_KEYS[n]) {
+    throw new Error(op + ': "' + n + '" is a reserved JavaScript object key and cannot be used as a workstream name. Rename the workstream.');
   }
   return n;
 }
 /** Own-property existence check — never walks the prototype chain (see above). */
-function tsgHasThread_(doc, name) {
-  return Object.prototype.hasOwnProperty.call(doc.threads, String(name));
+function tsgHasWorkstream_(doc, name) {
+  return Object.prototype.hasOwnProperty.call(doc.workstreams, String(name));
 }
 
 /**
- * THREAD IDS (2026-09-23, per Durand: "threads identify themselves by an ID generated on
- * creation that never changes, so there are no title-change errors").
- * `threads` stays keyed by name (the dashboard and the history code depend on it); every
- * thread object carries an immutable `id` = 'T' + zero-padded number, allocated from the
- * server-owned counter meta.next_thread_id. Never derived from the thread count, never reused
- * (a removed thread's number is gone for good). No patch or client save can set or change an
- * id: add_thread ignores one, replace_all restores the server's id for a thread of the same
- * name and drops any other, and every thread op resolves `id` or `name` through
- * tsgResolveThread_ (id wins; a disagreeing pair is an error). Mirror Docs are keyed
- * 'thread:<id>' so a rename (rename_thread) retitles the same Doc.
+ * THREAD -> WORKSTREAM (Durand, 2026-09-23: rename "thread" to "workstream" everywhere and
+ * track which sessions belong to which workstream). Storage moved: `threads` -> `workstreams`,
+ * meta.next_thread_id -> meta.next_workstream_id, mirror records 'thread:<id>' ->
+ * 'workstream:<id>'. tsgMigrateWorkstreams_ does it in place, idempotently, on every read and
+ * write path (it runs first inside tsgEnsureWorkstreamIds_), so an un-migrated file still
+ * works and the first rulesets write after deploy persists the new keys. Ids keep their
+ * values (T002, T018 ...): never renumbered, never reused. If a file somehow holds BOTH keys,
+ * `workstreams` wins and any name only under `threads` is carried over. The old *_thread op
+ * names stay accepted as aliases (TSG_WORKSTREAM_OP_ALIASES).
  */
-var TSG_THREAD_ID_RE = /^T(\d{3,})$/;
-function tsgThreadIdFor_(n) { var d = String(n); while (d.length < 3) d = '0' + d; return 'T' + d; }
-function tsgThreadIdNumber_(id) { var m = TSG_THREAD_ID_RE.exec(String(id || '')); return m ? Number(m[1]) : null; }
-function tsgThreadFirstTs_(th) {
-  var h = th && Array.isArray(th.history) ? th.history : [];
-  for (var i = 0; i < h.length; i++) { if (h[i] && h[i].ts) { var ms = Date.parse(h[i].ts); if (!isNaN(ms)) return ms; } }
-  return Number.MAX_SAFE_INTEGER;   // no dated history: after every dated thread, then by name
+function tsgMigrateWorkstreams_(doc) {
+  if (!doc || typeof doc !== 'object') return false;
+  var changed = false;
+  if (Object.prototype.hasOwnProperty.call(doc, 'threads')) {
+    var old = doc.threads && typeof doc.threads === 'object' ? doc.threads : {};
+    if (!doc.workstreams || typeof doc.workstreams !== 'object') doc.workstreams = {};
+    Object.keys(old).forEach(function(n) {
+      if (!Object.prototype.hasOwnProperty.call(doc.workstreams, n)) doc.workstreams[n] = old[n];
+      else Logger.log('[workstreams] migration: "' + n + '" is under both keys; kept the workstreams copy');
+    });
+    delete doc.threads;
+    changed = true;
+  }
+  if (!doc.workstreams || typeof doc.workstreams !== 'object') doc.workstreams = {};
+  var meta = doc.meta;
+  if (meta && Object.prototype.hasOwnProperty.call(meta, 'next_thread_id')) {
+    var a = typeof meta.next_thread_id === 'number' ? meta.next_thread_id : 0;
+    var b = typeof meta.next_workstream_id === 'number' ? meta.next_workstream_id : 0;
+    if (a || b) meta.next_workstream_id = Math.max(a, b);   // the counter only ever rises
+    delete meta.next_thread_id;
+    changed = true;
+  }
+  var md = meta && meta.mirrorDocs;
+  if (md && typeof md === 'object') {
+    Object.keys(md).forEach(function(k) {
+      if (k.indexOf('thread:') !== 0) return;
+      var nk = 'workstream:' + k.slice('thread:'.length);
+      if (!md[nk]) md[nk] = md[k];
+      delete md[k];
+      changed = true;
+    });
+  }
+  return changed;
 }
-/** Gives every thread without a valid, unique id the next one, oldest first (first history ts, then name). Idempotent. */
-function tsgEnsureThreadIds_(doc) {
+
+/**
+ * WORKSTREAM IDS (2026-09-23, per Durand: "threads identify themselves by an ID generated on
+ * creation that never changes, so there are no title-change errors").
+ * `workstreams` stays keyed by name (the dashboard and the history code depend on it); every
+ * workstream object carries an immutable `id` = 'T' + zero-padded number, allocated from the
+ * server-owned counter meta.next_workstream_id. Never derived from the count, never reused
+ * (a removed workstream's number is gone for good). No patch or client save can set or change
+ * an id: add_workstream ignores one, replace_all restores the server's id for a workstream of
+ * the same name and drops any other, and every workstream op resolves `id` or `name` through
+ * tsgResolveWorkstream_ (id wins; a disagreeing pair is an error). Mirror Docs are keyed
+ * 'workstream:<id>' so a rename (rename_workstream) retitles the same Doc.
+ */
+var TSG_WORKSTREAM_ID_RE = /^T(\d{3,})$/;
+function tsgWorkstreamIdFor_(n) { var d = String(n); while (d.length < 3) d = '0' + d; return 'T' + d; }
+function tsgWorkstreamIdNumber_(id) { var m = TSG_WORKSTREAM_ID_RE.exec(String(id || '')); return m ? Number(m[1]) : null; }
+function tsgWorkstreamFirstTs_(ws) {
+  var h = ws && Array.isArray(ws.history) ? ws.history : [];
+  for (var i = 0; i < h.length; i++) { if (h[i] && h[i].ts) { var ms = Date.parse(h[i].ts); if (!isNaN(ms)) return ms; } }
+  return Number.MAX_SAFE_INTEGER;   // no dated history: after every dated workstream, then by name
+}
+/** Migrates old keys, then gives every workstream without a valid, unique id the next one, oldest first (first history ts, then name). Idempotent. */
+function tsgEnsureWorkstreamIds_(doc) {
   if (!doc) return 0;
   if (!doc.meta) doc.meta = {};
-  if (!doc.threads) doc.threads = {};
-  var names = Object.keys(doc.threads).filter(function(n) { return doc.threads[n] && typeof doc.threads[n] === 'object'; });
+  tsgMigrateWorkstreams_(doc);
+  var wss = doc.workstreams;
+  var names = Object.keys(wss).filter(function(n) { return wss[n] && typeof wss[n] === 'object'; });
   var maxNum = 0, seen = {}, missing = [];
-  var ordered = names.slice().sort(function(a, b) { return (tsgThreadFirstTs_(doc.threads[a]) - tsgThreadFirstTs_(doc.threads[b])) || a.localeCompare(b); });
+  var ordered = names.slice().sort(function(a, b) { return (tsgWorkstreamFirstTs_(wss[a]) - tsgWorkstreamFirstTs_(wss[b])) || a.localeCompare(b); });
   ordered.forEach(function(n) {
-    var id = doc.threads[n].id, num = tsgThreadIdNumber_(id);
-    if (num == null || seen[id]) { missing.push(n); return; }   // no id, malformed, or a duplicate of an earlier thread's
+    var id = wss[n].id, num = tsgWorkstreamIdNumber_(id);
+    if (num == null || seen[id]) { missing.push(n); return; }   // no id, malformed, or a duplicate of an earlier workstream's
     seen[id] = true;
     if (num > maxNum) maxNum = num;
   });
   // The counter only ever rises: never below the highest id in use, never reset by a client copy.
-  if (typeof doc.meta.next_thread_id !== 'number' || doc.meta.next_thread_id <= maxNum) doc.meta.next_thread_id = maxNum + 1;
+  if (typeof doc.meta.next_workstream_id !== 'number' || doc.meta.next_workstream_id <= maxNum) doc.meta.next_workstream_id = maxNum + 1;
   missing.forEach(function(n) {
-    var was = doc.threads[n].id;
-    doc.threads[n].id = tsgThreadIdFor_(doc.meta.next_thread_id);
-    doc.meta.next_thread_id += 1;
-    if (was) Logger.log('[threads] "' + n + '": ignored id ' + JSON.stringify(was) + ' (not the server\'s); assigned ' + doc.threads[n].id);
+    var was = wss[n].id;
+    wss[n].id = tsgWorkstreamIdFor_(doc.meta.next_workstream_id);
+    doc.meta.next_workstream_id += 1;
+    if (was) Logger.log('[workstreams] "' + n + '": ignored id ' + JSON.stringify(was) + ' (not the server\'s); assigned ' + wss[n].id);
   });
   return missing.length;
 }
-function tsgThreadNameById_(doc, id) {
+function tsgWorkstreamNameById_(doc, id) {
   var want = String(id || '');
   if (!want) return null;
-  var names = Object.keys((doc && doc.threads) || {});
-  for (var i = 0; i < names.length; i++) { var th = doc.threads[names[i]]; if (th && th.id === want) return names[i]; }
+  var names = Object.keys((doc && doc.workstreams) || {});
+  for (var i = 0; i < names.length; i++) { var ws = doc.workstreams[names[i]]; if (ws && ws.id === want) return names[i]; }
   return null;
 }
-/** The name key a thread op addresses: `id` wins, `name` still works, both must agree. */
-function tsgResolveThread_(doc, patch, op) {
-  var byId = patch.id != null && patch.id !== '' ? tsgThreadNameById_(doc, patch.id) : null;
-  if (patch.id != null && patch.id !== '' && !byId) throw new Error(op + ': thread id not found: ' + patch.id);
+/** The name key a workstream op addresses: `id` wins, `name` still works, both must agree. */
+function tsgResolveWorkstream_(doc, patch, op) {
+  var byId = patch.id != null && patch.id !== '' ? tsgWorkstreamNameById_(doc, patch.id) : null;
+  if (patch.id != null && patch.id !== '' && !byId) throw new Error(op + ': workstream id not found: ' + patch.id);
   var name = patch.name != null && patch.name !== '' ? String(patch.name) : null;
   if (byId && name && byId !== name) throw new Error(op + ': id ' + patch.id + ' is "' + byId + '", not "' + name + '" (id and name disagree)');
   if (byId) return byId;
-  if (!name) throw new Error(op + ': thread id or name is required');
-  if (!tsgHasThread_(doc, name)) throw new Error(op + ': thread not found: ' + name);
+  if (!name) throw new Error(op + ': workstream id or name is required');
+  if (!tsgHasWorkstream_(doc, name)) throw new Error(op + ': workstream not found: ' + name);
   return name;
+}
+/** Old op names (sessions and skills still send them) -> the workstream op they mean. */
+var TSG_WORKSTREAM_OP_ALIASES = {
+  add_thread: 'add_workstream',
+  update_thread_instructions: 'update_workstream_instructions',
+  add_thread_memory: 'add_workstream_memory',
+  remove_thread_memory: 'remove_workstream_memory',
+  remove_thread: 'remove_workstream',
+  rename_thread: 'rename_workstream',
+  set_thread_code: 'set_workstream_code'
+};
+function tsgCanonicalRulesetOp_(op) {
+  return Object.prototype.hasOwnProperty.call(TSG_WORKSTREAM_OP_ALIASES, op) ? TSG_WORKSTREAM_OP_ALIASES[op] : op;
+}
+/**
+ * SESSIONS (2026-09-23): each workstream keeps `sessions[]`, newest first, one entry per Claude
+ * session that worked on it: {sessionId, surface, title, startedAt, firstSeen, lastSeen}.
+ * record_session appends or updates by sessionId (lastSeen = the patch ts). Only ids are stored
+ * (session_01..., cse_...), never links: a link dies with its session. A pasted link is reduced
+ * to the id it carries, else refused. Past TSG_WORKSTREAM_SESSIONS_KEEP the oldest entries move
+ * to rs.meta.sessionArchiveStash, which tsgArchiveRulesetsHistory_ writes into the dated
+ * History/rulesets-history file on the same write.
+ */
+var TSG_WORKSTREAM_SESSIONS_KEEP = 50;
+var TSG_SESSION_SURFACES = ['chat', 'cowork', 'code-local', 'code-cloud', 'scheduled', 'routine'];
+function tsgCleanSessionId_(raw) {
+  var s = String(raw == null ? '' : raw).trim();
+  if (!s) throw new Error('record_session: sessionId is required');
+  if (/[\/:?#\s]/.test(s)) {
+    var m = /(session_[A-Za-z0-9]+|cse_[A-Za-z0-9]+)/.exec(s);
+    if (!m) throw new Error('record_session: sessionId must be a session id (session_... or cse_...), not a link: ' + s.slice(0, 80));
+    s = m[1];
+  }
+  return s;
 }
 
 /**
@@ -314,7 +394,7 @@ function tsgResolveThread_(doc, patch, op) {
  *
  * The Rulesets document had no version check whatsoever: target=rulesets was a blind
  * whole-document overwrite. It now has two genuinely uncoordinated writers (the
- * dashboard's Settings UI, and Claude sessions pushing threads/current patches through
+ * dashboard's Settings UI, and Claude sessions pushing workstream/current patches through
  * _Inbox), so a stale Settings save could silently erase a memory pushed thirty seconds
  * earlier. This wrapper gives the document the same counter + conflict semantics the data
  * document already has.
@@ -326,8 +406,7 @@ function tsgResolveThread_(doc, patch, op) {
 function applyRulesetPatch_(doc, patch) {
   if (!doc.meta) doc.meta = {};
   if (typeof doc.meta.docVersion !== 'number') doc.meta.docVersion = 1;
-  if (!doc.threads) doc.threads = {};
-  tsgEnsureThreadIds_(doc);   // the backfill: every thread has its id before any op resolves one
+  tsgEnsureWorkstreamIds_(doc);   // the migration + id backfill: every workstream has its id before any op resolves one
 
   if (patch.op === 'replace_all') {
     // Whole-document save from the dashboard's Settings UI, submitted as a patch like
@@ -347,24 +426,27 @@ function applyRulesetPatch_(doc, patch) {
     }
     const incoming = patch.doc || {};
     if (incoming.current) doc.current = incoming.current;
-    if (incoming.threads) {
-      // Ids are server-owned: a thread of the same name keeps the id the server holds (a copy
-      // that stripped it gets it back, a copy that changed it is ignored and logged); a thread
-      // new to the server gets a fresh id from the counter, never one the client made up.
-      var prevThreads = doc.threads || {};
-      doc.threads = incoming.threads;
-      Object.keys(doc.threads).forEach(function(n) {
-        var th = doc.threads[n]; if (!th || typeof th !== 'object') return;
-        var prev = Object.prototype.hasOwnProperty.call(prevThreads, n) ? prevThreads[n] : null;
+    // A page loaded before the rename still sends `threads`; either key lands as workstreams.
+    var incomingWs = (incoming.workstreams && typeof incoming.workstreams === 'object') ? incoming.workstreams
+      : ((incoming.threads && typeof incoming.threads === 'object') ? incoming.threads : null);
+    if (incomingWs) {
+      // Ids are server-owned: a workstream of the same name keeps the id the server holds (a
+      // copy that stripped it gets it back, a copy that changed it is ignored and logged); a
+      // workstream new to the server gets a fresh id from the counter, never one the client made up.
+      var prevWs = doc.workstreams || {};
+      doc.workstreams = incomingWs;
+      Object.keys(doc.workstreams).forEach(function(n) {
+        var ws = doc.workstreams[n]; if (!ws || typeof ws !== 'object') return;
+        var prev = Object.prototype.hasOwnProperty.call(prevWs, n) ? prevWs[n] : null;
         if (prev && prev.id) {
-          if (th.id && th.id !== prev.id) Logger.log('[threads] replace_all: "' + n + '" sent id ' + JSON.stringify(th.id) + ', kept ' + prev.id);
-          th.id = prev.id;
-        } else if (th.id) {
-          Logger.log('[threads] replace_all: new thread "' + n + '" sent id ' + JSON.stringify(th.id) + ', ignored');
-          delete th.id;
+          if (ws.id && ws.id !== prev.id) Logger.log('[workstreams] replace_all: "' + n + '" sent id ' + JSON.stringify(ws.id) + ', kept ' + prev.id);
+          ws.id = prev.id;
+        } else if (ws.id) {
+          Logger.log('[workstreams] replace_all: new workstream "' + n + '" sent id ' + JSON.stringify(ws.id) + ', ignored');
+          delete ws.id;
         }
       });
-      tsgEnsureThreadIds_(doc);
+      tsgEnsureWorkstreamIds_(doc);
     }
     if (Array.isArray(incoming.history)) doc.history = incoming.history;
     // meta stays server-owned apart from the descriptive fields — in particular
@@ -385,96 +467,144 @@ function applyRulesetPatch_(doc, patch) {
 
 function applyRulesetPatchOp_(doc, patch) {
   const now = patch.ts || new Date().toISOString();
-  if (!doc.threads) doc.threads = {};
+  if (!doc.workstreams) doc.workstreams = {};
+  var op = tsgCanonicalRulesetOp_(patch.op);
 
-  if (patch.op === 'append_category') {
+  if (op === 'append_category') {
     doc.current[patch.category].content += '\n\n' + patch.text;
     doc.current[patch.category].pushed = now;
-  } else if (patch.op === 'replace_category_text') {
+  } else if (op === 'replace_category_text') {
     const cur = doc.current[patch.category].content;
     if (cur.indexOf(patch.find) === -1) throw new Error('replace_category_text: find text not present');
     doc.current[patch.category].content = cur.split(patch.find).join(patch.replace);
     doc.current[patch.category].pushed = now;
-  } else if (patch.op === 'set_category') {
+  } else if (op === 'set_category') {
     // Creates the category when it does not exist yet (2026-09-22: the Code set is born this way).
     if (!doc.current) doc.current = {};
     if (!doc.current[patch.category]) doc.current[patch.category] = { content: '', pushed: now };
     doc.current[patch.category].content = patch.text;
     doc.current[patch.category].pushed = now;
-  } else if (patch.op === 'remove_category') {
+  } else if (op === 'remove_category') {
     if (!doc.current || !Object.prototype.hasOwnProperty.call(doc.current, patch.category)) throw new Error('remove_category: category not found: ' + patch.category);
     delete doc.current[patch.category];
-  } else if (patch.op === 'set_thread_code') {
-    // A code thread's mirror Doc carries the Code layer under General (INSTRUCTION LAYERS, 2026-09-22).
-    var codeName = tsgResolveThread_(doc, patch, 'set_thread_code');
-    doc.threads[codeName].code = !!patch.code;
-    doc.threads[codeName].history.push({ ts: now, action: 'update', summary: (patch.code ? 'Marked as a code thread (Code layer applies).' : 'No longer a code thread.') });
+  } else if (op === 'set_workstream_code') {
+    // A code workstream's mirror Doc carries the Code layer under General (INSTRUCTION LAYERS, 2026-09-22).
+    var codeName = tsgResolveWorkstream_(doc, patch, op);
+    doc.workstreams[codeName].code = !!patch.code;
+    doc.workstreams[codeName].history.push({ ts: now, action: 'update', summary: (patch.code ? 'Marked as a code workstream (Code layer applies).' : 'No longer a code workstream.') });
     doc.meta.last_updated = now.slice(0, 10);
     return;
-  } else if (patch.op === 'rename_thread') {
-    // The id stays; the name key moves with instructions, memories, code and history (2026-09-23).
-    var oldName = tsgResolveThread_(doc, patch, 'rename_thread');
-    var newName = tsgAssertSafeThreadName_('rename_thread', patch.newName);
+  } else if (op === 'rename_workstream') {
+    // The id stays; the name key moves with instructions, memories, code, sessions and history (2026-09-23).
+    var oldName = tsgResolveWorkstream_(doc, patch, op);
+    var newName = tsgAssertSafeWorkstreamName_(op, patch.newName);
     if (newName === oldName) return;
-    if (tsgHasThread_(doc, newName)) throw new Error('rename_thread: a thread named "' + newName + '" already exists');
-    var moved = doc.threads[oldName];
-    delete doc.threads[oldName];
-    doc.threads[newName] = moved;
+    if (tsgHasWorkstream_(doc, newName)) throw new Error(op + ': a workstream named "' + newName + '" already exists');
+    var moved = doc.workstreams[oldName];
+    delete doc.workstreams[oldName];
+    doc.workstreams[newName] = moved;
     if (!Array.isArray(moved.history)) moved.history = [];
     moved.history.push({ ts: now, action: 'rename', summary: 'Renamed from ' + oldName + ' to ' + newName + '.' });
     doc.meta.last_updated = now.slice(0, 10);
     return;
-  } else if (patch.op === 'mirror_instructions') {
+  } else if (op === 'mirror_instructions') {
     // No change to the document; the write it triggers re-mirrors every instruction set.
     return;
 
-  } else if (patch.op === 'add_thread') {
-    // Reserved-key guard + own-property existence check — see tsgAssertSafeThreadName_.
-    const addName = tsgAssertSafeThreadName_('add_thread', patch.name);
-    if (tsgHasThread_(doc, addName)) throw new Error('add_thread: thread already exists: ' + addName);
-    doc.threads[addName] = {
+  } else if (op === 'add_workstream') {
+    // Reserved-key guard + own-property existence check — see tsgAssertSafeWorkstreamName_.
+    const addName = tsgAssertSafeWorkstreamName_(op, patch.name);
+    if (tsgHasWorkstream_(doc, addName)) throw new Error(op + ': workstream already exists: ' + addName);
+    doc.workstreams[addName] = {
       instructions: patch.instructions || '',
       memories: patch.memories || [],
-      history: [{ ts: now, action: 'baseline', summary: (patch.historyEntry && patch.historyEntry.summary) || 'Thread added.' }]
+      history: [{ ts: now, action: 'baseline', summary: (patch.historyEntry && patch.historyEntry.summary) || 'Workstream added.' }]
     };
-    if (patch.id) Logger.log('[threads] add_thread "' + addName + '": ignored supplied id ' + JSON.stringify(patch.id));
-    tsgEnsureThreadIds_(doc);   // the new thread takes the next id; a patch never picks one
+    if (patch.id) Logger.log('[workstreams] add_workstream "' + addName + '": ignored supplied id ' + JSON.stringify(patch.id));
+    tsgEnsureWorkstreamIds_(doc);   // the new workstream takes the next id; a patch never picks one
     doc.meta.last_updated = now.slice(0, 10);
     return;
-  } else if (patch.op === 'update_thread_instructions') {
-    var uName = tsgResolveThread_(doc, patch, 'update_thread_instructions');
-    doc.threads[uName].instructions = patch.instructions || '';
-    doc.threads[uName].history.push({
+  } else if (op === 'update_workstream_instructions') {
+    var uName = tsgResolveWorkstream_(doc, patch, op);
+    doc.workstreams[uName].instructions = patch.instructions || '';
+    doc.workstreams[uName].history.push({
       ts: now,
       action: (patch.historyEntry && patch.historyEntry.action) || 'update',
       summary: (patch.historyEntry && patch.historyEntry.summary) || 'Instructions updated.'
     });
     doc.meta.last_updated = now.slice(0, 10);
     return;
-  } else if (patch.op === 'add_thread_memory') {
-    var amName = tsgResolveThread_(doc, patch, 'add_thread_memory');
-    doc.threads[amName].memories.push(patch.memory);
-    doc.threads[amName].history.push({
+  } else if (op === 'add_workstream_memory') {
+    var amName = tsgResolveWorkstream_(doc, patch, op);
+    if (!Array.isArray(doc.workstreams[amName].memories)) doc.workstreams[amName].memories = [];
+    doc.workstreams[amName].memories.push(patch.memory);
+    doc.workstreams[amName].history.push({
       ts: now,
       action: (patch.historyEntry && patch.historyEntry.action) || 'update',
       summary: (patch.historyEntry && patch.historyEntry.summary) || ('Memory added: "' + patch.memory + '"')
     });
     doc.meta.last_updated = now.slice(0, 10);
     return;
-  } else if (patch.op === 'remove_thread_memory') {
-    var rmName = tsgResolveThread_(doc, patch, 'remove_thread_memory');
-    if (typeof patch.index !== 'number' || patch.index < 0) throw new Error('remove_thread_memory: index must be a non-negative number');
-    doc.threads[rmName].memories.splice(patch.index, 1);
-    doc.threads[rmName].history.push({
+  } else if (op === 'remove_workstream_memory') {
+    var rmName = tsgResolveWorkstream_(doc, patch, op);
+    if (typeof patch.index !== 'number' || patch.index < 0) throw new Error(op + ': index must be a non-negative number');
+    doc.workstreams[rmName].memories.splice(patch.index, 1);
+    doc.workstreams[rmName].history.push({
       ts: now,
       action: (patch.historyEntry && patch.historyEntry.action) || 'update',
       summary: (patch.historyEntry && patch.historyEntry.summary) || 'Memory removed.'
     });
     doc.meta.last_updated = now.slice(0, 10);
     return;
-  } else if (patch.op === 'remove_thread') {
-    var delName = tsgResolveThread_(doc, patch, 'remove_thread');
-    delete doc.threads[delName];   // its number is never reused: the counter only rises
+  } else if (op === 'remove_workstream') {
+    var delName = tsgResolveWorkstream_(doc, patch, op);
+    delete doc.workstreams[delName];   // its number is never reused: the counter only rises
+    doc.meta.last_updated = now.slice(0, 10);
+    return;
+  } else if (op === 'record_session') {
+    // No history line: a session check-in is not an instruction change and would push the
+    // real changelog out of the hot file (TSG_RULESETS_HISTORY_KEEP).
+    var sName = tsgResolveWorkstream_(doc, patch, op);
+    var sid = tsgCleanSessionId_(patch.sessionId);
+    if (patch.surface != null && patch.surface !== '' && TSG_SESSION_SURFACES.indexOf(patch.surface) === -1) {
+      throw new Error(op + ': surface must be one of ' + TSG_SESSION_SURFACES.join(', ') + ' (got ' + JSON.stringify(patch.surface) + ')');
+    }
+    var wsS = doc.workstreams[sName];
+    if (!Array.isArray(wsS.sessions)) wsS.sessions = [];
+    var at = -1;
+    for (var si = 0; si < wsS.sessions.length; si++) { if (wsS.sessions[si] && wsS.sessions[si].sessionId === sid) { at = si; break; } }
+    var entry = at >= 0 ? wsS.sessions.splice(at, 1)[0] : { sessionId: sid, firstSeen: now };
+    if (patch.surface) entry.surface = patch.surface;
+    if (patch.title != null && patch.title !== '') entry.title = String(patch.title).slice(0, 200);
+    if (patch.startedAt) entry.startedAt = String(patch.startedAt);
+    entry.lastSeen = now;
+    wsS.sessions.unshift(entry);   // newest first
+    if (wsS.sessions.length > TSG_WORKSTREAM_SESSIONS_KEEP) {
+      var over = wsS.sessions.splice(TSG_WORKSTREAM_SESSIONS_KEEP);
+      doc.meta.sessionArchiveStash = doc.meta.sessionArchiveStash || {};
+      var stashKey = wsS.id || sName;
+      doc.meta.sessionArchiveStash[stashKey] = (doc.meta.sessionArchiveStash[stashKey] || []).concat(over.map(function(s) { return Object.assign({ workstream: sName }, s); }));
+    }
+    doc.meta.last_updated = now.slice(0, 10);
+    return;
+  } else if (op === 'set_workstream_links') {
+    var lName = tsgResolveWorkstream_(doc, patch, op);
+    var wsL = doc.workstreams[lName];
+    var links = Object.assign({}, wsL.links || {});
+    var changedKeys = [];
+    ['projectUrl', 'repo', 'notes'].forEach(function(k) {
+      if (!Object.prototype.hasOwnProperty.call(patch, k)) return;
+      var v = patch[k] == null ? '' : String(patch[k]).trim();
+      if (k === 'projectUrl' && v && !/^https:\/\/claude\.ai\/project\//.test(v)) throw new Error(op + ': projectUrl must be a https://claude.ai/project/... link');
+      if (k === 'repo' && v && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(v.replace(/^https:\/\/github\.com\//, '').replace(/\/$/, ''))) throw new Error(op + ': repo must be owner/repo or a github.com link');
+      if (k === 'repo') v = v.replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '').replace(/\.git$/, '');
+      if (v) links[k] = v; else delete links[k];
+      changedKeys.push(k);
+    });
+    if (!changedKeys.length) throw new Error(op + ': give at least one of projectUrl, repo, notes');
+    wsL.links = links;
+    if (!Array.isArray(wsL.history)) wsL.history = [];
+    wsL.history.push({ ts: now, action: 'update', summary: 'Links updated (' + changedKeys.join(', ') + ').' });
     doc.meta.last_updated = now.slice(0, 10);
     return;
   } else {
@@ -766,12 +896,13 @@ function tsgIndexDoc_(doc) {
  * generalized merge of all rules to be applied everywhere; the code instructions should be
  * Claude Code specific rules that sit on top of the general instructions; each thread should
  * push to its own instruction set, a set of thread/project specific instructions that sit on
- * top of the general ones (and code ones for code threads)". The rulesets file holds the
- * layers: current.General, current.Code, threads[name] (with `code: true` on a code thread).
+ * top of the general ones (and code ones for code threads)". Threads are WORKSTREAMS since
+ * 2026-09-23. The rulesets file holds the layers: current.General, current.Code,
+ * workstreams[name] (with `code: true` on a code workstream).
  * On every rulesets write the tracker mirrors each set to a Google Doc a session can read in
  * one call (the Drive connector returns JSON base64-encoded, Docs as text): one Doc per set,
- * COMPOSED so a session reads one Doc: General; Code = General + Code; a thread = General
- * (+ Code for a code thread) + the thread's instructions and memories. Docs live in the
+ * COMPOSED so a session reads one Doc: General; Code = General + Code; a workstream = General
+ * (+ Code for a code workstream) + its instructions, memories, links and latest sessions. Docs live in the
  * "Instructions" folder under the tracker folder; ids and content hashes in meta.mirrorDocs
  * (server-owned), so an unchanged set costs nothing and a Doc keeps its id (the pointer a
  * session was given stays valid). The legacy 'Systems — Cowork Instructions' Doc (task 309)
@@ -779,31 +910,57 @@ function tsgIndexDoc_(doc) {
  */
 var TSG_INSTRUCTIONS_FOLDER = 'Instructions';
 var TSG_MIRROR_DOC_PREFIX = 'Systems — Instructions — ';
+// The General mirror. The Instructions for Claude box links to this exact Doc (2026-09-23), so
+// its file id must never change: the Doc is rewritten and renamed in place, never recreated.
 var TSG_LEGACY_COWORK_MIRROR_DOC_ID = '1G-QI_F04Ye5SdEIJeOFq_Ex6da1v9oFDED49Ee-1HZM';
 function tsgHashText_(text) {
   var h = 5381, str = String(text || '');
   for (var i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
   return (h >>> 0).toString(16) + ':' + str.length;
 }
+var TSG_MIRROR_HOW_TO = 'MIRROR. Do not edit this Doc. It is rewritten from the TSG Task Tracker Rulesets after every change. To change it: propose the exact text in chat, get Durand\'s approval, push an _Inbox ruleset patch (tsg-task-tracker-protocol skill), then re-read this Doc. Layers: General applies everywhere; Code sits on top for Claude Code sessions; a workstream set sits on top of those for that workstream.';
+var TSG_MIRROR_SESSIONS_SHOWN = 10;
+function tsgMirrorWhen_(ts) {
+  var d = new Date(ts);
+  if (!ts || isNaN(d.getTime())) return String(ts || '');
+  try {
+    var tz = Session.getScriptTimeZone();
+    return Utilities.formatDate(d, tz, 'yyyy-MM-dd') + ' ' + Utilities.formatDate(d, tz, 'HH:mm') + ' ' + tz;
+  } catch (e) { return d.toISOString(); }
+}
+/** The workstream's links and latest sessions as mirror-Doc text (2026-09-23). */
+function tsgWorkstreamMirrorExtras_(ws) {
+  var links = (ws && ws.links) || {};
+  var out = '\n\nLinks:' + ((links.projectUrl || links.repo || links.notes)
+    ? (links.projectUrl ? '\n- Claude Project: ' + links.projectUrl : '') + (links.repo ? '\n- Repo: https://github.com/' + links.repo : '') + (links.notes ? '\n- Notes: ' + links.notes : '')
+    : ' none recorded');
+  var ss = Array.isArray(ws && ws.sessions) ? ws.sessions : [];
+  var shown = ss.slice(0, TSG_MIRROR_SESSIONS_SHOWN);
+  out += '\n\nSessions (latest ' + shown.length + ' of ' + ss.length + '; ids only, newest first):' + (shown.length
+    ? '\n- ' + shown.map(function(x) { return [x.sessionId, x.surface || '?', x.title ? '"' + x.title + '"' : '(untitled)', 'last seen ' + tsgMirrorWhen_(x.lastSeen)].join(' | '); }).join('\n- ')
+    : ' none recorded');
+  return out;
+}
 function tsgInstructionSets_(rs) {
-  var cur = (rs && rs.current) || {}, threads = (rs && rs.threads) || {};
+  var cur = (rs && rs.current) || {}, wss = (rs && (rs.workstreams || rs.threads)) || {};
   var general = cur.General || { content: '', pushed: '' };
   var code = cur.Code || null;
   var stamp = 'Generated ' + new Date().toISOString() + ' by the TSG Task Tracker from its rulesets (docVersion ' + ((rs.meta && rs.meta.docVersion) || '?') + ').';
-  var howTo = 'MIRROR. Do not edit this Doc: edit in the tracker (Settings > Rulesets / Threads) or push through tsg-thread-sync; the tracker rewrites it on every save. Layers: General applies everywhere; Code sits on top for Claude Code sessions; a thread set sits on top of those for that thread.';
+  var howTo = TSG_MIRROR_HOW_TO;
   var section = function(title, block) { return '\n\n=== ' + title + (block && block.pushed ? ' (pushed ' + block.pushed + ')' : '') + ' ===\n' + ((block && block.content) || '(empty)'); };
   var sets = [];
   sets.push({ key: 'General', title: TSG_MIRROR_DOC_PREFIX + 'General', text: 'SYSTEMS — INSTRUCTIONS — GENERAL\n' + stamp + '\n' + howTo + section('GENERAL', general) });
   sets.push({ key: 'Code', title: TSG_MIRROR_DOC_PREFIX + 'Code', text: 'SYSTEMS — INSTRUCTIONS — CODE (General + Code)\n' + stamp + '\n' + howTo + section('GENERAL', general) + section('CODE', code) });
-  Object.keys(threads).sort().forEach(function(name) {
-    var th = threads[name] || {};
-    var id = th.id || name;   // every thread has an id after tsgEnsureThreadIds_; the name is the last-resort key
-    var text = 'SYSTEMS — INSTRUCTIONS — THREAD ' + id + ': ' + name + (th.code ? ' (General + Code + thread)' : ' (General + thread)') + '\n' + stamp + '\n' + howTo + section('GENERAL', general);
-    if (th.code) text += section('CODE', code);
-    text += section('THREAD ' + id + ': ' + name, { content: th.instructions || '' });
-    var mems = Array.isArray(th.memories) ? th.memories : [];
+  Object.keys(wss).sort().forEach(function(name) {
+    var ws = wss[name] || {};
+    var id = ws.id || name;   // every workstream has an id after tsgEnsureWorkstreamIds_; the name is the last-resort key
+    var text = 'SYSTEMS — INSTRUCTIONS — WORKSTREAM ' + id + ': ' + name + (ws.code ? ' (General + Code + workstream)' : ' (General + workstream)') + '\n' + stamp + '\n' + howTo + section('GENERAL', general);
+    if (ws.code) text += section('CODE', code);
+    text += section('WORKSTREAM ' + id + ': ' + name, { content: ws.instructions || '' });
+    var mems = Array.isArray(ws.memories) ? ws.memories : [];
     text += '\n\nCritical memories (' + mems.length + '):' + (mems.length ? '\n- ' + mems.join('\n- ') : ' none');
-    sets.push({ key: 'thread:' + id, title: TSG_MIRROR_DOC_PREFIX + 'Thread — ' + id + ' — ' + name, text: text });
+    text += tsgWorkstreamMirrorExtras_(ws);
+    sets.push({ key: 'workstream:' + id, title: TSG_MIRROR_DOC_PREFIX + 'Workstream — ' + id + ' — ' + name, text: text });
   });
   return sets;
 }
@@ -833,12 +990,12 @@ function tsgMirrorInstructions_(rs) {
   if (!rs) return 0;
   rs.meta = rs.meta || {};
   if (!rs.meta.mirrorDocs || typeof rs.meta.mirrorDocs !== 'object') rs.meta.mirrorDocs = {};
-  tsgEnsureThreadIds_(rs);
+  tsgEnsureWorkstreamIds_(rs);   // also moves 'thread:<x>' records to 'workstream:<x>'
   // Records keyed by name (before 2026-09-23) move to the id key so the SAME Doc is reused and
-  // retitled; nothing is created for a thread that already has a Doc.
-  Object.keys(rs.threads || {}).forEach(function(name) {
-    var th = rs.threads[name]; if (!th || !th.id) return;
-    var oldKey = 'thread:' + name, newKey = 'thread:' + th.id;
+  // retitled; nothing is created for a workstream that already has a Doc.
+  Object.keys(rs.workstreams || {}).forEach(function(name) {
+    var ws = rs.workstreams[name]; if (!ws || !ws.id) return;
+    var oldKey = 'workstream:' + name, newKey = 'workstream:' + ws.id;
     if (oldKey !== newKey && rs.meta.mirrorDocs[oldKey] && !rs.meta.mirrorDocs[newKey]) {
       rs.meta.mirrorDocs[newKey] = rs.meta.mirrorDocs[oldKey];
       delete rs.meta.mirrorDocs[oldKey];
@@ -862,7 +1019,7 @@ function tsgMirrorInstructions_(rs) {
       Logger.log('[mirror] ' + set.key + ' not written: ' + err);
     }
   });
-  // A removed thread's record goes; its Doc stays in the folder for Durand to trash.
+  // A removed workstream's record goes; its Doc stays in the folder for Durand to trash.
   Object.keys(rs.meta.mirrorDocs).forEach(function(k) { if (!live[k]) delete rs.meta.mirrorDocs[k]; });
   return written;
 }
@@ -2404,8 +2561,10 @@ function doGet(e) {
   }
   if (e.parameter.api === 'rulesets') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
-    return ContentService.createTextOutput(getTrackerFile_('rulesets').getBlob().getDataAsString())
-      .setMimeType(ContentService.MimeType.JSON);
+    var rsText = getTrackerFile_('rulesets').getBlob().getDataAsString();
+    // Served in the workstream shape even before the first write persists the migration (2026-09-23).
+    try { var rsServed = JSON.parse(rsText); if (tsgMigrateWorkstreams_(rsServed)) rsText = JSON.stringify(rsServed); } catch (mErr) {}
+    return ContentService.createTextOutput(rsText).setMimeType(ContentService.MimeType.JSON);
   }
   if (e.parameter.api === 'calendar') {
     if (!tsgCheckToken_(e)) return tsgUnauthorized_();
@@ -4034,12 +4193,12 @@ function doPost(e) {
   // pipeline as task data (2026-09-02). It used to be a blind whole-document setContent()
   // with no version check at all — which was defensible only while the dashboard's
   // Settings UI was the single writer. It no longer is: Claude sessions push
-  // threads/current patches into _Inbox too, so the document had exactly the two
+  // workstream/current patches into _Inbox too, so the document had exactly the two
   // uncoordinated writers racing for one file that the data file's own fix was written to
   // eliminate. Same two shapes as target=data:
-  //   - a whole document (has .current or .threads) — the dashboard's Settings save.
+  //   - a whole document (has .current or .workstreams; an older page sends .threads) — the dashboard's Settings save.
   //     Wrapped as a "replace_all" ruleset patch, version-checked against meta.docVersion.
-  //   - a single op (has .op, e.g. {op:'add_thread_memory', ...}) — the same shape a
+  //   - a single op (has .op, e.g. {op:'add_workstream_memory', ...}) — the same shape a
   //     terminal-authored _Inbox ruleset file already uses, passed straight through.
   if (requested === 'rulesets') {
     var rsPayload;
@@ -6065,7 +6224,8 @@ function tsgHistoryFolder_() {
 var TSG_RULESETS_HISTORY_KEEP = 3;
 function tsgArchiveRulesetsHistory_(rs, now) {
   if (!rs) return 0;
-  var K = TSG_RULESETS_HISTORY_KEEP, pruned = { history: [], threads: {} }, lines = 0;
+  tsgMigrateWorkstreams_(rs);
+  var K = TSG_RULESETS_HISTORY_KEEP, pruned = { history: [], workstreams: {} }, lines = 0;
   var top = Array.isArray(rs.history) ? rs.history : [];
   var keepTop = [], byTarget = {};
   // Top-level changelog: newest K per target (category), oldest lines archived.
@@ -6074,21 +6234,27 @@ function tsgArchiveRulesetsHistory_(rs, now) {
     byTarget[tg] = (byTarget[tg] || 0) + 1;
     if (byTarget[tg] <= K) keepTop.unshift(h); else pruned.history.unshift(h);
   }
-  var threadKeep = {};
-  Object.keys(rs.threads || {}).forEach(function(name) {
-    var th = rs.threads[name]; if (!th || !Array.isArray(th.history)) return;
-    if (th.history.length > K) { pruned.threads[name] = th.history.slice(0, th.history.length - K); threadKeep[name] = th.history.slice(-K); }
+  var wsKeep = {}, wss = rs.workstreams || {};
+  Object.keys(wss).forEach(function(name) {
+    var ws = wss[name]; if (!ws || !Array.isArray(ws.history)) return;
+    if (ws.history.length > K) { pruned.workstreams[name] = ws.history.slice(0, ws.history.length - K); wsKeep[name] = ws.history.slice(-K); }
   });
-  lines = pruned.history.length + Object.keys(pruned.threads).reduce(function(a, n) { return a + pruned.threads[n].length; }, 0);
-  if (!lines) return 0;
-  var payload = { archivedAt: now, kind: 'rulesets-history', docVersion: rs.meta && rs.meta.docVersion, history: pruned.history, threads: pruned.threads };
+  // Session entries past a workstream's cap (record_session stashed them, keyed by id).
+  var stash = (rs.meta && rs.meta.sessionArchiveStash) || null;
+  var sessionLines = stash ? Object.keys(stash).reduce(function(a, k) { return a + ((stash[k] || []).length); }, 0) : 0;
+  lines = pruned.history.length + Object.keys(pruned.workstreams).reduce(function(a, n) { return a + pruned.workstreams[n].length; }, 0);
+  if (!lines && !sessionLines) return 0;
+  var payload = { archivedAt: now, kind: 'rulesets-history', docVersion: rs.meta && rs.meta.docVersion, history: pruned.history, workstreams: pruned.workstreams };
+  if (sessionLines) payload.sessions = stash;
   var file = tsgHistoryFolder_().createFile('rulesets-history-' + String(now).replace(/[:.]/g, '-') + '.json', JSON.stringify(payload), 'application/json');
   rs.history = keepTop;
-  Object.keys(threadKeep).forEach(function(name) { rs.threads[name].history = threadKeep[name]; });
+  Object.keys(wsKeep).forEach(function(name) { wss[name].history = wsKeep[name]; });
   rs.meta = rs.meta || {};
+  if (sessionLines) delete rs.meta.sessionArchiveStash;
   var prev = rs.meta.historyArchive || {};
   rs.meta.historyArchive = { lastAt: now, files: (prev.files || 0) + 1, lines: (prev.lines || 0) + lines, lastFile: file && file.getName ? file.getName() : undefined };
-  return lines;
+  if (sessionLines || prev.sessions) rs.meta.historyArchive.sessions = (prev.sessions || 0) + sessionLines;
+  return lines + sessionLines;
 }
 /** Prunes over-cap histories into one dated archive file. Writes the archive FIRST; a throw prunes nothing. */
 function tsgArchiveHistory_(doc, now) {

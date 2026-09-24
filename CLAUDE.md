@@ -1,5 +1,7 @@
 # TSG Task Tracker — standing facts for Claude Code sessions
 
+Every session: read the General rules Doc https://docs.google.com/document/d/1G-QI_F04Ye5SdEIJeOFq_Ex6da1v9oFDED49Ee-1HZM/edit and, for work in this repo, the Code layer Doc 'Systems — Instructions — Code' in the tracker's Instructions folder. Durand's current message wins.
+
 Read README.md for the file map, test commands, and conventions. This file holds the
 identifiers and environment facts that are otherwise only known from chat.
 
@@ -1430,3 +1432,57 @@ THREAD IDS paragraph; both skills say ops carry `id`.
   ids unchanged), every Doc in the Instructions folder retitled `... — Thread — T### — <name>` (30 files
   there: 29 threads + Code; General is the legacy Doc elsewhere), no new or duplicate Docs, and `_Inbox`
   holds no FAILED-/MALFORMED- file (only the routine's earlier PARTIAL- from 12:21Z, unrelated).
+
+## Threads renamed to workstreams, sessions and links (2026-09-23, backend 2026-09-23.3, dashboard UI 2026-09-23.3)
+
+Per Durand's brief (2026-09-23): "rename thread to workstream everywhere and track which sessions
+belong to which workstream". Every earlier note in this file that says thread / `threads` /
+`next_thread_id` / `thread:<id>` / `*_thread` / "Settings > Threads" / tsg-thread-sync is history;
+the names below are current.
+- Storage: `workstreams` (was `threads`), `meta.next_workstream_id` (was `next_thread_id`), mirror
+  records `workstream:<id>` (was `thread:<id>`). `tsgMigrateWorkstreams_` (idempotent) runs first in
+  `tsgEnsureWorkstreamIds_` (was `tsgEnsureThreadIds_`), so every rulesets write path migrates, and
+  `?api=rulesets` serves the migrated shape before the first write. Ids keep their values; never
+  renumbered, never reused. Functions renamed: `tsgResolveWorkstream_`, `tsgAssertSafeWorkstreamName_`,
+  `tsgHasWorkstream_`, `tsgWorkstreamIdFor_`, `tsgWorkstreamNameById_`.
+- Ops: `add_workstream`, `update_workstream_instructions`, `add_workstream_memory`,
+  `remove_workstream_memory`, `remove_workstream`, `rename_workstream`, `set_workstream_code`; every
+  old `*_thread` name is an alias (`TSG_WORKSTREAM_OP_ALIASES`, `tsgCanonicalRulesetOp_`). NEW
+  `record_session {id, sessionId, surface, title, startedAt}` (`sessions[]` newest first, update by
+  sessionId, lastSeen = patch ts, ids only (a pasted link is reduced to its id), surfaces
+  `TSG_SESSION_SURFACES`, 50 kept, overflow to `meta.sessionArchiveStash` -> the rulesets-history
+  archive file as `sessions`; no changelog line) and `set_workstream_links {id, projectUrl?, repo?,
+  notes?}` (`links` object, claude.ai/project URL and owner/repo validated, empty clears).
+- Mirror Docs: `Systems — Instructions — Workstream — <id> — <name>`, first line
+  `SYSTEMS — INSTRUCTIONS — WORKSTREAM <id>: <name>`, new MIRROR line (`TSG_MIRROR_HOW_TO`), links and
+  the latest 10 sessions (`tsgWorkstreamMirrorExtras_`) after the memories. The first rulesets write
+  after deploy rewrites every Doc (the MIRROR line changed), which renames them in place by `setName`.
+  `TSG_LEGACY_COWORK_MIRROR_DOC_ID` stays `1G-QI_F04Ye5SdEIJeOFq_Ex6da1v9oFDED49Ee-1HZM`: the
+  Instructions for Claude box links to that exact Doc.
+- Dashboard: Settings > Workstreams (`renderWorkstreamsTab`, `workstreamLinksHtml_`,
+  `workstreamSessionsHtml_`, `editWorkstreamLinks` -> `postRulesetsOp_`), CSS `.workstream-*`.
+  `loadRulesets` reads `threads` when `workstreams` is missing.
+- Skills: `skills/tsg-workstream-sync` (renamed from tsg-thread-sync), `skills/tsg-session-start`
+  (new: General Doc, find workstream, read its Doc, record_session, name the session, propose a new
+  workstream only with Durand's approval), protocol skill ruleset section rewritten (one op per
+  ruleset patch file). Durand saves them from Cowork.
+- Replay against the live Rulesets (docVersion 208, 15 workstreams, next_thread_id 35, downloaded
+  2026-09-23 18:06 EDT): 15 -> 15 with the same ids, next_workstream_id 35, General unchanged, all 17
+  mirror records kept their Doc ids, no new Docs.
+- Local Claude Code pointer (`~/.claude/CLAUDE.md`, brief step 7) cannot be written from a cloud
+  session; it is Durand's local step.
+
+- Deployed 2026-09-23 18:21 EDT: web app @99 = backend 2026-09-23.3 / UI 2026-09-23.3 = commit 6d8359a,
+  `main` fast-forwarded (PR tsg-homes/TSG-Task-Tracker#1 shows merged). Durand's go in chat. clasp
+  login used the paste fallback (Durand chose it after the automatic method was refused in the cloud
+  container: a tunnel into the container is blocked as a containment escape). VERIFIED LIVE after one
+  `mirror_instructions` patch (applied 22:22Z): Rulesets docVersion 209 -> 210, `threads` key gone,
+  15 workstreams with the same names and ids as immediately before deploy, `next_workstream_id` 35 =
+  the old `next_thread_id`, `next_thread_id` gone, General content byte-identical (sha256 601358dc…),
+  17 mirror records now `workstream:<id>` with the same 17 Doc file ids; every Doc retitled in place
+  ("Systems — Instructions — Workstream — T018 — TSG Task Tracker" etc.), General Doc id
+  1G-QI_F04Ye5SdEIJeOFq_Ex6da1v9oFDED49Ee-1HZM unchanged and rewritten with the new MIRROR line.
+  Twenty orphan "… — Thread — T0xx — …" Docs in the Instructions folder belong to workstreams removed
+  earlier on 2026-09-23 (not in the 15); the tracker leaves them for Durand to trash. General's own text
+  still says "'Systems — Instructions — Thread — <id> — <name>' until the tracker's thread-to-workstream
+  rename ships": that wording is Durand's to change.

@@ -3,11 +3,11 @@ name: tsg-task-tracker-protocol
 description: "TSG Task Tracker write/estimation protocol. Trigger whenever writing to the Task Tracker's Data or Rulesets files — adding/updating/deleting a task or subitem, answering the judgment queue, pushing a ruleset patch, computing estHours/estDays for a tracker task, or closing out a Claude session that worked a tracker task (effort self-report) — not only when Durand names this skill. Covers the exact Inbox-patch envelope shapes (flat op vs. bulk) and the shape bug that silently drops malformed writes, the current op list (update_subitem, judgment, request_steps, log_time, comments), the ONE estimation workflow shared with the in-script estimator (measured reference class from the team's own actuals, then the calibration table, PERT only as a last resort — never a flat multiplier), Claude-typed tasks estimated in Durand's attention turns (never Claude wall-clock), the capacity-aware estDays rules, the field checklist (delegate not assignee, docs[] not doc), and the safety rules (never write directly to Data/Rulesets, never curl the exec URL, never assume a trashed inbox file means success, never fabricate an estimate)."
 ---
 
-# TSG Task Tracker protocol (revised 2026-09-17)
+# TSG Task Tracker protocol (revised 2026-09-23: workstreams)
 
 ## Architecture
 
-- Backend: Apps Script project "TSG Task Tracker API" (id `1YfbOa3_KqFuTrLBZNfjEPjDk0_TX25dMDUkmGMCquQejGEsft3dCoA6L`). Source of truth for the code: GitHub `tsg-homes/task-tracker` (`Code.gs`, `dashboard_final.html`, `person.html`); `README.md` there documents every op and the judgment-queue answer shapes and wins over this file when they disagree.
+- Backend: Apps Script project "TSG Task Tracker API" (id `1YfbOa3_KqFuTrLBZNfjEPjDk0_TX25dMDUkmGMCquQejGEsft3dCoA6L`). Source of truth for the code: GitHub `tsg-homes/TSG-Task-Tracker` (`Code.gs`, `dashboard_final.html`, `person.html`); `README.md` there documents every op and the judgment-queue answer shapes and wins over this file when they disagree.
 - Data lives in Drive JSON files: `Systems — Task Tracker Data — TSG.json` (`1SRdNiNhHdAfaB-agj9OcXRIPA5xNLidt`) and `Systems — Task Tracker Rulesets.json` (`1RKkNUEfh6Q0qlQXbNlME7aIfh_h8FE-R`), both in the Task Tracker folder (`1PEyP4X_k1TxOfqZeGSbHyyaM8K64GwQ-`).
 - READ THE INDEX FIRST (2026-09-22): `Systems — Task Tracker Index — TSG.json` (`1F4Lgzuq3KsawqUNGqrQBds4Mxu95yaxC`, in the Task Tracker folder; rewritten by the backend after every applied write): every open task's `id`, `title`, `status`, `group`, `owner`, `delegate`, `due`, `tags`, `needsApproval` and all its `steps` (`i` = the index `update_subitem` needs, `title` = its `expectTitle`), Done tasks as id + title, `status_values`, `priority_values`, `taskTypes`, `groups`, `roster`, `backendVersion`, `docVersion`. It is a few tens of KB. The full Data file (685 KB+) is for notes, history, docs and `meta.judgments` only; when you need one task's notes, decode the base64 in a shell and pull that task with `jq`, never the whole file into context.
 - Writes never touch those files. A JSON patch file goes into `_Inbox` (`1-xBA0xRiqAcJ8btUAPUOouwNGKXY2_Pi`) through the Drive connector's `create_file`; the installed 1-minute trigger (`tsgInboxTick`) applies every patch and trashes the file, success or failure. Nothing needs to hit the web app.
@@ -20,7 +20,7 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 
 - Single op, flat: `{"target":"data","op":"update_task","id":11,"fields":{...},"source":"Claude","ts":"<ISO>"}`
 - Several ops in one file: `{"target":"data","op":"bulk","source":"Claude","ops":[{"op":"update_task",...},{"op":"add_task",...}],"ts":"<ISO>"}` — sub-ops are flat objects with no `target`.
-- Always carry `source` (your session's name, e.g. `"Claude (FUB thread)"`): a history line without a person's source counts as automation and is overwritten by later enrichment; a line with a person's source is protected.
+- Always carry `source` (your session's name, e.g. `"Claude (FUB workstream)"`): a history line without a person's source counts as automation and is overwritten by later enrichment; a line with a person's source is protected.
 
 ### Data ops (`target: "data"`)
 - `add_task {task}` — fields below; `skipDedup`/`skipEnrich` only when told. A near-duplicate title is merged as a step of the existing task, not added.
@@ -40,19 +40,50 @@ description: "TSG Task Tracker write/estimation protocol. Trigger whenever writi
 - `replace_all` is the dashboard's own save; never send it from a session.
 
 ### Ruleset ops (`target: "rulesets"`)
-`append_category`, `replace_category_text` (exact-substring find/replace; throws if `find` is not present verbatim — byte-check against a fresh read first), `set_category` (full overwrite; avoid), `add_thread`, `update_thread_instructions`, `add_thread_memory`, `remove_thread_memory`, `remove_thread`, `set_thread_code`, `rename_thread`, `mirror_instructions`. THREAD IDS (2026-09-23): every thread has an immutable server-assigned `id` (T001, T002 ...; read it from the thread's mirror Doc title "Systems — Instructions — Thread — <id> — <name>"). Address every thread op with `id` (preferred; `name` still works; both must agree). Never send an id on `add_thread` (the server assigns it), never expect an id to change, and never rename by re-adding: `rename_thread {id, newName}` keeps the id, memories, code, history and the same Doc.
 
-### Instruction layers (2026-09-22)
+ONE OP PER RULESET PATCH FILE (never a `bulk`; rulesets has no bulk op). Every workstream op
+resolves its workstream by `id` first, then `name` (the old wording "key the thread by patch.name"
+is stale): send `id` (preferred); `name` still works; when both are sent they must agree, and an
+unknown id or name is refused by name.
+
+- Categories (General and Code are Durand's; only when he asks): `append_category {category, text}`,
+  `replace_category_text {category, find, replace}` (exact substring; throws if `find` is not present
+  verbatim — byte-check against a fresh read first), `set_category {category, text}` (full overwrite,
+  creates the category), `remove_category {category}`.
+- Workstreams (formerly threads, renamed 2026-09-23): `add_workstream {name, instructions?, memories?}`
+  (the server assigns the `id`; never send one), `update_workstream_instructions {id, instructions,
+  historyEntry?}` (REPLACES the text), `add_workstream_memory {id, memory}`,
+  `remove_workstream_memory {id, index}`, `remove_workstream {id}`, `rename_workstream {id, newName}`
+  (keeps id, memories, code, sessions, history and the same Doc), `set_workstream_code {id, code}`,
+  `set_workstream_links {id, projectUrl?, repo?, notes?}` (Claude Project URL `https://claude.ai/project/...`,
+  repo `owner/repo`; an empty value clears that key), `record_session {id, sessionId, surface, title,
+  startedAt}` (appends or updates by `sessionId`, lastSeen = patch `ts`; `surface` is one of `chat`,
+  `cowork`, `code-local`, `code-cloud`, `scheduled`, `routine`; store the session ID only, e.g.
+  `session_01...` or `cse_...`, never a link; 50 most recent kept per workstream, older ones archived).
+- ALIASES: `add_thread`, `update_thread_instructions`, `add_thread_memory`, `remove_thread_memory`,
+  `remove_thread`, `rename_thread`, `set_thread_code` still work and land exactly like the workstream
+  ops (backend >= 2026-09-23.3). Write the workstream names.
+- `mirror_instructions {}` forces a re-mirror of every Doc.
+
+WORKSTREAM IDS: every workstream has an immutable server-assigned `id` (T002, T018 ...; read it from
+its mirror Doc title "Systems — Instructions — Workstream — <id> — <name>"). Never expect an id to
+change, never guess one, never rename by re-adding.
+
+### Instruction layers (2026-09-22; workstreams 2026-09-23)
 
 The Rulesets file holds `current.General` (everywhere), `current.Code` (Claude Code rules on top of
-General) and `threads[name]` (this thread's rules on top of those; `code: true` marks a code thread).
-A session pushes ONLY to its own thread entry (`update_thread_instructions`, `add_thread_memory`,
-`remove_thread_memory`; `set_thread_code {name, code}` to mark it a code thread); General and Code are
-Durand's (Settings > Rulesets, or `set_category` / `remove_category` when he asks). The tracker mirrors
-each set to a Google Doc in the tracker folder's `Instructions` subfolder after every rulesets write
-("Systems — Instructions — General" / "— Code" / "— Thread — <name>", composed so one Doc holds the
-whole stack; links in `meta.mirrorDocs` and in Settings). Read the Doc, never the Rulesets JSON.
-`mirror_instructions {}` (target rulesets) forces a re-mirror.
+General) and `workstreams[name]` (a workstream's rules on top of those; `code: true` marks a code
+workstream). Storage keys since backend 2026-09-23.3: `workstreams` (was `threads`),
+`meta.next_workstream_id` (was `next_thread_id`), mirror records `workstream:<id>` (was `thread:<id>`);
+the tracker migrates an old file on its first write. A session pushes ONLY to its own workstream
+entry (`update_workstream_instructions`, `add_workstream_memory`, `remove_workstream_memory`,
+`set_workstream_code`, `set_workstream_links`, `record_session`; tsg-workstream-sync covers the
+instruction push, tsg-session-start the session record); General and Code are Durand's (Settings >
+Rulesets, or `set_category` / `remove_category` when he asks). The tracker mirrors each set to a
+Google Doc in the tracker folder's `Instructions` subfolder after every rulesets write ("Systems —
+Instructions — General" / "— Code" / "— Workstream — <id> — <name>", composed so one Doc holds the
+whole stack; links in `meta.mirrorDocs` and in Settings > Workstreams). Read the Doc, never the
+Rulesets JSON.
 
 ## Steps for any write
 
@@ -62,8 +93,8 @@ whole stack; links in `meta.mirrorDocs` and in Settings). Read the Doc, never th
 4. Upload with `create_file` (`textContent`, `contentMimeType: application/json`, `disableConversionToGoogleType: true`) into `_Inbox`.
 5. Wait a minute, re-read, diff against the expected result before telling Durand it is done. If the change is missing, look in `_Inbox` for your file renamed `FAILED-` (rolled back), `PARTIAL-` (a bulk: the failing sub-ops rolled back, the rest applied) or `MALFORMED-` (not JSON), and read `meta.inboxErrors[]` in the data file for the exact error (it names the failing sub-op by index and lists the ops the deployed backend accepts; a malformed file's entry carries the parse position and the text around it). Every filed patch is raised as a critical dashboard alert plus a toast on load (no email, per Durand). A vanished file with the change present is success; anything else is not.
 6. Keep patches lean: one write costs the data file roughly its own size again (history lines plus one queued judgment per touched item, coalesced per parent in a bulk); history over the per-item cap is archived to the `History` folder, never in the hot file, and a from/to value in a history line is cut at 240 chars, so never read old notes text back out of `history[]`.
-6. BEFORE sending an op, check `meta.backendVersion` in the data file: it is the deployed backend, which can trail the repo. `log_time` needs `>= 2026-09-17.7`; `update_subitem`, `judgment`, `request_steps`, `request_tidy`, `add_comment` need `>= 2026-09-16.5`. An op the deployed backend lacks is rolled back and filed, never applied.
-7. Multi-KB content (a restore, a large rewrite): never retype it through tool calls; SHA-256 it, deliver the file, have Durand upload it as a new version, verify by re-hashing.
+7. BEFORE sending an op, check `meta.backendVersion` in the data file: it is the deployed backend, which can trail the repo. `log_time` needs `>= 2026-09-17.7`; `update_subitem`, `judgment`, `request_steps`, `request_tidy`, `add_comment` need `>= 2026-09-16.5`. An op the deployed backend lacks is rolled back and filed, never applied.
+8. Multi-KB content (a restore, a large rewrite): never retype it through tool calls; SHA-256 it, deliver the file, have Durand upload it as a new version, verify by re-hashing.
 
 ## Field checklist
 
@@ -107,7 +138,7 @@ At every write-back for a tracker task the session worked on (progress, notes, D
 
 ```json
 {"op":"log_time","id":<task id>,"subIdx":null,"minutes":<Durand's attention minutes>,"kind":"session",
- "source":"Claude session (<thread>)","turns":<his messages on this task>,"spanMin":<first-to-last wall-clock>,
+ "source":"Claude session (<workstream>)","turns":<his messages on this task>,"spanMin":<first-to-last wall-clock>,
  "note":"<one line on what was done>"}
 ```
 
@@ -120,6 +151,6 @@ At every write-back for a tracker task the session worked on (progress, notes, D
 - Never assume a trashed inbox file means success; re-read and diff.
 - Never fabricate `estHours`/`estDays`; follow the one workflow above or leave `estSource: "none"`.
 - Never set `Triage` or `Review` yourself, never unpin the bonus tasks, never write `assignee` or `doc`.
-- Never state a FUB go-live date: it is PENDING until Durand sets one.
+- FUB is TSG's main CRM (Durand, 2026-09-23); Lofty is phasing out and stays only as a backstop for anything missed in the transfer. Never describe FUB as pending or Lofty as the operating CRM, and never invent a go-live or Lofty shut-off date.
 - Dates are America/New_York. A cloud session's clock is UTC, which is already "tomorrow" after 8 PM Eastern; compute TODAY and every `due` / `timelineEnd` in Eastern and never propose a due date on a day whose workday (ends 4:30 PM) is over. Stored `ts` values stay UTC ISO.
 - Check any op or field you have not used before against `applyDataPatch_` in `Code.gs`; a wrong name fails silently.

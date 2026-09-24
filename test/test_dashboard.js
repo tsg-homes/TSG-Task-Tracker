@@ -389,44 +389,62 @@ setTimeout(async () => {
     } finally { CAL.pop(); t2.docs = prevDocs; }
   });
   // Instruction layers (2026-09-22): Settings shows the mirror Doc links and the code-thread toggle.
-  tryCall('Settings: Rulesets tab shows mirror Doc links and Threads tab has a Code thread toggle', () => {
-    w.eval("RULESETS = { meta: { docVersion: 3, mirrorDocs: { General: { id: 'G1', url: 'https://docs.google.com/document/d/G1/edit' }, 'thread:T001': { id: 'T1', url: 'https://docs.google.com/document/d/T1/edit' } } }, current: { Code: { content: 'code rules', pushed: '2026-09-22T16:00:00Z' }, General: { content: 'general rules', pushed: '2026-09-22T14:20:00Z' } }, history: [], threads: { Alpha: { id: 'T001', instructions: 'a', memories: [], history: [], code: true }, Beta: { instructions: 'b', memories: [], history: [] } } }; rulesetsLoaded = true;");
+  tryCall('Settings: Rulesets tab shows mirror Doc links and Workstreams tab has a Code workstream toggle', () => {
+    w.eval("RULESETS = { meta: { docVersion: 3, mirrorDocs: { General: { id: 'G1', url: 'https://docs.google.com/document/d/G1/edit' }, 'workstream:T001': { id: 'T1', url: 'https://docs.google.com/document/d/T1/edit' } } }, current: { Code: { content: 'code rules', pushed: '2026-09-22T16:00:00Z' }, General: { content: 'general rules', pushed: '2026-09-22T14:20:00Z' } }, history: [], workstreams: { Alpha: { id: 'T001', instructions: 'a', memories: [], history: [], code: true }, Beta: { instructions: 'b', memories: [], history: [] } } }; rulesetsLoaded = true;");
     const rs = w.renderRulesetsTab();
     if (rs.indexOf('https://docs.google.com/document/d/G1/edit') === -1) throw new Error('General mirror link missing');
     if (rs.indexOf('<h3>General</h3>') > rs.indexOf('<h3>Code</h3>')) throw new Error('General should render before Code');
     if (!/no mirror Doc yet/.test(rs)) throw new Error('Code without a Doc should say so');
-    const th = w.renderThreadsTab();
+    const th = w.renderWorkstreamsTab();
     if (th.indexOf('https://docs.google.com/document/d/T1/edit') === -1) throw new Error('thread mirror link missing');
     const alphaIdx = th.indexOf('Alpha</h3>'), betaIdx = th.indexOf('Beta</h3>');
     const alphaBlock = th.slice(alphaIdx, betaIdx), betaBlock = th.slice(betaIdx);
     if (!/type="checkbox" checked/.test(alphaBlock) || /type="checkbox" checked/.test(betaBlock)) throw new Error('code-thread checkbox state wrong');
     if (!/on top of General \+ Code/.test(alphaBlock) || /on top of General \+ Code/.test(betaBlock)) throw new Error('layer label wrong');
-    w.threadCodeToggle('Beta', true);
-    const beta = w.eval('RULESETS.threads.Beta');
-    if (beta.code !== true || !beta.history.some(h => /code thread/.test(h.summary))) throw new Error('toggle did not set code or log it');
-    w.eval("RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true;");
+    w.workstreamCodeToggle('Beta', true);
+    const beta = w.eval('RULESETS.workstreams.Beta');
+    if (beta.code !== true || !beta.history.some(h => /code workstream/.test(h.summary))) throw new Error('toggle did not set code or log it');
+    w.eval("RULESETS = { meta: {}, current: {}, history: [], workstreams: {} }; rulesetsLoaded = true;");
   });
-  tryCall('Threads tab shows each thread id, "id pending" for a UI-added thread, links the mirror Doc by id, and Rename posts rename_thread by id (2026-09-23)', () => {
-    w.eval("RULESETS = { meta: { docVersion: 3, mirrorDocs: { 'thread:T007': { id: 'D7', url: 'https://docs.google.com/document/d/D7/edit' } } }, current: { General: { content: 'g', pushed: '' } }, history: [], threads: { Alpha: { id: 'T007', instructions: 'a', memories: [], history: [] } } }; rulesetsLoaded = true;");
+  tryCall('Workstreams tab shows each workstream id, "id pending" for a UI-added one, links the mirror Doc by id, and Rename posts rename_workstream by id (2026-09-23)', () => {
+    w.eval("RULESETS = { meta: { docVersion: 3, mirrorDocs: { 'workstream:T007': { id: 'D7', url: 'https://docs.google.com/document/d/D7/edit' } } }, current: { General: { content: 'g', pushed: '' } }, history: [], workstreams: { Alpha: { id: 'T007', instructions: 'a', memories: [], history: [] } } }; rulesetsLoaded = true;");
     w.prompt = () => 'Fresh';
-    w.addThread();
+    w.addWorkstream();
     w.prompt = () => null;
-    const th = w.renderThreadsTab();
-    if (!/thread-id[^>]*>T007</.test(th) || !/id pending/.test(th)) throw new Error('id badge / pending badge missing: ' + th.slice(0, 300));
+    const th = w.renderWorkstreamsTab();
+    if (!/workstream-id[^>]*>T007</.test(th) || !/id pending/.test(th)) throw new Error('id badge / pending badge missing: ' + th.slice(0, 300));
     if (th.indexOf('https://docs.google.com/document/d/D7/edit') === -1) throw new Error('mirror link by id missing');
     const alphaBlock = th.slice(th.indexOf('Alpha</h3>'), th.indexOf('Fresh</h3>')), freshBlock = th.slice(th.indexOf('Fresh</h3>'));
-    if (!/renameThread\('Alpha'\)/.test(alphaBlock) || /renameThread/.test(freshBlock)) throw new Error('Rename only on a thread with an id');
-    if (!w.eval('RULESETS.threads.Fresh') || w.eval('RULESETS.threads.Fresh.id')) throw new Error('a UI-added thread must not mint its own id');
+    if (!/renameWorkstream\('Alpha'\)/.test(alphaBlock) || /renameWorkstream/.test(freshBlock)) throw new Error('Rename only on a thread with an id');
+    if (!w.eval('RULESETS.workstreams.Fresh') || w.eval('RULESETS.workstreams.Fresh.id')) throw new Error('a UI-added thread must not mint its own id');
     w.__posts = [];
     w.prompt = () => 'Alpha Renamed';
-    w.renameThread('Alpha');
+    w.renameWorkstream('Alpha');
     w.prompt = () => null;
-    const post = (w.__posts || []).find(x => x.body && x.body.includes('rename_thread'));
-    if (!post || !post.url.includes('target=rulesets')) throw new Error('no rename_thread post');
+    const post = (w.__posts || []).find(x => x.body && x.body.includes('rename_workstream'));
+    if (!post || !post.url.includes('target=rulesets')) throw new Error('no rename_workstream post');
     const body = JSON.parse(post.body);
-    if (body.op !== 'rename_thread' || body.id !== 'T007' || body.newName !== 'Alpha Renamed' || body.name) throw new Error('rename op wrong: ' + post.body);
-    if (w.eval("Object.keys(RULESETS.threads).indexOf('Alpha Renamed')") !== -1) throw new Error('the renamed key must not be written client-side');
-    w.eval("RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true;");
+    if (body.op !== 'rename_workstream' || body.id !== 'T007' || body.newName !== 'Alpha Renamed' || body.name) throw new Error('rename op wrong: ' + post.body);
+    if (w.eval("Object.keys(RULESETS.workstreams).indexOf('Alpha Renamed')") !== -1) throw new Error('the renamed key must not be written client-side');
+    w.eval("RULESETS = { meta: {}, current: {}, history: [], workstreams: {} }; rulesetsLoaded = true;");
+  });
+  tryCall('Workstreams tab shows links and the latest 10 sessions; Edit links posts set_workstream_links by id (2026-09-23)', () => {
+    const ss = []; for (let i = 0; i < 12; i++) ss.push({ sessionId: 'session_0' + i, surface: 'code-cloud', title: 'Session ' + i, lastSeen: '2026-09-23T2' + (i % 10) + ':00:00Z' });
+    w.eval("RULESETS = { meta: { docVersion: 3, mirrorDocs: {} }, current: { General: { content: 'g', pushed: '' } }, history: [], workstreams: { 'TSG Task Tracker': { id: 'T018', instructions: 'a', memories: [], history: [], links: { projectUrl: 'https://claude.ai/project/abc', repo: 'tsg-homes/TSG-Task-Tracker' }, sessions: " + JSON.stringify(ss) + " } } }; rulesetsLoaded = true;");
+    const html = w.renderWorkstreamsTab();
+    if (!html.includes('https://claude.ai/project/abc') || !html.includes('https://github.com/tsg-homes/TSG-Task-Tracker')) throw new Error('links missing');
+    if (!html.includes('session_09') || html.includes('session_010') || html.includes('session_011') || !/Sessions \(12, latest 10 shown\)/.test(html)) throw new Error('sessions list wrong');
+    if (/>Threads</.test(w.document.body.innerHTML) || !/>Workstreams</.test(w.document.body.innerHTML)) throw new Error('Settings tab should say Workstreams');
+    w.__posts = [];
+    const answers = ['https://claude.ai/project/xyz', 'tsg-homes/TSG-Task-Tracker', 'note'];
+    w.prompt = () => answers.shift();
+    w.editWorkstreamLinks('TSG Task Tracker');
+    w.prompt = () => null;
+    const post = (w.__posts || []).find(x => x.body && x.body.includes('set_workstream_links'));
+    if (!post) throw new Error('no set_workstream_links post');
+    const body = JSON.parse(post.body);
+    if (body.id !== 'T018' || body.projectUrl !== 'https://claude.ai/project/xyz' || body.notes !== 'note') throw new Error('links op wrong: ' + post.body);
+    w.eval("RULESETS = { meta: {}, current: {}, history: [], workstreams: {} }; rulesetsLoaded = true;");
   });
   // #250 backlog batch 1 (2026-09-16): Durand first, group dropdown, tag autocomplete, dependencies in the modal, dense cards
   tryCall('people lists put Durand first, then A to Z', () => {
@@ -539,7 +557,7 @@ setTimeout(async () => {
     if (!/Courthouse/.test(row.textContent) || !/40 min round trip/.test(row.textContent)) throw new Error('location or travel missing: ' + row.textContent);
     w.closeTaskCard();
     delete t.location; delete t.travelMin;
-    w.eval("RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true;");
+    w.eval("RULESETS = { meta: {}, current: {}, history: [], workstreams: {} }; rulesetsLoaded = true;");
     w.setSettingsTab('general');
     if (!doc.getElementById('homeBaseInput') || !doc.getElementById('claudeRepoInput') || !doc.getElementById('inboxErrorsList')) throw new Error('General tab missing home base / repo / inbox errors');
     if (!doc.getElementById('claudeSessionInput')) throw new Error('General tab missing the working session field');
@@ -951,7 +969,7 @@ setTimeout(async () => {
     w.eval("RAW_META.remindDefault = '1440'");
     delete t.dueTime; w.modalDueTimeChange(1, '09:00');
     if (t.remindAt !== '2026-09-24T09:00') throw new Error('1 day default: ' + t.remindAt);
-    w.eval("delete RAW_META.remindDefault; RULESETS = { meta: {}, current: {}, history: [], threads: {} }; rulesetsLoaded = true;");
+    w.eval("delete RAW_META.remindDefault; RULESETS = { meta: {}, current: {}, history: [], workstreams: {} }; rulesetsLoaded = true;");
     w.setSettingsTab('general');
     const sel = doc.getElementById('remindDefaultSelect');
     if (!sel || sel.value !== '60' || [...sel.options].some(o => o.value === 'custom')) throw new Error('Settings default reminder select');
@@ -1458,7 +1476,10 @@ setTimeout(async () => {
   tryCall('Today view label carries the day of week (2026-09-21)', () => {
     const today = w.todayISO();
     if (!/^Today · (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), /.test(w.relativeDayLabel(today))) throw new Error('today label: ' + w.relativeDayLabel(today));
-    if (!/^Friday, /.test(w.relativeDayLabel('2026-09-25'))) throw new Error('dated label: ' + w.relativeDayLabel('2026-09-25'));
+    // A Friday at least two weeks out, so the label is never "Tomorrow" (was pinned to 2026-09-25).
+    const fri = new Date(); fri.setDate(fri.getDate() + 14); while (fri.getDay() !== 5) fri.setDate(fri.getDate() + 1);
+    const friIso = w.isoLocal_(fri);
+    if (!/^Friday, /.test(w.relativeDayLabel(friIso))) throw new Error('dated label: ' + w.relativeDayLabel(friIso));
     w.eval("todayGranularity = 'day'");
     if (!w.renderTodayNavBar().includes(w.escapeHtml(w.relativeDayLabel(w.eval('todayViewDate'))))) throw new Error('nav bar does not show the label');
   });
